@@ -1,0 +1,51 @@
+{
+  "name": "polybot-crypto-5m",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Crypto Up/Down 5m Polymarket trading bot with simulation and live modes.",
+  "scripts": {
+    "bot": "tsx src/index.ts",
+    "ui": "tsx src/ui/index.ts",
+    "ui:sim": "tsx src/ui/index.ts --auto-start=sim",
+    "ui:build": "vite build",
+    "ui:preview": "tsx src/ui/index.ts --static",
+    "start:ui": "node dist/src/ui/index.js --static",
+    "service:install": "bash scripts/install-systemd.sh",
+    "smoke:market": "tsx src/smoke/market.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@polymarket/clob-client-v2": "^1.0.3",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "lucide-react": "^1.14.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "viem": "^2.40.3",
+    "ws": "^8.20.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/supertest": "^7.2.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.0.1",
+    "jsdom": "^29.1.1",
+    "supertest": "^7.2.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.10",
+    "vitest": "^4.0.14"
+  }
+}

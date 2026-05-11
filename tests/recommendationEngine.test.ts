@@ -1,0 +1,137 @@
+import { describe, expect, it } from "vitest";
+
+import { buildRecommendations } from "../src/recommendationEngine.js";
+import type { AnalyticsSample, MarketSymbol, Outcome } from "../src/types.js";
+
+describe("RecommendationEngine", () => {
+  it("chooses a predictive window and distance using walk-forward validation", () => {
+    const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true));
+    const response = buildRecommendations(samples, settings());
+    const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
+
+    expect(btc?.recommended?.entryWindowSeconds).toBeGreaterThanOrEqual(22);
+    expect(btc?.recommended?.entryWindowSeconds).toBeLessThanOrEqual(25);
+    expect(btc?.recommended?.minDistanceUsd).toBeGreaterThanOrEqual(17);
+    expect(btc?.recommended?.minDistanceUsd).toBeLessThanOrEqual(18);
+    expect(btc?.confidence).toBe("high");
+    expect(btc?.canAutoApply).toBe(true);
+    expect(btc?.recommended?.metrics.expectedRoi).toBeGreaterThan(0);
+    expect(btc?.recommended?.metrics.walkForwardRoi).toBeGreaterThan(0);
+    expect(btc?.recommended?.metrics.overfitRisk).toBeLessThanOrEqual(0.45);
+  });
+
+  it("keeps low-sample markets exploratory", () => {
+    const response = buildRecommendations(
+      Array.from({ length: 9 }, (_value, index) => predictiveSample("ETH", index, "UP", true)),
+      settings(),
+    );
+    const eth = response.recommendations.find((recommendation) => recommendation.market === "ETH");
+
+    expect(eth?.status).toBe("insufficient_data");
+    expect(eth?.confidence).toBe("low");
+    expect(eth?.canApply).toBe(false);
+    expect(eth?.canAutoApply).toBe(false);
+  });
+
+  it("rejects auto-apply when quote coverage is too thin", () => {
+    const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", index < 20));
+    const response = buildRecommendations(samples, settings());
+    const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
+
+    expect((btc?.recommended ?? btc?.current)?.metrics.quoteCoverage).toBeLessThan(0.8);
+    expect(btc?.canAutoApply).toBe(false);
+  });
+
+  it("blocks auto-apply while recommendation cooldown is active", () => {
+    const nowMs = Date.UTC(2026, 4, 8, 18);
+    const response = buildRecommendations(
+      Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true)),
+      { ...settings(), aiLastAppliedAtMs: nowMs - 10 * 60_000 },
+      nowMs,
+    );
+    const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
+
+    expect(btc?.canApply).toBe(true);
+    expect(btc?.canAutoApply).toBe(false);
+    expect(btc?.reason).toContain("cooldown");
+  });
+
+  it("does not trust an in-sample pattern that fails later out of sample", () => {
+    const samples = Array.from({ length: 45 }, (_value, index) =>
+      overfitSample("BTC", index, index < 20 ? "UP" : "DOWN"),
+    );
+    const response = buildRecommendations(samples, settings());
+    const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
+
+    expect(btc?.canAutoApply).toBe(false);
+    expect(btc?.confidence).not.toBe("high");
+  });
+});
+
+function settings() {
+  return {
+    minDistanceUsdByMarket: { BTC: 20, ETH: 5, DOGE: 0.0005 },
+    entryWindowSeconds: 20,
+    entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+    maxAskPrice: 0.99,
+  };
+}
+
+function predictiveSample(
+  market: MarketSymbol,
+  index: number,
+  winningOutcome: Outcome,
+  includeQuotes: boolean,
+): AnalyticsSample {
+  const windowStartMs = Date.UTC(2026, 4, 8, 12, index * 5, 0);
+  const endMs = windowStartMs + 300_000;
+  const earlyLosingMs = endMs - 24_000;
+  const predictiveMs = endMs - 22_000;
+  const currentMs = endMs - 18_000;
+  const winsUp = winningOutcome === "UP";
+  return {
+    version: 1,
+    market,
+    slug: `${market.toLowerCase()}-updown-5m-${Math.floor(windowStartMs / 1000)}`,
+    windowStartMs,
+    endMs,
+    openingPrice: 100,
+    openingTickTimestampMs: windowStartMs,
+    ticks: [
+      { timestampMs: earlyLosingMs, secondsToEnd: 24, price: winsUp ? 84 : 116, distanceUsd: winsUp ? -16 : 16 },
+      { timestampMs: predictiveMs, secondsToEnd: 22, price: winsUp ? 118 : 82, distanceUsd: winsUp ? 18 : -18 },
+      { timestampMs: currentMs, secondsToEnd: 18, price: winsUp ? 80 : 120, distanceUsd: winsUp ? -20 : 20 },
+    ],
+    quotes: includeQuotes
+      ? [
+          quote(earlyLosingMs, 24),
+          quote(predictiveMs, 22),
+          quote(currentMs, 18),
+        ]
+      : [],
+    finalPrice: winsUp ? 120 : 80,
+    finalTickTimestampMs: endMs,
+    winningOutcome,
+    resolvedAtMs: endMs,
+  };
+}
+
+function quote(timestampMs: number, secondsToEnd: number) {
+  return {
+    timestampMs,
+    secondsToEnd,
+    upBestAsk: 0.5,
+    upBestBid: 0.48,
+    downBestAsk: 0.5,
+    downBestBid: 0.48,
+  };
+}
+
+function overfitSample(market: MarketSymbol, index: number, winningOutcome: Outcome): AnalyticsSample {
+  const sample = predictiveSample(market, index, "UP", true);
+  return {
+    ...sample,
+    finalPrice: winningOutcome === "UP" ? 120 : 80,
+    winningOutcome,
+  };
+}

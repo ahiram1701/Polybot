@@ -1,0 +1,6 @@
+
+> polybot-crypto-5m@0.1.0 ui
+> tsx src/ui/index.ts --static
+
+[2026-05-08T20:46:18.211Z] INFO Polybot UI listening. {"url":"http://127.0.0.1:8789"}
+[2026-05-08T20:46:18.879Z] INFO Connected to Polymarket RTDS Chainlink feed.

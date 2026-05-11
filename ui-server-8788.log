@@ -1,0 +1,8 @@
+
+> polybot-crypto-5m@0.1.0 ui
+> tsx src/ui/index.ts
+
+[2026-05-07T20:12:36.056Z] INFO Polybot UI listening. {"url":"http://127.0.0.1:8788"}
+[2026-05-07T20:12:36.555Z] INFO Connected to Polymarket RTDS Chainlink feed.
+[2026-05-07T22:12:36.654Z] WARN RTDS websocket closed; reconnecting soon.
+[2026-05-07T22:12:40.352Z] INFO Connected to Polymarket RTDS Chainlink feed.

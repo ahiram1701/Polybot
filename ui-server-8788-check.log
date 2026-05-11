@@ -1,0 +1,7 @@
+
+> polybot-crypto-5m@0.1.0 ui
+> tsx src/ui/index.ts
+
+[2m11:56:18 a.m.[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m Re-optimizing dependencies because vite config has changed
+[2026-05-08T17:56:19.050Z] INFO Polybot UI listening. {"url":"http://127.0.0.1:8788"}
+[2026-05-08T17:56:19.637Z] INFO Connected to Polymarket RTDS Chainlink feed.

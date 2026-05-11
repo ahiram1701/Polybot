@@ -1,0 +1,208 @@
+import "dotenv/config";
+
+import { resolve } from "node:path";
+import { z } from "zod";
+
+import { defaultMarketDistances, defaultMarketEntryWindows, normalizeEnabledMarkets } from "./markets.js";
+import type { BotConfig, Mode } from "./types.js";
+
+const DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com";
+const DEFAULT_CLOB_HOST = "https://clob.polymarket.com";
+const DEFAULT_RTDS_URL = "wss://ws-live-data.polymarket.com";
+const DEFAULT_POLYGON_RPC_URL = "https://polygon-rpc.com";
+
+const optionalString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().optional(),
+);
+const optionalPositiveNumber = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.coerce.number().positive().optional(),
+);
+const optionalUrlString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().url().optional(),
+);
+
+const envSchema = z.object({
+  MODE: z.enum(["sim", "live"]).default("sim"),
+  ENABLED_MARKETS: z.string().default("BTC"),
+  MIN_BTC_DISTANCE_USD: z.coerce.number().positive().default(20),
+  MIN_ETH_DISTANCE_USD: z.coerce.number().positive().default(5),
+  MIN_DOGE_DISTANCE_USD: z.coerce.number().positive().default(0.0005),
+  ENTRY_WINDOW_SECONDS: z.coerce.number().positive().default(20),
+  ENTRY_WINDOW_SECONDS_BTC: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_ETH: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_DOGE: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD: z.coerce.number().positive().default(1),
+  LIVE_TRADE_AMOUNT_USD: z.coerce.number().positive().default(1),
+  AUTO_MIN_LIVE: z
+    .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(true),
+  MAX_ASK_PRICE: z.coerce.number().gt(0).lte(1).default(0.98),
+  DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
+  TICK_STALE_MS: z.coerce.number().positive().default(10_000),
+  POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
+  OPENING_CAPTURE_GRACE_MS: z.coerce.number().positive().default(15_000),
+  DATA_DIR: z.string().default("data"),
+  GAMMA_HOST: z.string().url().default(DEFAULT_GAMMA_HOST),
+  CLOB_HOST: z.string().url().default(DEFAULT_CLOB_HOST),
+  RTDS_URL: z.string().url().default(DEFAULT_RTDS_URL),
+  POLYGON_RPC_URL: z.string().url().default(DEFAULT_POLYGON_RPC_URL),
+  POLYBOT_PUBLIC_URL: optionalUrlString,
+  TELEGRAM_BOT_TOKEN: optionalString,
+  TELEGRAM_CHAT_ID: optionalString,
+  POLYMARKET_PRIVATE_KEY: optionalString,
+  POLYMARKET_SIGNATURE_TYPE: z.coerce.number().int().min(0).max(3).default(0),
+  POLYMARKET_FUNDER_ADDRESS: optionalString,
+});
+
+export interface CliArgs {
+  mode?: Mode;
+  confirmLive: boolean;
+  once: boolean;
+  help: boolean;
+}
+
+export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
+  const parsed: CliArgs = {
+    confirmLive: false,
+    once: false,
+    help: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--confirm-live") {
+      parsed.confirmLive = true;
+      continue;
+    }
+    if (arg === "--once") {
+      parsed.once = true;
+      continue;
+    }
+    if (arg === "--help" || arg === "-h") {
+      parsed.help = true;
+      continue;
+    }
+    if (arg === "--mode") {
+      parsed.mode = parseMode(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--mode=")) {
+      parsed.mode = parseMode(arg.slice("--mode=".length));
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  return parsed;
+}
+
+export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; cli: CliArgs } {
+  const env = envSchema.parse(process.env);
+  const cli = parseCliArgs(argv);
+  const mode = cli.mode ?? env.MODE;
+  const minDistanceUsdByMarket = defaultMarketDistances({
+    BTC: env.MIN_BTC_DISTANCE_USD,
+    ETH: env.MIN_ETH_DISTANCE_USD,
+    DOGE: env.MIN_DOGE_DISTANCE_USD,
+  });
+  const entryWindowSecondsByMarket = defaultMarketEntryWindows(
+    {
+      BTC: env.ENTRY_WINDOW_SECONDS_BTC,
+      ETH: env.ENTRY_WINDOW_SECONDS_ETH,
+      DOGE: env.ENTRY_WINDOW_SECONDS_DOGE,
+    },
+    env.ENTRY_WINDOW_SECONDS,
+  );
+
+  const config: BotConfig = {
+    mode,
+    confirmLive: cli.confirmLive,
+    minBtcDistanceUsd: env.MIN_BTC_DISTANCE_USD,
+    enabledMarkets: normalizeEnabledMarkets(env.ENABLED_MARKETS),
+    minDistanceUsdByMarket,
+    entryWindowSeconds: env.ENTRY_WINDOW_SECONDS,
+    entryWindowSecondsByMarket,
+    simTradeAmountUsd: env.SIM_TRADE_AMOUNT_USD,
+    liveTradeAmountUsd: env.LIVE_TRADE_AMOUNT_USD,
+    autoMinLive: env.AUTO_MIN_LIVE,
+    maxAskPrice: env.MAX_ASK_PRICE,
+    dailySpendLimitUsd: env.DAILY_SPEND_LIMIT_USD,
+    tickStaleMs: env.TICK_STALE_MS,
+    pollIntervalMs: env.POLL_INTERVAL_MS,
+    openingCaptureGraceMs: env.OPENING_CAPTURE_GRACE_MS,
+    dataDir: resolve(process.cwd(), env.DATA_DIR),
+    gammaHost: env.GAMMA_HOST.replace(/\/$/, ""),
+    clobHost: env.CLOB_HOST.replace(/\/$/, ""),
+    rtdsUrl: env.RTDS_URL,
+    polygonRpcUrl: env.POLYGON_RPC_URL,
+    publicUrl: env.POLYBOT_PUBLIC_URL,
+    telegramBotToken: env.TELEGRAM_BOT_TOKEN,
+    telegramChatId: env.TELEGRAM_CHAT_ID,
+    privateKey: normalizePrivateKey(env.POLYMARKET_PRIVATE_KEY),
+    signatureType: env.POLYMARKET_SIGNATURE_TYPE as 0 | 1 | 2 | 3,
+    funderAddress: normalizeAddress(env.POLYMARKET_FUNDER_ADDRESS),
+  };
+
+  validateLiveConfig(config);
+  return { config, cli };
+}
+
+export function usage(): string {
+  return [
+    "Usage:",
+    "  npm run bot -- --mode sim",
+    "  npm run bot -- --mode live --confirm-live",
+    "  npm run smoke:market",
+    "",
+    "Optional:",
+    "  --once            Run one bot loop iteration and exit.",
+  ].join("\n");
+}
+
+function parseMode(value?: string): Mode {
+  if (value === "sim" || value === "live") {
+    return value;
+  }
+  throw new Error(`Invalid --mode value: ${value ?? "(missing)"}`);
+}
+
+function normalizePrivateKey(value?: string): `0x${string}` | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const withPrefix = value.startsWith("0x") ? value : `0x${value}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(withPrefix)) {
+    throw new Error("POLYMARKET_PRIVATE_KEY must be a 32-byte hex private key.");
+  }
+  return withPrefix as `0x${string}`;
+}
+
+function normalizeAddress(value?: string): `0x${string}` | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    throw new Error("POLYMARKET_FUNDER_ADDRESS must be a 20-byte 0x-prefixed address.");
+  }
+  return value as `0x${string}`;
+}
+
+function validateLiveConfig(config: BotConfig): void {
+  if (config.mode !== "live") {
+    return;
+  }
+  if (!config.confirmLive) {
+    throw new Error("Live mode requires --confirm-live.");
+  }
+  if (!config.privateKey) {
+    throw new Error("Live mode requires POLYMARKET_PRIVATE_KEY.");
+  }
+  if (!config.funderAddress) {
+    throw new Error("Live mode requires POLYMARKET_FUNDER_ADDRESS.");
+  }
+}
