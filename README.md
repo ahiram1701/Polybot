@@ -64,20 +64,38 @@ La UI escucha solo en `127.0.0.1:8787`.
 
 ## Linux VPS 24/7 Con Tailscale
 
-Para correr Polybot 24/7 en Ubuntu/Debian:
+En un VPS nuevo, primero crea un usuario de despliegue y trabaja desde ahi. No corras Polybot como `root`:
 
 ```bash
+sudo apt update
+sudo apt install -y curl git ufw rsync
+sudo adduser polybot
+sudo usermod -aG sudo polybot
+su - polybot
+```
+
+Luego copia o clona el proyecto en `/home/polybot/Polybot`, entra al directorio y prepara la app:
+
+```bash
+cd ~/Polybot
 npm ci
+cp .env.example .env
 npm run build
 npm run ui:build
-POLYBOT_UI_HOST=0.0.0.0 npm run start:ui
-```
-
-La forma recomendada para produccion es instalarlo como servicio:
-
-```bash
 npm run service:install
 ```
+
+Si ya copiaste el proyecto dentro de `/root`, muevelo primero:
+
+```bash
+sudo mkdir -p /home/polybot/Polybot
+sudo rsync -a --exclude node_modules /root/Polybot/Polybot/ /home/polybot/Polybot/
+sudo chown -R polybot:polybot /home/polybot/Polybot
+su - polybot
+cd ~/Polybot
+```
+
+Si ves `Run this script as the deploy user, not as root`, el build estuvo bien, pero el servicio no se instalo. Sal de `root`, entra con el usuario `polybot` y repite `npm run service:install`.
 
 El servicio levanta solo la UI. Live queda apagado hasta que lo inicies manualmente desde la interfaz, incluso despues de reiniciar el VPS.
 
