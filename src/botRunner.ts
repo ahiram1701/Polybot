@@ -8,7 +8,7 @@ import {
 } from "./executionEngine.js";
 import { logger } from "./logger.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
-import { getEntryWindowSeconds, getMinDistanceUsd, marketSymbolFromSlug } from "./markets.js";
+import { getEntryWindowSeconds, getMarketOutcomeNumber, getMinDistanceUsd, marketSymbolFromSlug } from "./markets.js";
 import { MarketWatcher } from "./marketWatcher.js";
 import { createNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
@@ -52,6 +52,7 @@ interface TradeSignal {
   market: MarketInfo;
   outcome: Outcome;
   amountUsd: number;
+  maxAskPrice: number;
   opening: WindowOpening;
   tick: BtcPriceTick;
   distanceUsd: number;
@@ -90,15 +91,26 @@ export class BotRunner {
   }
 
   updateStrategySettings(
-    settings: Pick<BotConfig, "minDistanceUsdByMarket" | "entryWindowSeconds" | "entryWindowSecondsByMarket">,
+    settings: Pick<
+      BotConfig,
+      | "minDistanceUsdByMarket"
+      | "minDistanceUsdByMarketOutcome"
+      | "entryWindowSeconds"
+      | "entryWindowSecondsByMarket"
+      | "entryWindowSecondsByMarketOutcome"
+    >,
   ): void {
     this.config.minDistanceUsdByMarket = settings.minDistanceUsdByMarket;
+    this.config.minDistanceUsdByMarketOutcome = settings.minDistanceUsdByMarketOutcome;
     this.config.minBtcDistanceUsd = settings.minDistanceUsdByMarket.BTC;
     this.config.entryWindowSeconds = settings.entryWindowSeconds;
     this.config.entryWindowSecondsByMarket = settings.entryWindowSecondsByMarket;
+    this.config.entryWindowSecondsByMarketOutcome = settings.entryWindowSecondsByMarketOutcome;
     logger.info("Runtime strategy settings updated.", {
       minDistanceUsdByMarket: this.config.minDistanceUsdByMarket,
+      minDistanceUsdByMarketOutcome: this.config.minDistanceUsdByMarketOutcome,
       entryWindowSecondsByMarket: this.config.entryWindowSecondsByMarket,
+      entryWindowSecondsByMarketOutcome: this.config.entryWindowSecondsByMarketOutcome,
     });
   }
 
@@ -109,9 +121,12 @@ export class BotRunner {
       mode: this.config.mode,
       enabledMarkets: this.config.enabledMarkets,
       minDistanceUsdByMarket: this.config.minDistanceUsdByMarket,
+      minDistanceUsdByMarketOutcome: this.config.minDistanceUsdByMarketOutcome,
       entryWindowSeconds: this.config.entryWindowSeconds,
       entryWindowSecondsByMarket: this.config.entryWindowSecondsByMarket,
+      entryWindowSecondsByMarketOutcome: this.config.entryWindowSecondsByMarketOutcome,
       maxAskPrice: this.config.maxAskPrice,
+      maxAskPriceByMarketOutcome: this.config.maxAskPriceByMarketOutcome,
       dailySpendLimitUsd: this.config.dailySpendLimitUsd,
     });
     await this.deps.notifier?.notify({
@@ -169,7 +184,7 @@ export class BotRunner {
       const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
       this.logMarketChange(market);
       const opening = await this.ensureOpening(market, latestTick, nowMs);
-      const analyticsQuotes = await this.getAnalyticsQuotes(market, this.resolveConfiguredTradeAmount(market), nowMs);
+      const analyticsQuotes = await this.getAnalyticsQuotes(market, nowMs);
       analyticsQuotesBySlug.set(market.slug, analyticsQuotes);
       await this.recordAnalyticsObservation({
         market,
@@ -316,15 +331,6 @@ export class BotRunner {
     nowMs: number;
     reservedDailySpendUsd: number;
   }): TradeSignal | undefined {
-    const entryWindowSeconds = getEntryWindowSeconds(
-      this.config.entryWindowSecondsByMarket,
-      args.market.asset,
-      this.config.entryWindowSeconds,
-    );
-    if (!isWithinEntryWindow(args.market.endMs, args.nowMs, entryWindowSeconds)) {
-      return undefined;
-    }
-
     if (this.deps.state.hasTraded(args.market.slug)) {
       this.logSkipOnce(args.market.slug, "market_already_traded");
       return undefined;
@@ -356,7 +362,10 @@ export class BotRunner {
       return undefined;
     }
 
-    const minDistanceUsd = getMinDistanceUsd(this.config.minDistanceUsdByMarket, args.market.asset);
+    const minDistanceUsd = {
+      UP: this.resolveConfiguredMinDistance(args.market.asset, "UP"),
+      DOWN: this.resolveConfiguredMinDistance(args.market.asset, "DOWN"),
+    };
     const winner = getWinningOutcome(args.opening.openingPrice, args.latestTick.value, minDistanceUsd);
     if (!winner) {
       this.logSkipOnce(args.market.slug, "btc_distance_below_threshold", {
@@ -368,12 +377,18 @@ export class BotRunner {
       return undefined;
     }
 
+    const entryWindowSeconds = this.resolveConfiguredEntryWindow(args.market.asset, winner.outcome);
+    if (!isWithinEntryWindow(args.market.endMs, args.nowMs, entryWindowSeconds)) {
+      return undefined;
+    }
+
     const amountUsd = resolveTradeAmountUsd({
       mode: this.config.mode,
-      requestedUsd: this.config.mode === "live" ? this.config.liveTradeAmountUsd : this.config.simTradeAmountUsd,
+      requestedUsd: this.resolveConfiguredTradeAmountUsd(args.market.asset, winner.outcome),
       orderMinSize: args.market.orderMinSize,
       autoMinLive: this.config.autoMinLive,
     });
+    const maxAskPrice = this.resolveConfiguredMaxAskPrice(args.market.asset, winner.outcome);
 
     if (args.reservedDailySpendUsd + amountUsd > this.config.dailySpendLimitUsd) {
       this.logSkipOnce(args.market.slug, "daily_spend_limit_reached", {
@@ -388,6 +403,7 @@ export class BotRunner {
       market: args.market,
       outcome: winner.outcome,
       amountUsd,
+      maxAskPrice,
       opening: args.opening,
       tick: args.latestTick,
       distanceUsd: winner.distanceUsd,
@@ -412,7 +428,7 @@ export class BotRunner {
     try {
       quote =
         quoteCache.get(signal.market.slug)?.[signal.outcome] ??
-        (await this.deps.orderbook.getQuote(token.tokenId, signal.amountUsd, this.config.maxAskPrice));
+        (await this.deps.orderbook.getQuote(token.tokenId, signal.amountUsd, signal.maxAskPrice));
     } catch (error) {
       this.logSkipOnce(signal.market.slug, "orderbook_quote_failed", {
         outcome: signal.outcome,
@@ -426,11 +442,11 @@ export class BotRunner {
       return undefined;
     }
 
-    if (quote.bestAsk > this.config.maxAskPrice) {
+    if (quote.bestAsk > signal.maxAskPrice) {
       this.logSkipOnce(signal.market.slug, "best_ask_above_cap", {
         outcome: signal.outcome,
         bestAsk: quote.bestAsk,
-        maxAskPrice: this.config.maxAskPrice,
+        maxAskPrice: signal.maxAskPrice,
       });
       return undefined;
     }
@@ -477,6 +493,7 @@ export class BotRunner {
         market: candidate.market,
         outcome: candidate.outcome,
         amountUsd: candidate.amountUsd,
+        maxAskPrice: candidate.maxAskPrice,
         quote: candidate.quote,
         opening: candidate.opening,
         tick: candidate.tick,
@@ -489,18 +506,47 @@ export class BotRunner {
     }
   }
 
-  private resolveConfiguredTradeAmount(market: MarketInfo): number {
-    return resolveTradeAmountUsd({
-      mode: this.config.mode,
-      requestedUsd: this.config.mode === "live" ? this.config.liveTradeAmountUsd : this.config.simTradeAmountUsd,
-      orderMinSize: market.orderMinSize,
-      autoMinLive: this.config.autoMinLive,
-    });
+  private resolveConfiguredTradeAmountUsd(market: MarketSymbol, outcome: Outcome): number {
+    if (this.config.mode === "live") {
+      return getMarketOutcomeNumber(
+        this.config.liveTradeAmountUsdByMarketOutcome,
+        market,
+        outcome,
+        this.config.liveTradeAmountUsd,
+      );
+    }
+    return getMarketOutcomeNumber(
+      this.config.simTradeAmountUsdByMarketOutcome,
+      market,
+      outcome,
+      this.config.simTradeAmountUsd,
+    );
+  }
+
+  private resolveConfiguredMaxAskPrice(market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(this.config.maxAskPriceByMarketOutcome, market, outcome, this.config.maxAskPrice);
+  }
+
+  private resolveConfiguredMinDistance(market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(
+      this.config.minDistanceUsdByMarketOutcome,
+      market,
+      outcome,
+      getMinDistanceUsd(this.config.minDistanceUsdByMarket, market),
+    );
+  }
+
+  private resolveConfiguredEntryWindow(market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(
+      this.config.entryWindowSecondsByMarketOutcome,
+      market,
+      outcome,
+      getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, market, this.config.entryWindowSeconds),
+    );
   }
 
   private async getAnalyticsQuotes(
     market: MarketInfo,
-    amountUsd: number,
     nowMs: number,
   ): Promise<Partial<Record<Outcome, OrderbookQuote>>> {
     if (!this.deps.analyticsRecorder || !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS)) {
@@ -508,8 +554,26 @@ export class BotRunner {
     }
 
     const [up, down] = await Promise.allSettled([
-      this.deps.orderbook.getQuote(market.outcomes.UP.tokenId, amountUsd, this.config.maxAskPrice),
-      this.deps.orderbook.getQuote(market.outcomes.DOWN.tokenId, amountUsd, this.config.maxAskPrice),
+      this.deps.orderbook.getQuote(
+        market.outcomes.UP.tokenId,
+        resolveTradeAmountUsd({
+          mode: this.config.mode,
+          requestedUsd: this.resolveConfiguredTradeAmountUsd(market.asset, "UP"),
+          orderMinSize: market.orderMinSize,
+          autoMinLive: this.config.autoMinLive,
+        }),
+        this.resolveConfiguredMaxAskPrice(market.asset, "UP"),
+      ),
+      this.deps.orderbook.getQuote(
+        market.outcomes.DOWN.tokenId,
+        resolveTradeAmountUsd({
+          mode: this.config.mode,
+          requestedUsd: this.resolveConfiguredTradeAmountUsd(market.asset, "DOWN"),
+          orderMinSize: market.orderMinSize,
+          autoMinLive: this.config.autoMinLive,
+        }),
+        this.resolveConfiguredMaxAskPrice(market.asset, "DOWN"),
+      ),
     ]);
     const quotes: Partial<Record<Outcome, OrderbookQuote>> = {};
     if (up.status === "fulfilled") {

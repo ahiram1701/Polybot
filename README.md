@@ -55,7 +55,7 @@ En la UI puedes:
 - Iniciar/detener simulacion con el boton `Sim`.
 - Resetear estado local con el boton `Reset` cuando el bot esta detenido.
 - Revisar trades, logs y parametros, incluyendo distancia y ventana de entrada por mercado.
-- Ver recomendaciones de IA local para distancia y ventana por mercado.
+- Ver analisis EV por estrategias y pedir lectura a Ollama Cloud.
 - Guardar settings no secretos cuando el bot esta detenido.
 - Ver si live esta listo sin exponer private keys.
 - Ver en `Trades` si una posicion live con fill detectado termino `Gano` o `Perdio`.
@@ -148,20 +148,28 @@ POLYMARKET_FUNDER_ADDRESS=0x...
 - `MIN_BTC_DISTANCE_USD=20`: distancia minima BTC entre precio actual y precio inicial.
 - `MIN_ETH_DISTANCE_USD=5`: distancia minima ETH entre precio actual y precio inicial.
 - `MIN_DOGE_DISTANCE_USD=0.0005`: distancia minima DOGE entre precio actual y precio inicial.
+- `MIN_BTC_UP_DISTANCE_USD=`, `MIN_BTC_DOWN_DISTANCE_USD=` y equivalentes `ETH`/`DOGE`: overrides opcionales de distancia por mercado y lado. Si quedan vacios usan la distancia del mercado.
 - `ENTRY_WINDOW_SECONDS=20`: ventana de entrada global usada como fallback.
 - `ENTRY_WINDOW_SECONDS_BTC=`, `ENTRY_WINDOW_SECONDS_ETH=`, `ENTRY_WINDOW_SECONDS_DOGE=`: overrides opcionales de ventana por mercado. Dejalas vacias para usar `ENTRY_WINDOW_SECONDS`.
+- `ENTRY_WINDOW_SECONDS_BTC_UP=`, `ENTRY_WINDOW_SECONDS_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de ventana por mercado y lado.
 - `SIM_TRADE_AMOUNT_USD=1`: monto usado en simulacion.
+- `SIM_TRADE_AMOUNT_USD_BTC_UP=`, `SIM_TRADE_AMOUNT_USD_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de monto sim por mercado y lado.
 - `LIVE_TRADE_AMOUNT_USD=1`: monto deseado en live.
+- `LIVE_TRADE_AMOUNT_USD_BTC_UP=`, `LIVE_TRADE_AMOUNT_USD_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de monto live por mercado y lado.
 - `AUTO_MIN_LIVE=true`: en live eleva el monto al minimo del mercado si hace falta.
 - `MAX_ASK_PRICE=0.98`: no compra si el mejor ask supera este cap.
+- `MAX_ASK_PRICE_BTC_UP=`, `MAX_ASK_PRICE_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de ask cap por mercado y lado.
 - `DAILY_SPEND_LIMIT_USD=50`: freno diario de gasto bruto aproximado.
 - `TICK_STALE_MS=10000`: descarta ticks Chainlink viejos.
 - `POLL_INTERVAL_MS=1000`: frecuencia del loop del bot.
+- `OLLAMA_API_KEY=`: token opcional para pedir analisis bajo demanda a Ollama Cloud.
+- `OLLAMA_HOST=https://ollama.com`: host de Ollama Cloud.
+- `OLLAMA_MODEL=gpt-oss:120b`: modelo usado por el analisis bajo demanda.
 - `POLYGON_RPC_URL=https://polygon-rpc.com`: RPC usado por el cliente live para firmar/crear credenciales Polymarket.
 - `POLYBOT_UI_HOST=127.0.0.1`: host de la UI. En VPS con Tailscale usa `0.0.0.0` y firewall.
 - `POLYBOT_UI_PORT=8787`: puerto de la UI.
 - `POLYBOT_PUBLIC_URL=`: URL Tailscale que se muestra en logs y avisos Telegram.
-- `TELEGRAM_BOT_TOKEN=` y `TELEGRAM_CHAT_ID=`: opcionales; activan avisos de UI lista, errores, arranques/detenciones y autoajustes.
+- `TELEGRAM_BOT_TOKEN=` y `TELEGRAM_CHAT_ID=`: opcionales; activan avisos de UI lista, errores y arranques/detenciones.
 
 Los cambios hechos desde la UI se guardan en `data/ui-config.json` y se aplican al proximo arranque del bot.
 
@@ -190,7 +198,7 @@ El bot escribe:
 
 - `data/state.json`: estado, aperturas y trades por mercado.
 - `data/trades.jsonl`: auditoria append-only de trades y resoluciones.
-- `data/analytics.jsonl`: muestras resueltas para recomendaciones locales de IA.
+- `data/analytics.jsonl`: muestras resueltas para analisis EV de estrategias.
 - `data/ui-config.json`: settings no secretos guardados desde la UI.
 
 `data/` esta ignorado por Git.
@@ -230,22 +238,22 @@ No borra:
 
 Si el bot esta corriendo, `Reset` primero lo detiene y despues limpia el estado local.
 
-## IA Local
+## Analisis
 
-La pestana `IA` usa un optimizador predictivo local, sin API externa. Mientras el bot corre, Polybot guarda muestras compactas por mercado durante los ultimos 60 segundos de cada ventana: ticks Chainlink, quotes UP/DOWN y resultado final. Con esas muestras evalua ventanas `5..60s` en pasos de 1 segundo y distancias precisas por mercado.
+La pestana `Analisis` calcula EV historico de estrategias usando las muestras compactas de `data/analytics.jsonl`. Mientras el bot corre, Polybot guarda ticks Chainlink, quotes UP/DOWN y resultado final de los ultimos 60 segundos de cada ventana. Con esas muestras cruza mercado, lado, ventana `5..60s`, distancia minima y ask cap para estimar `EV = promedio(gano ? 1 / ask - 1 : -1)`.
 
-La recomendacion se puntua con validacion temporal walk-forward: cada prediccion usa solo ventanas anteriores, no el futuro de la misma muestra. Las metricas incluyen edge esperado, ROI walk-forward, limite inferior conservador, riesgo de sobreajuste, probabilidad de acierto estimada y error de calibracion.
+La tabla muestra ranking por EV, trades simulables, win rate, cobertura de quotes y drawdown. Tambien conserva las estrategias actuales por mercado/lado como referencia, pero no aplica cambios automaticos ni modifica settings.
 
-El autoajuste live solo se permite con alta confianza: al menos 40 ventanas resueltas, 20 trades simulables, cobertura de quotes >= 80%, mejora ajustada >= 3 puntos porcentuales, edge esperado positivo, ROI walk-forward positivo, cooldown de 30 minutos, cambio de ventana <= 5s y cambio de distancia <= 15%. No autoaplica dentro de los ultimos 65 segundos de una ventana activa. El autoajuste solo toca distancia y ventana; no cambia montos, ask cap ni limites.
+Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud desde la misma pestana. Polybot adjunta solo contexto agregado: P&L, trades recientes resumidos, estrategias actuales y top estrategias EV. No envia credenciales, `.env` ni respuestas crudas de ordenes.
 
 ## Regla De Entrada
 
 - Mercados: `btc-updown-5m-{epoch}`, `eth-updown-5m-{epoch}` y `doge-updown-5m-{epoch}`.
 - Precio inicial: primer tick Chainlink del simbolo (`btc/usd`, `eth/usd` o `doge/usd`) capturado al inicio de la ventana.
-- Compra `UP` si `precioActual - precioInicial` supera la distancia configurada para ese mercado.
-- Compra `DOWN` si `precioInicial - precioActual` supera la distancia configurada para ese mercado.
-- Solo compra dentro de la ventana configurada para ese mercado: `0 < segundosParaCierre <= ventanaDelMercado`.
-- Salta si el tick esta stale, no hay liquidez, `bestAsk > MAX_ASK_PRICE`, el mercado no acepta ordenes, ya se intento ese mercado o se alcanzo el limite diario.
+- Compra `UP` si `precioActual - precioInicial` supera la distancia configurada para ese mercado/lado.
+- Compra `DOWN` si `precioInicial - precioActual` supera la distancia configurada para ese mercado/lado.
+- Solo compra dentro de la ventana configurada para ese mercado/lado: `0 < segundosParaCierre <= ventanaDelMercadoLado`.
+- Salta si el tick esta stale, no hay liquidez, `bestAsk` supera el ask cap del mercado/lado, el mercado no acepta ordenes, ya se intento ese mercado o se alcanzo el limite diario.
 
 ## Problemas Comunes
 

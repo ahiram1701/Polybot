@@ -1,7 +1,9 @@
 import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
+  MarketOutcomeNumberSettings,
   MarketSymbol,
+  Outcome,
   PriceFeedSymbol,
 } from "./types.js";
 
@@ -16,6 +18,9 @@ export interface MarketDefinition {
 
 export const SUPPORTED_MARKETS = ["BTC", "ETH", "DOGE"] as const satisfies readonly MarketSymbol[];
 export const DEFAULT_ENTRY_WINDOW_SECONDS = 20;
+export const DEFAULT_MAX_ASK_PRICE = 0.98;
+export const DEFAULT_TRADE_AMOUNT_USD = 1;
+export const OUTCOMES = ["UP", "DOWN"] as const satisfies readonly Outcome[];
 
 export const MARKET_DEFINITIONS: Record<MarketSymbol, MarketDefinition> = {
   BTC: {
@@ -60,6 +65,15 @@ export function defaultMarketDistances(overrides: Partial<MarketDistanceSettings
   };
 }
 
+export type MarketOutcomeNumberOverrides = Partial<Record<MarketSymbol, Partial<Record<Outcome, number>>>>;
+
+export function defaultMarketOutcomeDistances(
+  overrides: MarketOutcomeNumberOverrides = {},
+  fallbackByMarket: MarketDistanceSettings = defaultMarketDistances(),
+): MarketOutcomeNumberSettings {
+  return defaultMarketOutcomeNumbers(overrides, (symbol) => fallbackByMarket[symbol], isPositiveFiniteNumber);
+}
+
 export function defaultMarketEntryWindows(
   overrides: Partial<MarketEntryWindowSettings> = {},
   fallbackSeconds = DEFAULT_ENTRY_WINDOW_SECONDS,
@@ -70,6 +84,29 @@ export function defaultMarketEntryWindows(
     ETH: isPositiveFiniteNumber(overrides.ETH) ? overrides.ETH : fallback,
     DOGE: isPositiveFiniteNumber(overrides.DOGE) ? overrides.DOGE : fallback,
   };
+}
+
+export function defaultMarketOutcomeEntryWindows(
+  overrides: MarketOutcomeNumberOverrides = {},
+  fallbackByMarket: MarketEntryWindowSettings = defaultMarketEntryWindows(),
+): MarketOutcomeNumberSettings {
+  return defaultMarketOutcomeNumbers(overrides, (symbol) => fallbackByMarket[symbol], isPositiveFiniteNumber);
+}
+
+export function defaultMarketOutcomeAmounts(
+  overrides: MarketOutcomeNumberOverrides = {},
+  fallbackAmountUsd = DEFAULT_TRADE_AMOUNT_USD,
+): MarketOutcomeNumberSettings {
+  const fallback = isPositiveFiniteNumber(fallbackAmountUsd) ? fallbackAmountUsd : DEFAULT_TRADE_AMOUNT_USD;
+  return defaultMarketOutcomeNumbers(overrides, () => fallback, isPositiveFiniteNumber);
+}
+
+export function defaultMarketOutcomeMaxAskPrices(
+  overrides: MarketOutcomeNumberOverrides = {},
+  fallbackMaxAskPrice = DEFAULT_MAX_ASK_PRICE,
+): MarketOutcomeNumberSettings {
+  const fallback = isValidMaxAskPrice(fallbackMaxAskPrice) ? fallbackMaxAskPrice : DEFAULT_MAX_ASK_PRICE;
+  return defaultMarketOutcomeNumbers(overrides, () => fallback, isValidMaxAskPrice);
 }
 
 export function normalizeEnabledMarkets(markets: unknown, fallback: MarketSymbol[] = ["BTC"]): MarketSymbol[] {
@@ -118,6 +155,16 @@ export function getMinDistanceUsd(
   return distances?.[symbol] ?? MARKET_DEFINITIONS[symbol].defaultMinDistanceUsd;
 }
 
+export function getMarketOutcomeNumber(
+  settings: Partial<Record<MarketSymbol, Partial<Record<Outcome, number>>>> | undefined,
+  symbol: MarketSymbol,
+  outcome: Outcome,
+  fallback: number,
+): number {
+  const value = settings?.[symbol]?.[outcome];
+  return isPositiveFiniteNumber(value) ? value : fallback;
+}
+
 export function getEntryWindowSeconds(
   windows: Partial<MarketEntryWindowSettings> | undefined,
   symbol: MarketSymbol,
@@ -128,6 +175,33 @@ export function getEntryWindowSeconds(
     : MARKET_DEFINITIONS[symbol].defaultEntryWindowSeconds;
   const value = windows?.[symbol];
   return isPositiveFiniteNumber(value) ? value : fallback;
+}
+
+function defaultMarketOutcomeNumbers(
+  overrides: MarketOutcomeNumberOverrides,
+  fallbackForMarket: (symbol: MarketSymbol) => number,
+  isValid: (value: unknown) => value is number,
+): MarketOutcomeNumberSettings {
+  return {
+    BTC: defaultOutcomeNumbers(overrides.BTC, fallbackForMarket("BTC"), isValid),
+    ETH: defaultOutcomeNumbers(overrides.ETH, fallbackForMarket("ETH"), isValid),
+    DOGE: defaultOutcomeNumbers(overrides.DOGE, fallbackForMarket("DOGE"), isValid),
+  };
+}
+
+function defaultOutcomeNumbers(
+  overrides: Partial<Record<Outcome, number>> | undefined,
+  fallbackValue: number,
+  isValid: (value: unknown) => value is number,
+): Record<Outcome, number> {
+  return {
+    UP: isValid(overrides?.UP) ? overrides.UP : fallbackValue,
+    DOWN: isValid(overrides?.DOWN) ? overrides.DOWN : fallbackValue,
+  };
+}
+
+function isValidMaxAskPrice(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1;
 }
 
 function isPositiveFiniteNumber(value: unknown): value is number {

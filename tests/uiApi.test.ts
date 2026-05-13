@@ -1,12 +1,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { RecommendationEngine } from "../src/recommendationEngine.js";
-import type { AiRecommendation, AiRecommendationsResponse, MarketInfo, MarketSymbol } from "../src/types.js";
-import type { BotConfig } from "../src/types.js";
+import type { StrategyAnalysisEngine } from "../src/strategyAnalysisEngine.js";
+import type { BotConfig, StrategyAnalysisResponse, StrategyCandidate } from "../src/types.js";
 import { BotController, type RunnerLike } from "../src/ui/controller.js";
 import { createUiApp } from "../src/ui/server.js";
 import type { UiStatus } from "../src/ui/shared.js";
@@ -112,119 +111,80 @@ describe("UI API", () => {
     controller.dispose();
   });
 
-  it("returns and applies AI recommendations while stopped", async () => {
-    const recommendationEngine = fakeRecommendationEngine(recommendationsResponse([recommendation({ market: "BTC" })]));
+  it("returns strategy analysis", async () => {
     const controller = new BotController(await baseConfig(false), {
-      recommendationEngine,
+      strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
       startPriceFeed: false,
       snapshotProvider: fixedSnapshot,
       runnerFactory: () => new FakeRunner(),
     });
     const app = createUiApp(controller);
 
-    await request(app).get("/api/recommendations").expect(200).expect((response) => {
-      expect(response.body.recommendations[0].market).toBe("BTC");
+    await request(app).get("/api/analysis/strategies").expect(200).expect((response) => {
+      expect(response.body.summary.sampleCount).toBe(5);
+      expect(response.body.strategies[0].market).toBe("BTC");
+      expect(response.body.currentStrategies[0].isCurrent).toBe(true);
     });
+    controller.dispose();
+  });
+
+  it("rejects empty Ollama prompts", async () => {
+    const controller = new BotController(await baseConfig(false, { ollamaApiKey: "ollama-key" }), {
+      strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).post("/api/analysis/ollama").send({ prompt: " " }).expect(400);
+    controller.dispose();
+  });
+
+  it("rejects Ollama analysis without an API key", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).post("/api/analysis/ollama").send({ prompt: "resume riesgos" }).expect(409);
+    controller.dispose();
+  });
+
+  it("requests Ollama analysis with strategy context", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body);
+      expect(body).toContain("resume riesgos");
+      expect(body).toContain("topStrategies");
+      expect(body).toContain("confidence");
+      expect(body).toContain("riskFlags");
+      expect(body).not.toContain("1111111111");
+      expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer ollama-key");
+      return new Response(JSON.stringify({ message: { content: "Tesis: EV positivo." } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const controller = new BotController(await baseConfig(true, { ollamaApiKey: "ollama-key" }), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
+      fetch: fetchMock,
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
 
     await request(app)
-      .post("/api/recommendations/apply")
-      .send({ markets: ["BTC"] })
+      .post("/api/analysis/ollama")
+      .send({ prompt: "resume riesgos" })
       .expect(200)
       .expect((response) => {
-        expect(response.body.settings.minDistanceUsdByMarket.BTC).toBe(15);
-        expect(response.body.settings.entryWindowSecondsByMarket.BTC).toBe(30);
+        expect(response.body.model).toBe("gpt-oss:120b");
+        expect(response.body.content).toContain("EV positivo");
+        expect(response.body.contextSummary).toContain("estrategias");
       });
-    controller.dispose();
-  });
-
-  it("rejects AI auto-apply without high-confidence recommendations", async () => {
-    const recommendationEngine = fakeRecommendationEngine(
-      recommendationsResponse([recommendation({ market: "BTC", canApply: true, canAutoApply: false })]),
-    );
-    const controller = new BotController(await baseConfig(false), {
-      recommendationEngine,
-      startPriceFeed: false,
-      snapshotProvider: fixedSnapshot,
-      runnerFactory: () => new FakeRunner(),
-    });
-    const app = createUiApp(controller);
-
-    await request(app).post("/api/recommendations/auto-apply").send({ markets: ["BTC"] }).expect(409);
-    controller.dispose();
-  });
-
-  it("auto-applies high-confidence AI recommendations to a running live runner", async () => {
-    const updateStrategySettings = vi.fn<
-      (settings: Pick<BotConfig, "minDistanceUsdByMarket" | "entryWindowSeconds" | "entryWindowSecondsByMarket">) => void
-    >();
-    const runner: RunnerLike = {
-      start: async () => new Promise(() => undefined),
-      stop: () => undefined,
-      updateStrategySettings,
-    };
-    const recommendationEngine = fakeRecommendationEngine(recommendationsResponse([recommendation({ market: "BTC" })]));
-    const controller = new BotController(await baseConfig(true), {
-      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
-      recommendationEngine,
-      startPriceFeed: false,
-      snapshotProvider: fixedSnapshot,
-      watcher: { getCurrentMarket: async () => null },
-      runnerFactory: () => runner,
-    });
-    const app = createUiApp(controller);
-
-    await request(app).post("/api/bot/start").send({ mode: "live", confirmLive: true }).expect(200);
-    await request(app)
-      .post("/api/recommendations/auto-apply")
-      .send({ markets: ["BTC"] })
-      .expect(200)
-      .expect((response) => {
-        expect(response.body.settings.minDistanceUsdByMarket.BTC).toBe(15);
-        expect(response.body.settings.entryWindowSecondsByMarket.BTC).toBe(30);
-      });
-    expect(updateStrategySettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        minDistanceUsdByMarket: expect.objectContaining({ BTC: 15 }),
-        entryWindowSecondsByMarket: expect.objectContaining({ BTC: 30 }),
-      }),
-    );
-    controller.dispose();
-  });
-
-  it("rejects AI auto-apply during the protected final market window", async () => {
-    const runner: RunnerLike = {
-      start: async () => new Promise(() => undefined),
-      stop: () => undefined,
-      updateStrategySettings: () => undefined,
-    };
-    const recommendationEngine = fakeRecommendationEngine(recommendationsResponse([recommendation({ market: "BTC" })]));
-    const controller = new BotController(await baseConfig(true), {
-      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
-      recommendationEngine,
-      startPriceFeed: false,
-      snapshotProvider: fixedSnapshot,
-      watcher: { getCurrentMarket: async () => marketInfo("BTC", Date.now() + 30_000) },
-      runnerFactory: () => runner,
-    });
-    const app = createUiApp(controller);
-
-    await request(app).post("/api/bot/start").send({ mode: "live", confirmLive: true }).expect(200);
-    await request(app).post("/api/recommendations/auto-apply").send({ markets: ["BTC"] }).expect(409);
-    controller.dispose();
-  });
-
-  it("allows toggling AI auto-apply while running", async () => {
-    const controller = new BotController(await baseConfig(false), {
-      startPriceFeed: false,
-      snapshotProvider: fixedSnapshot,
-      runnerFactory: () => new FakeRunner(),
-    });
-    const app = createUiApp(controller);
-
-    await request(app).post("/api/bot/start").send({ mode: "sim" }).expect(200);
-    await request(app).patch("/api/settings").send({ aiAutoApplyLive: true }).expect(200).expect((response) => {
-      expect(response.body.aiAutoApplyLive).toBe(true);
-    });
+    expect(fetchMock).toHaveBeenCalledWith("https://ollama.com/api/chat", expect.any(Object));
     controller.dispose();
   });
 
@@ -248,7 +208,7 @@ describe("UI API", () => {
   });
 });
 
-async function baseConfig(withSecrets: boolean): Promise<BotConfig> {
+async function baseConfig(withSecrets: boolean, overrides: Partial<BotConfig> = {}): Promise<BotConfig> {
   const dataDir = await mkdtemp(join(tmpdir(), "polybot-api-"));
   temps.push(dataDir);
   return {
@@ -272,9 +232,12 @@ async function baseConfig(withSecrets: boolean): Promise<BotConfig> {
     clobHost: "https://clob.polymarket.com",
     rtdsUrl: "wss://ws-live-data.polymarket.com",
     polygonRpcUrl: "https://polygon-rpc.com",
+    ollamaHost: "https://ollama.com",
+    ollamaModel: "gpt-oss:120b",
     signatureType: 0,
     privateKey: withSecrets ? (`0x${"1".repeat(64)}` as `0x${string}`) : undefined,
     funderAddress: withSecrets ? (`0x${"2".repeat(40)}` as `0x${string}`) : undefined,
+    ...overrides,
   };
 }
 
@@ -286,98 +249,50 @@ async function fixedSnapshot(): Promise<Partial<UiStatus>> {
   };
 }
 
-function fakeRecommendationEngine(response: AiRecommendationsResponse): RecommendationEngine {
+function fakeStrategyAnalysisEngine(response: StrategyAnalysisResponse): StrategyAnalysisEngine {
   return {
-    recommend: async () => response,
-  } as unknown as RecommendationEngine;
+    analyze: async () => response,
+  } as unknown as StrategyAnalysisEngine;
 }
 
-function recommendationsResponse(recommendations: AiRecommendation[]): AiRecommendationsResponse {
-  return {
-    generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    recommendations,
-  };
-}
-
-function marketInfo(asset: MarketSymbol, endMs: number): MarketInfo {
-  const windowStartMs = endMs - 300_000;
-  return {
-    asset,
-    slug: `${asset.toLowerCase()}-updown-5m-${Math.floor(windowStartMs / 1000)}`,
-    title: `${asset} Up or Down`,
-    conditionId: "condition",
-    windowStartMs,
-    endMs,
-    eventStartTimeMs: windowStartMs,
-    acceptingOrders: true,
-    active: true,
-    closed: false,
-    tickSize: "0.01",
-    negRisk: false,
-    orderMinSize: 1,
-    outcomes: {
-      UP: { outcome: "UP", label: "Up", tokenId: "up" },
-      DOWN: { outcome: "DOWN", label: "Down", tokenId: "down" },
+function analysisResponse(): StrategyAnalysisResponse {
+  const strategy: StrategyCandidate = {
+    market: "BTC" as const,
+    outcome: "UP" as const,
+    entryWindowSeconds: 20,
+    minDistanceUsd: 10,
+    maxAskPrice: 0.8,
+    isCurrent: true,
+    confidence: "medium",
+    riskFlags: [],
+    qualityScore: 0.43,
+    evDeltaVsCurrent: 0,
+    metrics: {
+      sampleCount: 5,
+      signalCount: 5,
+      tradeCount: 5,
+      winCount: 3,
+      lossCount: 2,
+      quoteCoverage: 1,
+      winRate: 0.5,
+      averageAsk: 0.5,
+      evRoi: 0.25,
+      maxDrawdown: 1,
     },
   };
-}
-
-function recommendation(args: {
-  market: "BTC" | "ETH" | "DOGE";
-  canApply?: boolean;
-  canAutoApply?: boolean;
-}): AiRecommendation {
   return {
-    market: args.market,
-    status: "ready",
-    confidence: args.canAutoApply === false ? "medium" : "high",
     generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    current: {
-      entryWindowSeconds: 20,
-      minDistanceUsd: args.market === "DOGE" ? 0.0005 : args.market === "ETH" ? 5 : 20,
-      metrics: {
-        sampleCount: 20,
-        signalCount: 20,
-        tradeCount: 20,
-        winCount: 10,
-        lossCount: 10,
-        quoteCoverage: 1,
-        averageRoi: 0,
-        adjustedRoi: 0,
-        expectedRoi: 0,
-        walkForwardRoi: 0,
-        lowerBoundRoi: 0,
-        overfitRisk: 0.2,
-        predictedWinProbability: 0.5,
-        calibrationError: 0.1,
-        maxDrawdown: 1,
-      },
+    strategies: [strategy],
+    currentStrategies: [strategy],
+    summary: {
+      sampleCount: 5,
+      strategyCount: 1,
+      currentStrategyCount: 1,
+      reliableStrategyCount: 1,
+      bestEvRoi: 0.25,
+      bestTradeCount: 5,
+      bestReliableEvRoi: 0.25,
+      bestReliableTradeCount: 5,
     },
-    recommended: {
-      entryWindowSeconds: 30,
-      minDistanceUsd: args.market === "DOGE" ? 0.0004 : args.market === "ETH" ? 4 : 15,
-      metrics: {
-        sampleCount: 20,
-        signalCount: 20,
-        tradeCount: 20,
-        winCount: 15,
-        lossCount: 5,
-        quoteCoverage: 1,
-        averageRoi: 0.2,
-        adjustedRoi: 0.12,
-        expectedRoi: 0.16,
-        walkForwardRoi: 0.14,
-        lowerBoundRoi: 0.1,
-        overfitRisk: 0.2,
-        predictedWinProbability: 0.62,
-        calibrationError: 0.08,
-        maxDrawdown: 1,
-      },
-    },
-    improvementAdjustedRoi: 0.12,
-    sampleCount: 20,
-    reason: "Alta confianza",
-    canApply: args.canApply ?? true,
-    canAutoApply: args.canAutoApply ?? true,
   };
 }

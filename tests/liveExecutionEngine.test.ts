@@ -188,6 +188,7 @@ function baseInput(): ExecutionInput {
     market,
     outcome: "UP",
     amountUsd: 5,
+    maxAskPrice: 0.98,
     quote: {
       tokenId: "up-token",
       bestAsk: 0.91,

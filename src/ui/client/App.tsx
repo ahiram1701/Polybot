@@ -28,15 +28,28 @@ import { type FormEvent, useEffect, useState } from "react";
 import type { LogEntry } from "../../logger.js";
 import { calculateTradePnl, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
-import type { AiRecommendation, AiRecommendationsResponse, MarketSymbol, TradeAttempt } from "../../types.js";
+import type {
+  MarketSymbol,
+  OllamaTradeAnalysisResponse,
+  Outcome,
+  StrategyAnalysisResponse,
+  StrategyCandidate,
+  StrategyConfidence,
+  StrategyRiskFlag,
+  TradeAttempt,
+} from "../../types.js";
 import type { MarketStatusSnapshot, StartBotRequest, UiSettings, UiStatus } from "../shared.js";
 
-type Tab = "dashboard" | "trades" | "ai" | "settings" | "logs";
+type Tab = "dashboard" | "trades" | "analysis" | "settings" | "logs";
 type Theme = "light" | "dark";
 type TradeMarketFilter = "ALL" | MarketSymbol;
 type TradePnlFilter = "ALL" | "POSITIVE" | "NEGATIVE";
 type TradeSortKey = "createdAtMs" | "entryWindowSeconds" | "stakeUsd" | "bestAsk" | "distanceUsd" | "payoutUsd" | "netUsd";
 type TradeSortDirection = "asc" | "desc";
+type StrategySortKey = "evRoi" | "tradeCount" | "winRate" | "quoteCoverage" | "entryWindowSeconds" | "minDistanceUsd" | "maxAskPrice" | "maxDrawdown";
+type StrategySortDirection = "asc" | "desc";
+type StrategyQualityFilter = "RELIABLE" | "ALL" | "POSITIVE" | "CURRENT";
+type OutcomeFilter = "ALL" | Outcome;
 
 interface TradeSortState {
   key: TradeSortKey;
@@ -52,6 +65,11 @@ interface TradeAverages {
   netUsd?: number;
 }
 
+interface StrategySortState {
+  key: StrategySortKey;
+  direction: StrategySortDirection;
+}
+
 const themeStorageKey = "polybot-theme";
 
 const emptySettings: UiSettings = {
@@ -62,16 +80,41 @@ const emptySettings: UiSettings = {
     ETH: 5,
     DOGE: 0.0005,
   },
+  minDistanceUsdByMarketOutcome: {
+    BTC: { UP: 20, DOWN: 20 },
+    ETH: { UP: 5, DOWN: 5 },
+    DOGE: { UP: 0.0005, DOWN: 0.0005 },
+  },
   entryWindowSeconds: 20,
   entryWindowSecondsByMarket: {
     BTC: 20,
     ETH: 20,
     DOGE: 20,
   },
+  entryWindowSecondsByMarketOutcome: {
+    BTC: { UP: 20, DOWN: 20 },
+    ETH: { UP: 20, DOWN: 20 },
+    DOGE: { UP: 20, DOWN: 20 },
+  },
   simTradeAmountUsd: 1,
+  simTradeAmountUsdByMarketOutcome: {
+    BTC: { UP: 1, DOWN: 1 },
+    ETH: { UP: 1, DOWN: 1 },
+    DOGE: { UP: 1, DOWN: 1 },
+  },
   liveTradeAmountUsd: 1,
+  liveTradeAmountUsdByMarketOutcome: {
+    BTC: { UP: 1, DOWN: 1 },
+    ETH: { UP: 1, DOWN: 1 },
+    DOGE: { UP: 1, DOWN: 1 },
+  },
   autoMinLive: true,
   maxAskPrice: 0.98,
+  maxAskPriceByMarketOutcome: {
+    BTC: { UP: 0.98, DOWN: 0.98 },
+    ETH: { UP: 0.98, DOWN: 0.98 },
+    DOGE: { UP: 0.98, DOWN: 0.98 },
+  },
   dailySpendLimitUsd: 50,
   tickStaleMs: 10_000,
   pollIntervalMs: 1_000,
@@ -85,11 +128,32 @@ const marketOptions: Array<{ symbol: MarketSymbol; label: string; step: number; 
   { symbol: "DOGE", label: "Dogecoin", step: 0.0001, min: 0.0001 },
 ];
 
+const outcomeOptions: Outcome[] = ["UP", "DOWN"];
+
+const ollamaPromptOptions = [
+  {
+    label: "Resumen",
+    prompt: "Resume las mejores estrategias confiables, el EV esperado y que mercados/lados parecen mas prometedores.",
+  },
+  {
+    label: "Riesgos",
+    prompt: "Detecta riesgos de sobreajuste, baja cobertura, pocos trades y drawdown. Indica que no deberia usarse todavia.",
+  },
+  {
+    label: "Actual vs mejor",
+    prompt: "Compara las estrategias actuales contra las mejores confiables por mercado/lado y explica que diferencias importan.",
+  },
+  {
+    label: "Plan de prueba",
+    prompt: "Prop\u00f3n un plan de prueba conservador para validar estas estrategias sin aumentar riesgo live.",
+  },
+];
+
 export function App() {
   const [status, setStatus] = useState<UiStatus | null>(null);
   const [trades, setTrades] = useState<TradeAttempt[]>([]);
   const [settings, setSettings] = useState<UiSettings>(emptySettings);
-  const [recommendations, setRecommendations] = useState<AiRecommendationsResponse | null>(null);
+  const [analysis, setAnalysis] = useState<StrategyAnalysisResponse | null>(null);
   const [tab, setTab] = useState<Tab>("dashboard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,14 +186,14 @@ export function App() {
 
   async function refreshAll() {
     setError(null);
-    const [nextStatus, nextSettings, nextRecommendations] = await Promise.all([
+    const [nextStatus, nextSettings, nextAnalysis] = await Promise.all([
       api<UiStatus>("/api/status"),
       api<UiSettings>("/api/settings"),
-      api<AiRecommendationsResponse>("/api/recommendations"),
+      api<StrategyAnalysisResponse>("/api/analysis/strategies"),
     ]);
     setStatus(nextStatus);
     setSettings(nextSettings);
-    setRecommendations(nextRecommendations);
+    setAnalysis(nextAnalysis);
     await loadTrades();
   }
 
@@ -138,8 +202,8 @@ export function App() {
     setTrades(payload.trades);
   }
 
-  async function loadRecommendations() {
-    setRecommendations(await api<AiRecommendationsResponse>("/api/recommendations"));
+  async function loadAnalysis() {
+    setAnalysis(await api<StrategyAnalysisResponse>("/api/analysis/strategies"));
   }
 
   async function startBot(request: StartBotRequest) {
@@ -181,54 +245,17 @@ export function App() {
     }
   }
 
-  async function applyRecommendation(market: MarketSymbol) {
+  async function requestOllamaAnalysis(prompt: string): Promise<OllamaTradeAnalysisResponse> {
     setBusy(true);
     setError(null);
     try {
-      const payload = await api<{ settings: UiSettings; recommendations: AiRecommendationsResponse }>("/api/recommendations/apply", {
+      return await api<OllamaTradeAnalysisResponse>("/api/analysis/ollama", {
         method: "POST",
-        body: JSON.stringify({ markets: [market] }),
+        body: JSON.stringify({ prompt }),
       });
-      setSettings(payload.settings);
-      setRecommendations(payload.recommendations);
-      await refreshAll();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function autoApplyRecommendations() {
-    setBusy(true);
-    setError(null);
-    try {
-      const payload = await api<{ settings: UiSettings; recommendations: AiRecommendationsResponse }>("/api/recommendations/auto-apply", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      setSettings(payload.settings);
-      setRecommendations(payload.recommendations);
-      await refreshAll();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function toggleAiAutoApplyLive(enabled: boolean) {
-    setBusy(true);
-    setError(null);
-    try {
-      const saved = await api<UiSettings>("/api/settings", {
-        method: "PATCH",
-        body: JSON.stringify({ aiAutoApplyLive: enabled }),
-      });
-      setSettings(saved);
-      await loadRecommendations();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      throw caught;
     } finally {
       setBusy(false);
     }
@@ -262,7 +289,7 @@ export function App() {
         <nav className="tabs" aria-label="Secciones">
           <TabButton active={tab === "dashboard"} icon={<Gauge size={18} />} label="Dashboard" onClick={() => setTab("dashboard")} />
           <TabButton active={tab === "trades"} icon={<Table2 size={18} />} label="Trades" onClick={() => setTab("trades")} />
-          <TabButton active={tab === "ai"} icon={<Brain size={18} />} label="IA" onClick={() => setTab("ai")} />
+          <TabButton active={tab === "analysis"} icon={<Brain size={18} />} label="Análisis" onClick={() => setTab("analysis")} />
           <TabButton active={tab === "settings"} icon={<Settings size={18} />} label="Settings" onClick={() => setTab("settings")} />
           <TabButton active={tab === "logs"} icon={<Terminal size={18} />} label="Logs" onClick={() => setTab("logs")} />
         </nav>
@@ -295,16 +322,12 @@ export function App() {
 
         {tab === "dashboard" && <Dashboard status={status} />}
         {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
-        {tab === "ai" && (
-          <AiPanel
-            recommendations={recommendations}
-            settings={settings}
-            status={status}
+        {tab === "analysis" && (
+          <AnalysisPanel
+            analysis={analysis}
             busy={busy}
-            onApply={applyRecommendation}
-            onRefresh={loadRecommendations}
-            onAutoApply={autoApplyRecommendations}
-            onToggleAutoApply={toggleAiAutoApplyLive}
+            onRefresh={loadAnalysis}
+            onAnalyze={requestOllamaAnalysis}
           />
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
@@ -422,7 +445,7 @@ function Dashboard({ status }: { status: UiStatus | null }) {
         <div className="hero-metrics compact">
           <Metric label="Gasto diario" value={formatUsd(status?.dailySpendUsd)} />
           <Metric label="Limite" value={formatUsd(status?.settings.dailySpendLimitUsd)} />
-          <Metric label="Ask cap" value={formatPrice(status?.settings.maxAskPrice)} />
+          <Metric label="Ask cap" value={formatOutcomeSettingRange(status?.settings.maxAskPriceByMarketOutcome, formatPrice)} />
         </div>
       </section>
     </div>
@@ -461,149 +484,260 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
   );
 }
 
-export function AiPanel({
-  recommendations,
-  settings,
-  status,
+export function AnalysisPanel({
+  analysis,
   busy,
-  onApply,
   onRefresh,
-  onAutoApply,
-  onToggleAutoApply,
+  onAnalyze,
 }: {
-  recommendations: AiRecommendationsResponse | null;
-  settings: UiSettings;
-  status: UiStatus | null;
+  analysis: StrategyAnalysisResponse | null;
   busy: boolean;
-  onApply: (market: MarketSymbol) => Promise<void>;
   onRefresh: () => Promise<void>;
-  onAutoApply: () => Promise<void>;
-  onToggleAutoApply: (enabled: boolean) => Promise<void>;
+  onAnalyze: (prompt: string) => Promise<OllamaTradeAnalysisResponse>;
 }) {
-  const running = Boolean(status?.running);
-  const runningLive = running && status?.mode === "live";
-  const items = recommendations?.recommendations ?? [];
+  const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
+  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("ALL");
+  const [qualityFilter, setQualityFilter] = useState<StrategyQualityFilter>("RELIABLE");
+  const [sortState, setSortState] = useState<StrategySortState>({ key: "evRoi", direction: "desc" });
+  const [prompt, setPrompt] = useState("");
+  const [ollamaResult, setOllamaResult] = useState<OllamaTradeAnalysisResponse | null>(null);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
+  const strategies = qualityFilter === "CURRENT" ? analysis?.currentStrategies ?? [] : analysis?.strategies ?? [];
+  const bestReliableByOutcome = bestReliableStrategyByOutcome(analysis?.strategies ?? []);
+  const filteredStrategies = strategies.filter((strategy) =>
+    matchesStrategyFilters(strategy, marketFilter, outcomeFilter, qualityFilter),
+  );
+  const visibleStrategies = sortStrategies(filteredStrategies, sortState);
+
+  function toggleSort(key: StrategySortKey) {
+    setSortState((current) => ({
+      key,
+      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  }
+
+  async function submitOllama() {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      setOllamaError("Prompt requerido.");
+      return;
+    }
+    setOllamaError(null);
+    try {
+      setOllamaResult(await onAnalyze(trimmed));
+    } catch (caught) {
+      setOllamaError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
   return (
-    <section className="panel ai-panel">
-      <div className="ai-toolbar">
+    <section className="panel analysis-panel">
+      <div className="analysis-toolbar">
         <div className="section-heading">
           <Brain size={18} />
-          <h2>IA local</h2>
+          <h2>{"An\u00e1lisis"}</h2>
         </div>
-        <div className="ai-actions">
-          <label className="switch-row">
-            <input
-              type="checkbox"
-              checked={settings.aiAutoApplyLive}
-              onChange={(event) => onToggleAutoApply(event.target.checked)}
-              disabled={busy}
-            />
-            <span>Auto live</span>
-          </label>
-          <button className="command" type="button" onClick={onRefresh} disabled={busy}>
-            <RefreshCw size={18} /> Actualizar
+        <button className="command" type="button" onClick={onRefresh} disabled={busy}>
+          <RefreshCw size={18} /> Actualizar
+        </button>
+      </div>
+
+      <div className="hero-metrics compact analysis-metrics">
+        <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />
+        <Metric label="Confiables" value={String(analysis?.summary.reliableStrategyCount ?? 0)} />
+        <Metric label="Mejor EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
+        <Metric label="Trades fiables" value={String(analysis?.summary.bestReliableTradeCount ?? 0)} />
+      </div>
+
+      <div className="analysis-controls">
+        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por mercado">
+          <button
+            className={`segment-button ${marketFilter === "ALL" ? "active" : ""}`}
+            type="button"
+            onClick={() => setMarketFilter("ALL")}
+          >
+            Todos
           </button>
-          <button className="command primary" type="button" onClick={onAutoApply} disabled={busy || !runningLive}>
-            <CheckCircle2 size={18} /> Auto aplicar
+          {marketOptions.map((market) => (
+            <button
+              className={`segment-button ${marketFilter === market.symbol ? "active" : ""}`}
+              type="button"
+              key={market.symbol}
+              onClick={() => setMarketFilter(market.symbol)}
+            >
+              {market.symbol}
+            </button>
+          ))}
+        </div>
+        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por lado">
+          <button
+            className={`segment-button ${outcomeFilter === "ALL" ? "active" : ""}`}
+            type="button"
+            onClick={() => setOutcomeFilter("ALL")}
+          >
+            Ambos
           </button>
+          {outcomeOptions.map((outcome) => (
+            <button
+              className={`segment-button ${outcomeFilter === outcome ? "active" : ""}`}
+              type="button"
+              key={outcome}
+              onClick={() => setOutcomeFilter(outcome)}
+            >
+              {outcome}
+            </button>
+          ))}
+        </div>
+        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por calidad">
+          {[
+            ["RELIABLE", "Confiables"],
+            ["POSITIVE", "EV positivo"],
+            ["CURRENT", "Actuales"],
+            ["ALL", "Todas"],
+          ].map(([value, label]) => (
+            <button
+              className={`segment-button ${qualityFilter === value ? "active" : ""}`}
+              type="button"
+              key={value}
+              onClick={() => setQualityFilter(value as StrategyQualityFilter)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
-      {items.length === 0 ? (
-        <div className="empty-state">Sin recomendaciones</div>
-      ) : (
-        <div className="ai-card-grid">
-          {items.map((recommendation) => (
-            <AiRecommendationCard
-              key={recommendation.market}
-              recommendation={recommendation}
-              running={running}
-              busy={busy}
-              onApply={() => onApply(recommendation.market)}
+
+      {analysis?.currentStrategies.length ? (
+        <div className="current-strategy-grid">
+          {analysis.currentStrategies.map((strategy) => (
+            <StrategyMiniCard
+              key={`${strategy.market}-${strategy.outcome}`}
+              strategy={strategy}
+              bestReliable={bestReliableByOutcome.get(strategyOutcomeKey(strategy))}
             />
           ))}
         </div>
+      ) : null}
+
+      {visibleStrategies.length === 0 ? (
+        <div className="empty-state">{emptyStrategyMessage(qualityFilter)}</div>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Mercado</th>
+                <th>Lado</th>
+                <th aria-sort={strategySortAria("entryWindowSeconds", sortState)}>
+                  <StrategySortHeader label="Ventana" sortKey="entryWindowSeconds" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("minDistanceUsd", sortState)}>
+                  <StrategySortHeader label="Distancia" sortKey="minDistanceUsd" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("maxAskPrice", sortState)}>
+                  <StrategySortHeader label="Ask cap" sortKey="maxAskPrice" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("evRoi", sortState)}>
+                  <StrategySortHeader label="EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th>Conf.</th>
+                <th>Delta</th>
+                <th aria-sort={strategySortAria("tradeCount", sortState)}>
+                  <StrategySortHeader label="Trades" sortKey="tradeCount" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("winRate", sortState)}>
+                  <StrategySortHeader label="Win" sortKey="winRate" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("quoteCoverage", sortState)}>
+                  <StrategySortHeader label="Cobertura" sortKey="quoteCoverage" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("maxDrawdown", sortState)}>
+                  <StrategySortHeader label="DD" sortKey="maxDrawdown" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th>Alertas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleStrategies.map((strategy) => (
+                <tr key={strategyKey(strategy)}>
+                  <td>{strategy.market}{strategy.isCurrent ? " actual" : ""}</td>
+                  <td><span className={`side ${strategy.outcome.toLowerCase()}`}>{strategy.outcome}</span></td>
+                  <td>{formatEntryWindow(strategy.entryWindowSeconds)}</td>
+                  <td>{formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</td>
+                  <td>{formatPrice(strategy.maxAskPrice)}</td>
+                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.evRoi)}`}>{formatPercent(strategy.metrics.evRoi)}</span></td>
+                  <td><ConfidenceBadge confidence={strategy.confidence} /></td>
+                  <td>{formatDelta(strategy.evDeltaVsCurrent)}</td>
+                  <td>{strategy.metrics.tradeCount}</td>
+                  <td>{formatRatio(strategy.metrics.winRate)}</td>
+                  <td>{formatRatio(strategy.metrics.quoteCoverage)}</td>
+                  <td>{strategy.metrics.maxDrawdown.toFixed(2)}</td>
+                  <td>{formatRiskFlags(strategy.riskFlags)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
+      <div className="ollama-panel">
+        <div className="quick-prompts" aria-label={"Prompts r\u00e1pidos Ollama"}>
+          {ollamaPromptOptions.map((option) => (
+            <button className="segment-button" type="button" key={option.label} onClick={() => setPrompt(option.prompt)}>
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <label className="field">
+          <span>Prompt Ollama</span>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={4}
+            placeholder={"Elige un prompt r\u00e1pido o escribe qu\u00e9 quieres revisar de estas estrategias."}
+          />
+        </label>
+        <div className="form-actions">
+          <button className="command primary" type="button" onClick={submitOllama} disabled={busy}>
+            <CheckCircle2 size={18} /> Analizar con Ollama
+          </button>
+        </div>
+        {ollamaError && <div className="notice error"><AlertTriangle size={18} />{ollamaError}</div>}
+        {ollamaResult && (
+          <article className="ollama-result">
+            <div>
+              <strong>{ollamaResult.model}</strong>
+              <span>{ollamaResult.contextSummary}</span>
+            </div>
+            <p>{ollamaResult.content}</p>
+          </article>
+        )}
+      </div>
     </section>
   );
 }
 
-function AiRecommendationCard({
-  recommendation,
-  running,
-  busy,
-  onApply,
-}: {
-  recommendation: AiRecommendation;
-  running: boolean;
-  busy: boolean;
-  onApply: () => Promise<void>;
-}) {
-  const market = recommendation.market;
-  const recommended = recommendation.recommended;
+function StrategyMiniCard({ strategy, bestReliable }: { strategy: StrategyCandidate; bestReliable?: StrategyCandidate }) {
+  const reliableDelta =
+    bestReliable?.metrics.evRoi !== undefined && strategy.metrics.evRoi !== undefined
+      ? bestReliable.metrics.evRoi - strategy.metrics.evRoi
+      : undefined;
   return (
-    <article className="ai-card">
-      <div className="ai-card-header">
-        <div>
-          <strong>{market}</strong>
-          <span>{aiStatusLabel(recommendation.status)} - {confidenceLabel(recommendation.confidence)}</span>
-        </div>
-        <span className={`confidence-badge ${recommendation.confidence}`}>{confidenceShortLabel(recommendation.confidence)}</span>
+    <article className="strategy-mini-card">
+      <div>
+        <strong>{strategy.market} {strategy.outcome}</strong>
+        <span>{formatEntryWindow(strategy.entryWindowSeconds)} / {formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</span>
       </div>
-      <div className="ai-compare">
-        <AiSettingColumn
-          label="Actual"
-          windowSeconds={recommendation.current.entryWindowSeconds}
-          distanceUsd={recommendation.current.minDistanceUsd}
-          market={market}
-          adjustedRoi={recommendation.current.metrics.adjustedRoi}
-        />
-        <AiSettingColumn
-          label="Sugerida"
-          windowSeconds={recommended?.entryWindowSeconds}
-          distanceUsd={recommended?.minDistanceUsd}
-          market={market}
-          adjustedRoi={recommended?.metrics.adjustedRoi}
-        />
-      </div>
-      <div className="hero-metrics compact ai-metrics">
-        <Metric label="Muestras" value={String(recommendation.sampleCount)} />
-        <Metric label="Trades" value={String((recommended ?? recommendation.current).metrics.tradeCount)} />
-        <Metric label="Cobertura" value={formatPercent((recommended ?? recommendation.current).metrics.quoteCoverage)} />
-        <Metric label="Edge" value={formatPercent((recommended ?? recommendation.current).metrics.expectedRoi)} />
-        <Metric label="Walk" value={formatPercent((recommended ?? recommendation.current).metrics.walkForwardRoi)} />
-        <Metric label="Riesgo" value={formatPercent((recommended ?? recommendation.current).metrics.overfitRisk)} />
-      </div>
-      <p className="ai-reason">{recommendation.reason}</p>
-      <div className="form-actions">
-        <button className="command primary" type="button" disabled={busy || running || !recommendation.canApply} onClick={onApply}>
-          <CheckCircle2 size={18} /> Aplicar
-        </button>
-      </div>
+      <Metric label="EV" value={formatPercent(strategy.metrics.evRoi)} tone={pnlTone(strategy.metrics.evRoi)} />
+      <Metric label="Trades" value={String(strategy.metrics.tradeCount)} />
+      <ConfidenceBadge confidence={strategy.confidence} />
+      <small>{bestReliable ? `Mejor fiable ${formatPercent(bestReliable.metrics.evRoi)} (${formatDelta(reliableDelta)})` : "Sin fiable"}</small>
     </article>
   );
 }
 
-function AiSettingColumn({
-  label,
-  windowSeconds,
-  distanceUsd,
-  market,
-  adjustedRoi,
-}: {
-  label: string;
-  windowSeconds?: number;
-  distanceUsd?: number;
-  market: MarketSymbol;
-  adjustedRoi?: number;
-}) {
-  return (
-    <div className="ai-setting-column">
-      <span>{label}</span>
-      <strong>{formatEntryWindow(windowSeconds)}</strong>
-      <strong>{formatMarketDistance(distanceUsd, market)}</strong>
-      <small>{formatPercent(adjustedRoi)}</small>
-    </div>
-  );
+function ConfidenceBadge({ confidence }: { confidence: StrategyConfidence }) {
+  return <span className={`confidence-badge ${confidence}`}>{confidenceLabel(confidence)}</span>;
 }
 
 export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; settings?: UiSettings }) {
@@ -776,30 +910,97 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
     });
   }
 
-  function updateMarketDistance(symbol: MarketSymbol, value: number) {
+  function updateMarketDistance(symbol: MarketSymbol, outcome: Outcome, value: number) {
     setDraft((current) => {
+      const minDistanceUsdByMarketOutcome = {
+        ...current.minDistanceUsdByMarketOutcome,
+        [symbol]: {
+          ...current.minDistanceUsdByMarketOutcome[symbol],
+          [outcome]: value,
+        },
+      };
       const minDistanceUsdByMarket = {
         ...current.minDistanceUsdByMarket,
-        [symbol]: value,
+        [symbol]: minDistanceUsdByMarketOutcome[symbol].UP,
       };
       return {
         ...current,
         minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
         minDistanceUsdByMarket,
+        minDistanceUsdByMarketOutcome,
       };
     });
   }
 
-  function updateMarketEntryWindow(symbol: MarketSymbol, value: number) {
+  function updateMarketEntryWindow(symbol: MarketSymbol, outcome: Outcome, value: number) {
     setDraft((current) => {
+      const entryWindowSecondsByMarketOutcome = {
+        ...current.entryWindowSecondsByMarketOutcome,
+        [symbol]: {
+          ...current.entryWindowSecondsByMarketOutcome[symbol],
+          [outcome]: value,
+        },
+      };
       const entryWindowSecondsByMarket = {
         ...current.entryWindowSecondsByMarket,
-        [symbol]: value,
+        [symbol]: entryWindowSecondsByMarketOutcome[symbol].UP,
       };
       return {
         ...current,
         entryWindowSeconds: entryWindowSecondsByMarket.BTC,
         entryWindowSecondsByMarket,
+        entryWindowSecondsByMarketOutcome,
+      };
+    });
+  }
+
+  function updateMarketSimAmount(symbol: MarketSymbol, outcome: Outcome, value: number) {
+    setDraft((current) => {
+      const simTradeAmountUsdByMarketOutcome = {
+        ...current.simTradeAmountUsdByMarketOutcome,
+        [symbol]: {
+          ...current.simTradeAmountUsdByMarketOutcome[symbol],
+          [outcome]: value,
+        },
+      };
+      return {
+        ...current,
+        simTradeAmountUsd: simTradeAmountUsdByMarketOutcome.BTC.UP,
+        simTradeAmountUsdByMarketOutcome,
+      };
+    });
+  }
+
+  function updateMarketLiveAmount(symbol: MarketSymbol, outcome: Outcome, value: number) {
+    setDraft((current) => {
+      const liveTradeAmountUsdByMarketOutcome = {
+        ...current.liveTradeAmountUsdByMarketOutcome,
+        [symbol]: {
+          ...current.liveTradeAmountUsdByMarketOutcome[symbol],
+          [outcome]: value,
+        },
+      };
+      return {
+        ...current,
+        liveTradeAmountUsd: liveTradeAmountUsdByMarketOutcome.BTC.UP,
+        liveTradeAmountUsdByMarketOutcome,
+      };
+    });
+  }
+
+  function updateMarketAskCap(symbol: MarketSymbol, outcome: Outcome, value: number) {
+    setDraft((current) => {
+      const maxAskPriceByMarketOutcome = {
+        ...current.maxAskPriceByMarketOutcome,
+        [symbol]: {
+          ...current.maxAskPriceByMarketOutcome[symbol],
+          [outcome]: value,
+        },
+      };
+      return {
+        ...current,
+        maxAskPrice: maxAskPriceByMarketOutcome.BTC.UP,
+        maxAskPriceByMarketOutcome,
       };
     });
   }
@@ -814,36 +1015,65 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
       <div className="market-settings">
         {marketOptions.map((market) => (
           <div className="market-setting-row" key={market.symbol}>
-            <label className="switch-row">
-              <input
-                type="checkbox"
-                checked={draft.enabledMarkets.includes(market.symbol)}
-                onChange={(event) => toggleMarket(market.symbol, event.target.checked)}
-                disabled={running}
-              />
-              <span>{market.symbol}</span>
-            </label>
-            <NumberField
-              label={`Distancia ${market.label}`}
-              value={draft.minDistanceUsdByMarket[market.symbol]}
-              min={market.min}
-              step={market.step}
-              onChange={(value) => updateMarketDistance(market.symbol, value)}
-            />
-            <NumberField
-              label={`Ventana ${market.label}`}
-              value={draft.entryWindowSecondsByMarket[market.symbol]}
-              min={1}
-              step={1}
-              onChange={(value) => updateMarketEntryWindow(market.symbol, value)}
-            />
+            <div className="market-setting-header">
+              <label className="switch-row">
+                <input
+                  type="checkbox"
+                  checked={draft.enabledMarkets.includes(market.symbol)}
+                  onChange={(event) => toggleMarket(market.symbol, event.target.checked)}
+                  disabled={running}
+                />
+                <span>{market.symbol}</span>
+              </label>
+              <strong>{market.label}</strong>
+            </div>
+            <div className="outcome-settings-grid">
+              {outcomeOptions.map((outcome) => (
+                <div className="outcome-setting-row" key={`${market.symbol}-${outcome}`}>
+                  <span className={`side ${outcome.toLowerCase()}`}>{outcome}</span>
+                  <NumberField
+                    label={`Distancia ${market.label} ${outcome}`}
+                    value={draft.minDistanceUsdByMarketOutcome[market.symbol][outcome]}
+                    min={market.min}
+                    step={market.step}
+                    onChange={(value) => updateMarketDistance(market.symbol, outcome, value)}
+                  />
+                  <NumberField
+                    label={`Ventana ${market.label} ${outcome}`}
+                    value={draft.entryWindowSecondsByMarketOutcome[market.symbol][outcome]}
+                    min={1}
+                    step={1}
+                    onChange={(value) => updateMarketEntryWindow(market.symbol, outcome, value)}
+                  />
+                  <NumberField
+                    label={`Monto sim ${market.label} ${outcome}`}
+                    value={draft.simTradeAmountUsdByMarketOutcome[market.symbol][outcome]}
+                    min={0.1}
+                    step={0.1}
+                    onChange={(value) => updateMarketSimAmount(market.symbol, outcome, value)}
+                  />
+                  <NumberField
+                    label={`Monto live ${market.label} ${outcome}`}
+                    value={draft.liveTradeAmountUsdByMarketOutcome[market.symbol][outcome]}
+                    min={0.1}
+                    step={0.1}
+                    onChange={(value) => updateMarketLiveAmount(market.symbol, outcome, value)}
+                  />
+                  <NumberField
+                    label={`Ask cap ${market.label} ${outcome}`}
+                    value={draft.maxAskPriceByMarketOutcome[market.symbol][outcome]}
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    onChange={(value) => updateMarketAskCap(market.symbol, outcome, value)}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
       <div className="settings-grid">
-        <NumberField label="Monto sim" value={draft.simTradeAmountUsd} min={0.1} step={0.1} onChange={(value) => update("simTradeAmountUsd", value)} />
-        <NumberField label="Monto live" value={draft.liveTradeAmountUsd} min={0.1} step={0.1} onChange={(value) => update("liveTradeAmountUsd", value)} />
-        <NumberField label="Ask cap" value={draft.maxAskPrice} min={0.01} max={1} step={0.01} onChange={(value) => update("maxAskPrice", value)} />
         <NumberField label="Limite diario" value={draft.dailySpendLimitUsd} min={1} step={1} onChange={(value) => update("dailySpendLimitUsd", value)} />
         <NumberField label="Tick stale ms" value={draft.tickStaleMs} min={1000} step={1000} onChange={(value) => update("tickStaleMs", value)} />
         <NumberField label="Poll ms" value={draft.pollIntervalMs} min={250} step={250} onChange={(value) => update("pollIntervalMs", value)} />
@@ -953,6 +1183,32 @@ function SortHeader({ label, sortKey, sortState, onSort }: {
   onSort: (key: TradeSortKey) => void;
 }) {
   const active = sortState?.key === sortKey;
+  const Icon = active
+    ? sortState.direction === "desc"
+      ? ArrowDownNarrowWide
+      : ArrowUpNarrowWide
+    : ArrowUpDown;
+  const nextDirection = active && sortState.direction === "desc" ? "menor a mayor" : "mayor a menor";
+  return (
+    <button
+      className={`sort-header ${active ? "active" : ""}`}
+      type="button"
+      onClick={() => onSort(sortKey)}
+      title={`Ordenar ${label} de ${nextDirection}`}
+    >
+      <span>{label}</span>
+      <Icon size={14} aria-hidden="true" />
+    </button>
+  );
+}
+
+function StrategySortHeader({ label, sortKey, sortState, onSort }: {
+  label: string;
+  sortKey: StrategySortKey;
+  sortState: StrategySortState;
+  onSort: (key: StrategySortKey) => void;
+}) {
+  const active = sortState.key === sortKey;
   const Icon = active
     ? sortState.direction === "desc"
       ? ArrowDownNarrowWide
@@ -1160,6 +1416,73 @@ function sortTrades(trades: TradeAttempt[], sortState: TradeSortState | undefine
   });
 }
 
+function sortStrategies(strategies: StrategyCandidate[], sortState: StrategySortState): StrategyCandidate[] {
+  return [...strategies].sort((left, right) => {
+    const leftValue = getStrategySortValue(left, sortState.key);
+    const rightValue = getStrategySortValue(right, sortState.key);
+    if (leftValue === undefined && rightValue === undefined) {
+      return 0;
+    }
+    if (leftValue === undefined) {
+      return 1;
+    }
+    if (rightValue === undefined) {
+      return -1;
+    }
+    const difference = leftValue - rightValue;
+    return sortState.direction === "desc" ? -difference : difference;
+  });
+}
+
+function matchesStrategyFilters(
+  strategy: StrategyCandidate,
+  marketFilter: TradeMarketFilter,
+  outcomeFilter: OutcomeFilter,
+  qualityFilter: StrategyQualityFilter,
+): boolean {
+  const marketMatches = marketFilter === "ALL" || strategy.market === marketFilter;
+  const outcomeMatches = outcomeFilter === "ALL" || strategy.outcome === outcomeFilter;
+  if (!marketMatches || !outcomeMatches) {
+    return false;
+  }
+  if (qualityFilter === "RELIABLE") {
+    return isReliableStrategy(strategy);
+  }
+  if (qualityFilter === "POSITIVE") {
+    return (strategy.metrics.evRoi ?? -Infinity) > 0;
+  }
+  if (qualityFilter === "CURRENT") {
+    return strategy.isCurrent;
+  }
+  return true;
+}
+
+function bestReliableStrategyByOutcome(strategies: StrategyCandidate[]): Map<string, StrategyCandidate> {
+  const best = new Map<string, StrategyCandidate>();
+  for (const strategy of strategies) {
+    if (!isReliableStrategy(strategy)) {
+      continue;
+    }
+    const key = strategyOutcomeKey(strategy);
+    const current = best.get(key);
+    if (!current || (strategy.metrics.evRoi ?? -Infinity) > (current.metrics.evRoi ?? -Infinity)) {
+      best.set(key, strategy);
+    }
+  }
+  return best;
+}
+
+function isReliableStrategy(strategy: StrategyCandidate): boolean {
+  return strategy.confidence === "medium" || strategy.confidence === "high";
+}
+
+function getStrategySortValue(strategy: StrategyCandidate, key: StrategySortKey): number | undefined {
+  if (key === "entryWindowSeconds" || key === "minDistanceUsd" || key === "maxAskPrice") {
+    return strategy[key];
+  }
+  return strategy.metrics[key];
+}
+
 function getTradeSortValue(trade: TradeAttempt, key: TradeSortKey, settings?: UiSettings): number | undefined {
   if (key === "createdAtMs") {
     return trade.createdAtMs;
@@ -1186,6 +1509,28 @@ function sortAria(key: TradeSortKey, sortState?: TradeSortState): "ascending" | 
     return "none";
   }
   return sortState.direction === "asc" ? "ascending" : "descending";
+}
+
+function strategySortAria(key: StrategySortKey, sortState: StrategySortState): "ascending" | "descending" | "none" {
+  if (sortState.key !== key) {
+    return "none";
+  }
+  return sortState.direction === "asc" ? "ascending" : "descending";
+}
+
+function strategyKey(strategy: StrategyCandidate): string {
+  return [
+    strategy.market,
+    strategy.outcome,
+    strategy.entryWindowSeconds,
+    strategy.minDistanceUsd,
+    strategy.maxAskPrice,
+    strategy.isCurrent ? "current" : "candidate",
+  ].join(":");
+}
+
+function strategyOutcomeKey(strategy: Pick<StrategyCandidate, "market" | "outcome">): string {
+  return `${strategy.market}:${strategy.outcome}`;
 }
 
 function matchesTradePnlFilter(trade: TradeAttempt, filter: TradePnlFilter): boolean {
@@ -1238,6 +1583,23 @@ function formatPrice(value?: number): string {
   return value.toFixed(2);
 }
 
+function formatOutcomeSettingRange(
+  settings: UiSettings["maxAskPriceByMarketOutcome"] | undefined,
+  formatter: (value?: number) => string,
+): string {
+  if (!settings) {
+    return "--";
+  }
+  const values = marketOptions.flatMap((market) => outcomeOptions.map((outcome) => settings[market.symbol][outcome]));
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  if (finiteValues.length === 0) {
+    return "--";
+  }
+  const min = Math.min(...finiteValues);
+  const max = Math.max(...finiteValues);
+  return min === max ? formatter(min) : `${formatter(min)}-${formatter(max)}`;
+}
+
 function formatMarketDistance(value: number | undefined, market: MarketSymbol): string {
   if (value === undefined || !Number.isFinite(value)) {
     return "--";
@@ -1282,6 +1644,61 @@ function formatPercent(value?: number): string {
   return `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
 }
 
+function formatRatio(value?: number): string {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatDelta(value?: number): string {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  return formatPercent(value);
+}
+
+function formatRiskFlags(flags: StrategyRiskFlag[]): string {
+  if (flags.length === 0) {
+    return "OK";
+  }
+  return flags.map(riskFlagLabel).join(", ");
+}
+
+function riskFlagLabel(flag: StrategyRiskFlag): string {
+  const labels: Record<StrategyRiskFlag, string> = {
+    no_trades: "Sin trades",
+    few_trades: "Pocos trades",
+    low_quote_coverage: "Baja cobertura",
+    negative_ev: "EV negativo",
+    high_drawdown: "Drawdown alto",
+  };
+  return labels[flag];
+}
+
+function confidenceLabel(confidence: StrategyConfidence): string {
+  if (confidence === "high") {
+    return "Alta";
+  }
+  if (confidence === "medium") {
+    return "Media";
+  }
+  return "Baja";
+}
+
+function emptyStrategyMessage(filter: StrategyQualityFilter): string {
+  if (filter === "RELIABLE") {
+    return "Sin estrategias confiables todavia. Revisa Todas o acumula mas muestras.";
+  }
+  if (filter === "POSITIVE") {
+    return "Sin estrategias con EV positivo para estos filtros.";
+  }
+  if (filter === "CURRENT") {
+    return "Sin estrategias actuales para estos filtros.";
+  }
+  return "Sin estrategias con EV calculable.";
+}
+
 function formatTradePnl(pnl: TradePnl): string {
   return pnl.status === "resolved" ? formatSignedUsd(pnl.netUsd) : "--";
 }
@@ -1314,30 +1731,6 @@ function pnlTone(value?: number): "positive" | "negative" | "neutral" {
   return value > 0 ? "positive" : "negative";
 }
 
-function aiStatusLabel(status: AiRecommendation["status"]): string {
-  return status === "ready" ? "Lista" : "Insuficiente";
-}
-
-function confidenceLabel(confidence: AiRecommendation["confidence"]): string {
-  if (confidence === "high") {
-    return "alta confianza";
-  }
-  if (confidence === "medium") {
-    return "confianza media";
-  }
-  return "baja confianza";
-}
-
-function confidenceShortLabel(confidence: AiRecommendation["confidence"]): string {
-  if (confidence === "high") {
-    return "Alta";
-  }
-  if (confidence === "medium") {
-    return "Media";
-  }
-  return "Baja";
-}
-
 function getInitialTheme(): Theme {
   try {
     const stored = window.localStorage.getItem(themeStorageKey);
@@ -1368,3 +1761,4 @@ function reasonLabel(reason?: string): string {
   };
   return labels[reason ?? ""] ?? reason ?? "--";
 }
+

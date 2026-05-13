@@ -5,6 +5,7 @@ export type MarketSymbol = "BTC" | "ETH" | "DOGE";
 export type PriceFeedSymbol = "btc/usd" | "eth/usd" | "doge/usd";
 export type MarketDistanceSettings = Record<MarketSymbol, number>;
 export type MarketEntryWindowSettings = Record<MarketSymbol, number>;
+export type MarketOutcomeNumberSettings = Record<MarketSymbol, Record<Outcome, number>>;
 export type RecommendationConfidence = "low" | "medium" | "high";
 export type AiRecommendationStatus = "insufficient_data" | "ready";
 
@@ -14,12 +15,17 @@ export interface BotConfig {
   minBtcDistanceUsd: number;
   enabledMarkets: MarketSymbol[];
   minDistanceUsdByMarket: MarketDistanceSettings;
+  minDistanceUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   entryWindowSeconds: number;
   entryWindowSecondsByMarket: MarketEntryWindowSettings;
+  entryWindowSecondsByMarketOutcome?: MarketOutcomeNumberSettings;
   simTradeAmountUsd: number;
+  simTradeAmountUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   liveTradeAmountUsd: number;
+  liveTradeAmountUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
   maxAskPrice: number;
+  maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
   dailySpendLimitUsd: number;
   tickStaleMs: number;
   pollIntervalMs: number;
@@ -29,6 +35,9 @@ export interface BotConfig {
   clobHost: string;
   rtdsUrl: string;
   polygonRpcUrl: string;
+  ollamaApiKey?: string;
+  ollamaHost?: string;
+  ollamaModel?: string;
   publicUrl?: string;
   telegramBotToken?: string;
   telegramChatId?: string;
@@ -163,6 +172,67 @@ export interface AiRecommendation {
 export interface AiRecommendationsResponse {
   generatedAtMs: number;
   recommendations: AiRecommendation[];
+}
+
+export interface StrategyMetrics {
+  sampleCount: number;
+  signalCount: number;
+  tradeCount: number;
+  winCount: number;
+  lossCount: number;
+  quoteCoverage: number;
+  winRate?: number;
+  averageAsk?: number;
+  evRoi?: number;
+  maxDrawdown: number;
+}
+
+export type StrategyConfidence = "low" | "medium" | "high";
+
+export type StrategyRiskFlag =
+  | "no_trades"
+  | "few_trades"
+  | "low_quote_coverage"
+  | "negative_ev"
+  | "high_drawdown";
+
+export interface StrategyCandidate {
+  market: MarketSymbol;
+  outcome: Outcome;
+  entryWindowSeconds: number;
+  minDistanceUsd: number;
+  maxAskPrice: number;
+  metrics: StrategyMetrics;
+  isCurrent: boolean;
+  confidence: StrategyConfidence;
+  riskFlags: StrategyRiskFlag[];
+  qualityScore: number;
+  evDeltaVsCurrent?: number;
+}
+
+export interface StrategyAnalysisSummary {
+  sampleCount: number;
+  strategyCount: number;
+  currentStrategyCount: number;
+  reliableStrategyCount: number;
+  bestEvRoi?: number;
+  bestTradeCount?: number;
+  bestReliableEvRoi?: number;
+  bestReliableTradeCount?: number;
+}
+
+export interface StrategyAnalysisResponse {
+  generatedAtMs: number;
+  strategies: StrategyCandidate[];
+  currentStrategies: StrategyCandidate[];
+  summary: StrategyAnalysisSummary;
+}
+
+export interface OllamaTradeAnalysisResponse {
+  generatedAtMs: number;
+  model: string;
+  content: string;
+  contextSummary: string;
 }
 
 export interface TradeAttempt {

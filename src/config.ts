@@ -3,13 +3,23 @@ import "dotenv/config";
 import { resolve } from "node:path";
 import { z } from "zod";
 
-import { defaultMarketDistances, defaultMarketEntryWindows, normalizeEnabledMarkets } from "./markets.js";
+import {
+  defaultMarketDistances,
+  defaultMarketEntryWindows,
+  defaultMarketOutcomeAmounts,
+  defaultMarketOutcomeDistances,
+  defaultMarketOutcomeEntryWindows,
+  defaultMarketOutcomeMaxAskPrices,
+  normalizeEnabledMarkets,
+} from "./markets.js";
 import type { BotConfig, Mode } from "./types.js";
 
 const DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_HOST = "https://clob.polymarket.com";
 const DEFAULT_RTDS_URL = "wss://ws-live-data.polymarket.com";
 const DEFAULT_POLYGON_RPC_URL = "https://polygon-rpc.com";
+const DEFAULT_OLLAMA_HOST = "https://ollama.com";
+const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
 
 const optionalString = z.preprocess(
   (value) => (value === "" ? undefined : value),
@@ -18,6 +28,10 @@ const optionalString = z.preprocess(
 const optionalPositiveNumber = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.coerce.number().positive().optional(),
+);
+const optionalAskPrice = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.coerce.number().gt(0).lte(1).optional(),
 );
 const optionalUrlString = z.preprocess(
   (value) => (value === "" ? undefined : value),
@@ -30,17 +44,47 @@ const envSchema = z.object({
   MIN_BTC_DISTANCE_USD: z.coerce.number().positive().default(20),
   MIN_ETH_DISTANCE_USD: z.coerce.number().positive().default(5),
   MIN_DOGE_DISTANCE_USD: z.coerce.number().positive().default(0.0005),
+  MIN_BTC_UP_DISTANCE_USD: optionalPositiveNumber,
+  MIN_BTC_DOWN_DISTANCE_USD: optionalPositiveNumber,
+  MIN_ETH_UP_DISTANCE_USD: optionalPositiveNumber,
+  MIN_ETH_DOWN_DISTANCE_USD: optionalPositiveNumber,
+  MIN_DOGE_UP_DISTANCE_USD: optionalPositiveNumber,
+  MIN_DOGE_DOWN_DISTANCE_USD: optionalPositiveNumber,
   ENTRY_WINDOW_SECONDS: z.coerce.number().positive().default(20),
   ENTRY_WINDOW_SECONDS_BTC: optionalPositiveNumber,
   ENTRY_WINDOW_SECONDS_ETH: optionalPositiveNumber,
   ENTRY_WINDOW_SECONDS_DOGE: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_BTC_UP: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_BTC_DOWN: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_ETH_UP: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_ETH_DOWN: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_DOGE_UP: optionalPositiveNumber,
+  ENTRY_WINDOW_SECONDS_DOGE_DOWN: optionalPositiveNumber,
   SIM_TRADE_AMOUNT_USD: z.coerce.number().positive().default(1),
+  SIM_TRADE_AMOUNT_USD_BTC_UP: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD_BTC_DOWN: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD_ETH_UP: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD_ETH_DOWN: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD_DOGE_UP: optionalPositiveNumber,
+  SIM_TRADE_AMOUNT_USD_DOGE_DOWN: optionalPositiveNumber,
   LIVE_TRADE_AMOUNT_USD: z.coerce.number().positive().default(1),
+  LIVE_TRADE_AMOUNT_USD_BTC_UP: optionalPositiveNumber,
+  LIVE_TRADE_AMOUNT_USD_BTC_DOWN: optionalPositiveNumber,
+  LIVE_TRADE_AMOUNT_USD_ETH_UP: optionalPositiveNumber,
+  LIVE_TRADE_AMOUNT_USD_ETH_DOWN: optionalPositiveNumber,
+  LIVE_TRADE_AMOUNT_USD_DOGE_UP: optionalPositiveNumber,
+  LIVE_TRADE_AMOUNT_USD_DOGE_DOWN: optionalPositiveNumber,
   AUTO_MIN_LIVE: z
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(true),
   MAX_ASK_PRICE: z.coerce.number().gt(0).lte(1).default(0.98),
+  MAX_ASK_PRICE_BTC_UP: optionalAskPrice,
+  MAX_ASK_PRICE_BTC_DOWN: optionalAskPrice,
+  MAX_ASK_PRICE_ETH_UP: optionalAskPrice,
+  MAX_ASK_PRICE_ETH_DOWN: optionalAskPrice,
+  MAX_ASK_PRICE_DOGE_UP: optionalAskPrice,
+  MAX_ASK_PRICE_DOGE_DOWN: optionalAskPrice,
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
@@ -50,6 +94,9 @@ const envSchema = z.object({
   CLOB_HOST: z.string().url().default(DEFAULT_CLOB_HOST),
   RTDS_URL: z.string().url().default(DEFAULT_RTDS_URL),
   POLYGON_RPC_URL: z.string().url().default(DEFAULT_POLYGON_RPC_URL),
+  OLLAMA_API_KEY: optionalString,
+  OLLAMA_HOST: z.string().url().default(DEFAULT_OLLAMA_HOST),
+  OLLAMA_MODEL: z.string().default(DEFAULT_OLLAMA_MODEL),
   POLYBOT_PUBLIC_URL: optionalUrlString,
   TELEGRAM_BOT_TOKEN: optionalString,
   TELEGRAM_CHAT_ID: optionalString,
@@ -118,6 +165,46 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     },
     env.ENTRY_WINDOW_SECONDS,
   );
+  const minDistanceUsdByMarketOutcome = defaultMarketOutcomeDistances(
+    {
+      BTC: { UP: env.MIN_BTC_UP_DISTANCE_USD, DOWN: env.MIN_BTC_DOWN_DISTANCE_USD },
+      ETH: { UP: env.MIN_ETH_UP_DISTANCE_USD, DOWN: env.MIN_ETH_DOWN_DISTANCE_USD },
+      DOGE: { UP: env.MIN_DOGE_UP_DISTANCE_USD, DOWN: env.MIN_DOGE_DOWN_DISTANCE_USD },
+    },
+    minDistanceUsdByMarket,
+  );
+  const entryWindowSecondsByMarketOutcome = defaultMarketOutcomeEntryWindows(
+    {
+      BTC: { UP: env.ENTRY_WINDOW_SECONDS_BTC_UP, DOWN: env.ENTRY_WINDOW_SECONDS_BTC_DOWN },
+      ETH: { UP: env.ENTRY_WINDOW_SECONDS_ETH_UP, DOWN: env.ENTRY_WINDOW_SECONDS_ETH_DOWN },
+      DOGE: { UP: env.ENTRY_WINDOW_SECONDS_DOGE_UP, DOWN: env.ENTRY_WINDOW_SECONDS_DOGE_DOWN },
+    },
+    entryWindowSecondsByMarket,
+  );
+  const simTradeAmountUsdByMarketOutcome = defaultMarketOutcomeAmounts(
+    {
+      BTC: { UP: env.SIM_TRADE_AMOUNT_USD_BTC_UP, DOWN: env.SIM_TRADE_AMOUNT_USD_BTC_DOWN },
+      ETH: { UP: env.SIM_TRADE_AMOUNT_USD_ETH_UP, DOWN: env.SIM_TRADE_AMOUNT_USD_ETH_DOWN },
+      DOGE: { UP: env.SIM_TRADE_AMOUNT_USD_DOGE_UP, DOWN: env.SIM_TRADE_AMOUNT_USD_DOGE_DOWN },
+    },
+    env.SIM_TRADE_AMOUNT_USD,
+  );
+  const liveTradeAmountUsdByMarketOutcome = defaultMarketOutcomeAmounts(
+    {
+      BTC: { UP: env.LIVE_TRADE_AMOUNT_USD_BTC_UP, DOWN: env.LIVE_TRADE_AMOUNT_USD_BTC_DOWN },
+      ETH: { UP: env.LIVE_TRADE_AMOUNT_USD_ETH_UP, DOWN: env.LIVE_TRADE_AMOUNT_USD_ETH_DOWN },
+      DOGE: { UP: env.LIVE_TRADE_AMOUNT_USD_DOGE_UP, DOWN: env.LIVE_TRADE_AMOUNT_USD_DOGE_DOWN },
+    },
+    env.LIVE_TRADE_AMOUNT_USD,
+  );
+  const maxAskPriceByMarketOutcome = defaultMarketOutcomeMaxAskPrices(
+    {
+      BTC: { UP: env.MAX_ASK_PRICE_BTC_UP, DOWN: env.MAX_ASK_PRICE_BTC_DOWN },
+      ETH: { UP: env.MAX_ASK_PRICE_ETH_UP, DOWN: env.MAX_ASK_PRICE_ETH_DOWN },
+      DOGE: { UP: env.MAX_ASK_PRICE_DOGE_UP, DOWN: env.MAX_ASK_PRICE_DOGE_DOWN },
+    },
+    env.MAX_ASK_PRICE,
+  );
 
   const config: BotConfig = {
     mode,
@@ -125,12 +212,17 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     minBtcDistanceUsd: env.MIN_BTC_DISTANCE_USD,
     enabledMarkets: normalizeEnabledMarkets(env.ENABLED_MARKETS),
     minDistanceUsdByMarket,
+    minDistanceUsdByMarketOutcome,
     entryWindowSeconds: env.ENTRY_WINDOW_SECONDS,
     entryWindowSecondsByMarket,
+    entryWindowSecondsByMarketOutcome,
     simTradeAmountUsd: env.SIM_TRADE_AMOUNT_USD,
+    simTradeAmountUsdByMarketOutcome,
     liveTradeAmountUsd: env.LIVE_TRADE_AMOUNT_USD,
+    liveTradeAmountUsdByMarketOutcome,
     autoMinLive: env.AUTO_MIN_LIVE,
     maxAskPrice: env.MAX_ASK_PRICE,
+    maxAskPriceByMarketOutcome,
     dailySpendLimitUsd: env.DAILY_SPEND_LIMIT_USD,
     tickStaleMs: env.TICK_STALE_MS,
     pollIntervalMs: env.POLL_INTERVAL_MS,
@@ -140,6 +232,9 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     clobHost: env.CLOB_HOST.replace(/\/$/, ""),
     rtdsUrl: env.RTDS_URL,
     polygonRpcUrl: env.POLYGON_RPC_URL,
+    ollamaApiKey: env.OLLAMA_API_KEY,
+    ollamaHost: env.OLLAMA_HOST.replace(/\/$/, ""),
+    ollamaModel: env.OLLAMA_MODEL,
     publicUrl: env.POLYBOT_PUBLIC_URL,
     telegramBotToken: env.TELEGRAM_BOT_TOKEN,
     telegramChatId: env.TELEGRAM_CHAT_ID,

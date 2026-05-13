@@ -255,6 +255,128 @@ describe("BotRunner", () => {
     );
   });
 
+  it("uses side-specific window, distance, amount, and ask cap", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 270_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => market),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC",
+        symbol: "btc/usd",
+        value: 85,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const orderbook = {
+      getQuote: vi.fn(async () => ({
+        tokenId: "token",
+        bestAsk: 0.7,
+        bestBid: 0.69,
+        availableUsdUnderCap: 100,
+        estimatedSharesForAmount: 10,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        minDistanceUsdByMarketOutcome: {
+          BTC: { UP: 10, DOWN: 12 },
+          ETH: { UP: 5, DOWN: 5 },
+          DOGE: { UP: 0.0005, DOWN: 0.0005 },
+        },
+        entryWindowSecondsByMarketOutcome: {
+          BTC: { UP: 20, DOWN: 35 },
+          ETH: { UP: 20, DOWN: 20 },
+          DOGE: { UP: 20, DOWN: 20 },
+        },
+        simTradeAmountUsdByMarketOutcome: {
+          BTC: { UP: 1, DOWN: 7 },
+          ETH: { UP: 1, DOWN: 1 },
+          DOGE: { UP: 1, DOWN: 1 },
+        },
+        maxAskPriceByMarketOutcome: {
+          BTC: { UP: 0.98, DOWN: 0.72 },
+          ETH: { UP: 0.98, DOWN: 0.98 },
+          DOGE: { UP: 0.98, DOWN: 0.98 },
+        },
+      },
+      {
+        watcher,
+        orderbook,
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(orderbook.getQuote).toHaveBeenCalledWith("BTC-down", 7, 0.72);
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "DOWN",
+        amountUsd: 7,
+        maxAskPrice: 0.72,
+        distanceUsd: 15,
+        entryWindowSeconds: 35,
+      }),
+    );
+  });
+
   it("uses updated strategy settings on the next iteration", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

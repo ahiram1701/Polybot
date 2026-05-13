@@ -1,5 +1,6 @@
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { loadConfig } from "../config.js";
+import { getMarketOutcomeNumber } from "../markets.js";
 import { MarketWatcher } from "../marketWatcher.js";
 import { OrderbookService } from "../orderbookService.js";
 
@@ -12,10 +13,25 @@ async function main(): Promise<void> {
   }
 
   const orderbook = OrderbookService.create(config.clobHost);
-  const quoteAmountUsd = Math.max(config.simTradeAmountUsd, market.orderMinSize);
+  const upQuoteAmountUsd = Math.max(
+    getMarketOutcomeNumber(config.simTradeAmountUsdByMarketOutcome, market.asset, "UP", config.simTradeAmountUsd),
+    market.orderMinSize,
+  );
+  const downQuoteAmountUsd = Math.max(
+    getMarketOutcomeNumber(config.simTradeAmountUsdByMarketOutcome, market.asset, "DOWN", config.simTradeAmountUsd),
+    market.orderMinSize,
+  );
   const [upQuote, downQuote] = await Promise.all([
-    orderbook.getQuote(market.outcomes.UP.tokenId, quoteAmountUsd, config.maxAskPrice),
-    orderbook.getQuote(market.outcomes.DOWN.tokenId, quoteAmountUsd, config.maxAskPrice),
+    orderbook.getQuote(
+      market.outcomes.UP.tokenId,
+      upQuoteAmountUsd,
+      getMarketOutcomeNumber(config.maxAskPriceByMarketOutcome, market.asset, "UP", config.maxAskPrice),
+    ),
+    orderbook.getQuote(
+      market.outcomes.DOWN.tokenId,
+      downQuoteAmountUsd,
+      getMarketOutcomeNumber(config.maxAskPriceByMarketOutcome, market.asset, "DOWN", config.maxAskPrice),
+    ),
   ]);
 
   const feed = new ChainlinkPriceFeed(config.rtdsUrl);
@@ -38,7 +54,8 @@ async function main(): Promise<void> {
             downToken: market.outcomes.DOWN.tokenId,
           },
           orderbook: {
-            quoteAmountUsd,
+            upQuoteAmountUsd,
+            downQuoteAmountUsd,
             up: {
               bestAsk: upQuote.bestAsk,
               bestBid: upQuote.bestBid,

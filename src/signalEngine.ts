@@ -16,15 +16,17 @@ export interface SignalDecision {
 export function getWinningOutcome(
   openingPrice: number,
   currentPrice: number,
-  minDistanceUsd: number,
+  minDistanceUsd: number | Partial<Record<Outcome, number>>,
 ): WinningOutcome | null {
+  const upMinDistanceUsd = typeof minDistanceUsd === "number" ? minDistanceUsd : minDistanceUsd.UP;
+  const downMinDistanceUsd = typeof minDistanceUsd === "number" ? minDistanceUsd : minDistanceUsd.DOWN;
   const upDistance = currentPrice - openingPrice;
-  if (upDistance >= minDistanceUsd) {
+  if (upMinDistanceUsd !== undefined && upDistance >= upMinDistanceUsd) {
     return { outcome: "UP", distanceUsd: upDistance };
   }
 
   const downDistance = openingPrice - currentPrice;
-  if (downDistance >= minDistanceUsd) {
+  if (downMinDistanceUsd !== undefined && downDistance >= downMinDistanceUsd) {
     return { outcome: "DOWN", distanceUsd: downDistance };
   }
 

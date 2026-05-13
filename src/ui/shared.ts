@@ -4,6 +4,7 @@ import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
   MarketInfo,
+  MarketOutcomeNumberSettings,
   MarketSymbol,
   Mode,
   OrderbookQuote,
@@ -17,12 +18,17 @@ export interface UiSettings {
   minBtcDistanceUsd: number;
   enabledMarkets: MarketSymbol[];
   minDistanceUsdByMarket: MarketDistanceSettings;
+  minDistanceUsdByMarketOutcome: MarketOutcomeNumberSettings;
   entryWindowSeconds: number;
   entryWindowSecondsByMarket: MarketEntryWindowSettings;
+  entryWindowSecondsByMarketOutcome: MarketOutcomeNumberSettings;
   simTradeAmountUsd: number;
+  simTradeAmountUsdByMarketOutcome: MarketOutcomeNumberSettings;
   liveTradeAmountUsd: number;
+  liveTradeAmountUsdByMarketOutcome: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
   maxAskPrice: number;
+  maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   dailySpendLimitUsd: number;
   tickStaleMs: number;
   pollIntervalMs: number;

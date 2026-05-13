@@ -3,19 +3,38 @@ import { EventEmitter } from "node:events";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import { type LogEntry, logger } from "../logger.js";
-import { getEntryWindowSeconds, getMinDistanceUsd, normalizeEnabledMarkets } from "../markets.js";
+import {
+  getEntryWindowSeconds,
+  getMarketOutcomeNumber,
+  getMinDistanceUsd,
+  normalizeEnabledMarkets,
+  SUPPORTED_MARKETS,
+} from "../markets.js";
 import { MarketWatcher } from "../marketWatcher.js";
 import { createNotifier, type Notifier } from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
-import { calculatePnlSummary, EMPTY_PNL_SUMMARY } from "../pnl.js";
-import { RecommendationEngine } from "../recommendationEngine.js";
+import { calculatePnlSummary, calculateTradePnl, EMPTY_PNL_SUMMARY } from "../pnl.js";
 import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEngine.js";
 import { StateStore } from "../stateStore.js";
+import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import { secondsToEnd } from "../time.js";
-import type { AiRecommendationsResponse, BotConfig, MarketSymbol, Mode, Outcome } from "../types.js";
+import type {
+  BotConfig,
+  MarketOutcomeNumberSettings,
+  MarketSymbol,
+  Mode,
+  OllamaTradeAnalysisResponse,
+  Outcome,
+  StrategyAnalysisResponse,
+  StrategyCandidate,
+  TradeAttempt,
+} from "../types.js";
 import { BotRunner } from "../botRunner.js";
 import type { MarketStatusSnapshot, SanitizedConfig, UiEvent, UiSettings, UiStatus } from "./shared.js";
 import { applySettings, UiSettingsStore } from "./settings.js";
+
+const DEFAULT_OLLAMA_HOST = "https://ollama.com";
+const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
 
 export class ControllerError extends Error {
   constructor(
@@ -30,7 +49,14 @@ export interface RunnerLike {
   start(options?: { once?: boolean }): Promise<void>;
   stop(): void;
   updateStrategySettings?(
-    settings: Pick<BotConfig, "minDistanceUsdByMarket" | "entryWindowSeconds" | "entryWindowSecondsByMarket">,
+    settings: Pick<
+      BotConfig,
+      | "minDistanceUsdByMarket"
+      | "minDistanceUsdByMarketOutcome"
+      | "entryWindowSeconds"
+      | "entryWindowSecondsByMarket"
+      | "entryWindowSecondsByMarketOutcome"
+    >,
   ): void;
 }
 
@@ -41,9 +67,10 @@ export interface BotControllerDeps {
   watcher?: Pick<MarketWatcher, "getCurrentMarket">;
   orderbook?: Pick<OrderbookService, "getQuote">;
   priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
-  recommendationEngine?: RecommendationEngine;
+  strategyAnalysisEngine?: StrategyAnalysisEngine;
   notifier?: Notifier;
   snapshotProvider?: () => Promise<Partial<UiStatus>>;
+  fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   startPriceFeed?: boolean;
 }
@@ -62,13 +89,13 @@ export class BotController {
   private readonly watcher: Pick<MarketWatcher, "getCurrentMarket">;
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
   private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
-  private readonly recommendationEngine: RecommendationEngine;
+  private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
   private readonly notifier: Notifier;
   private readonly runnerFactory: (config: BotConfig) => RunnerLike;
   private readonly snapshotProvider?: () => Promise<Partial<UiStatus>>;
+  private readonly fetchImpl: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
   private readonly unsubscribeLogger: () => boolean;
-  private lastAutoApplyCheckMs = 0;
 
   constructor(
     private readonly baseConfig: BotConfig,
@@ -80,10 +107,11 @@ export class BotController {
     this.watcher = deps.watcher ?? new MarketWatcher(baseConfig.gammaHost);
     this.orderbook = deps.orderbook ?? OrderbookService.create(baseConfig.clobHost);
     this.priceFeed = deps.priceFeed ?? new ChainlinkPriceFeed(baseConfig.rtdsUrl);
-    this.recommendationEngine = deps.recommendationEngine ?? new RecommendationEngine(baseConfig.dataDir);
+    this.strategyAnalysisEngine = deps.strategyAnalysisEngine ?? new StrategyAnalysisEngine(baseConfig.dataDir);
     this.notifier = deps.notifier ?? createNotifier(baseConfig);
     this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config));
     this.snapshotProvider = deps.snapshotProvider;
+    this.fetchImpl = deps.fetch ?? fetch;
     this.unsubscribeLogger = logger.subscribe((entry) => this.pushLog(entry));
 
     if (deps.startPriceFeed !== false) {
@@ -178,7 +206,7 @@ export class BotController {
   }
 
   async patchSettings(patch: Partial<UiSettings>): Promise<UiSettings> {
-    if (this.runnerPromise && !isAiToggleOnlyPatch(patch)) {
+    if (this.runnerPromise) {
       throw new ControllerError("Stop the bot before changing settings.", 409);
     }
     const current = await this.settingsStore.load(this.baseConfig);
@@ -190,6 +218,19 @@ export class BotController {
         BTC: patch.minBtcDistanceUsd,
       };
     }
+    if (normalizedPatch.minDistanceUsdByMarket !== undefined && patch.minDistanceUsdByMarketOutcome === undefined) {
+      normalizedPatch.minDistanceUsdByMarketOutcome = mergeMarketValuesIntoOutcomeSettings(
+        current.minDistanceUsdByMarketOutcome,
+        normalizedPatch.minDistanceUsdByMarket,
+      );
+    }
+    if (patch.minDistanceUsdByMarketOutcome !== undefined && normalizedPatch.minDistanceUsdByMarket === undefined) {
+      normalizedPatch.minDistanceUsdByMarket = marketValuesFromOutcomeSettings(
+        current.minDistanceUsdByMarket,
+        patch.minDistanceUsdByMarketOutcome,
+      );
+      normalizedPatch.minBtcDistanceUsd = normalizedPatch.minDistanceUsdByMarket.BTC;
+    }
     if (patch.entryWindowSeconds !== undefined && patch.entryWindowSecondsByMarket === undefined) {
       normalizedPatch.entryWindowSecondsByMarket = {
         BTC: patch.entryWindowSeconds,
@@ -197,52 +238,115 @@ export class BotController {
         DOGE: patch.entryWindowSeconds,
       };
     }
+    if (normalizedPatch.entryWindowSecondsByMarket !== undefined && patch.entryWindowSecondsByMarketOutcome === undefined) {
+      normalizedPatch.entryWindowSecondsByMarketOutcome = mergeMarketValuesIntoOutcomeSettings(
+        current.entryWindowSecondsByMarketOutcome,
+        normalizedPatch.entryWindowSecondsByMarket,
+      );
+    }
+    if (patch.entryWindowSecondsByMarketOutcome !== undefined && normalizedPatch.entryWindowSecondsByMarket === undefined) {
+      normalizedPatch.entryWindowSecondsByMarket = marketValuesFromOutcomeSettings(
+        current.entryWindowSecondsByMarket,
+        patch.entryWindowSecondsByMarketOutcome,
+      );
+      normalizedPatch.entryWindowSeconds = normalizedPatch.entryWindowSecondsByMarket.BTC;
+    }
+    if (patch.simTradeAmountUsd !== undefined && patch.simTradeAmountUsdByMarketOutcome === undefined) {
+      normalizedPatch.simTradeAmountUsdByMarketOutcome = outcomeSettingsForAllMarkets(patch.simTradeAmountUsd);
+    }
+    if (patch.simTradeAmountUsdByMarketOutcome !== undefined && patch.simTradeAmountUsd === undefined) {
+      normalizedPatch.simTradeAmountUsd = patch.simTradeAmountUsdByMarketOutcome.BTC.UP;
+    }
+    if (patch.liveTradeAmountUsd !== undefined && patch.liveTradeAmountUsdByMarketOutcome === undefined) {
+      normalizedPatch.liveTradeAmountUsdByMarketOutcome = outcomeSettingsForAllMarkets(patch.liveTradeAmountUsd);
+    }
+    if (patch.liveTradeAmountUsdByMarketOutcome !== undefined && patch.liveTradeAmountUsd === undefined) {
+      normalizedPatch.liveTradeAmountUsd = patch.liveTradeAmountUsdByMarketOutcome.BTC.UP;
+    }
+    if (patch.maxAskPrice !== undefined && patch.maxAskPriceByMarketOutcome === undefined) {
+      normalizedPatch.maxAskPriceByMarketOutcome = outcomeSettingsForAllMarkets(patch.maxAskPrice);
+    }
+    if (patch.maxAskPriceByMarketOutcome !== undefined && patch.maxAskPrice === undefined) {
+      normalizedPatch.maxAskPrice = patch.maxAskPriceByMarketOutcome.BTC.UP;
+    }
     return this.settingsStore.save({ ...current, ...normalizedPatch });
   }
 
-  async getRecommendations(): Promise<AiRecommendationsResponse> {
+  async getStrategyAnalysis(): Promise<StrategyAnalysisResponse> {
     const settings = await this.settingsStore.load(this.baseConfig);
-    return this.recommendationEngine.recommend(settings);
+    return this.strategyAnalysisEngine.analyze(settings);
   }
 
-  async applyRecommendations(markets?: MarketSymbol[]): Promise<{ settings: UiSettings; recommendations: AiRecommendationsResponse }> {
-    if (this.runnerPromise) {
-      throw new ControllerError("Stop the bot before applying recommendations manually.", 409);
+  async analyzeTradesWithOllama(prompt: string): Promise<OllamaTradeAnalysisResponse> {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) {
+      throw new ControllerError("Prompt is required.", 400);
     }
-    const settings = await this.settingsStore.load(this.baseConfig);
-    const recommendations = await this.recommendationEngine.recommend(settings);
-    const selected = filterApplicableRecommendations(recommendations, markets, "manual");
-    if (selected.length === 0) {
-      throw new ControllerError("No applicable recommendations are available yet.", 409);
+    if (!this.baseConfig.ollamaApiKey) {
+      throw new ControllerError("OLLAMA_API_KEY is required to request Ollama Cloud analysis.", 409);
     }
 
-    const nextSettings = applySelectedRecommendations(settings, selected, Date.now());
-    const saved = await this.settingsStore.save(nextSettings);
-    logger.info("AI recommendations applied manually.", {
-      markets: selected.map((recommendation) => recommendation.market),
-    });
-    return {
-      settings: saved,
-      recommendations: await this.recommendationEngine.recommend(saved),
+    const settings = await this.settingsStore.load(this.baseConfig);
+    const analysis = await this.strategyAnalysisEngine.analyze(settings);
+    const trades = await this.getTrades(50);
+    const pnl = calculatePnlSummary(trades);
+    const model = this.baseConfig.ollamaModel ?? DEFAULT_OLLAMA_MODEL;
+    const host = (this.baseConfig.ollamaHost ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, "");
+    const contextSummary = `${analysis.summary.sampleCount} muestras, ${analysis.strategies.length} estrategias rankeadas, ${trades.length} trades recientes.`;
+    const context = {
+      summary: analysis.summary,
+      topStrategies: analysis.strategies.slice(0, 12).map(summarizeStrategyCandidate),
+      currentStrategies: analysis.currentStrategies.map(summarizeStrategyCandidate),
+      pnl,
+      recentTrades: trades.slice(0, 25).map(summarizeTrade),
     };
-  }
 
-  async autoApplyRecommendations(markets?: MarketSymbol[]): Promise<{ settings: UiSettings; recommendations: AiRecommendationsResponse }> {
-    const settings = await this.settingsStore.load(this.baseConfig);
-    const recommendations = await this.recommendationEngine.recommend(settings);
-    const selected = filterApplicableRecommendations(recommendations, markets, "auto");
-    if (selected.length === 0) {
-      throw new ControllerError("No high-confidence recommendations are available for auto-apply.", 409);
-    }
-    if (!this.runnerPromise || this.mode !== "live") {
-      throw new ControllerError("Auto-apply requires the live bot to be running.", 409);
-    }
-    await this.assertOutsideAutoApplyProtectedWindow(selected);
+    const response = await this.fetchImpl(`${host}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.baseConfig.ollamaApiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Eres un analista de trading cuantitativo. Responde en espanol, separa tesis, riesgos y acciones sugeridas. No recomiendes cambiar settings si los datos son insuficientes.",
+          },
+          {
+            role: "user",
+            content: [
+              `Prompt del usuario: ${trimmedPrompt}`,
+              "Contexto JSON sin credenciales ni respuestas crudas de ordenes:",
+              JSON.stringify(context),
+            ].join("\n\n"),
+          },
+        ],
+      }),
+    });
 
-    const saved = await this.applyAutoRecommendations(settings, selected);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new ControllerError(
+        `Ollama Cloud returned HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
+        502,
+      );
+    }
+
+    const payload = (await response.json()) as unknown;
+    const content = extractOllamaContent(payload);
+    if (!content) {
+      throw new ControllerError("Ollama Cloud response did not include analysis content.", 502);
+    }
+
     return {
-      settings: saved,
-      recommendations: await this.recommendationEngine.recommend(saved),
+      generatedAtMs: Date.now(),
+      model,
+      content,
+      contextSummary,
     };
   }
 
@@ -256,10 +360,7 @@ export class BotController {
   }
 
   async getStatus(): Promise<UiStatus> {
-    let settings = await this.settingsStore.load(this.baseConfig);
-    if (await this.maybeAutoApplyLiveRecommendations(settings)) {
-      settings = await this.settingsStore.load(this.baseConfig);
-    }
+    const settings = await this.settingsStore.load(this.baseConfig);
     const config = this.buildRuntimeConfig(this.mode ?? this.baseConfig.mode, this.mode === "live", settings);
     let snapshot: Partial<UiStatus> = {};
     try {
@@ -295,121 +396,6 @@ export class BotController {
       quotes: primaryMarket?.quotes ?? snapshot.quotes,
       snapshotError: snapshot.snapshotError,
     };
-  }
-
-  private async maybeAutoApplyLiveRecommendations(settings: UiSettings): Promise<boolean> {
-    const nowMs = Date.now();
-    if (
-      !this.runnerPromise ||
-      this.mode !== "live" ||
-      !settings.aiAutoApplyLive ||
-      nowMs - this.lastAutoApplyCheckMs < 60_000 ||
-      (settings.aiLastAppliedAtMs !== undefined && nowMs - settings.aiLastAppliedAtMs < 5 * 60_000)
-    ) {
-      return false;
-    }
-    this.lastAutoApplyCheckMs = nowMs;
-
-    const recommendations = await this.recommendationEngine.recommend(settings, nowMs);
-    const selected = filterApplicableRecommendations(recommendations, undefined, "auto");
-    if (selected.length === 0) {
-      return false;
-    }
-    if (await this.isAutoApplyProtectedWindow(selected)) {
-      return false;
-    }
-    await this.applyAutoRecommendations(settings, selected);
-    return true;
-  }
-
-  private async assertOutsideAutoApplyProtectedWindow(
-    recommendations: AiRecommendationsResponse["recommendations"],
-  ): Promise<void> {
-    let blocked: { market: MarketSymbol; secondsToEnd: number } | undefined;
-    try {
-      blocked = await this.findProtectedAutoApplyMarket(recommendations);
-    } catch (error) {
-      throw new ControllerError(
-        `Auto-apply could not verify the active market window: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        409,
-      );
-    }
-    if (blocked) {
-      throw new ControllerError(
-        `Auto-apply paused for ${blocked.market}: ${Math.ceil(blocked.secondsToEnd)}s remain in the active window.`,
-        409,
-      );
-    }
-  }
-
-  private async isAutoApplyProtectedWindow(
-    recommendations: AiRecommendationsResponse["recommendations"],
-  ): Promise<boolean> {
-    try {
-      const blocked = await this.findProtectedAutoApplyMarket(recommendations);
-      if (blocked) {
-        logger.info("AI auto-apply paused near market close.", blocked);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      logger.warn("AI auto-apply skipped because the active window could not be verified.", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return true;
-    }
-  }
-
-  private async findProtectedAutoApplyMarket(
-    recommendations: AiRecommendationsResponse["recommendations"],
-  ): Promise<{ market: MarketSymbol; secondsToEnd: number } | undefined> {
-    const nowMs = Date.now();
-    for (const recommendation of recommendations) {
-      const market = await this.watcher.getCurrentMarket(nowMs, recommendation.market);
-      if (!market) {
-        continue;
-      }
-      const remaining = secondsToEnd(market.endMs, nowMs);
-      if (remaining > 0 && remaining <= 65) {
-        return { market: recommendation.market, secondsToEnd: remaining };
-      }
-    }
-    return undefined;
-  }
-
-  private async applyAutoRecommendations(
-    settings: UiSettings,
-    recommendations: AiRecommendationsResponse["recommendations"],
-  ): Promise<UiSettings> {
-    const nextSettings = applySelectedRecommendations(settings, recommendations, Date.now());
-    const saved = await this.settingsStore.save(nextSettings);
-    const runtimeConfig = this.buildRuntimeConfig(this.mode ?? this.baseConfig.mode, this.mode === "live", saved);
-    this.runner?.updateStrategySettings?.({
-      minDistanceUsdByMarket: runtimeConfig.minDistanceUsdByMarket,
-      entryWindowSeconds: runtimeConfig.entryWindowSeconds,
-      entryWindowSecondsByMarket: runtimeConfig.entryWindowSecondsByMarket,
-    });
-    logger.info("AI recommendations auto-applied.", {
-      markets: recommendations.map((recommendation) => recommendation.market),
-      minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
-      entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
-    });
-    await this.notifier.notify({
-      key: `auto-apply:${recommendations.map((recommendation) => recommendation.market).join(",")}`,
-      title: "Autoajuste aplicado",
-      body: recommendations
-        .map((recommendation) => {
-          const recommended = recommendation.recommended;
-          return recommended
-            ? `${recommendation.market}: ventana ${recommended.entryWindowSeconds}s, distancia ${recommended.minDistanceUsd}`
-            : recommendation.market;
-        })
-        .join("\n"),
-      minIntervalMs: 5 * 60_000,
-    });
-    return saved;
   }
 
   private async buildSnapshot(settings: UiSettings, config: BotConfig): Promise<Partial<UiStatus>> {
@@ -467,22 +453,26 @@ export class BotController {
 
     const opening = state.getOpening(market.slug);
     const secondsRemaining = secondsToEnd(market.endMs, nowMs);
-    const entryWindowSeconds = getEntryWindowSeconds(
-      settings.entryWindowSecondsByMarket,
-      marketSymbol,
-      settings.entryWindowSeconds,
-    );
-    const inEntryWindow = isWithinEntryWindow(market.endMs, nowMs, entryWindowSeconds);
-    const amountUsd = resolveTradeAmountUsd({
-      mode: config.mode,
-      requestedUsd: config.mode === "live" ? settings.liveTradeAmountUsd : settings.simTradeAmountUsd,
-      orderMinSize: market.orderMinSize,
-      autoMinLive: settings.autoMinLive,
-    });
+    const entryWindowSecondsByOutcome = {
+      UP: this.resolveConfiguredEntryWindow(config, marketSymbol, "UP"),
+      DOWN: this.resolveConfiguredEntryWindow(config, marketSymbol, "DOWN"),
+    };
+    const inEntryWindowByOutcome = {
+      UP: isWithinEntryWindow(market.endMs, nowMs, entryWindowSecondsByOutcome.UP),
+      DOWN: isWithinEntryWindow(market.endMs, nowMs, entryWindowSecondsByOutcome.DOWN),
+    };
 
     const quotes = await Promise.allSettled([
-      this.orderbook.getQuote(market.outcomes.UP.tokenId, amountUsd, settings.maxAskPrice),
-      this.orderbook.getQuote(market.outcomes.DOWN.tokenId, amountUsd, settings.maxAskPrice),
+      this.orderbook.getQuote(
+        market.outcomes.UP.tokenId,
+        this.resolveRuntimeTradeAmountUsd(config, market, "UP"),
+        this.resolveConfiguredMaxAskPrice(config, marketSymbol, "UP"),
+      ),
+      this.orderbook.getQuote(
+        market.outcomes.DOWN.tokenId,
+        this.resolveRuntimeTradeAmountUsd(config, market, "DOWN"),
+        this.resolveConfiguredMaxAskPrice(config, marketSymbol, "DOWN"),
+      ),
     ]);
 
     const quoteMap: Partial<Record<Outcome, Awaited<ReturnType<OrderbookService["getQuote"]>>>> = {};
@@ -505,9 +495,12 @@ export class BotController {
         openingPrice: opening?.openingPrice,
         tickValue: tick?.value,
         tickStale: tick ? isTickStale(tick, nowMs, settings.tickStaleMs) : false,
-        inEntryWindow,
+        inEntryWindowByOutcome,
         secondsToEnd: secondsRemaining,
-        minDistance: getMinDistanceUsd(settings.minDistanceUsdByMarket, marketSymbol),
+        minDistance: {
+          UP: this.resolveConfiguredMinDistance(config, marketSymbol, "UP"),
+          DOWN: this.resolveConfiguredMinDistance(config, marketSymbol, "DOWN"),
+        },
       }),
     };
   }
@@ -518,34 +511,36 @@ export class BotController {
     openingPrice?: number;
     tickValue?: number;
     tickStale: boolean;
-    inEntryWindow: boolean;
+    inEntryWindowByOutcome: Record<Outcome, boolean>;
     secondsToEnd: number;
-    minDistance: number;
+    minDistance: Record<Outcome, number>;
   }) {
+    const anyInEntryWindow = args.inEntryWindowByOutcome.UP || args.inEntryWindowByOutcome.DOWN;
     if (!args.marketActive) {
-      return { market: args.market, reason: "market_not_accepting_orders", inEntryWindow: args.inEntryWindow, secondsToEnd: args.secondsToEnd };
+      return { market: args.market, reason: "market_not_accepting_orders", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
     if (args.openingPrice === undefined) {
-      return { market: args.market, reason: "missing_opening_chainlink_tick", inEntryWindow: args.inEntryWindow, secondsToEnd: args.secondsToEnd };
+      return { market: args.market, reason: "missing_opening_chainlink_tick", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
     if (args.tickValue === undefined) {
-      return { market: args.market, reason: "missing_current_chainlink_tick", inEntryWindow: args.inEntryWindow, secondsToEnd: args.secondsToEnd };
+      return { market: args.market, reason: "missing_current_chainlink_tick", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
     if (args.tickStale) {
-      return { market: args.market, reason: "stale_chainlink_tick", inEntryWindow: args.inEntryWindow, secondsToEnd: args.secondsToEnd };
+      return { market: args.market, reason: "stale_chainlink_tick", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
 
     const winner = getWinningOutcome(args.openingPrice, args.tickValue, args.minDistance);
     if (!winner) {
-      return { market: args.market, reason: "btc_distance_below_threshold", inEntryWindow: args.inEntryWindow, secondsToEnd: args.secondsToEnd };
+      return { market: args.market, reason: "btc_distance_below_threshold", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
-    if (!args.inEntryWindow) {
+    const inEntryWindow = args.inEntryWindowByOutcome[winner.outcome];
+    if (!inEntryWindow) {
       return {
         market: args.market,
         reason: "waiting_entry_window",
         outcome: winner.outcome,
         distanceUsd: winner.distanceUsd,
-        inEntryWindow: args.inEntryWindow,
+        inEntryWindow,
         secondsToEnd: args.secondsToEnd,
       };
     }
@@ -554,9 +549,57 @@ export class BotController {
       reason: "signal_ready",
       outcome: winner.outcome,
       distanceUsd: winner.distanceUsd,
-      inEntryWindow: args.inEntryWindow,
+      inEntryWindow,
       secondsToEnd: args.secondsToEnd,
     };
+  }
+
+  private resolveRuntimeTradeAmountUsd(config: BotConfig, market: { asset: MarketSymbol; orderMinSize: number }, outcome: Outcome): number {
+    return resolveTradeAmountUsd({
+      mode: config.mode,
+      requestedUsd: this.resolveConfiguredTradeAmountUsd(config, market.asset, outcome),
+      orderMinSize: market.orderMinSize,
+      autoMinLive: config.autoMinLive,
+    });
+  }
+
+  private resolveConfiguredTradeAmountUsd(config: BotConfig, market: MarketSymbol, outcome: Outcome): number {
+    if (config.mode === "live") {
+      return getMarketOutcomeNumber(
+        config.liveTradeAmountUsdByMarketOutcome,
+        market,
+        outcome,
+        config.liveTradeAmountUsd,
+      );
+    }
+    return getMarketOutcomeNumber(
+      config.simTradeAmountUsdByMarketOutcome,
+      market,
+      outcome,
+      config.simTradeAmountUsd,
+    );
+  }
+
+  private resolveConfiguredMaxAskPrice(config: BotConfig, market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(config.maxAskPriceByMarketOutcome, market, outcome, config.maxAskPrice);
+  }
+
+  private resolveConfiguredMinDistance(config: BotConfig, market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(
+      config.minDistanceUsdByMarketOutcome,
+      market,
+      outcome,
+      getMinDistanceUsd(config.minDistanceUsdByMarket, market),
+    );
+  }
+
+  private resolveConfiguredEntryWindow(config: BotConfig, market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(
+      config.entryWindowSecondsByMarketOutcome,
+      market,
+      outcome,
+      getEntryWindowSeconds(config.entryWindowSecondsByMarket, market, config.entryWindowSeconds),
+    );
   }
 
   private buildRuntimeConfig(mode: Mode, confirmLive: boolean, settings: UiSettings): BotConfig {
@@ -575,12 +618,17 @@ export class BotController {
       minBtcDistanceUsd: config.minDistanceUsdByMarket.BTC,
       enabledMarkets: config.enabledMarkets,
       minDistanceUsdByMarket: config.minDistanceUsdByMarket,
+      minDistanceUsdByMarketOutcome: config.minDistanceUsdByMarketOutcome ?? settings.minDistanceUsdByMarketOutcome,
       entryWindowSeconds: config.entryWindowSeconds,
       entryWindowSecondsByMarket: config.entryWindowSecondsByMarket,
+      entryWindowSecondsByMarketOutcome: config.entryWindowSecondsByMarketOutcome ?? settings.entryWindowSecondsByMarketOutcome,
       simTradeAmountUsd: config.simTradeAmountUsd,
+      simTradeAmountUsdByMarketOutcome: config.simTradeAmountUsdByMarketOutcome ?? settings.simTradeAmountUsdByMarketOutcome,
       liveTradeAmountUsd: config.liveTradeAmountUsd,
+      liveTradeAmountUsdByMarketOutcome: config.liveTradeAmountUsdByMarketOutcome ?? settings.liveTradeAmountUsdByMarketOutcome,
       autoMinLive: config.autoMinLive,
       maxAskPrice: config.maxAskPrice,
+      maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       tickStaleMs: config.tickStaleMs,
       pollIntervalMs: config.pollIntervalMs,
@@ -635,46 +683,97 @@ export class BotController {
   }
 }
 
-function isAiToggleOnlyPatch(patch: Partial<UiSettings>): boolean {
-  const keys = Object.keys(patch);
-  return keys.length > 0 && keys.every((key) => key === "aiAutoApplyLive");
-}
-
-function filterApplicableRecommendations(
-  response: AiRecommendationsResponse,
-  markets: MarketSymbol[] | undefined,
-  mode: "manual" | "auto",
-): AiRecommendationsResponse["recommendations"] {
-  const marketSet = markets ? new Set(markets) : undefined;
-  return response.recommendations.filter((recommendation) => {
-    if (marketSet && !marketSet.has(recommendation.market)) {
-      return false;
+function mergeMarketValuesIntoOutcomeSettings(
+  current: MarketOutcomeNumberSettings,
+  values: Partial<Record<MarketSymbol, number>>,
+): MarketOutcomeNumberSettings {
+  const next = cloneOutcomeSettings(current);
+  for (const market of SUPPORTED_MARKETS) {
+    const value = values[market];
+    if (value !== undefined) {
+      next[market] = { UP: value, DOWN: value };
     }
-    return mode === "auto" ? recommendation.canAutoApply : recommendation.canApply;
-  });
-}
-
-function applySelectedRecommendations(
-  settings: UiSettings,
-  recommendations: AiRecommendationsResponse["recommendations"],
-  appliedAtMs: number,
-): UiSettings {
-  const minDistanceUsdByMarket = { ...settings.minDistanceUsdByMarket };
-  const entryWindowSecondsByMarket = { ...settings.entryWindowSecondsByMarket };
-  for (const recommendation of recommendations) {
-    if (!recommendation.recommended) {
-      continue;
-    }
-    minDistanceUsdByMarket[recommendation.market] = recommendation.recommended.minDistanceUsd;
-    entryWindowSecondsByMarket[recommendation.market] = recommendation.recommended.entryWindowSeconds;
   }
+  return next;
+}
 
+function marketValuesFromOutcomeSettings(
+  current: Record<MarketSymbol, number>,
+  values: MarketOutcomeNumberSettings,
+): Record<MarketSymbol, number> {
   return {
-    ...settings,
-    minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
-    minDistanceUsdByMarket,
-    entryWindowSeconds: entryWindowSecondsByMarket.BTC,
-    entryWindowSecondsByMarket,
-    aiLastAppliedAtMs: appliedAtMs,
+    BTC: values.BTC?.UP ?? current.BTC,
+    ETH: values.ETH?.UP ?? current.ETH,
+    DOGE: values.DOGE?.UP ?? current.DOGE,
   };
+}
+
+function outcomeSettingsForAllMarkets(value: number): MarketOutcomeNumberSettings {
+  return {
+    BTC: { UP: value, DOWN: value },
+    ETH: { UP: value, DOWN: value },
+    DOGE: { UP: value, DOWN: value },
+  };
+}
+
+function cloneOutcomeSettings(settings: MarketOutcomeNumberSettings): MarketOutcomeNumberSettings {
+  return {
+    BTC: { ...settings.BTC },
+    ETH: { ...settings.ETH },
+    DOGE: { ...settings.DOGE },
+  };
+}
+
+function summarizeStrategyCandidate(candidate: StrategyCandidate) {
+  return {
+    market: candidate.market,
+    outcome: candidate.outcome,
+    entryWindowSeconds: candidate.entryWindowSeconds,
+    minDistanceUsd: candidate.minDistanceUsd,
+    maxAskPrice: candidate.maxAskPrice,
+    isCurrent: candidate.isCurrent,
+    confidence: candidate.confidence,
+    riskFlags: candidate.riskFlags,
+    qualityScore: candidate.qualityScore,
+    evDeltaVsCurrent: candidate.evDeltaVsCurrent,
+    metrics: candidate.metrics,
+  };
+}
+
+function summarizeTrade(trade: TradeAttempt) {
+  const pnl = calculateTradePnl(trade);
+  return {
+    id: trade.id,
+    market: trade.asset,
+    mode: trade.mode,
+    outcome: trade.outcome,
+    amountUsd: trade.amountUsd,
+    bestAsk: trade.bestAsk,
+    distanceUsd: trade.distanceUsd,
+    entryWindowSeconds: trade.entryWindowSeconds,
+    createdAtMs: trade.createdAtMs,
+    resolvedWon: trade.resolved?.won,
+    pnl,
+  };
+}
+
+function extractOllamaContent(payload: unknown): string | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const message = payload.message;
+  if (isRecord(message) && typeof message.content === "string") {
+    return message.content;
+  }
+  if (typeof payload.response === "string") {
+    return payload.response;
+  }
+  if (typeof payload.content === "string") {
+    return payload.content;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

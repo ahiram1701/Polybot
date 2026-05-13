@@ -1,16 +1,66 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AiPanel, ControlBar, SettingsPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisPanel, App, ControlBar, SettingsPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
-import type { AiRecommendation, AiRecommendationsResponse, MarketSymbol, TradeAttempt } from "../src/types.js";
+import type { MarketSymbol, OllamaTradeAnalysisResponse, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("UI frontend components", () => {
+  it("shows the Analysis tab in the app navigation", () => {
+    class FakeEventSource {
+      readonly url: string;
+      readonly withCredentials = false;
+      readonly CONNECTING = 0;
+      readonly OPEN = 1;
+      readonly CLOSED = 2;
+      readyState = 1;
+      onerror: ((this: EventSource, event: Event) => unknown) | null = null;
+      onmessage: ((this: EventSource, event: MessageEvent) => unknown) | null = null;
+      onopen: ((this: EventSource, event: Event) => unknown) | null = null;
+
+      constructor(url: string | URL) {
+        this.url = String(url);
+      }
+
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() {
+        return true;
+      }
+      close() {}
+    }
+
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/status") {
+        return jsonResponse(status({ liveReady: false }));
+      }
+      if (path === "/api/settings") {
+        return jsonResponse(settings());
+      }
+      if (path === "/api/analysis/strategies") {
+        return jsonResponse(analysisResponse());
+      }
+      if (path === "/api/trades?limit=100") {
+        return jsonResponse({ trades: [] });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }));
+
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Análisis" })).toBeInTheDocument();
+  });
+
   it("disables live control when live is not ready", () => {
     render(
       <ControlBar
@@ -165,18 +215,19 @@ describe("UI frontend components", () => {
     expect(screen.getByRole("button", { name: /guardar/i })).toBeDisabled();
   });
 
-  it("renders entry-window controls for every market", () => {
+  it("renders side-specific controls for every market", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
-    expect(screen.getByLabelText("Ventana Bitcoin")).toHaveValue("20");
-    expect(screen.getByLabelText("Ventana Ethereum")).toHaveValue("20");
-    expect(screen.getByLabelText("Ventana Dogecoin")).toHaveValue("20");
+    expect(screen.getByLabelText("Ventana Bitcoin UP")).toHaveValue("20");
+    expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
+    expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
+    expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
   });
 
   it("allows free-form number editing in settings", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
-    const dogeDistance = screen.getByLabelText("Distancia Dogecoin");
+    const dogeDistance = screen.getByLabelText("Distancia Dogecoin UP");
     fireEvent.focus(dogeDistance);
     fireEvent.change(dogeDistance, { target: { value: "0." } });
     expect(dogeDistance).toHaveValue("0.");
@@ -188,48 +239,45 @@ describe("UI frontend components", () => {
     expect(dogeDistance).toHaveValue("0.00025");
   });
 
-  it("renders AI recommendations and applies a market suggestion", () => {
-    const onApply = vi.fn(async () => undefined);
+  it("renders strategy analysis and requests Ollama analysis", async () => {
+    const onAnalyze = vi.fn(async () => ollamaResponse());
     render(
-      <AiPanel
-        recommendations={recommendationsResponse([recommendation("BTC")])}
-        settings={settings()}
-        status={status({ liveReady: false })}
+      <AnalysisPanel
+        analysis={analysisResponse()}
         busy={false}
-        onApply={onApply}
         onRefresh={vi.fn(async () => undefined)}
-        onAutoApply={vi.fn(async () => undefined)}
-        onToggleAutoApply={vi.fn(async () => undefined)}
+        onAnalyze={onAnalyze}
       />,
     );
 
-    expect(screen.getByText("IA local")).toBeInTheDocument();
-    expect(screen.getByText("BTC")).toBeInTheDocument();
-    expect(screen.getByText("Alta")).toBeInTheDocument();
-    expect(screen.getByText("Edge")).toBeInTheDocument();
-    expect(screen.getByText("Walk")).toBeInTheDocument();
-    expect(screen.getByText("Riesgo")).toBeInTheDocument();
+    expect(screen.getByText("Análisis")).toBeInTheDocument();
+    expect(screen.getAllByText("Confiables").length).toBeGreaterThan(0);
+    expect(screen.getByText("BTC actual")).toBeInTheDocument();
+    expect(screen.getAllByText("Media").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getAllByText("EV").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("+25.0%").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Aplicar" }));
-    expect(onApply).toHaveBeenCalledWith("BTC");
+    fireEvent.click(screen.getByRole("button", { name: "Riesgos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Analizar con Ollama" }));
+
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledWith(expect.stringContaining("riesgos")));
+    expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
   });
 
-  it("disables manual AI apply while running", () => {
+  it("does not render removed AI recommendation controls", () => {
     render(
-      <AiPanel
-        recommendations={recommendationsResponse([recommendation("BTC")])}
-        settings={settings()}
-        status={{ ...status({ liveReady: true }), running: true, mode: "live" }}
+      <AnalysisPanel
+        analysis={analysisResponse()}
         busy={false}
-        onApply={vi.fn(async () => undefined)}
         onRefresh={vi.fn(async () => undefined)}
-        onAutoApply={vi.fn(async () => undefined)}
-        onToggleAutoApply={vi.fn(async () => undefined)}
+        onAnalyze={vi.fn(async () => ollamaResponse())}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Aplicar" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Auto aplicar" })).toBeEnabled();
+    expect(screen.queryByText("IA local")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Aplicar" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Auto aplicar" })).not.toBeInTheDocument();
   });
 });
 
@@ -238,18 +286,50 @@ function settings(): UiSettings {
     minBtcDistanceUsd: 20,
     enabledMarkets: ["BTC"],
     minDistanceUsdByMarket: { BTC: 20, ETH: 5, DOGE: 0.0005 },
+    minDistanceUsdByMarketOutcome: {
+      BTC: { UP: 20, DOWN: 20 },
+      ETH: { UP: 5, DOWN: 5 },
+      DOGE: { UP: 0.0005, DOWN: 0.0005 },
+    },
     entryWindowSeconds: 20,
     entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+    entryWindowSecondsByMarketOutcome: {
+      BTC: { UP: 20, DOWN: 20 },
+      ETH: { UP: 20, DOWN: 20 },
+      DOGE: { UP: 20, DOWN: 20 },
+    },
     simTradeAmountUsd: 1,
+    simTradeAmountUsdByMarketOutcome: {
+      BTC: { UP: 1, DOWN: 1 },
+      ETH: { UP: 1, DOWN: 1 },
+      DOGE: { UP: 1, DOWN: 1 },
+    },
     liveTradeAmountUsd: 1,
+    liveTradeAmountUsdByMarketOutcome: {
+      BTC: { UP: 1, DOWN: 1 },
+      ETH: { UP: 1, DOWN: 1 },
+      DOGE: { UP: 1, DOWN: 1 },
+    },
     autoMinLive: true,
     maxAskPrice: 0.98,
+    maxAskPriceByMarketOutcome: {
+      BTC: { UP: 0.98, DOWN: 0.98 },
+      ETH: { UP: 0.98, DOWN: 0.98 },
+      DOGE: { UP: 0.98, DOWN: 0.98 },
+    },
     dailySpendLimitUsd: 50,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,
     openingCaptureGraceMs: 15_000,
     aiAutoApplyLive: false,
   };
+}
+
+function jsonResponse(body: unknown, statusCode = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status: statusCode,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function getBodyRows(): HTMLElement[] {
@@ -322,65 +402,53 @@ function trade(args: { resolvedWon: boolean; asset?: MarketSymbol; distanceUsd?:
   };
 }
 
-function recommendationsResponse(recommendations: AiRecommendation[]): AiRecommendationsResponse {
+function analysisResponse(): StrategyAnalysisResponse {
+  const strategy: StrategyCandidate = {
+    market: "BTC" as const,
+    outcome: "UP" as const,
+    entryWindowSeconds: 20,
+    minDistanceUsd: 10,
+    maxAskPrice: 0.8,
+    isCurrent: true,
+    confidence: "medium",
+    riskFlags: [],
+    qualityScore: 0.43,
+    evDeltaVsCurrent: 0,
+    metrics: {
+      sampleCount: 5,
+      signalCount: 5,
+      tradeCount: 5,
+      winCount: 3,
+      lossCount: 2,
+      quoteCoverage: 1,
+      winRate: 0.5,
+      averageAsk: 0.5,
+      evRoi: 0.25,
+      maxDrawdown: 1,
+    },
+  };
   return {
     generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    recommendations,
+    strategies: [strategy],
+    currentStrategies: [strategy],
+    summary: {
+      sampleCount: 5,
+      strategyCount: 1,
+      currentStrategyCount: 1,
+      reliableStrategyCount: 1,
+      bestEvRoi: 0.25,
+      bestTradeCount: 5,
+      bestReliableEvRoi: 0.25,
+      bestReliableTradeCount: 5,
+    },
   };
 }
 
-function recommendation(market: MarketSymbol): AiRecommendation {
+function ollamaResponse(): OllamaTradeAnalysisResponse {
   return {
-    market,
-    status: "ready",
-    confidence: "high",
     generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    current: {
-      entryWindowSeconds: 20,
-      minDistanceUsd: 20,
-      metrics: {
-        sampleCount: 20,
-        signalCount: 20,
-        tradeCount: 20,
-        winCount: 10,
-        lossCount: 10,
-        quoteCoverage: 1,
-        averageRoi: 0,
-        adjustedRoi: 0,
-        expectedRoi: 0,
-        walkForwardRoi: 0,
-        lowerBoundRoi: 0,
-        overfitRisk: 0.2,
-        predictedWinProbability: 0.5,
-        calibrationError: 0.1,
-        maxDrawdown: 1,
-      },
-    },
-    recommended: {
-      entryWindowSeconds: 30,
-      minDistanceUsd: 15,
-      metrics: {
-        sampleCount: 20,
-        signalCount: 20,
-        tradeCount: 20,
-        winCount: 15,
-        lossCount: 5,
-        quoteCoverage: 1,
-        averageRoi: 0.2,
-        adjustedRoi: 0.12,
-        expectedRoi: 0.16,
-        walkForwardRoi: 0.14,
-        lowerBoundRoi: 0.1,
-        overfitRisk: 0.2,
-        predictedWinProbability: 0.62,
-        calibrationError: 0.08,
-        maxDrawdown: 1,
-      },
-    },
-    improvementAdjustedRoi: 0.12,
-    sampleCount: 20,
-    reason: "Alta confianza",
-    canApply: true,
-    canAutoApply: true,
+    model: "gpt-oss:120b",
+    content: "Tesis: EV positivo.",
+    contextSummary: "2 muestras, 1 estrategias rankeadas, 0 trades recientes.",
   };
 }

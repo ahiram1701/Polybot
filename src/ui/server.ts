@@ -2,7 +2,6 @@ import express, { type Express, type Request, type Response } from "express";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
-import { SUPPORTED_MARKETS } from "../markets.js";
 import { ControllerError, type BotController } from "./controller.js";
 import { patchSettingsSchema } from "./settings.js";
 import type { StartBotRequest, UiEvent } from "./shared.js";
@@ -11,8 +10,8 @@ const startRequestSchema = z.object({
   mode: z.enum(["sim", "live"]),
   confirmLive: z.boolean().optional(),
 });
-const recommendationRequestSchema = z.object({
-  markets: z.array(z.enum(SUPPORTED_MARKETS)).optional(),
+const ollamaAnalysisRequestSchema = z.object({
+  prompt: z.string().trim().min(1),
 });
 
 export interface UiAppOptions {
@@ -37,18 +36,13 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.getSettings());
   }));
 
-  app.get("/api/recommendations", asyncHandler(async (_req, res) => {
-    res.json(await controller.getRecommendations());
+  app.get("/api/analysis/strategies", asyncHandler(async (_req, res) => {
+    res.json(await controller.getStrategyAnalysis());
   }));
 
-  app.post("/api/recommendations/apply", asyncHandler(async (req, res) => {
-    const body = recommendationRequestSchema.parse(req.body ?? {});
-    res.json(await controller.applyRecommendations(body.markets));
-  }));
-
-  app.post("/api/recommendations/auto-apply", asyncHandler(async (req, res) => {
-    const body = recommendationRequestSchema.parse(req.body ?? {});
-    res.json(await controller.autoApplyRecommendations(body.markets));
+  app.post("/api/analysis/ollama", asyncHandler(async (req, res) => {
+    const body = ollamaAnalysisRequestSchema.parse(req.body ?? {});
+    res.json(await controller.analyzeTradesWithOllama(body.prompt));
   }));
 
   app.patch("/api/settings", asyncHandler(async (req, res) => {

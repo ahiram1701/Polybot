@@ -22,6 +22,7 @@ export interface ExecutionInput {
   market: MarketInfo;
   outcome: Outcome;
   amountUsd: number;
+  maxAskPrice: number;
   quote: OrderbookQuote;
   opening: WindowOpening;
   tick: BtcPriceTick;
@@ -49,7 +50,7 @@ export class SimulationExecutionEngine implements TradeExecutor {
   constructor(private readonly config: BotConfig) {}
 
   async execute(input: ExecutionInput): Promise<TradeAttempt> {
-    return buildBaseTrade(input, this.config.mode, this.config.maxAskPrice);
+    return buildBaseTrade(input, this.config.mode);
   }
 }
 
@@ -68,7 +69,7 @@ export class LiveExecutionEngine implements TradeExecutor {
         tokenID: tokenId,
         side: Side.BUY,
         amount: input.amountUsd,
-        price: this.config.maxAskPrice,
+        price: input.maxAskPrice,
         orderType: OrderType.FAK,
       },
       {
@@ -86,7 +87,7 @@ export class LiveExecutionEngine implements TradeExecutor {
     const fill = summarizeLiveOrderFill(response);
 
     return {
-      ...buildBaseTrade(input, this.config.mode, this.config.maxAskPrice),
+      ...buildBaseTrade(input, this.config.mode),
       orderId: response.orderID,
       status: response.status,
       fillDetected: fill.fillDetected,
@@ -107,7 +108,7 @@ export class LiveExecutionEngine implements TradeExecutor {
   }
 }
 
-function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live", maxAskPrice: number): TradeAttempt {
+function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttempt {
   const token = input.market.outcomes[input.outcome];
   return {
     id: `${input.market.slug}-${mode}-${input.outcome}-${Date.now()}`,
@@ -118,7 +119,7 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live", maxAskPrice
     outcome: input.outcome,
     tokenId: token.tokenId,
     amountUsd: input.amountUsd,
-    maxAskPrice,
+    maxAskPrice: input.maxAskPrice,
     bestAsk: input.quote.bestAsk,
     estimatedShares: input.quote.estimatedSharesForAmount,
     openingPrice: input.opening.openingPrice,
