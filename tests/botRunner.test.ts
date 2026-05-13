@@ -7,7 +7,15 @@ import type { TradeReconciler } from "../src/liveTradeReconciler.js";
 import type { MarketWatcher } from "../src/marketWatcher.js";
 import type { OrderbookService } from "../src/orderbookService.js";
 import type { StateStore } from "../src/stateStore.js";
-import type { BotConfig, MarketInfo, MarketSymbol, TradeAttempt, WindowOpening } from "../src/types.js";
+import type {
+  BotConfig,
+  MarketInfo,
+  MarketSymbol,
+  StrategyAnalysisResponse,
+  StrategyCandidate,
+  TradeAttempt,
+  WindowOpening,
+} from "../src/types.js";
 
 describe("BotRunner", () => {
   afterEach(() => {
@@ -468,6 +476,329 @@ describe("BotRunner", () => {
     );
   });
 
+  it("auto-adjusts enabled live sides from reliable EV strategies", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 270_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => market),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC",
+        symbol: "btc/usd",
+        value: 115,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const orderbook = fakeOrderbook();
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "live" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () => strategyAnalysisResponse(bestStrategy("BTC", "UP", 35, 10, 0.8))),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "live",
+        minDistanceUsdByMarketOutcome: {
+          BTC: { UP: 20, DOWN: 20 },
+          ETH: { UP: 5, DOWN: 5 },
+          DOGE: { UP: 0.0005, DOWN: 0.0005 },
+        },
+        entryWindowSecondsByMarketOutcome: {
+          BTC: { UP: 20, DOWN: 20 },
+          ETH: { UP: 20, DOWN: 20 },
+          DOGE: { UP: 20, DOWN: 20 },
+        },
+        autoAdjustLiveByMarketOutcome: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher,
+        orderbook,
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(strategyAnalysisEngine.analyze).toHaveBeenCalled();
+    expect(orderbook.getQuote).toHaveBeenCalledWith("BTC-up", 1, 0.8);
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "UP",
+        distanceUsd: 15,
+        entryWindowSeconds: 35,
+        maxAskPrice: 0.8,
+      }),
+    );
+  });
+
+  it("auto-adjusts an enabled side after a resolved loss", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const nowMs = Date.UTC(2026, 4, 7, 4, 29, 30, 0);
+    const previousWindowStartMs = nowMs - 600_000;
+    const currentWindowStartMs = nowMs - 270_000;
+    const market = marketInfo("BTC", "btc", currentWindowStartMs);
+    const lostTrade: TradeAttempt = {
+      id: "lost-btc-up",
+      asset: "BTC",
+      slug: "btc-updown-5m-previous",
+      mode: "sim",
+      conditionId: "BTC-condition",
+      outcome: "UP",
+      tokenId: "BTC-up",
+      amountUsd: 1,
+      maxAskPrice: 0.98,
+      bestAsk: 0.5,
+      estimatedShares: 2,
+      openingPrice: 200,
+      entryPrice: 210,
+      distanceUsd: 10,
+      entryWindowSeconds: 20,
+      windowStartMs: previousWindowStartMs,
+      endMs: previousWindowStartMs + 300_000,
+      createdAtMs: previousWindowStartMs + 270_000,
+    };
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs: currentWindowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: currentWindowStartMs,
+          capturedAtMs: currentWindowStartMs,
+        },
+      ],
+    ]);
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => market),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC",
+        symbol: "btc/usd",
+        value: 130,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => [lostTrade]),
+      recordTradeResolution: vi.fn(async (_slug: string, resolution: NonNullable<TradeAttempt["resolved"]>) => {
+        lostTrade.resolved = resolution;
+      }),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () => strategyAnalysisResponse(bestStrategy("BTC", "UP", 35, 10, 0.8))),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        minDistanceUsdByMarket: { BTC: 40, ETH: 5, DOGE: 0.0005 },
+        minDistanceUsdByMarketOutcome: {
+          BTC: { UP: 40, DOWN: 40 },
+          ETH: { UP: 5, DOWN: 5 },
+          DOGE: { UP: 0.0005, DOWN: 0.0005 },
+        },
+        autoAdjustAfterLossByMarketOutcome: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher,
+        orderbook: fakeOrderbook(),
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(state.recordTradeResolution).toHaveBeenCalledWith(
+      lostTrade.slug,
+      expect.objectContaining({ won: false, winningOutcome: "DOWN" }),
+    );
+    expect(strategyAnalysisEngine.analyze).toHaveBeenCalledTimes(1);
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "UP",
+        distanceUsd: 30,
+        entryWindowSeconds: 35,
+        maxAskPrice: 0.8,
+      }),
+    );
+  });
+
+  it.each([
+    { finalPrice: 130, title: "Trade ganado", level: "info" as const, won: true },
+    { finalPrice: 90, title: "Trade perdido", level: "warn" as const, won: false },
+  ])("notifies Telegram when a trade is resolved as $title", async ({ finalPrice, title, level, won }) => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const nowMs = Date.UTC(2026, 4, 7, 4, 29, 30, 0);
+    const windowStartMs = nowMs - 600_000;
+    const trade: TradeAttempt = {
+      id: `btc-up-${won ? "win" : "loss"}`,
+      asset: "BTC",
+      slug: `btc-updown-5m-${won ? "win" : "loss"}`,
+      mode: "sim",
+      conditionId: "BTC-condition",
+      outcome: "UP",
+      tokenId: "BTC-up",
+      amountUsd: 1,
+      maxAskPrice: 0.98,
+      bestAsk: 0.5,
+      estimatedShares: 2,
+      openingPrice: 100,
+      entryPrice: 120,
+      distanceUsd: 20,
+      entryWindowSeconds: 20,
+      windowStartMs,
+      endMs: windowStartMs + 300_000,
+      createdAtMs: windowStartMs + 270_000,
+    };
+    const notifier = {
+      notify: vi.fn(async () => undefined),
+    };
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => [trade]),
+      recordTradeResolution: vi.fn(async (_slug: string, resolution: NonNullable<TradeAttempt["resolved"]>) => {
+        trade.resolved = resolution;
+      }),
+      getDailySpend: vi.fn(() => 0),
+    } as unknown as StateStore;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC",
+        symbol: "btc/usd",
+        value: finalPrice,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const runner = new BotRunner(baseConfig(), {
+      watcher: { getCurrentMarket: vi.fn(async () => null) } as unknown as MarketWatcher,
+      orderbook: fakeOrderbook(),
+      priceFeed,
+      state,
+      executor: {} as TradeExecutor,
+      reconciler: fakeReconciler(),
+      notifier,
+    });
+
+    await runner.runOnce(nowMs);
+
+    expect(state.recordTradeResolution).toHaveBeenCalledWith(
+      trade.slug,
+      expect.objectContaining({ won }),
+    );
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: `trade-resolved:${trade.id}`,
+        level,
+        title,
+        body: expect.stringContaining(`Slug: ${trade.slug}.`),
+      }),
+    );
+  });
+
   it("keeps trying other markets when one execution fails", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -714,6 +1045,57 @@ function fakeOrderbook(): OrderbookService {
       rawAskLevels: [],
     })),
   } as unknown as OrderbookService;
+}
+
+function bestStrategy(
+  market: MarketSymbol,
+  outcome: "UP" | "DOWN",
+  entryWindowSeconds: number,
+  minDistanceUsd: number,
+  maxAskPrice: number,
+): StrategyCandidate {
+  return {
+    market,
+    outcome,
+    entryWindowSeconds,
+    minDistanceUsd,
+    maxAskPrice,
+    isCurrent: false,
+    confidence: "medium",
+    riskFlags: [],
+    qualityScore: 0.5,
+    evDeltaVsCurrent: 0.25,
+    metrics: {
+      sampleCount: 10,
+      signalCount: 8,
+      tradeCount: 5,
+      winCount: 4,
+      lossCount: 1,
+      quoteCoverage: 1,
+      winRate: 0.8,
+      averageAsk: 0.5,
+      evRoi: 0.6,
+      maxDrawdown: 1,
+    },
+  };
+}
+
+function strategyAnalysisResponse(strategy: StrategyCandidate): StrategyAnalysisResponse {
+  return {
+    generatedAtMs: Date.UTC(2026, 4, 7, 4, 25, 0, 0),
+    strategies: [strategy],
+    currentStrategies: [],
+    summary: {
+      sampleCount: 10,
+      strategyCount: 1,
+      currentStrategyCount: 0,
+      reliableStrategyCount: 1,
+      bestEvRoi: strategy.metrics.evRoi,
+      bestTradeCount: strategy.metrics.tradeCount,
+      bestReliableEvRoi: strategy.metrics.evRoi,
+      bestReliableTradeCount: strategy.metrics.tradeCount,
+    },
+  };
 }
 
 function marketInfo(asset: MarketSymbol, slugPrefix: string, windowStartMs: number): MarketInfo {

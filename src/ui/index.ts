@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { logger } from "../logger.js";
-import { createNotifier } from "../notifier.js";
+import { createDynamicNotifier } from "../notifier.js";
 import { BotController } from "./controller.js";
 import { createUiApp } from "./server.js";
 
@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const staticClient = process.argv.includes("--static");
   const autoStartMode = getAutoStartMode(process.argv);
   const { config } = loadConfig(["--mode", "sim"]);
-  const notifier = createNotifier(config);
+  const notifier = createDynamicNotifier(config);
   const controller = new BotController(config);
   const app = createUiApp(controller, { staticClient });
 

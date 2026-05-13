@@ -13,6 +13,12 @@ const startRequestSchema = z.object({
 const ollamaAnalysisRequestSchema = z.object({
   prompt: z.string().trim().min(1),
 });
+const telegramNotificationsPatchSchema = z.object({
+  enabled: z.boolean().optional(),
+  botToken: z.string().optional(),
+  chatId: z.string().optional(),
+  publicUrl: z.union([z.string().url(), z.literal("")]).optional(),
+});
 
 export interface UiAppOptions {
   staticClient?: boolean;
@@ -38,6 +44,19 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
 
   app.get("/api/analysis/strategies", asyncHandler(async (_req, res) => {
     res.json(await controller.getStrategyAnalysis());
+  }));
+
+  app.get("/api/notifications/telegram", asyncHandler(async (_req, res) => {
+    res.json(await controller.getTelegramNotifications());
+  }));
+
+  app.patch("/api/notifications/telegram", asyncHandler(async (req, res) => {
+    const patch = telegramNotificationsPatchSchema.parse(req.body ?? {});
+    res.json(await controller.patchTelegramNotifications(patch));
+  }));
+
+  app.post("/api/notifications/telegram/test", asyncHandler(async (_req, res) => {
+    res.json(await controller.testTelegramNotifications());
   }));
 
   app.post("/api/analysis/ollama", asyncHandler(async (req, res) => {

@@ -4,6 +4,7 @@ import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
   MarketInfo,
+  MarketOutcomeBooleanSettings,
   MarketOutcomeNumberSettings,
   MarketSymbol,
   Mode,
@@ -27,6 +28,8 @@ export interface UiSettings {
   liveTradeAmountUsd: number;
   liveTradeAmountUsdByMarketOutcome: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
+  autoAdjustLiveByMarketOutcome: MarketOutcomeBooleanSettings;
+  autoAdjustAfterLossByMarketOutcome: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   dailySpendLimitUsd: number;
@@ -98,4 +101,26 @@ export type UiEvent =
 export interface StartBotRequest {
   mode: Mode;
   confirmLive?: boolean;
+}
+
+export interface TelegramNotificationSettings {
+  enabled: boolean;
+  configured: boolean;
+  hasBotToken: boolean;
+  botTokenMasked?: string;
+  chatId: string;
+  publicUrl?: string;
+  source: "env" | "local" | "none";
+}
+
+export interface TelegramNotificationPatch {
+  enabled?: boolean;
+  botToken?: string;
+  chatId?: string;
+  publicUrl?: string;
+}
+
+export interface TelegramNotificationTestResponse {
+  ok: true;
+  sentAtMs: number;
 }

@@ -111,6 +111,37 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("patches auto-adjust toggles per market side", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({
+        autoAdjustLiveByMarketOutcome: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+        autoAdjustAfterLossByMarketOutcome: {
+          BTC: { UP: false, DOWN: true },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.autoAdjustLiveByMarketOutcome.BTC.UP).toBe(true);
+        expect(response.body.autoAdjustLiveByMarketOutcome.BTC.DOWN).toBe(false);
+        expect(response.body.autoAdjustAfterLossByMarketOutcome.BTC.DOWN).toBe(true);
+      });
+    controller.dispose();
+  });
+
   it("returns strategy analysis", async () => {
     const controller = new BotController(await baseConfig(false), {
       strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
@@ -138,6 +169,79 @@ describe("UI API", () => {
     const app = createUiApp(controller);
 
     await request(app).post("/api/analysis/ollama").send({ prompt: " " }).expect(400);
+    controller.dispose();
+  });
+
+  it("manages Telegram notification settings without exposing the token", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}")) as unknown as typeof fetch;
+    const controller = new BotController(await baseConfig(false), {
+      fetch: fetchMock,
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/notifications/telegram")
+      .send({
+        enabled: true,
+        botToken: "123456:test_token",
+        chatId: "42",
+        publicUrl: "http://polybot.local:8787",
+      })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.configured).toBe(true);
+        expect(response.body.hasBotToken).toBe(true);
+        expect(response.body.botTokenMasked).not.toContain("test_token");
+        expect(JSON.stringify(response.body)).not.toContain("123456:test_token");
+      });
+
+    await request(app)
+      .patch("/api/notifications/telegram")
+      .send({ enabled: true, chatId: "43" })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.configured).toBe(true);
+        expect(response.body.chatId).toBe("43");
+      });
+
+    await request(app).post("/api/notifications/telegram/test").expect(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bot123456:test_token/sendMessage",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("\"chat_id\":\"43\""),
+      }),
+    );
+    controller.dispose();
+  });
+
+  it("uses .env Telegram values as fallback before local settings exist", async () => {
+    const controller = new BotController(
+      await baseConfig(false, {
+        telegramBotToken: "123456:env_token",
+        telegramChatId: "99",
+        publicUrl: "http://env-polybot.local",
+      }),
+      {
+        startPriceFeed: false,
+        snapshotProvider: fixedSnapshot,
+        runnerFactory: () => new FakeRunner(),
+      },
+    );
+    const app = createUiApp(controller);
+
+    await request(app)
+      .get("/api/notifications/telegram")
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.source).toBe("env");
+        expect(response.body.configured).toBe(true);
+        expect(response.body.chatId).toBe("99");
+        expect(JSON.stringify(response.body)).not.toContain("env_token");
+      });
     controller.dispose();
   });
 

@@ -3,6 +3,7 @@ import {
   ArrowDownNarrowWide,
   ArrowUpDown,
   ArrowUpNarrowWide,
+  Bell,
   Brain,
   CheckCircle2,
   DollarSign,
@@ -14,6 +15,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Send,
   Settings,
   ShieldAlert,
   Square,
@@ -38,9 +40,16 @@ import type {
   StrategyRiskFlag,
   TradeAttempt,
 } from "../../types.js";
-import type { MarketStatusSnapshot, StartBotRequest, UiSettings, UiStatus } from "../shared.js";
+import type {
+  MarketStatusSnapshot,
+  StartBotRequest,
+  TelegramNotificationPatch,
+  TelegramNotificationSettings,
+  UiSettings,
+  UiStatus,
+} from "../shared.js";
 
-type Tab = "dashboard" | "trades" | "analysis" | "settings" | "logs";
+type Tab = "dashboard" | "trades" | "analysis" | "settings" | "telegram" | "logs";
 type Theme = "light" | "dark";
 type TradeMarketFilter = "ALL" | MarketSymbol;
 type TradePnlFilter = "ALL" | "POSITIVE" | "NEGATIVE";
@@ -50,6 +59,7 @@ type StrategySortKey = "evRoi" | "tradeCount" | "winRate" | "quoteCoverage" | "e
 type StrategySortDirection = "asc" | "desc";
 type StrategyQualityFilter = "RELIABLE" | "ALL" | "POSITIVE" | "CURRENT";
 type OutcomeFilter = "ALL" | Outcome;
+type AutoAdjustSettingKey = "autoAdjustLiveByMarketOutcome" | "autoAdjustAfterLossByMarketOutcome";
 
 interface TradeSortState {
   key: TradeSortKey;
@@ -109,6 +119,16 @@ const emptySettings: UiSettings = {
     DOGE: { UP: 1, DOWN: 1 },
   },
   autoMinLive: true,
+  autoAdjustLiveByMarketOutcome: {
+    BTC: { UP: false, DOWN: false },
+    ETH: { UP: false, DOWN: false },
+    DOGE: { UP: false, DOWN: false },
+  },
+  autoAdjustAfterLossByMarketOutcome: {
+    BTC: { UP: false, DOWN: false },
+    ETH: { UP: false, DOWN: false },
+    DOGE: { UP: false, DOWN: false },
+  },
   maxAskPrice: 0.98,
   maxAskPriceByMarketOutcome: {
     BTC: { UP: 0.98, DOWN: 0.98 },
@@ -291,6 +311,7 @@ export function App() {
           <TabButton active={tab === "trades"} icon={<Table2 size={18} />} label="Trades" onClick={() => setTab("trades")} />
           <TabButton active={tab === "analysis"} icon={<Brain size={18} />} label="Análisis" onClick={() => setTab("analysis")} />
           <TabButton active={tab === "settings"} icon={<Settings size={18} />} label="Settings" onClick={() => setTab("settings")} />
+          <TabButton active={tab === "telegram"} icon={<Bell size={18} />} label="Telegram" onClick={() => setTab("telegram")} />
           <TabButton active={tab === "logs"} icon={<Terminal size={18} />} label="Logs" onClick={() => setTab("logs")} />
         </nav>
       </aside>
@@ -331,6 +352,7 @@ export function App() {
           />
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
+        {tab === "telegram" && <TelegramPanel />}
         {tab === "logs" && <LogsPanel logs={status?.logs ?? []} />}
       </main>
 
@@ -1005,6 +1027,19 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
     });
   }
 
+  function updateAutoAdjust(key: AutoAdjustSettingKey, symbol: MarketSymbol, outcome: Outcome, enabled: boolean) {
+    setDraft((current) => ({
+      ...current,
+      [key]: {
+        ...current[key],
+        [symbol]: {
+          ...current[key][symbol],
+          [outcome]: enabled,
+        },
+      },
+    }));
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     await onSave(draft);
@@ -1067,6 +1102,28 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
                     step={0.01}
                     onChange={(value) => updateMarketAskCap(market.symbol, outcome, value)}
                   />
+                  <label className="switch-row compact-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={`Auto live ${market.label} ${outcome}`}
+                      checked={draft.autoAdjustLiveByMarketOutcome[market.symbol][outcome]}
+                      onChange={(event) =>
+                        updateAutoAdjust("autoAdjustLiveByMarketOutcome", market.symbol, outcome, event.target.checked)}
+                      disabled={running}
+                    />
+                    <span>Auto live</span>
+                  </label>
+                  <label className="switch-row compact-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={`Tras perder ${market.label} ${outcome}`}
+                      checked={draft.autoAdjustAfterLossByMarketOutcome[market.symbol][outcome]}
+                      onChange={(event) =>
+                        updateAutoAdjust("autoAdjustAfterLossByMarketOutcome", market.symbol, outcome, event.target.checked)}
+                      disabled={running}
+                    />
+                    <span>Tras perder</span>
+                  </label>
                 </div>
               ))}
             </div>
@@ -1084,6 +1141,163 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
       </label>
       <div className="form-actions">
         <button className="command primary" disabled={running || busy} type="submit">
+          <Save size={18} /> Guardar
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function TelegramPanel() {
+  const [settings, setSettings] = useState<TelegramNotificationSettings | null>(null);
+  const [draft, setDraft] = useState<TelegramNotificationPatch>({ enabled: false, chatId: "", publicUrl: "" });
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadTelegramSettings();
+  }, []);
+
+  async function loadTelegramSettings() {
+    setError(null);
+    try {
+      const next = await api<TelegramNotificationSettings>("/api/notifications/telegram");
+      setSettings(next);
+      setDraft({
+        enabled: next.enabled,
+        botToken: "",
+        chatId: next.chatId,
+        publicUrl: next.publicUrl ?? "",
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function updateTelegramDraft(key: keyof TelegramNotificationPatch, value: string | boolean) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const payload = {
+        ...draft,
+        botToken: typeof draft.botToken === "string" && draft.botToken.trim() ? draft.botToken : undefined,
+      };
+      const saved = await api<TelegramNotificationSettings>("/api/notifications/telegram", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setSettings(saved);
+      setDraft({
+        enabled: saved.enabled,
+        botToken: "",
+        chatId: saved.chatId,
+        publicUrl: saved.publicUrl ?? "",
+      });
+      setMessage("Configuracion guardada.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendTest() {
+    setTesting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      await api("/api/notifications/telegram/test", { method: "POST" });
+      setMessage("Mensaje de prueba enviado.");
+      await loadTelegramSettings();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const statusLabel = !settings
+    ? "Cargando"
+    : !settings.enabled
+      ? "Desactivado"
+      : settings.configured
+        ? "Configurado"
+        : "Incompleto";
+  const tokenPlaceholder = settings?.hasBotToken ? settings.botTokenMasked ?? "Token guardado" : "123456:ABC...";
+
+  return (
+    <form className="panel telegram-panel" onSubmit={submit}>
+      <div className="telegram-header">
+        <div className="section-heading">
+          <Bell size={18} />
+          <h2>Telegram</h2>
+        </div>
+        <span className={`telegram-status ${settings?.configured ? "ready" : "idle"}`}>{statusLabel}</span>
+      </div>
+
+      {error && <div className="notice error"><AlertTriangle size={18} />{error}</div>}
+      {message && <div className="notice success"><CheckCircle2 size={18} />{message}</div>}
+
+      <label className="switch-row">
+        <input
+          type="checkbox"
+          checked={Boolean(draft.enabled)}
+          onChange={(event) => updateTelegramDraft("enabled", event.target.checked)}
+        />
+        <span>Activar notificaciones Telegram</span>
+      </label>
+
+      <div className="settings-grid telegram-grid">
+        <label className="field">
+          <span>Bot token</span>
+          <input
+            type="password"
+            value={draft.botToken ?? ""}
+            placeholder={tokenPlaceholder}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => updateTelegramDraft("botToken", event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Chat ID</span>
+          <input
+            type="text"
+            value={draft.chatId ?? ""}
+            placeholder="123456789"
+            spellCheck={false}
+            onChange={(event) => updateTelegramDraft("chatId", event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>URL publica</span>
+          <input
+            type="url"
+            value={draft.publicUrl ?? ""}
+            placeholder="https://polybot.example.com"
+            spellCheck={false}
+            onChange={(event) => updateTelegramDraft("publicUrl", event.target.value)}
+          />
+        </label>
+      </div>
+
+      {settings?.source === "env" && (
+        <p className="telegram-note">Usando valores de .env hasta que guardes una configuracion local.</p>
+      )}
+
+      <div className="form-actions telegram-actions">
+        <button className="command" type="button" disabled={busy || testing || !settings?.configured} onClick={sendTest}>
+          <Send size={18} /> Probar
+        </button>
+        <button className="command primary" disabled={busy || testing} type="submit">
           <Save size={18} /> Guardar
         </button>
       </div>

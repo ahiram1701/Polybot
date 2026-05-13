@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisPanel, App, ControlBar, SettingsPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisPanel, App, ControlBar, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { MarketSymbol, OllamaTradeAnalysisResponse, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 
@@ -57,6 +57,7 @@ describe("UI frontend components", () => {
     }));
 
     render(<App />);
+    expect(screen.getByRole("button", { name: "Telegram" })).toBeInTheDocument();
 
     expect(screen.getByRole("button", { name: "Análisis" })).toBeInTheDocument();
   });
@@ -222,6 +223,8 @@ describe("UI frontend components", () => {
     expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
     expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
     expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
+    expect(screen.getByLabelText("Auto live Bitcoin UP")).not.toBeChecked();
+    expect(screen.getByLabelText("Tras perder Bitcoin UP")).not.toBeChecked();
   });
 
   it("allows free-form number editing in settings", () => {
@@ -237,6 +240,54 @@ describe("UI frontend components", () => {
 
     fireEvent.blur(dogeDistance);
     expect(dogeDistance).toHaveValue("0.00025");
+  });
+
+  it("saves Telegram settings and sends a test notification", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/notifications/telegram" && !init?.method) {
+        return jsonResponse({
+          enabled: false,
+          configured: false,
+          hasBotToken: false,
+          chatId: "",
+          source: "none",
+        });
+      }
+      if (path === "/api/notifications/telegram" && init?.method === "PATCH") {
+        expect(String(init.body)).toContain("123456:test_token");
+        return jsonResponse({
+          enabled: true,
+          configured: true,
+          hasBotToken: true,
+          botTokenMasked: "1234...oken",
+          chatId: "42",
+          publicUrl: "http://polybot.local:8787",
+          source: "local",
+        });
+      }
+      if (path === "/api/notifications/telegram/test" && init?.method === "POST") {
+        return jsonResponse({ ok: true, sentAtMs: 1 });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TelegramPanel />);
+
+    await screen.findByText("Desactivado");
+    fireEvent.click(screen.getByLabelText("Activar notificaciones Telegram"));
+    fireEvent.change(screen.getByLabelText("Bot token"), { target: { value: "123456:test_token" } });
+    fireEvent.change(screen.getByLabelText("Chat ID"), { target: { value: "42" } });
+    fireEvent.change(screen.getByLabelText("URL publica"), { target: { value: "http://polybot.local:8787" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    expect(await screen.findByText("Configuracion guardada.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Bot token")).toHaveValue("");
+    expect(screen.queryByDisplayValue("123456:test_token")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /probar/i }));
+    expect(await screen.findByText("Mensaje de prueba enviado.")).toBeInTheDocument();
   });
 
   it("renders strategy analysis and requests Ollama analysis", async () => {
@@ -311,6 +362,16 @@ function settings(): UiSettings {
       DOGE: { UP: 1, DOWN: 1 },
     },
     autoMinLive: true,
+    autoAdjustLiveByMarketOutcome: {
+      BTC: { UP: false, DOWN: false },
+      ETH: { UP: false, DOWN: false },
+      DOGE: { UP: false, DOWN: false },
+    },
+    autoAdjustAfterLossByMarketOutcome: {
+      BTC: { UP: false, DOWN: false },
+      ETH: { UP: false, DOWN: false },
+      DOGE: { UP: false, DOWN: false },
+    },
     maxAskPrice: 0.98,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },

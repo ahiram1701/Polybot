@@ -1,6 +1,7 @@
 import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
+  MarketOutcomeBooleanSettings,
   MarketOutcomeNumberSettings,
   MarketSymbol,
   Outcome,
@@ -66,6 +67,7 @@ export function defaultMarketDistances(overrides: Partial<MarketDistanceSettings
 }
 
 export type MarketOutcomeNumberOverrides = Partial<Record<MarketSymbol, Partial<Record<Outcome, number>>>>;
+export type MarketOutcomeBooleanOverrides = Partial<Record<MarketSymbol, Partial<Record<Outcome, boolean>>>>;
 
 export function defaultMarketOutcomeDistances(
   overrides: MarketOutcomeNumberOverrides = {},
@@ -107,6 +109,17 @@ export function defaultMarketOutcomeMaxAskPrices(
 ): MarketOutcomeNumberSettings {
   const fallback = isValidMaxAskPrice(fallbackMaxAskPrice) ? fallbackMaxAskPrice : DEFAULT_MAX_ASK_PRICE;
   return defaultMarketOutcomeNumbers(overrides, () => fallback, isValidMaxAskPrice);
+}
+
+export function defaultMarketOutcomeBooleans(
+  overrides: MarketOutcomeBooleanOverrides = {},
+  fallback = false,
+): MarketOutcomeBooleanSettings {
+  return {
+    BTC: defaultOutcomeBooleans(overrides.BTC, fallback),
+    ETH: defaultOutcomeBooleans(overrides.ETH, fallback),
+    DOGE: defaultOutcomeBooleans(overrides.DOGE, fallback),
+  };
 }
 
 export function normalizeEnabledMarkets(markets: unknown, fallback: MarketSymbol[] = ["BTC"]): MarketSymbol[] {
@@ -165,6 +178,16 @@ export function getMarketOutcomeNumber(
   return isPositiveFiniteNumber(value) ? value : fallback;
 }
 
+export function getMarketOutcomeBoolean(
+  settings: Partial<Record<MarketSymbol, Partial<Record<Outcome, boolean>>>> | undefined,
+  symbol: MarketSymbol,
+  outcome: Outcome,
+  fallback = false,
+): boolean {
+  const value = settings?.[symbol]?.[outcome];
+  return typeof value === "boolean" ? value : fallback;
+}
+
 export function getEntryWindowSeconds(
   windows: Partial<MarketEntryWindowSettings> | undefined,
   symbol: MarketSymbol,
@@ -197,6 +220,16 @@ function defaultOutcomeNumbers(
   return {
     UP: isValid(overrides?.UP) ? overrides.UP : fallbackValue,
     DOWN: isValid(overrides?.DOWN) ? overrides.DOWN : fallbackValue,
+  };
+}
+
+function defaultOutcomeBooleans(
+  overrides: Partial<Record<Outcome, boolean>> | undefined,
+  fallback: boolean,
+): Record<Outcome, boolean> {
+  return {
+    UP: typeof overrides?.UP === "boolean" ? overrides.UP : fallback,
+    DOWN: typeof overrides?.DOWN === "boolean" ? overrides.DOWN : fallback,
   };
 }
 

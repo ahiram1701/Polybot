@@ -11,7 +11,12 @@ import {
   SUPPORTED_MARKETS,
 } from "../markets.js";
 import { MarketWatcher } from "../marketWatcher.js";
-import { createNotifier, type Notifier } from "../notifier.js";
+import {
+  createDynamicNotifier,
+  TelegramNotificationStore,
+  TelegramNotifier,
+  type Notifier,
+} from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
 import { calculatePnlSummary, calculateTradePnl, EMPTY_PNL_SUMMARY } from "../pnl.js";
 import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEngine.js";
@@ -30,7 +35,16 @@ import type {
   TradeAttempt,
 } from "../types.js";
 import { BotRunner } from "../botRunner.js";
-import type { MarketStatusSnapshot, SanitizedConfig, UiEvent, UiSettings, UiStatus } from "./shared.js";
+import type {
+  MarketStatusSnapshot,
+  SanitizedConfig,
+  TelegramNotificationPatch,
+  TelegramNotificationSettings,
+  TelegramNotificationTestResponse,
+  UiEvent,
+  UiSettings,
+  UiStatus,
+} from "./shared.js";
 import { applySettings, UiSettingsStore } from "./settings.js";
 
 const DEFAULT_OLLAMA_HOST = "https://ollama.com";
@@ -90,6 +104,7 @@ export class BotController {
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
   private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
   private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
+  private readonly telegramStore: TelegramNotificationStore;
   private readonly notifier: Notifier;
   private readonly runnerFactory: (config: BotConfig) => RunnerLike;
   private readonly snapshotProvider?: () => Promise<Partial<UiStatus>>;
@@ -108,7 +123,8 @@ export class BotController {
     this.orderbook = deps.orderbook ?? OrderbookService.create(baseConfig.clobHost);
     this.priceFeed = deps.priceFeed ?? new ChainlinkPriceFeed(baseConfig.rtdsUrl);
     this.strategyAnalysisEngine = deps.strategyAnalysisEngine ?? new StrategyAnalysisEngine(baseConfig.dataDir);
-    this.notifier = deps.notifier ?? createNotifier(baseConfig);
+    this.telegramStore = new TelegramNotificationStore(baseConfig.dataDir, baseConfig, this.env);
+    this.notifier = deps.notifier ?? createDynamicNotifier(baseConfig, { fetchFn: deps.fetch, env: this.env });
     this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config));
     this.snapshotProvider = deps.snapshotProvider;
     this.fetchImpl = deps.fetch ?? fetch;
@@ -270,6 +286,37 @@ export class BotController {
       normalizedPatch.maxAskPrice = patch.maxAskPriceByMarketOutcome.BTC.UP;
     }
     return this.settingsStore.save({ ...current, ...normalizedPatch });
+  }
+
+  async getTelegramNotifications(): Promise<TelegramNotificationSettings> {
+    return this.telegramStore.loadSanitized();
+  }
+
+  async patchTelegramNotifications(patch: TelegramNotificationPatch): Promise<TelegramNotificationSettings> {
+    return this.telegramStore.save(patch);
+  }
+
+  async testTelegramNotifications(): Promise<TelegramNotificationTestResponse> {
+    const config = await this.telegramStore.loadEffective();
+    if (!config.enabled) {
+      throw new ControllerError("Telegram notifications are disabled.", 409);
+    }
+    if (!config.botToken || !config.chatId) {
+      throw new ControllerError("Telegram bot token and chat id are required.", 409);
+    }
+    const notifier = new TelegramNotifier({
+      botToken: config.botToken,
+      chatId: config.chatId,
+      publicUrl: config.publicUrl,
+      fetchFn: this.fetchImpl,
+    });
+    await notifier.notify({
+      key: `telegram-test:${Date.now()}`,
+      title: "Prueba de Telegram",
+      body: "Polybot puede enviar notificaciones.",
+      minIntervalMs: 0,
+    });
+    return { ok: true, sentAtMs: Date.now() };
   }
 
   async getStrategyAnalysis(): Promise<StrategyAnalysisResponse> {
@@ -627,6 +674,8 @@ export class BotController {
       liveTradeAmountUsd: config.liveTradeAmountUsd,
       liveTradeAmountUsdByMarketOutcome: config.liveTradeAmountUsdByMarketOutcome ?? settings.liveTradeAmountUsdByMarketOutcome,
       autoMinLive: config.autoMinLive,
+      autoAdjustLiveByMarketOutcome: config.autoAdjustLiveByMarketOutcome ?? settings.autoAdjustLiveByMarketOutcome,
+      autoAdjustAfterLossByMarketOutcome: config.autoAdjustAfterLossByMarketOutcome ?? settings.autoAdjustAfterLossByMarketOutcome,
       maxAskPrice: config.maxAskPrice,
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
       dailySpendLimitUsd: config.dailySpendLimitUsd,

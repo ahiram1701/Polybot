@@ -6,6 +6,7 @@ export type PriceFeedSymbol = "btc/usd" | "eth/usd" | "doge/usd";
 export type MarketDistanceSettings = Record<MarketSymbol, number>;
 export type MarketEntryWindowSettings = Record<MarketSymbol, number>;
 export type MarketOutcomeNumberSettings = Record<MarketSymbol, Record<Outcome, number>>;
+export type MarketOutcomeBooleanSettings = Record<MarketSymbol, Record<Outcome, boolean>>;
 export type RecommendationConfidence = "low" | "medium" | "high";
 export type AiRecommendationStatus = "insufficient_data" | "ready";
 
@@ -24,6 +25,8 @@ export interface BotConfig {
   liveTradeAmountUsd: number;
   liveTradeAmountUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
+  autoAdjustLiveByMarketOutcome?: MarketOutcomeBooleanSettings;
+  autoAdjustAfterLossByMarketOutcome?: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
   dailySpendLimitUsd: number;

@@ -278,6 +278,12 @@ h2 {
   border: 1px solid var(--danger-border);
 }
 
+.notice.success {
+  background: var(--positive-bg);
+  color: var(--positive);
+  border: 1px solid var(--border-soft);
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(280px, 1.5fr) minmax(260px, 1fr);
@@ -602,6 +608,50 @@ th {
   gap: 18px;
 }
 
+.telegram-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.telegram-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.telegram-header .section-heading {
+  margin-bottom: 0;
+}
+
+.telegram-status {
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--surface-active);
+  color: var(--muted-strong);
+}
+
+.telegram-status.ready {
+  background: var(--positive-bg);
+  color: var(--positive);
+}
+
+.telegram-grid {
+  grid-template-columns: minmax(220px, 1.1fr) minmax(160px, 0.8fr) minmax(220px, 1.1fr);
+}
+
+.telegram-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.telegram-actions {
+  gap: 8px;
+}
+
 .analysis-panel {
   display: grid;
   gap: 14px;
@@ -769,7 +819,7 @@ th {
 
 .outcome-setting-row {
   display: grid;
-  grid-template-columns: 64px repeat(5, minmax(112px, 1fr));
+  grid-template-columns: 64px repeat(5, minmax(112px, 1fr)) repeat(2, minmax(96px, auto));
   gap: 10px;
   align-items: end;
 }
@@ -811,6 +861,11 @@ th {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.compact-switch {
+  min-height: 44px;
+  padding: 8px 0;
 }
 
 .form-actions {
@@ -916,6 +971,7 @@ th {
   .market-card-grid,
   .current-strategy-grid,
   .market-settings,
+  .telegram-grid,
   .settings-grid {
     grid-template-columns: 1fr;
   }
@@ -982,6 +1038,7 @@ th {
   }
 
   .market-card-header,
+  .telegram-header,
   .table-toolbar {
     display: grid;
   }

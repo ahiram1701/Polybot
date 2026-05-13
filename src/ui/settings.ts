@@ -6,11 +6,13 @@ import {
   defaultMarketDistances,
   defaultMarketEntryWindows,
   defaultMarketOutcomeAmounts,
+  defaultMarketOutcomeBooleans,
   defaultMarketOutcomeDistances,
   defaultMarketOutcomeEntryWindows,
   defaultMarketOutcomeMaxAskPrices,
   normalizeEnabledMarkets,
   SUPPORTED_MARKETS,
+  type MarketOutcomeBooleanOverrides,
   type MarketOutcomeNumberOverrides,
 } from "../markets.js";
 import type { BotConfig, Outcome } from "../types.js";
@@ -45,6 +47,15 @@ const marketOutcomeAskPriceSchema = z.object({
   ETH: outcomeAskPriceSchema,
   DOGE: outcomeAskPriceSchema,
 });
+const outcomeBooleanSchema = z.object({
+  UP: z.boolean(),
+  DOWN: z.boolean(),
+});
+const marketOutcomeBooleanSchema = z.object({
+  BTC: outcomeBooleanSchema,
+  ETH: outcomeBooleanSchema,
+  DOGE: outcomeBooleanSchema,
+});
 
 const settingsSchema = z.object({
   minBtcDistanceUsd: z.coerce.number().positive(),
@@ -59,6 +70,8 @@ const settingsSchema = z.object({
   liveTradeAmountUsd: z.coerce.number().positive(),
   liveTradeAmountUsdByMarketOutcome: marketOutcomePositiveNumberSchema,
   autoMinLive: z.boolean(),
+  autoAdjustLiveByMarketOutcome: marketOutcomeBooleanSchema,
+  autoAdjustAfterLossByMarketOutcome: marketOutcomeBooleanSchema,
   maxAskPrice: z.coerce.number().gt(0).lte(1),
   maxAskPriceByMarketOutcome: marketOutcomeAskPriceSchema,
   dailySpendLimitUsd: z.coerce.number().positive(),
@@ -146,6 +159,8 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
       config.liveTradeAmountUsd,
     ),
     autoMinLive: config.autoMinLive,
+    autoAdjustLiveByMarketOutcome: defaultMarketOutcomeBooleans(config.autoAdjustLiveByMarketOutcome),
+    autoAdjustAfterLossByMarketOutcome: defaultMarketOutcomeBooleans(config.autoAdjustAfterLossByMarketOutcome),
     maxAskPrice: config.maxAskPrice,
     maxAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
       config.maxAskPriceByMarketOutcome,
@@ -193,6 +208,8 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
       settings.liveTradeAmountUsd,
     ),
     autoMinLive: settings.autoMinLive,
+    autoAdjustLiveByMarketOutcome: defaultMarketOutcomeBooleans(settings.autoAdjustLiveByMarketOutcome),
+    autoAdjustAfterLossByMarketOutcome: defaultMarketOutcomeBooleans(settings.autoAdjustAfterLossByMarketOutcome),
     maxAskPrice: settings.maxAskPrice,
     maxAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
       settings.maxAskPriceByMarketOutcome,
@@ -249,6 +266,12 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     marketOutcomeOverrides(settings.maxAskPriceByMarketOutcome),
     maxAskPriceFallback,
   );
+  const autoAdjustLiveByMarketOutcome = defaultMarketOutcomeBooleans(
+    marketOutcomeBooleanOverrides(settings.autoAdjustLiveByMarketOutcome),
+  );
+  const autoAdjustAfterLossByMarketOutcome = defaultMarketOutcomeBooleans(
+    marketOutcomeBooleanOverrides(settings.autoAdjustAfterLossByMarketOutcome),
+  );
 
   return {
     ...settings,
@@ -267,6 +290,8 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     simTradeAmountUsdByMarketOutcome,
     liveTradeAmountUsd: settings.liveTradeAmountUsd,
     liveTradeAmountUsdByMarketOutcome,
+    autoAdjustLiveByMarketOutcome,
+    autoAdjustAfterLossByMarketOutcome,
     maxAskPrice: settings.maxAskPrice,
     maxAskPriceByMarketOutcome,
     aiAutoApplyLive: Boolean(settings.aiAutoApplyLive),
@@ -286,11 +311,28 @@ function marketOutcomeOverrides(value: unknown): MarketOutcomeNumberOverrides {
   };
 }
 
+function marketOutcomeBooleanOverrides(value: unknown): MarketOutcomeBooleanOverrides {
+  const record = objectRecord(value);
+  return {
+    BTC: outcomeBooleanOverrides(record.BTC),
+    ETH: outcomeBooleanOverrides(record.ETH),
+    DOGE: outcomeBooleanOverrides(record.DOGE),
+  };
+}
+
 function outcomeOverrides(value: unknown): Partial<Record<Outcome, number>> {
   const record = objectRecord(value);
   return {
     UP: numberOrUndefined(record.UP),
     DOWN: numberOrUndefined(record.DOWN),
+  };
+}
+
+function outcomeBooleanOverrides(value: unknown): Partial<Record<Outcome, boolean>> {
+  const record = objectRecord(value);
+  return {
+    UP: booleanOrUndefined(record.UP),
+    DOWN: booleanOrUndefined(record.DOWN),
   };
 }
 
@@ -311,4 +353,20 @@ function askPriceOrUndefined(value: unknown): number | undefined {
 function numberOrUndefined(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function booleanOrUndefined(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return undefined;
 }

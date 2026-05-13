@@ -242,7 +242,14 @@ Si el bot esta corriendo, `Reset` primero lo detiene y despues limpia el estado 
 
 La pestana `Analisis` calcula EV historico de estrategias usando las muestras compactas de `data/analytics.jsonl`. Mientras el bot corre, Polybot guarda ticks Chainlink, quotes UP/DOWN y resultado final de los ultimos 60 segundos de cada ventana. Con esas muestras cruza mercado, lado, ventana `5..60s`, distancia minima y ask cap para estimar `EV = promedio(gano ? 1 / ask - 1 : -1)`.
 
-La tabla muestra ranking por EV, trades simulables, win rate, cobertura de quotes y drawdown. Tambien conserva las estrategias actuales por mercado/lado como referencia, pero no aplica cambios automaticos ni modifica settings.
+La tabla muestra ranking por EV, trades simulables, win rate, cobertura de quotes y drawdown. Tambien conserva las estrategias actuales por mercado/lado como referencia.
+
+En `Settings`, cada mercado/lado (`BTC UP`, `BTC DOWN`, etc.) puede activar dos autoajustes independientes:
+
+- `Auto live`: en modo live, el runner puede adoptar la mejor estrategia EV confiable para ese mercado/lado con cooldown.
+- `Tras perder`: cuando se resuelve una perdida de ese mercado/lado, el runner puede ajustar distancia, ventana y ask cap hacia la mejor estrategia EV confiable disponible.
+
+El autoajuste usa solo estrategias con EV positivo y confianza suficiente; si no hay datos confiables, no cambia la configuracion.
 
 Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud desde la misma pestana. Polybot adjunta solo contexto agregado: P&L, trades recientes resumidos, estrategias actuales y top estrategias EV. No envia credenciales, `.env` ni respuestas crudas de ordenes.
 
