@@ -15,6 +15,7 @@ export interface BotConfig {
   confirmLive: boolean;
   minBtcDistanceUsd: number;
   enabledMarkets: MarketSymbol[];
+  enabledMarketOutcomes?: MarketOutcomeBooleanSettings;
   minDistanceUsdByMarket: MarketDistanceSettings;
   minDistanceUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   entryWindowSeconds: number;

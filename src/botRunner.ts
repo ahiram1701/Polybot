@@ -394,6 +394,13 @@ export class BotRunner {
       });
       return undefined;
     }
+    if (!this.isConfiguredOutcomeEnabled(args.market.asset, winner.outcome)) {
+      this.logSkipOnce(args.market.slug, "outcome_disabled", {
+        market: args.market.asset,
+        outcome: winner.outcome,
+      });
+      return undefined;
+    }
 
     const entryWindowSeconds = this.resolveConfiguredEntryWindow(args.market.asset, winner.outcome);
     if (!isWithinEntryWindow(args.market.endMs, args.nowMs, entryWindowSeconds)) {
@@ -561,6 +568,10 @@ export class BotRunner {
       outcome,
       getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, market, this.config.entryWindowSeconds),
     );
+  }
+
+  private isConfiguredOutcomeEnabled(market: MarketSymbol, outcome: Outcome): boolean {
+    return getMarketOutcomeBoolean(this.config.enabledMarketOutcomes, market, outcome, this.config.enabledMarkets.includes(market));
   }
 
   private async getAnalyticsQuotes(

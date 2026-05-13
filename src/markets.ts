@@ -122,6 +122,22 @@ export function defaultMarketOutcomeBooleans(
   };
 }
 
+export function defaultEnabledMarketOutcomes(
+  overrides: MarketOutcomeBooleanOverrides = {},
+  fallbackMarkets: MarketSymbol[] = ["BTC"],
+): MarketOutcomeBooleanSettings {
+  const enabledMarkets = normalizeEnabledMarkets(fallbackMarkets, []);
+  return {
+    BTC: defaultOutcomeBooleans(overrides.BTC, enabledMarkets.includes("BTC")),
+    ETH: defaultOutcomeBooleans(overrides.ETH, enabledMarkets.includes("ETH")),
+    DOGE: defaultOutcomeBooleans(overrides.DOGE, enabledMarkets.includes("DOGE")),
+  };
+}
+
+export function getEnabledMarketsFromOutcomes(outcomes: MarketOutcomeBooleanSettings): MarketSymbol[] {
+  return SUPPORTED_MARKETS.filter((market) => outcomes[market].UP || outcomes[market].DOWN);
+}
+
 export function normalizeEnabledMarkets(markets: unknown, fallback: MarketSymbol[] = ["BTC"]): MarketSymbol[] {
   const items = Array.isArray(markets)
     ? markets

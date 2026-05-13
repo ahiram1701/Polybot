@@ -224,6 +224,8 @@ describe("UI frontend components", () => {
     expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
     expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
     expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
+    expect(screen.getByLabelText("Activar Bitcoin UP")).toBeChecked();
+    expect(screen.getByLabelText("Activar Ethereum UP")).not.toBeChecked();
     expect(screen.getByLabelText("Auto live Bitcoin UP")).not.toBeChecked();
     expect(screen.getByLabelText("Tras perder Bitcoin UP")).not.toBeChecked();
   });
@@ -369,6 +371,11 @@ function settings(): UiSettings {
   return {
     minBtcDistanceUsd: 20,
     enabledMarkets: ["BTC"],
+    enabledMarketOutcomes: {
+      BTC: { UP: true, DOWN: true },
+      ETH: { UP: false, DOWN: false },
+      DOGE: { UP: false, DOWN: false },
+    },
     minDistanceUsdByMarket: { BTC: 20, ETH: 5, DOGE: 0.0005 },
     minDistanceUsdByMarketOutcome: {
       BTC: { UP: 20, DOWN: 20 },

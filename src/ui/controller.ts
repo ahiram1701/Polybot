@@ -4,7 +4,10 @@ import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import { type LogEntry, logger } from "../logger.js";
 import {
+  defaultEnabledMarketOutcomes,
   getEntryWindowSeconds,
+  getEnabledMarketsFromOutcomes,
+  getMarketOutcomeBoolean,
   getMarketOutcomeNumber,
   getMinDistanceUsd,
   normalizeEnabledMarkets,
@@ -227,6 +230,15 @@ export class BotController {
     }
     const current = await this.settingsStore.load(this.baseConfig);
     const normalizedPatch = { ...patch };
+    if (patch.enabledMarkets !== undefined && patch.enabledMarketOutcomes === undefined) {
+      normalizedPatch.enabledMarketOutcomes = defaultEnabledMarketOutcomes(
+        {},
+        normalizeEnabledMarkets(patch.enabledMarkets, []),
+      );
+    }
+    if (patch.enabledMarketOutcomes !== undefined) {
+      normalizedPatch.enabledMarkets = getEnabledMarketsFromOutcomes(patch.enabledMarketOutcomes);
+    }
     if (patch.minBtcDistanceUsd !== undefined) {
       normalizedPatch.minDistanceUsdByMarket = {
         ...current.minDistanceUsdByMarket,
@@ -452,7 +464,7 @@ export class BotController {
     const trades = state.listTrades();
     const pnl = calculatePnlSummary(trades);
     const dailySpendUsd = state.getDailySpend(nowMs);
-    const enabledMarkets = normalizeEnabledMarkets(settings.enabledMarkets, []);
+    const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
 
     if (enabledMarkets.length === 0) {
       return {
@@ -543,6 +555,10 @@ export class BotController {
         tickValue: tick?.value,
         tickStale: tick ? isTickStale(tick, nowMs, settings.tickStaleMs) : false,
         inEntryWindowByOutcome,
+        enabledByOutcome: {
+          UP: this.isConfiguredOutcomeEnabled(config, marketSymbol, "UP"),
+          DOWN: this.isConfiguredOutcomeEnabled(config, marketSymbol, "DOWN"),
+        },
         secondsToEnd: secondsRemaining,
         minDistance: {
           UP: this.resolveConfiguredMinDistance(config, marketSymbol, "UP"),
@@ -559,6 +575,7 @@ export class BotController {
     tickValue?: number;
     tickStale: boolean;
     inEntryWindowByOutcome: Record<Outcome, boolean>;
+    enabledByOutcome: Record<Outcome, boolean>;
     secondsToEnd: number;
     minDistance: Record<Outcome, number>;
   }) {
@@ -579,6 +596,16 @@ export class BotController {
     const winner = getWinningOutcome(args.openingPrice, args.tickValue, args.minDistance);
     if (!winner) {
       return { market: args.market, reason: "btc_distance_below_threshold", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
+    }
+    if (!args.enabledByOutcome[winner.outcome]) {
+      return {
+        market: args.market,
+        reason: "outcome_disabled",
+        outcome: winner.outcome,
+        distanceUsd: winner.distanceUsd,
+        inEntryWindow: false,
+        secondsToEnd: args.secondsToEnd,
+      };
     }
     const inEntryWindow = args.inEntryWindowByOutcome[winner.outcome];
     if (!inEntryWindow) {
@@ -649,6 +676,10 @@ export class BotController {
     );
   }
 
+  private isConfiguredOutcomeEnabled(config: BotConfig, market: MarketSymbol, outcome: Outcome): boolean {
+    return getMarketOutcomeBoolean(config.enabledMarketOutcomes, market, outcome, config.enabledMarkets.includes(market));
+  }
+
   private buildRuntimeConfig(mode: Mode, confirmLive: boolean, settings: UiSettings): BotConfig {
     return applySettings(
       {
@@ -664,6 +695,7 @@ export class BotController {
     return {
       minBtcDistanceUsd: config.minDistanceUsdByMarket.BTC,
       enabledMarkets: config.enabledMarkets,
+      enabledMarketOutcomes: config.enabledMarketOutcomes ?? settings.enabledMarketOutcomes,
       minDistanceUsdByMarket: config.minDistanceUsdByMarket,
       minDistanceUsdByMarketOutcome: config.minDistanceUsdByMarketOutcome ?? settings.minDistanceUsdByMarketOutcome,
       entryWindowSeconds: config.entryWindowSeconds,

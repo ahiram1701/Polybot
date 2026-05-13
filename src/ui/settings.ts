@@ -4,12 +4,14 @@ import { z } from "zod";
 
 import {
   defaultMarketDistances,
+  defaultEnabledMarketOutcomes,
   defaultMarketEntryWindows,
   defaultMarketOutcomeAmounts,
   defaultMarketOutcomeBooleans,
   defaultMarketOutcomeDistances,
   defaultMarketOutcomeEntryWindows,
   defaultMarketOutcomeMaxAskPrices,
+  getEnabledMarketsFromOutcomes,
   normalizeEnabledMarkets,
   SUPPORTED_MARKETS,
   type MarketOutcomeBooleanOverrides,
@@ -60,6 +62,7 @@ const marketOutcomeBooleanSchema = z.object({
 const settingsSchema = z.object({
   minBtcDistanceUsd: z.coerce.number().positive(),
   enabledMarkets: z.array(marketSymbolSchema),
+  enabledMarketOutcomes: marketOutcomeBooleanSchema,
   minDistanceUsdByMarket: marketDistancesSchema,
   minDistanceUsdByMarketOutcome: marketOutcomePositiveNumberSchema,
   entryWindowSeconds: z.coerce.number().positive(),
@@ -99,6 +102,7 @@ export class UiSettingsStore {
       const merged = { ...defaults, ...saved };
       for (const key of [
         "entryWindowSecondsByMarket",
+        "enabledMarketOutcomes",
         "minDistanceUsdByMarketOutcome",
         "entryWindowSecondsByMarketOutcome",
         "simTradeAmountUsdByMarketOutcome",
@@ -134,9 +138,14 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     config.entryWindowSecondsByMarket,
     config.entryWindowSeconds,
   );
+  const enabledMarketOutcomes = defaultEnabledMarketOutcomes(
+    config.enabledMarketOutcomes,
+    normalizeEnabledMarkets(config.enabledMarkets),
+  );
   return {
     minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
-    enabledMarkets: normalizeEnabledMarkets(config.enabledMarkets),
+    enabledMarkets: getEnabledMarketsFromOutcomes(enabledMarketOutcomes),
+    enabledMarketOutcomes,
     minDistanceUsdByMarket,
     minDistanceUsdByMarketOutcome: defaultMarketOutcomeDistances(
       config.minDistanceUsdByMarketOutcome,
@@ -188,10 +197,15 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     settings.entryWindowSecondsByMarketOutcome,
     entryWindowSecondsByMarket,
   );
+  const enabledMarketOutcomes = defaultEnabledMarketOutcomes(
+    settings.enabledMarketOutcomes,
+    normalizeEnabledMarkets(settings.enabledMarkets, config.enabledMarkets),
+  );
   return {
     ...config,
     minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
-    enabledMarkets: normalizeEnabledMarkets(settings.enabledMarkets, config.enabledMarkets),
+    enabledMarkets: getEnabledMarketsFromOutcomes(enabledMarketOutcomes),
+    enabledMarketOutcomes,
     minDistanceUsdByMarket,
     minDistanceUsdByMarketOutcome,
     entryWindowSeconds: entryWindowSecondsByMarket.BTC,
@@ -266,6 +280,10 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     marketOutcomeOverrides(settings.maxAskPriceByMarketOutcome),
     maxAskPriceFallback,
   );
+  const enabledMarketOutcomes = defaultEnabledMarketOutcomes(
+    marketOutcomeBooleanOverrides(settings.enabledMarketOutcomes),
+    normalizeEnabledMarkets(settings.enabledMarkets),
+  );
   const autoAdjustLiveByMarketOutcome = defaultMarketOutcomeBooleans(
     marketOutcomeBooleanOverrides(settings.autoAdjustLiveByMarketOutcome),
   );
@@ -276,7 +294,8 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
   return {
     ...settings,
     minBtcDistanceUsd: distances.BTC,
-    enabledMarkets: normalizeEnabledMarkets(settings.enabledMarkets),
+    enabledMarkets: getEnabledMarketsFromOutcomes(enabledMarketOutcomes),
+    enabledMarketOutcomes,
     minDistanceUsdByMarket: {
       BTC: distances.BTC,
       ETH: distances.ETH,

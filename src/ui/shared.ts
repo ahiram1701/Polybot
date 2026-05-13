@@ -18,6 +18,7 @@ import type {
 export interface UiSettings {
   minBtcDistanceUsd: number;
   enabledMarkets: MarketSymbol[];
+  enabledMarketOutcomes: MarketOutcomeBooleanSettings;
   minDistanceUsdByMarket: MarketDistanceSettings;
   minDistanceUsdByMarketOutcome: MarketOutcomeNumberSettings;
   entryWindowSeconds: number;

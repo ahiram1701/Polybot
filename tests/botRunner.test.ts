@@ -385,6 +385,72 @@ describe("BotRunner", () => {
     );
   });
 
+  it("skips a signal when that market side is disabled", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => market),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC",
+        symbol: "btc/usd",
+        value: 80,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => ({
+        asset: "BTC",
+        slug: market.slug,
+        windowStartMs,
+        openingPrice: 100,
+        openingTickTimestampMs: windowStartMs,
+        capturedAtMs: windowStartMs,
+      })),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        enabledMarkets: ["BTC"],
+        enabledMarketOutcomes: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher,
+        orderbook: fakeOrderbook(),
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
   it("uses updated strategy settings on the next iteration", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

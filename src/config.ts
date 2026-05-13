@@ -6,10 +6,12 @@ import { z } from "zod";
 import {
   defaultMarketDistances,
   defaultMarketEntryWindows,
+  defaultEnabledMarketOutcomes,
   defaultMarketOutcomeAmounts,
   defaultMarketOutcomeDistances,
   defaultMarketOutcomeEntryWindows,
   defaultMarketOutcomeMaxAskPrices,
+  getEnabledMarketsFromOutcomes,
   normalizeEnabledMarkets,
 } from "./markets.js";
 import type { BotConfig, Mode } from "./types.js";
@@ -33,6 +35,10 @@ const optionalAskPrice = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.coerce.number().gt(0).lte(1).optional(),
 );
+const optionalBoolean = z.preprocess(
+  (value) => (value === "" || value === undefined ? undefined : String(value).toLowerCase()),
+  z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+);
 const optionalUrlString = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.string().url().optional(),
@@ -41,6 +47,12 @@ const optionalUrlString = z.preprocess(
 const envSchema = z.object({
   MODE: z.enum(["sim", "live"]).default("sim"),
   ENABLED_MARKETS: z.string().default("BTC"),
+  ENABLED_BTC_UP: optionalBoolean,
+  ENABLED_BTC_DOWN: optionalBoolean,
+  ENABLED_ETH_UP: optionalBoolean,
+  ENABLED_ETH_DOWN: optionalBoolean,
+  ENABLED_DOGE_UP: optionalBoolean,
+  ENABLED_DOGE_DOWN: optionalBoolean,
   MIN_BTC_DISTANCE_USD: z.coerce.number().positive().default(20),
   MIN_ETH_DISTANCE_USD: z.coerce.number().positive().default(5),
   MIN_DOGE_DISTANCE_USD: z.coerce.number().positive().default(0.0005),
@@ -152,6 +164,15 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
   const env = envSchema.parse(process.env);
   const cli = parseCliArgs(argv);
   const mode = cli.mode ?? env.MODE;
+  const enabledMarkets = normalizeEnabledMarkets(env.ENABLED_MARKETS);
+  const enabledMarketOutcomes = defaultEnabledMarketOutcomes(
+    {
+      BTC: { UP: env.ENABLED_BTC_UP, DOWN: env.ENABLED_BTC_DOWN },
+      ETH: { UP: env.ENABLED_ETH_UP, DOWN: env.ENABLED_ETH_DOWN },
+      DOGE: { UP: env.ENABLED_DOGE_UP, DOWN: env.ENABLED_DOGE_DOWN },
+    },
+    enabledMarkets,
+  );
   const minDistanceUsdByMarket = defaultMarketDistances({
     BTC: env.MIN_BTC_DISTANCE_USD,
     ETH: env.MIN_ETH_DISTANCE_USD,
@@ -210,7 +231,8 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     mode,
     confirmLive: cli.confirmLive,
     minBtcDistanceUsd: env.MIN_BTC_DISTANCE_USD,
-    enabledMarkets: normalizeEnabledMarkets(env.ENABLED_MARKETS),
+    enabledMarkets: getEnabledMarketsFromOutcomes(enabledMarketOutcomes),
+    enabledMarketOutcomes,
     minDistanceUsdByMarket,
     minDistanceUsdByMarketOutcome,
     entryWindowSeconds: env.ENTRY_WINDOW_SECONDS,

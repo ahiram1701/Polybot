@@ -90,7 +90,9 @@ describe("UI API", () => {
       })
       .expect(200)
       .expect((response) => {
-        expect(response.body.enabledMarkets).toEqual(["BTC", "DOGE", "ETH"]);
+        expect(response.body.enabledMarkets).toEqual(["BTC", "ETH", "DOGE"]);
+        expect(response.body.enabledMarketOutcomes.DOGE.UP).toBe(true);
+        expect(response.body.enabledMarketOutcomes.DOGE.DOWN).toBe(true);
         expect(response.body.minDistanceUsdByMarket.DOGE).toBe(0.0004);
         expect(response.body.entryWindowSecondsByMarket).toEqual({ BTC: 20, DOGE: 12, ETH: 35 });
       });
@@ -107,7 +109,36 @@ describe("UI API", () => {
 
     await request(app).patch("/api/settings").send({ enabledMarkets: [] }).expect(200).expect((response) => {
       expect(response.body.enabledMarkets).toEqual([]);
+      expect(response.body.enabledMarketOutcomes.BTC.UP).toBe(false);
+      expect(response.body.enabledMarketOutcomes.BTC.DOWN).toBe(false);
     });
+    controller.dispose();
+  });
+
+  it("patches enabled market sides from the UI", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({
+        enabledMarketOutcomes: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: true },
+          DOGE: { UP: false, DOWN: false },
+        },
+      })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.enabledMarkets).toEqual(["BTC", "ETH"]);
+        expect(response.body.enabledMarketOutcomes.BTC.UP).toBe(true);
+        expect(response.body.enabledMarketOutcomes.BTC.DOWN).toBe(false);
+        expect(response.body.enabledMarketOutcomes.ETH.DOWN).toBe(true);
+      });
     controller.dispose();
   });
 

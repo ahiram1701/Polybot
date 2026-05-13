@@ -93,6 +93,11 @@ const ollamaHistoryStorageKey = "polybot-ollama-history";
 const emptySettings: UiSettings = {
   minBtcDistanceUsd: 20,
   enabledMarkets: ["BTC"],
+  enabledMarketOutcomes: {
+    BTC: { UP: true, DOWN: true },
+    ETH: { UP: false, DOWN: false },
+    DOGE: { UP: false, DOWN: false },
+  },
   minDistanceUsdByMarket: {
     BTC: 20,
     ETH: 5,
@@ -958,16 +963,19 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
-  function toggleMarket(symbol: MarketSymbol, enabled: boolean) {
+  function toggleMarketOutcome(symbol: MarketSymbol, outcome: Outcome, enabled: boolean) {
     setDraft((current) => {
-      const enabledMarkets = enabled
-        ? [...current.enabledMarkets, symbol]
-        : current.enabledMarkets.filter((market) => market !== symbol);
+      const enabledMarketOutcomes = {
+        ...current.enabledMarketOutcomes,
+        [symbol]: {
+          ...current.enabledMarketOutcomes[symbol],
+          [outcome]: enabled,
+        },
+      };
       return {
         ...current,
-        enabledMarkets: marketOptions
-          .map((option) => option.symbol)
-          .filter((market) => enabledMarkets.includes(market)),
+        enabledMarkets: enabledMarketsFromOutcomeSettings(enabledMarketOutcomes),
+        enabledMarketOutcomes,
       };
     });
   }
@@ -1091,21 +1099,22 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
         {marketOptions.map((market) => (
           <div className="market-setting-row" key={market.symbol}>
             <div className="market-setting-header">
-              <label className="switch-row">
-                <input
-                  type="checkbox"
-                  checked={draft.enabledMarkets.includes(market.symbol)}
-                  onChange={(event) => toggleMarket(market.symbol, event.target.checked)}
-                  disabled={running}
-                />
-                <span>{market.symbol}</span>
-              </label>
+              <span className="market-code">{market.symbol}</span>
               <strong>{market.label}</strong>
             </div>
             <div className="outcome-settings-grid">
               {outcomeOptions.map((outcome) => (
                 <div className="outcome-setting-row" key={`${market.symbol}-${outcome}`}>
-                  <span className={`side ${outcome.toLowerCase()}`}>{outcome}</span>
+                  <label className="switch-row outcome-enable">
+                    <input
+                      type="checkbox"
+                      aria-label={`Activar ${market.label} ${outcome}`}
+                      checked={draft.enabledMarketOutcomes[market.symbol][outcome]}
+                      onChange={(event) => toggleMarketOutcome(market.symbol, outcome, event.target.checked)}
+                      disabled={running}
+                    />
+                    <span className={`side ${outcome.toLowerCase()}`}>{outcome}</span>
+                  </label>
                   <NumberField
                     label={`Distancia ${market.label} ${outcome}`}
                     value={draft.minDistanceUsdByMarketOutcome[market.symbol][outcome]}
@@ -1633,18 +1642,39 @@ function getMarketSnapshots(status: UiStatus | null): MarketStatusSnapshot[] {
     marketSymbol: market.symbol,
     signal: {
       market: market.symbol,
-      reason: status?.settings.enabledMarkets.includes(market.symbol) ? "market_not_found" : "disabled",
+      reason: isAnyOutcomeEnabled(status?.settings.enabledMarketOutcomes, market.symbol) ? "market_not_found" : "disabled",
       inEntryWindow: false,
     },
   }));
 }
 
 function activeMarketLine(status: UiStatus | null): string {
-  const enabled = status?.settings.enabledMarkets ?? [];
+  const enabled = enabledOutcomeLabels(status?.settings.enabledMarketOutcomes);
   if (enabled.length === 0) {
-    return "sin mercados activos";
+    return "sin lados activos";
   }
   return enabled.join(" + ");
+}
+
+function enabledMarketsFromOutcomeSettings(settings: UiSettings["enabledMarketOutcomes"]): MarketSymbol[] {
+  return marketOptions
+    .map((market) => market.symbol)
+    .filter((market) => settings[market].UP || settings[market].DOWN);
+}
+
+function enabledOutcomeLabels(settings: UiSettings["enabledMarketOutcomes"] | undefined): string[] {
+  if (!settings) {
+    return [];
+  }
+  return marketOptions.flatMap((market) =>
+    outcomeOptions
+      .filter((outcome) => settings[market.symbol][outcome])
+      .map((outcome) => `${market.symbol} ${outcome}`),
+  );
+}
+
+function isAnyOutcomeEnabled(settings: UiSettings["enabledMarketOutcomes"] | undefined, market: MarketSymbol): boolean {
+  return Boolean(settings?.[market]?.UP || settings?.[market]?.DOWN);
 }
 
 function tradeMarketLabel(trade: TradeAttempt): string {
@@ -2054,6 +2084,7 @@ function reasonLabel(reason?: string): string {
     missing_current_chainlink_tick: "Sin tick",
     stale_chainlink_tick: "Tick stale",
     btc_distance_below_threshold: "Sin distancia",
+    outcome_disabled: "Lado apagado",
     waiting_entry_window: "Esperando ventana",
     signal_ready: "Lista",
     snapshot_error: "Error snapshot",

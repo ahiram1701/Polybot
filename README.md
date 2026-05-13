@@ -145,6 +145,7 @@ POLYMARKET_FUNDER_ADDRESS=0x...
 ## Parametros Principales
 
 - `ENABLED_MARKETS=BTC`: mercados activos por defecto para CLI/UI nueva. Usa `BTC,ETH,DOGE` para activar los tres desde `.env`.
+- `ENABLED_BTC_UP=`, `ENABLED_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales para activar/desactivar cada mercado/lado. Si quedan vacios usan `ENABLED_MARKETS`.
 - `MIN_BTC_DISTANCE_USD=20`: distancia minima BTC entre precio actual y precio inicial.
 - `MIN_ETH_DISTANCE_USD=5`: distancia minima ETH entre precio actual y precio inicial.
 - `MIN_DOGE_DISTANCE_USD=0.0005`: distancia minima DOGE entre precio actual y precio inicial.
