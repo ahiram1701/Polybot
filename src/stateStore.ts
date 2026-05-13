@@ -9,6 +9,7 @@ const EMPTY_STATE: BotState = {
   openings: {},
   tradedMarkets: {},
   dailySpendUsd: {},
+  pnlResetAtMs: {},
 };
 
 export class StateStore {
@@ -34,6 +35,7 @@ export class StateStore {
         openings: parsed.openings ?? {},
         tradedMarkets: normalizeTradedMarkets(parsed.tradedMarkets ?? {}),
         dailySpendUsd: parsed.dailySpendUsd ?? {},
+        pnlResetAtMs: normalizePnlResetAtMs(parsed.pnlResetAtMs),
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -68,6 +70,11 @@ export class StateStore {
   getDailySpend(nowMs = Date.now()): number {
     this.assertLoaded();
     return this.state.dailySpendUsd[dailySpendKey(nowMs)] ?? 0;
+  }
+
+  getPnlResetAtMs(): Partial<Record<Mode, number>> {
+    this.assertLoaded();
+    return { ...(this.state.pnlResetAtMs ?? {}) };
   }
 
   getSnapshot(): BotState {
@@ -115,6 +122,16 @@ export class StateStore {
 
   async recordSimResolution(slug: string, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
     await this.recordTradeResolution(slug, resolution, "sim");
+  }
+
+  async resetPnl(mode: Mode, resetAtMs = Date.now()): Promise<void> {
+    this.assertLoaded();
+    this.state.pnlResetAtMs = {
+      ...(this.state.pnlResetAtMs ?? {}),
+      [mode]: resetAtMs,
+    };
+    await this.save();
+    await this.appendTradeEvent({ type: "pnl_reset", mode, resetAtMs });
   }
 
   private findTradeKey(slug: string, mode?: Mode): string | undefined {
@@ -177,4 +194,15 @@ function normalizeMode(mode: TradeAttempt["mode"] | undefined): Mode {
 
 function tradeStateKey(mode: Mode, slug: string): string {
   return `${mode}:${slug}`;
+}
+
+function normalizePnlResetAtMs(value: Partial<Record<Mode, number>> | undefined): Partial<Record<Mode, number>> {
+  return {
+    ...(isFiniteTimestamp(value?.sim) ? { sim: value.sim } : {}),
+    ...(isFiniteTimestamp(value?.live) ? { live: value.live } : {}),
+  };
+}
+
+function isFiniteTimestamp(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value);
 }

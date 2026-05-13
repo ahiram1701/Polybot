@@ -98,8 +98,11 @@ describe("UI frontend components", () => {
   });
 
   it("switches the dashboard P&L between sim and live", () => {
+    const onResetPnl = vi.fn();
     render(
       <Dashboard
+        busy={false}
+        onResetPnl={onResetPnl}
         status={{
           ...status({ liveReady: true }),
           pnl: pnlSummary({ realizedUsd: 0.5, payoutUsd: 3, realizedStakeUsd: 2.5 }),
@@ -115,12 +118,16 @@ describe("UI frontend components", () => {
     expect(screen.getByRole("button", { name: "Ver P&L sim" })).toHaveClass("active");
     expect(screen.getByText(/\+.*1\.00/)).toBeInTheDocument();
     expect(screen.queryByText(/\-.*0\.50/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reset P&L Sim" }));
+    expect(onResetPnl).toHaveBeenCalledWith("sim");
 
     fireEvent.click(screen.getByRole("button", { name: "Ver P&L live" }));
 
     expect(screen.getByRole("button", { name: "Ver P&L live" })).toHaveClass("active");
     expect(screen.getByText(/\-.*0\.50/)).toBeInTheDocument();
     expect(screen.queryByText(/\+.*1\.00/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reset P&L Live" }));
+    expect(onResetPnl).toHaveBeenCalledWith("live");
   });
 
   it("renders trade outcomes", () => {

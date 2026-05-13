@@ -10,6 +10,9 @@ const startRequestSchema = z.object({
   mode: z.enum(["sim", "live"]),
   confirmLive: z.boolean().optional(),
 });
+const pnlResetRequestSchema = z.object({
+  mode: z.enum(["sim", "live"]),
+});
 const ollamaAnalysisRequestSchema = z.object({
   prompt: z.string().trim().min(1),
 });
@@ -80,6 +83,11 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
 
   app.post("/api/bot/reset", asyncHandler(async (_req, res) => {
     res.json(await controller.reset());
+  }));
+
+  app.post("/api/pnl/reset", asyncHandler(async (req, res) => {
+    const body = pnlResetRequestSchema.parse(req.body ?? {});
+    res.json(await controller.resetPnl(body.mode));
   }));
 
   app.get("/api/events", (req, res) => {

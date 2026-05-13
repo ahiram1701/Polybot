@@ -42,6 +42,15 @@ describe("StateStore trade mode separation", () => {
 
     expect(reloaded.getTradedMarket(slug, "sim")?.resolved).toBeUndefined();
     expect(reloaded.getTradedMarket(slug, "live")?.resolved?.won).toBe(false);
+
+    await reloaded.resetPnl("sim", 10);
+    expect(reloaded.getPnlResetAtMs().sim).toBe(10);
+    expect(reloaded.listTrades()).toHaveLength(2);
+
+    const resetReloaded = new StateStore(dataDir);
+    await resetReloaded.load();
+    expect(resetReloaded.getPnlResetAtMs().sim).toBe(10);
+    expect(resetReloaded.listTrades()).toHaveLength(2);
   });
 });
 

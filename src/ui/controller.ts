@@ -22,8 +22,8 @@ import {
 } from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
 import {
-  calculatePnlSummary,
   calculatePnlSummaryByMode,
+  calculateResetAwarePnlSummary,
   calculateTradePnl,
   emptyPnlSummaryByMode,
   EMPTY_PNL_SUMMARY,
@@ -226,6 +226,14 @@ export class BotController {
     return this.getStatus();
   }
 
+  async resetPnl(mode: Mode): Promise<UiStatus> {
+    const state = this.stateFactory();
+    await state.load();
+    await state.resetPnl(mode);
+    logger.info("P&L reset completed.", { mode });
+    return this.getStatus();
+  }
+
   async getSettings(): Promise<UiSettings> {
     return this.settingsStore.load(this.baseConfig);
   }
@@ -353,9 +361,15 @@ export class BotController {
 
     const settings = await this.settingsStore.load(this.baseConfig);
     const analysis = await this.strategyAnalysisEngine.analyze(settings);
-    const trades = await this.getTrades(50);
-    const pnl = calculatePnlSummary(trades);
-    const pnlByMode = calculatePnlSummaryByMode(trades);
+    const state = this.stateFactory();
+    await state.load();
+    const allTrades = state.listTrades();
+    const trades = allTrades
+      .sort((left, right) => right.createdAtMs - left.createdAtMs)
+      .slice(0, 50);
+    const pnlResetAtMs = state.getPnlResetAtMs();
+    const pnl = calculateResetAwarePnlSummary(allTrades, pnlResetAtMs);
+    const pnlByMode = calculatePnlSummaryByMode(allTrades, pnlResetAtMs);
     const model = this.baseConfig.ollamaModel ?? DEFAULT_OLLAMA_MODEL;
     const host = (this.baseConfig.ollamaHost ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, "");
     const contextSummary = `${analysis.summary.sampleCount} muestras, ${analysis.strategies.length} estrategias rankeadas, ${trades.length} trades recientes.`;
@@ -472,8 +486,9 @@ export class BotController {
     const state = this.stateFactory();
     await state.load();
     const trades = state.listTrades();
-    const pnl = calculatePnlSummary(trades);
-    const pnlByMode = calculatePnlSummaryByMode(trades);
+    const pnlResetAtMs = state.getPnlResetAtMs();
+    const pnl = calculateResetAwarePnlSummary(trades, pnlResetAtMs);
+    const pnlByMode = calculatePnlSummaryByMode(trades, pnlResetAtMs);
     const dailySpendUsd = state.getDailySpend(nowMs);
     const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
 

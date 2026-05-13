@@ -51,6 +51,27 @@ describe("P&L calculations", () => {
     expect(summary.live.lostCount).toBe(1);
   });
 
+  it("ignores trades before the P&L reset timestamp for that mode", () => {
+    const oldSim = trade({ won: true, amountUsd: 1, estimatedShares: 1.25 });
+    oldSim.createdAtMs = 3;
+    const newSim = trade({ won: false, amountUsd: 2, estimatedShares: 4 });
+    newSim.createdAtMs = 5;
+    const oldLive = {
+      ...trade({ won: false, amountUsd: 3, estimatedShares: 6 }),
+      mode: "live" as const,
+      fillDetected: true,
+      filledAmountUsd: 3,
+      filledShares: 6,
+      createdAtMs: 3,
+    };
+
+    const summary = calculatePnlSummaryByMode([oldSim, newSim, oldLive], { sim: 4 });
+
+    expect(summary.sim.realizedUsd).toBeCloseTo(-2);
+    expect(summary.sim.lostCount).toBe(1);
+    expect(summary.live.realizedUsd).toBeCloseTo(-3);
+  });
+
   it("uses actual live fill amounts when available", () => {
     const pnl = calculateTradePnl({
       ...trade({ won: true, amountUsd: 10, estimatedShares: 20 }),

@@ -335,6 +335,18 @@ export function App() {
     }
   }
 
+  async function resetPnl(mode: Mode) {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await api<UiStatus>("/api/pnl/reset", { method: "POST", body: JSON.stringify({ mode }) }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -380,7 +392,7 @@ export function App() {
 
         {error && <div className="notice error"><AlertTriangle size={18} />{error}</div>}
 
-        {tab === "dashboard" && <Dashboard status={status} />}
+        {tab === "dashboard" && <Dashboard status={status} busy={busy} onResetPnl={resetPnl} />}
         {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
         {tab === "analysis" && (
           <AnalysisPanel
@@ -470,7 +482,15 @@ export function ControlBar(props: {
   );
 }
 
-export function Dashboard({ status }: { status: UiStatus | null }) {
+export function Dashboard({
+  status,
+  busy,
+  onResetPnl,
+}: {
+  status: UiStatus | null;
+  busy: boolean;
+  onResetPnl: (mode: Mode) => void;
+}) {
   const marketSnapshots = getMarketSnapshots(status);
   const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>("sim");
   const selectedPnl = status?.pnlByMode?.[selectedPnlMode];
@@ -512,7 +532,12 @@ export function Dashboard({ status }: { status: UiStatus | null }) {
             </button>
           </div>
         </div>
-        <PnlModeSummary label={selectedPnlLabel} summary={selectedPnl} />
+        <PnlModeSummary
+          label={selectedPnlLabel}
+          summary={selectedPnl}
+          busy={busy}
+          onReset={() => onResetPnl(selectedPnlMode)}
+        />
       </section>
 
       <section className="panel limits-panel">
@@ -960,14 +985,35 @@ function StrategyMiniCard({
   );
 }
 
-function PnlModeSummary({ label, summary }: { label: string; summary?: PnlSummary }) {
+function PnlModeSummary({
+  label,
+  summary,
+  busy,
+  onReset,
+}: {
+  label: string;
+  summary?: PnlSummary;
+  busy: boolean;
+  onReset: () => void;
+}) {
   return (
     <div className="pnl-mode-summary">
       <div className="pnl-mode-header">
         <span>{label}</span>
-        <strong className={`pnl-mode-net ${pnlTone(summary?.realizedUsd)}`}>
-          {formatSignedUsd(summary?.realizedUsd)}
-        </strong>
+        <div className="pnl-mode-actions">
+          <strong className={`pnl-mode-net ${pnlTone(summary?.realizedUsd)}`}>
+            {formatSignedUsd(summary?.realizedUsd)}
+          </strong>
+          <button
+            className="icon-button pnl-reset-button"
+            title={`Reset P&L ${label}`}
+            aria-label={`Reset P&L ${label}`}
+            onClick={onReset}
+            disabled={busy}
+          >
+            <RotateCcw size={16} />
+          </button>
+        </div>
       </div>
       <div className="hero-metrics pnl-metrics">
         <Metric label="Reclamado" value={formatUsd(summary?.payoutUsd)} tone={pnlTone(summary?.payoutUsd)} />

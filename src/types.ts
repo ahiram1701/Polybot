@@ -309,10 +309,12 @@ export interface BotState {
   openings: Record<string, WindowOpening>;
   tradedMarkets: Record<string, TradeAttempt>;
   dailySpendUsd: Record<string, number>;
+  pnlResetAtMs?: Partial<Record<Mode, number>>;
 }
 
 export type TradeEvent =
   | { type: "trade_attempt"; trade: TradeAttempt }
   | { type: "trade_reconciliation"; trade: TradeAttempt }
   | { type: "trade_resolution"; trade: TradeAttempt; resolution: SimResolution }
-  | { type: "sim_resolution"; trade: TradeAttempt; resolution: SimResolution };
+  | { type: "sim_resolution"; trade: TradeAttempt; resolution: SimResolution }
+  | { type: "pnl_reset"; mode: Mode; resetAtMs: number };

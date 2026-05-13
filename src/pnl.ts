@@ -24,6 +24,7 @@ export interface PnlSummary {
 }
 
 export type PnlSummaryByMode = Record<TradeAttempt["mode"], PnlSummary>;
+export type PnlResetAtMsByMode = Partial<Record<TradeAttempt["mode"], number>>;
 
 export const EMPTY_PNL_SUMMARY: PnlSummary = {
   realizedUsd: 0,
@@ -153,11 +154,23 @@ export function calculatePnlSummary(trades: TradeAttempt[]): PnlSummary {
   return summary;
 }
 
-export function calculatePnlSummaryByMode(trades: TradeAttempt[]): PnlSummaryByMode {
+export function calculatePnlSummaryByMode(trades: TradeAttempt[], resetAtMsByMode: PnlResetAtMsByMode = {}): PnlSummaryByMode {
+  const pnlTrades = filterTradesForPnlReset(trades, resetAtMsByMode);
   return {
-    sim: calculatePnlSummary(trades.filter((trade) => trade.mode === "sim")),
-    live: calculatePnlSummary(trades.filter((trade) => trade.mode === "live")),
+    sim: calculatePnlSummary(pnlTrades.filter((trade) => trade.mode === "sim")),
+    live: calculatePnlSummary(pnlTrades.filter((trade) => trade.mode === "live")),
   };
+}
+
+export function calculateResetAwarePnlSummary(trades: TradeAttempt[], resetAtMsByMode: PnlResetAtMsByMode = {}): PnlSummary {
+  return calculatePnlSummary(filterTradesForPnlReset(trades, resetAtMsByMode));
+}
+
+export function filterTradesForPnlReset(trades: TradeAttempt[], resetAtMsByMode: PnlResetAtMsByMode = {}): TradeAttempt[] {
+  return trades.filter((trade) => {
+    const resetAtMs = resetAtMsByMode[trade.mode];
+    return resetAtMs === undefined || trade.createdAtMs > resetAtMs;
+  });
 }
 
 function sanitizeUsd(value: number | undefined): number {

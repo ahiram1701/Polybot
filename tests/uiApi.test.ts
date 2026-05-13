@@ -5,7 +5,8 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StrategyAnalysisEngine } from "../src/strategyAnalysisEngine.js";
-import type { BotConfig, StrategyAnalysisResponse, StrategyCandidate } from "../src/types.js";
+import { StateStore } from "../src/stateStore.js";
+import type { BotConfig, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 import { BotController, type RunnerLike } from "../src/ui/controller.js";
 import { createUiApp } from "../src/ui/server.js";
 import type { UiStatus } from "../src/ui/shared.js";
@@ -341,6 +342,27 @@ describe("UI API", () => {
     });
     controller.dispose();
   });
+
+  it("resets dashboard P&L for one mode without clearing trades", async () => {
+    const config = await baseConfig(false);
+    const seedState = new StateStore(config.dataDir);
+    await seedState.load();
+    await seedState.recordTradeAttempt(apiTrade());
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).post("/api/pnl/reset").send({ mode: "sim" }).expect(200);
+
+    const state = new StateStore(config.dataDir);
+    await state.load();
+    expect(state.getPnlResetAtMs().sim).toEqual(expect.any(Number));
+    expect(state.listTrades()).toHaveLength(1);
+    controller.dispose();
+  });
 });
 
 async function baseConfig(withSecrets: boolean, overrides: Partial<BotConfig> = {}): Promise<BotConfig> {
@@ -429,5 +451,27 @@ function analysisResponse(): StrategyAnalysisResponse {
       bestReliableEvRoi: 0.25,
       bestReliableTradeCount: 5,
     },
+  };
+}
+
+function apiTrade(): TradeAttempt {
+  return {
+    id: "api-trade",
+    asset: "BTC",
+    slug: "btc-updown-5m-api",
+    mode: "sim",
+    outcome: "UP",
+    tokenId: "token",
+    amountUsd: 1,
+    maxAskPrice: 0.98,
+    bestAsk: 0.5,
+    estimatedShares: 2,
+    openingPrice: 100,
+    entryPrice: 125,
+    distanceUsd: 25,
+    entryWindowSeconds: 20,
+    windowStartMs: 1,
+    endMs: 2,
+    createdAtMs: 3,
   };
 }
