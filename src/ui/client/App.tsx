@@ -29,10 +29,11 @@ import {
 import { type FormEvent, useEffect, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
-import { calculateTradePnl, type TradePnl } from "../../pnl.js";
+import { calculateTradePnl, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import type {
   MarketSymbol,
+  Mode,
   OllamaTradeAnalysisResponse,
   Outcome,
   StrategyAnalysisResponse,
@@ -469,8 +470,11 @@ export function ControlBar(props: {
   );
 }
 
-function Dashboard({ status }: { status: UiStatus | null }) {
+export function Dashboard({ status }: { status: UiStatus | null }) {
   const marketSnapshots = getMarketSnapshots(status);
+  const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>("sim");
+  const selectedPnl = status?.pnlByMode?.[selectedPnlMode];
+  const selectedPnlLabel = selectedPnlMode === "sim" ? "Sim" : "Live";
   return (
     <div className="dashboard-grid">
       <section className="panel hero-panel markets-panel">
@@ -486,17 +490,29 @@ function Dashboard({ status }: { status: UiStatus | null }) {
       </section>
 
       <section className="panel pnl-panel">
-        <div className="section-heading">
-          <DollarSign size={18} />
-          <h2>P&L</h2>
+        <div className="section-heading pnl-heading">
+          <div className="section-title">
+            <DollarSign size={18} />
+            <h2>P&L</h2>
+          </div>
+          <div className="segmented-control pnl-mode-toggle" role="group" aria-label="Modo de P&L">
+            <button
+              aria-label="Ver P&L sim"
+              className={`segment-button ${selectedPnlMode === "sim" ? "active" : ""}`}
+              onClick={() => setSelectedPnlMode("sim")}
+            >
+              Sim
+            </button>
+            <button
+              aria-label="Ver P&L live"
+              className={`segment-button ${selectedPnlMode === "live" ? "active" : ""}`}
+              onClick={() => setSelectedPnlMode("live")}
+            >
+              Live
+            </button>
+          </div>
         </div>
-        <div className="hero-metrics pnl-metrics">
-          <Metric label="Neto" value={formatSignedUsd(status?.pnl.realizedUsd)} tone={pnlTone(status?.pnl.realizedUsd)} />
-          <Metric label="Reclamado" value={formatUsd(status?.pnl.payoutUsd)} tone={pnlTone(status?.pnl.payoutUsd)} />
-          <Metric label="Invertido" value={formatUsd(status?.pnl.realizedStakeUsd)} />
-          <Metric label="Pendiente" value={formatUsd(status?.pnl.pendingStakeUsd)} />
-          <Metric label="ROI" value={formatPercent(status?.pnl.roiPct)} tone={pnlTone(status?.pnl.realizedUsd)} />
-        </div>
+        <PnlModeSummary label={selectedPnlLabel} summary={selectedPnl} />
       </section>
 
       <section className="panel limits-panel">
@@ -941,6 +957,25 @@ function StrategyMiniCard({
         ].join(" / ")}
       </small>
     </article>
+  );
+}
+
+function PnlModeSummary({ label, summary }: { label: string; summary?: PnlSummary }) {
+  return (
+    <div className="pnl-mode-summary">
+      <div className="pnl-mode-header">
+        <span>{label}</span>
+        <strong className={`pnl-mode-net ${pnlTone(summary?.realizedUsd)}`}>
+          {formatSignedUsd(summary?.realizedUsd)}
+        </strong>
+      </div>
+      <div className="hero-metrics pnl-metrics">
+        <Metric label="Reclamado" value={formatUsd(summary?.payoutUsd)} tone={pnlTone(summary?.payoutUsd)} />
+        <Metric label="Invertido" value={formatUsd(summary?.realizedStakeUsd)} />
+        <Metric label="Pendiente" value={formatUsd(summary?.pendingStakeUsd)} />
+        <Metric label="ROI" value={formatPercent(summary?.roiPct)} tone={pnlTone(summary?.realizedUsd)} />
+      </div>
+    </div>
   );
 }
 

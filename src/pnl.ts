@@ -23,6 +23,8 @@ export interface PnlSummary {
   roiPct?: number;
 }
 
+export type PnlSummaryByMode = Record<TradeAttempt["mode"], PnlSummary>;
+
 export const EMPTY_PNL_SUMMARY: PnlSummary = {
   realizedUsd: 0,
   realizedStakeUsd: 0,
@@ -34,6 +36,13 @@ export const EMPTY_PNL_SUMMARY: PnlSummary = {
   wonCount: 0,
   lostCount: 0,
 };
+
+export function emptyPnlSummaryByMode(): PnlSummaryByMode {
+  return {
+    sim: { ...EMPTY_PNL_SUMMARY },
+    live: { ...EMPTY_PNL_SUMMARY },
+  };
+}
 
 export function calculateTradePnl(trade: TradeAttempt): TradePnl {
   const stakeUsd = getStakeUsd(trade);
@@ -142,6 +151,13 @@ export function calculatePnlSummary(trades: TradeAttempt[]): PnlSummary {
 
   summary.roiPct = summary.realizedStakeUsd > 0 ? summary.realizedUsd / summary.realizedStakeUsd : undefined;
   return summary;
+}
+
+export function calculatePnlSummaryByMode(trades: TradeAttempt[]): PnlSummaryByMode {
+  return {
+    sim: calculatePnlSummary(trades.filter((trade) => trade.mode === "sim")),
+    live: calculatePnlSummary(trades.filter((trade) => trade.mode === "live")),
+  };
 }
 
 function sanitizeUsd(value: number | undefined): number {

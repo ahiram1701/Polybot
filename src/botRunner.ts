@@ -352,7 +352,7 @@ export class BotRunner {
     nowMs: number;
     reservedDailySpendUsd: number;
   }): TradeSignal | undefined {
-    if (this.deps.state.hasTraded(args.market.slug)) {
+    if (this.deps.state.hasTraded(args.market.slug, this.config.mode)) {
       this.logSkipOnce(args.market.slug, "market_already_traded");
       return undefined;
     }
@@ -729,7 +729,7 @@ export class BotRunner {
       if (!resolution) {
         continue;
       }
-      await this.deps.state.recordTradeResolution(trade.slug, resolution);
+      await this.deps.state.recordTradeResolution(trade.slug, resolution, trade.mode);
       logger.info("Resolved trade.", {
         mode: trade.mode,
         slug: trade.slug,

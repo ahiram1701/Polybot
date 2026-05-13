@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type { BotState, TradeAttempt, TradeEvent, WindowOpening } from "./types.js";
+import type { BotState, Mode, TradeAttempt, TradeEvent, WindowOpening } from "./types.js";
 import { dailySpendKey } from "./time.js";
 
 const EMPTY_STATE: BotState = {
@@ -32,7 +32,7 @@ export class StateStore {
       this.state = {
         version: 1,
         openings: parsed.openings ?? {},
-        tradedMarkets: parsed.tradedMarkets ?? {},
+        tradedMarkets: normalizeTradedMarkets(parsed.tradedMarkets ?? {}),
         dailySpendUsd: parsed.dailySpendUsd ?? {},
       };
     } catch (error) {
@@ -49,14 +49,15 @@ export class StateStore {
     return this.state.openings[slug];
   }
 
-  hasTraded(slug: string): boolean {
+  hasTraded(slug: string, mode?: Mode): boolean {
     this.assertLoaded();
-    return this.state.tradedMarkets[slug] !== undefined;
+    return this.findTradeKey(slug, mode) !== undefined;
   }
 
-  getTradedMarket(slug: string): TradeAttempt | undefined {
+  getTradedMarket(slug: string, mode?: Mode): TradeAttempt | undefined {
     this.assertLoaded();
-    return this.state.tradedMarkets[slug];
+    const key = this.findTradeKey(slug, mode);
+    return key ? this.state.tradedMarkets[key] : undefined;
   }
 
   listTrades(): TradeAttempt[] {
@@ -82,7 +83,7 @@ export class StateStore {
 
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    this.state.tradedMarkets[trade.slug] = trade;
+    this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug)] = trade;
     const key = dailySpendKey(trade.createdAtMs);
     this.state.dailySpendUsd[key] = (this.state.dailySpendUsd[key] ?? 0) + trade.amountUsd;
     await this.save();
@@ -91,17 +92,19 @@ export class StateStore {
 
   async recordTradeReconciliation(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    if (!this.state.tradedMarkets[trade.slug]) {
+    const key = this.findTradeKey(trade.slug, trade.mode);
+    if (!key) {
       return;
     }
-    this.state.tradedMarkets[trade.slug] = trade;
+    this.state.tradedMarkets[key] = trade;
     await this.save();
     await this.appendTradeEvent({ type: "trade_reconciliation", trade });
   }
 
-  async recordTradeResolution(slug: string, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
+  async recordTradeResolution(slug: string, resolution: NonNullable<TradeAttempt["resolved"]>, mode?: Mode): Promise<void> {
     this.assertLoaded();
-    const trade = this.state.tradedMarkets[slug];
+    const key = this.findTradeKey(slug, mode);
+    const trade = key ? this.state.tradedMarkets[key] : undefined;
     if (!trade) {
       return;
     }
@@ -111,7 +114,20 @@ export class StateStore {
   }
 
   async recordSimResolution(slug: string, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
-    await this.recordTradeResolution(slug, resolution);
+    await this.recordTradeResolution(slug, resolution, "sim");
+  }
+
+  private findTradeKey(slug: string, mode?: Mode): string | undefined {
+    const preferredKey = mode ? tradeStateKey(mode, slug) : undefined;
+    if (preferredKey && this.state.tradedMarkets[preferredKey]) {
+      return preferredKey;
+    }
+    const legacyTrade = this.state.tradedMarkets[slug];
+    if (legacyTrade && (!mode || legacyTrade.mode === mode)) {
+      return slug;
+    }
+    return Object.entries(this.state.tradedMarkets)
+      .find(([, trade]) => trade.slug === slug && (!mode || trade.mode === mode))?.[0];
   }
 
   async reset(): Promise<void> {
@@ -139,4 +155,26 @@ export class StateStore {
       throw new Error("StateStore.load() must be called before use.");
     }
   }
+}
+
+function normalizeTradedMarkets(tradedMarkets: Record<string, TradeAttempt>): Record<string, TradeAttempt> {
+  const normalized: Record<string, TradeAttempt> = {};
+  for (const trade of Object.values(tradedMarkets)) {
+    if (!trade?.slug) {
+      continue;
+    }
+    normalized[tradeStateKey(normalizeMode(trade.mode), trade.slug)] = {
+      ...trade,
+      mode: normalizeMode(trade.mode),
+    };
+  }
+  return normalized;
+}
+
+function normalizeMode(mode: TradeAttempt["mode"] | undefined): Mode {
+  return mode === "live" ? "live" : "sim";
+}
+
+function tradeStateKey(mode: Mode, slug: string): string {
+  return `${mode}:${slug}`;
 }

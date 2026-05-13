@@ -1068,6 +1068,7 @@ describe("BotRunner", () => {
     expect(state.recordTradeResolution).toHaveBeenCalledWith(
       lostTrade.slug,
       expect.objectContaining({ won: false, winningOutcome: "DOWN" }),
+      "sim",
     );
     expect(strategyAnalysisEngine.analyze).toHaveBeenCalledTimes(1);
     expect(executor.execute).toHaveBeenCalledWith(
@@ -1145,6 +1146,7 @@ describe("BotRunner", () => {
     expect(state.recordTradeResolution).toHaveBeenCalledWith(
       trade.slug,
       expect.objectContaining({ won }),
+      "sim",
     );
     expect(notifier.notify).toHaveBeenCalledWith(
       expect.objectContaining({

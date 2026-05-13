@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisPanel, App, ControlBar, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisPanel, App, ControlBar, Dashboard, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { MarketSymbol, OllamaTradeAnalysisResponse, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 
@@ -95,6 +95,32 @@ describe("UI frontend components", () => {
     );
 
     expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
+  });
+
+  it("switches the dashboard P&L between sim and live", () => {
+    render(
+      <Dashboard
+        status={{
+          ...status({ liveReady: true }),
+          pnl: pnlSummary({ realizedUsd: 0.5, payoutUsd: 3, realizedStakeUsd: 2.5 }),
+          pnlByMode: {
+            sim: pnlSummary({ realizedUsd: 1, payoutUsd: 2, realizedStakeUsd: 1 }),
+            live: pnlSummary({ realizedUsd: -0.5, payoutUsd: 1, realizedStakeUsd: 1.5, pendingStakeUsd: 2 }),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "P&L" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ver P&L sim" })).toHaveClass("active");
+    expect(screen.getByText(/\+.*1\.00/)).toBeInTheDocument();
+    expect(screen.queryByText(/\-.*0\.50/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver P&L live" }));
+
+    expect(screen.getByRole("button", { name: "Ver P&L live" })).toHaveClass("active");
+    expect(screen.getByText(/\-.*0\.50/)).toBeInTheDocument();
+    expect(screen.queryByText(/\+.*1\.00/)).not.toBeInTheDocument();
   });
 
   it("renders trade outcomes", () => {
@@ -504,7 +530,26 @@ function status(args: { liveReady: boolean }): UiStatus {
       wonCount: 0,
       lostCount: 0,
     },
+    pnlByMode: {
+      sim: pnlSummary({}),
+      live: pnlSummary({}),
+    },
     logs: [],
+  };
+}
+
+function pnlSummary(overrides: Partial<UiStatus["pnl"]>): UiStatus["pnl"] {
+  return {
+    realizedUsd: 0,
+    realizedStakeUsd: 0,
+    payoutUsd: 0,
+    pendingStakeUsd: 0,
+    totalStakeUsd: 0,
+    resolvedCount: 0,
+    pendingCount: 0,
+    wonCount: 0,
+    lostCount: 0,
+    ...overrides,
   };
 }
 

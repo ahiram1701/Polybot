@@ -21,7 +21,13 @@ import {
   type Notifier,
 } from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
-import { calculatePnlSummary, calculateTradePnl, EMPTY_PNL_SUMMARY } from "../pnl.js";
+import {
+  calculatePnlSummary,
+  calculatePnlSummaryByMode,
+  calculateTradePnl,
+  emptyPnlSummaryByMode,
+  EMPTY_PNL_SUMMARY,
+} from "../pnl.js";
 import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEngine.js";
 import { StateStore } from "../stateStore.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
@@ -349,6 +355,7 @@ export class BotController {
     const analysis = await this.strategyAnalysisEngine.analyze(settings);
     const trades = await this.getTrades(50);
     const pnl = calculatePnlSummary(trades);
+    const pnlByMode = calculatePnlSummaryByMode(trades);
     const model = this.baseConfig.ollamaModel ?? DEFAULT_OLLAMA_MODEL;
     const host = (this.baseConfig.ollamaHost ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, "");
     const contextSummary = `${analysis.summary.sampleCount} muestras, ${analysis.strategies.length} estrategias rankeadas, ${trades.length} trades recientes.`;
@@ -357,6 +364,7 @@ export class BotController {
       topStrategies: analysis.strategies.slice(0, 12).map(summarizeStrategyCandidate),
       currentStrategies: analysis.currentStrategies.map(summarizeStrategyCandidate),
       pnl,
+      pnlByMode,
       recentTrades: trades.slice(0, 25).map(summarizeTrade),
     };
 
@@ -430,6 +438,7 @@ export class BotController {
         markets: [],
         dailySpendUsd: 0,
         pnl: EMPTY_PNL_SUMMARY,
+        pnlByMode: emptyPnlSummaryByMode(),
         snapshotError: error instanceof Error ? error.message : String(error),
       };
     }
@@ -448,6 +457,7 @@ export class BotController {
       signal: snapshot.signal ?? primaryMarket?.signal ?? { reason: "no_market", inEntryWindow: false },
       dailySpendUsd: snapshot.dailySpendUsd ?? 0,
       pnl: snapshot.pnl ?? EMPTY_PNL_SUMMARY,
+      pnlByMode: snapshot.pnlByMode ?? emptyPnlSummaryByMode(),
       logs: [...this.logs].reverse(),
       market: primaryMarket?.market ?? snapshot.market,
       opening: primaryMarket?.opening ?? snapshot.opening,
@@ -463,6 +473,7 @@ export class BotController {
     await state.load();
     const trades = state.listTrades();
     const pnl = calculatePnlSummary(trades);
+    const pnlByMode = calculatePnlSummaryByMode(trades);
     const dailySpendUsd = state.getDailySpend(nowMs);
     const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
 
@@ -471,6 +482,7 @@ export class BotController {
         markets: [],
         dailySpendUsd,
         pnl,
+        pnlByMode,
         signal: { reason: "no_markets_enabled", inEntryWindow: false },
       };
     }
@@ -488,6 +500,7 @@ export class BotController {
       quotes: primaryMarket?.quotes,
       dailySpendUsd,
       pnl,
+      pnlByMode,
       signal: primaryMarket?.signal ?? { reason: "market_not_found", inEntryWindow: false },
     };
   }

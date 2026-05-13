@@ -1,5 +1,5 @@
 import type { LogEntry } from "../logger.js";
-import type { PnlSummary } from "../pnl.js";
+import type { PnlSummary, PnlSummaryByMode } from "../pnl.js";
 import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
@@ -91,6 +91,7 @@ export interface UiStatus {
   signal: SignalSnapshot;
   dailySpendUsd: number;
   pnl: PnlSummary;
+  pnlByMode: PnlSummaryByMode;
   logs: LogEntry[];
   snapshotError?: string;
 }

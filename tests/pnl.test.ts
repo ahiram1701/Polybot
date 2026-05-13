@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { calculatePnlSummary, calculateTradePnl } from "../src/pnl.js";
+import { calculatePnlSummary, calculatePnlSummaryByMode, calculateTradePnl } from "../src/pnl.js";
 import type { TradeAttempt } from "../src/types.js";
 
 describe("P&L calculations", () => {
@@ -31,6 +31,24 @@ describe("P&L calculations", () => {
     expect(summary.lostCount).toBe(1);
     expect(summary.pendingCount).toBe(1);
     expect(summary.roiPct).toBeCloseTo(-0.6);
+  });
+
+  it("summarizes simulated and live P&L separately", () => {
+    const summary = calculatePnlSummaryByMode([
+      trade({ won: true, amountUsd: 1, estimatedShares: 1.25 }),
+      {
+        ...trade({ won: false, amountUsd: 2, estimatedShares: 4 }),
+        mode: "live",
+        fillDetected: true,
+        filledAmountUsd: 2,
+        filledShares: 4,
+      },
+    ]);
+
+    expect(summary.sim.realizedUsd).toBeCloseTo(0.25);
+    expect(summary.sim.wonCount).toBe(1);
+    expect(summary.live.realizedUsd).toBeCloseTo(-2);
+    expect(summary.live.lostCount).toBe(1);
   });
 
   it("uses actual live fill amounts when available", () => {
