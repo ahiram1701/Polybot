@@ -764,6 +764,18 @@ th {
   background: var(--surface-muted);
 }
 
+.ollama-history {
+  display: grid;
+  gap: 10px;
+}
+
+.ollama-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .ollama-result strong,
 .ollama-result span {
   display: block;
@@ -783,6 +795,11 @@ th {
   color: var(--muted-strong);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.compact-command {
+  min-height: 36px;
+  padding: 6px 10px;
 }
 
 .market-settings {

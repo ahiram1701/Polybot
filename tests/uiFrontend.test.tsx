@@ -10,6 +10,7 @@ import type { MarketSymbol, OllamaTradeAnalysisResponse, StrategyAnalysisRespons
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -314,6 +315,38 @@ describe("UI frontend components", () => {
 
     await waitFor(() => expect(onAnalyze).toHaveBeenCalledWith(expect.stringContaining("riesgos")));
     expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
+  });
+
+  it("keeps Ollama responses until the user deletes them", async () => {
+    const onAnalyze = vi.fn(async () => ollamaResponse());
+    const firstRender = render(
+      <AnalysisPanel
+        analysis={analysisResponse()}
+        busy={false}
+        onRefresh={vi.fn(async () => undefined)}
+        onAnalyze={onAnalyze}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Prompt Ollama"), { target: { value: "guarda esta respuesta" } });
+    fireEvent.click(screen.getByRole("button", { name: "Analizar con Ollama" }));
+    expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
+
+    firstRender.unmount();
+    render(
+      <AnalysisPanel
+        analysis={analysisResponse()}
+        busy={false}
+        onRefresh={vi.fn(async () => undefined)}
+        onAnalyze={onAnalyze}
+      />,
+    );
+
+    expect(screen.getByText("Tesis: EV positivo.")).toBeInTheDocument();
+    expect(screen.getByText("Prompt: guarda esta respuesta")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Borrar respuesta Ollama/i }));
+    expect(screen.queryByText("Tesis: EV positivo.")).not.toBeInTheDocument();
   });
 
   it("does not render removed AI recommendation controls", () => {

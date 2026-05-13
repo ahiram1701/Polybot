@@ -22,6 +22,7 @@ import {
   Sun,
   Table2,
   Terminal,
+  Trash2,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
@@ -80,7 +81,14 @@ interface StrategySortState {
   direction: StrategySortDirection;
 }
 
+interface OllamaHistoryEntry {
+  id: string;
+  prompt: string;
+  result: OllamaTradeAnalysisResponse;
+}
+
 const themeStorageKey = "polybot-theme";
+const ollamaHistoryStorageKey = "polybot-ollama-history";
 
 const emptySettings: UiSettings = {
   minBtcDistanceUsd: 20,
@@ -522,7 +530,7 @@ export function AnalysisPanel({
   const [qualityFilter, setQualityFilter] = useState<StrategyQualityFilter>("RELIABLE");
   const [sortState, setSortState] = useState<StrategySortState>({ key: "evRoi", direction: "desc" });
   const [prompt, setPrompt] = useState("");
-  const [ollamaResult, setOllamaResult] = useState<OllamaTradeAnalysisResponse | null>(null);
+  const [ollamaHistory, setOllamaHistory] = useState<OllamaHistoryEntry[]>(() => loadOllamaHistory());
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const strategies = qualityFilter === "CURRENT" ? analysis?.currentStrategies ?? [] : analysis?.strategies ?? [];
   const bestReliableByOutcome = bestReliableStrategyByOutcome(analysis?.strategies ?? []);
@@ -530,6 +538,10 @@ export function AnalysisPanel({
     matchesStrategyFilters(strategy, marketFilter, outcomeFilter, qualityFilter),
   );
   const visibleStrategies = sortStrategies(filteredStrategies, sortState);
+
+  useEffect(() => {
+    saveOllamaHistory(ollamaHistory);
+  }, [ollamaHistory]);
 
   function toggleSort(key: StrategySortKey) {
     setSortState((current) => ({
@@ -546,10 +558,22 @@ export function AnalysisPanel({
     }
     setOllamaError(null);
     try {
-      setOllamaResult(await onAnalyze(trimmed));
+      const result = await onAnalyze(trimmed);
+      setOllamaHistory((current) => [
+        {
+          id: createOllamaHistoryId(result),
+          prompt: trimmed,
+          result,
+        },
+        ...current,
+      ]);
     } catch (caught) {
       setOllamaError(caught instanceof Error ? caught.message : String(caught));
     }
+  }
+
+  function deleteOllamaEntry(id: string) {
+    setOllamaHistory((current) => current.filter((entry) => entry.id !== id));
   }
 
   return (
@@ -725,14 +749,30 @@ export function AnalysisPanel({
           </button>
         </div>
         {ollamaError && <div className="notice error"><AlertTriangle size={18} />{ollamaError}</div>}
-        {ollamaResult && (
-          <article className="ollama-result">
-            <div>
-              <strong>{ollamaResult.model}</strong>
-              <span>{ollamaResult.contextSummary}</span>
-            </div>
-            <p>{ollamaResult.content}</p>
-          </article>
+        {ollamaHistory.length > 0 && (
+          <div className="ollama-history" aria-label="Respuestas guardadas de Ollama">
+            {ollamaHistory.map((entry) => (
+              <article className="ollama-result" key={entry.id}>
+                <div className="ollama-result-header">
+                  <div>
+                    <strong>{entry.result.model}</strong>
+                    <span>{new Date(entry.result.generatedAtMs).toLocaleString()}</span>
+                    <span>{entry.result.contextSummary}</span>
+                    <span>Prompt: {entry.prompt}</span>
+                  </div>
+                  <button
+                    className="command danger compact-command"
+                    type="button"
+                    onClick={() => deleteOllamaEntry(entry.id)}
+                    aria-label={`Borrar respuesta Ollama ${new Date(entry.result.generatedAtMs).toLocaleString()}`}
+                  >
+                    <Trash2 size={16} /> Borrar
+                  </button>
+                </div>
+                <p>{entry.result.content}</p>
+              </article>
+            ))}
+          </div>
         )}
       </div>
     </section>
@@ -1525,6 +1565,52 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload.error ?? `HTTP ${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+function loadOllamaHistory(): OllamaHistoryEntry[] {
+  try {
+    const raw = window.localStorage.getItem(ollamaHistoryStorageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isOllamaHistoryEntry) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOllamaHistory(entries: OllamaHistoryEntry[]): void {
+  try {
+    if (entries.length === 0) {
+      window.localStorage.removeItem(ollamaHistoryStorageKey);
+      return;
+    }
+    window.localStorage.setItem(ollamaHistoryStorageKey, JSON.stringify(entries));
+  } catch {
+    // Keeping the in-memory response is still better than interrupting analysis rendering.
+  }
+}
+
+function createOllamaHistoryId(result: OllamaTradeAnalysisResponse): string {
+  return `${result.generatedAtMs}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isOllamaHistoryEntry(value: unknown): value is OllamaHistoryEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const entry = value as Partial<OllamaHistoryEntry>;
+  const result = entry.result as Partial<OllamaTradeAnalysisResponse> | undefined;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.prompt === "string" &&
+    Boolean(result) &&
+    typeof result?.generatedAtMs === "number" &&
+    typeof result?.model === "string" &&
+    typeof result?.content === "string" &&
+    typeof result?.contextSummary === "string"
+  );
 }
 
 function getMarketSnapshots(status: UiStatus | null): MarketStatusSnapshot[] {
