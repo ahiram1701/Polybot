@@ -655,6 +655,297 @@ describe("BotRunner", () => {
     );
   });
 
+  it("blocks live trades that fail the conservative EV gate", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () =>
+        strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
+          tradeCount: 10,
+          winCount: 8,
+          lossCount: 2,
+        })),
+      ),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "live",
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.9),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(strategyAnalysisEngine.analyze).toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
+  it("executes live trades when adjusted probability and EV clear the gate", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "live" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        expectedValue: input.expectedValue,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () =>
+        strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
+          tradeCount: 10,
+          winCount: 9,
+          lossCount: 1,
+        })),
+      ),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "live",
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.7),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedValue: expect.objectContaining({
+          askPrice: 0.7,
+          adjustedWinProbability: 10 / 12,
+          passesRecommendedEntry: true,
+        }),
+      }),
+    );
+    expect(state.recordTradeAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedValue: expect.objectContaining({ passesRecommendedEntry: true }),
+      }),
+    );
+  });
+
+  it("does not block simulation trades with the conservative live gate", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+
+    const runner = new BotRunner(
+      baseConfig(),
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.9),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).toHaveBeenCalled();
+    expect(state.recordTradeAttempt).toHaveBeenCalled();
+  });
+
+  it("blocks live trades with no exact strategy history at normal asks", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () =>
+        strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
+          tradeCount: 0,
+          winCount: 0,
+          lossCount: 0,
+        })),
+      ),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "live",
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.9),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
   it("auto-adjusts an enabled side after a resolved loss", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -1087,6 +1378,20 @@ function fakePriceFeed(): ChainlinkPriceFeed {
   } as unknown as ChainlinkPriceFeed;
 }
 
+function livePriceFeed(market: MarketSymbol, value: number, nowMs: number): ChainlinkPriceFeed {
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    getLatestTick: vi.fn(() => ({
+      market,
+      symbol: priceFeedSymbol(market),
+      value,
+      timestampMs: nowMs,
+      receivedAtMs: nowMs,
+    })),
+  } as unknown as ChainlinkPriceFeed;
+}
+
 function fakeState(): StateStore {
   return {
     load: vi.fn(async () => undefined),
@@ -1100,14 +1405,14 @@ function fakeReconciler(): TradeReconciler {
   };
 }
 
-function fakeOrderbook(): OrderbookService {
+function fakeOrderbook(bestAsk = 0.5): OrderbookService {
   return {
     getQuote: vi.fn(async () => ({
       tokenId: "token",
-      bestAsk: 0.5,
-      bestBid: 0.49,
+      bestAsk,
+      bestBid: bestAsk - 0.01,
       availableUsdUnderCap: 100,
-      estimatedSharesForAmount: 2,
+      estimatedSharesForAmount: 1 / bestAsk,
       rawAskLevels: [],
     })),
   } as unknown as OrderbookService;
@@ -1119,7 +1424,15 @@ function bestStrategy(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
+  metricsOverrides: Partial<StrategyCandidate["metrics"]> = {},
 ): StrategyCandidate {
+  const tradeCount = metricsOverrides.tradeCount ?? 5;
+  const winCount = metricsOverrides.winCount ?? 4;
+  const lossCount = metricsOverrides.lossCount ?? tradeCount - winCount;
+  const averageAsk = metricsOverrides.averageAsk ?? 0.5;
+  const adjustedWinProbability = metricsOverrides.adjustedWinProbability ?? (winCount + 1) / (tradeCount + 2);
+  const edge = metricsOverrides.edge ?? adjustedWinProbability - averageAsk;
+  const evRoi = metricsOverrides.evRoi ?? adjustedWinProbability / averageAsk - 1;
   return {
     market,
     outcome,
@@ -1134,14 +1447,32 @@ function bestStrategy(
     metrics: {
       sampleCount: 10,
       signalCount: 8,
-      tradeCount: 5,
-      winCount: 4,
-      lossCount: 1,
+      tradeCount,
+      winCount,
+      lossCount,
       quoteCoverage: 1,
-      winRate: 0.8,
-      averageAsk: 0.5,
-      evRoi: 0.6,
+      winRate: tradeCount > 0 ? winCount / tradeCount : undefined,
+      realWinProbability: tradeCount > 0 ? winCount / tradeCount : undefined,
+      adjustedWinProbability,
+      averageAsk,
+      historicalRoi: 0.6,
+      evRoi,
+      expectedRoi: evRoi,
+      expectedValueUsd: evRoi,
+      minExpectedValueUsd: 0.01,
+      winProfitUsd: 1 / averageAsk - 1,
+      lossUsd: -1,
+      breakEvenProbability: averageAsk,
+      edge,
+      liveTradeAmountUsd: 1,
+      askGuidance: "cheap",
+      passesBasicEntry: adjustedWinProbability > averageAsk,
+      passesSafetyMargin: adjustedWinProbability >= averageAsk + 0.02,
+      passesExpectedValue: evRoi >= 0.01,
+      passesRecommendedEntry: adjustedWinProbability >= averageAsk + 0.02 && evRoi >= 0.01,
+      evDecisionReason: adjustedWinProbability >= averageAsk + 0.02 && evRoi >= 0.01 ? "passes" : "safety_margin",
       maxDrawdown: 1,
+      ...metricsOverrides,
     },
   };
 }

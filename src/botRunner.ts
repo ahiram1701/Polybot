@@ -1,5 +1,6 @@
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
+import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import {
   LiveExecutionEngine,
   resolveTradeAmountUsd,
@@ -71,11 +72,13 @@ interface TradeSignal {
   opening: WindowOpening;
   tick: BtcPriceTick;
   distanceUsd: number;
+  minDistanceUsd: number;
   entryWindowSeconds: number;
 }
 
 interface TradeCandidate extends TradeSignal {
   quote: OrderbookQuote;
+  expectedValue?: ExpectedValueSnapshot;
 }
 
 type TradeExecutionResult =
@@ -432,6 +435,7 @@ export class BotRunner {
       opening: args.opening,
       tick: args.latestTick,
       distanceUsd: winner.distanceUsd,
+      minDistanceUsd: minDistanceUsd[winner.outcome],
       entryWindowSeconds,
     };
   }
@@ -476,7 +480,12 @@ export class BotRunner {
       return undefined;
     }
 
-    return { ...signal, quote };
+    const expectedValue = await this.evaluateLiveExpectedValue(signal, quote.bestAsk);
+    if (this.config.mode === "live" && !expectedValue) {
+      return undefined;
+    }
+
+    return { ...signal, quote, expectedValue };
   }
 
   private async executeTradeCandidates(candidates: TradeCandidate[]): Promise<void> {
@@ -512,6 +521,72 @@ export class BotRunner {
     }
   }
 
+  private async evaluateLiveExpectedValue(
+    signal: TradeSignal,
+    askPrice: number,
+  ): Promise<ExpectedValueSnapshot | undefined> {
+    if (this.config.mode !== "live") {
+      return undefined;
+    }
+    if (!this.deps.strategyAnalysisEngine) {
+      this.logSkipOnce(signal.market.slug, "expected_value_analysis_unavailable", {
+        market: signal.market.asset,
+        outcome: signal.outcome,
+      });
+      return undefined;
+    }
+
+    try {
+      const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, Date.now());
+      const strategy = findExactStrategyForSignal(
+        [...analysis.currentStrategies, ...analysis.strategies],
+        signal,
+      );
+      if (!strategy) {
+        this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
+          market: signal.market.asset,
+          outcome: signal.outcome,
+          entryWindowSeconds: signal.entryWindowSeconds,
+          minDistanceUsd: signal.minDistanceUsd,
+          maxAskPrice: signal.maxAskPrice,
+        });
+        return undefined;
+      }
+
+      const expectedValue = calculateExpectedValue({
+        capitalUsd: signal.amountUsd,
+        askPrice,
+        winCount: strategy.metrics.winCount,
+        tradeCount: strategy.metrics.tradeCount,
+      });
+      if (!expectedValue.passesRecommendedEntry) {
+        this.logSkipOnce(signal.market.slug, "expected_value_gate_failed", {
+          market: signal.market.asset,
+          outcome: signal.outcome,
+          askPrice: expectedValue.askPrice,
+          winCount: expectedValue.winCount,
+          tradeCount: expectedValue.tradeCount,
+          realWinProbability: expectedValue.realWinProbability,
+          adjustedWinProbability: expectedValue.adjustedWinProbability,
+          edge: expectedValue.edge,
+          expectedValueUsd: expectedValue.expectedValueUsd,
+          minExpectedValueUsd: expectedValue.minExpectedValueUsd,
+          decisionReason: expectedValue.decisionReason,
+        });
+        return undefined;
+      }
+
+      return expectedValue;
+    } catch (error) {
+      this.logSkipOnce(signal.market.slug, "expected_value_analysis_failed", {
+        market: signal.market.asset,
+        outcome: signal.outcome,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   private async executeTradeCandidate(candidate: TradeCandidate): Promise<TradeExecutionResult> {
     try {
       const trade = await this.deps.executor.execute({
@@ -520,6 +595,7 @@ export class BotRunner {
         amountUsd: candidate.amountUsd,
         maxAskPrice: candidate.maxAskPrice,
         quote: candidate.quote,
+        expectedValue: candidate.expectedValue,
         opening: candidate.opening,
         tick: candidate.tick,
         distanceUsd: candidate.distanceUsd,
@@ -843,8 +919,22 @@ function selectAutoAdjustStrategy(
     strategy.confidence !== "low" &&
     strategy.metrics.evRoi !== undefined &&
     strategy.metrics.evRoi > 0 &&
+    strategy.metrics.passesRecommendedEntry === true &&
     strategy.metrics.tradeCount >= 5 &&
     (strategy.evDeltaVsCurrent === undefined || strategy.evDeltaVsCurrent > 0),
+  );
+}
+
+function findExactStrategyForSignal(
+  strategies: StrategyCandidate[],
+  signal: TradeSignal,
+): StrategyCandidate | undefined {
+  return strategies.find((strategy) =>
+    strategy.market === signal.market.asset &&
+    strategy.outcome === signal.outcome &&
+    nearlyEqual(strategy.entryWindowSeconds, signal.entryWindowSeconds) &&
+    nearlyEqual(strategy.minDistanceUsd, signal.minDistanceUsd) &&
+    nearlyEqual(strategy.maxAskPrice, signal.maxAskPrice),
   );
 }
 
@@ -887,6 +977,10 @@ function cloneOutcomeNumbers(
 
 function strategyKey(market: MarketSymbol, outcome: Outcome): string {
   return `${market}:${outcome}`;
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) < 1e-9;
 }
 
 function formatUsd(value?: number): string {

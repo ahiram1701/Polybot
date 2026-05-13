@@ -676,6 +676,27 @@ th {
   gap: 8px;
 }
 
+.strategy-apply-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.strategy-apply-bar strong,
+.strategy-apply-bar span {
+  display: block;
+}
+
+.strategy-apply-bar span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .current-strategy-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(190px, 1fr));
@@ -684,7 +705,7 @@ th {
 
 .strategy-mini-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   align-items: center;
   gap: 12px;
   padding: 14px;
@@ -693,9 +714,19 @@ th {
   background: var(--surface-muted);
 }
 
+.strategy-mini-card.selected,
+tr.selected-row {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
 .strategy-mini-card strong,
 .strategy-mini-card span {
   display: block;
+}
+
+.strategy-mini-heading {
+  grid-column: 1 / -1;
 }
 
 .strategy-mini-card strong {

@@ -1,3 +1,5 @@
+import type { AskGuidance, ExpectedValueDecisionReason, ExpectedValueSnapshot } from "./expectedValue.js";
+
 export type Mode = "sim" | "live";
 export type Outcome = "UP" | "DOWN";
 export type FillSource = "order_response" | "clob_trades";
@@ -186,8 +188,25 @@ export interface StrategyMetrics {
   lossCount: number;
   quoteCoverage: number;
   winRate?: number;
+  realWinProbability?: number;
+  adjustedWinProbability?: number;
   averageAsk?: number;
+  historicalRoi?: number;
   evRoi?: number;
+  expectedRoi?: number;
+  expectedValueUsd?: number;
+  minExpectedValueUsd?: number;
+  winProfitUsd?: number;
+  lossUsd?: number;
+  breakEvenProbability?: number;
+  edge?: number;
+  liveTradeAmountUsd?: number;
+  askGuidance?: AskGuidance;
+  passesBasicEntry?: boolean;
+  passesSafetyMargin?: boolean;
+  passesExpectedValue?: boolean;
+  passesRecommendedEntry?: boolean;
+  evDecisionReason?: ExpectedValueDecisionReason;
   maxDrawdown: number;
 }
 
@@ -198,6 +217,10 @@ export type StrategyRiskFlag =
   | "few_trades"
   | "low_quote_coverage"
   | "negative_ev"
+  | "insufficient_history"
+  | "unsafe_edge"
+  | "below_min_ev"
+  | "avoid_ask"
   | "high_drawdown";
 
 export interface StrategyCandidate {
@@ -250,6 +273,7 @@ export interface TradeAttempt {
   amountUsd: number;
   maxAskPrice: number;
   bestAsk?: number;
+  expectedValue?: ExpectedValueSnapshot;
   estimatedShares: number;
   openingPrice: number;
   entryPrice: number;

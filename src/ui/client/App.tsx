@@ -56,7 +56,21 @@ type TradeMarketFilter = "ALL" | MarketSymbol;
 type TradePnlFilter = "ALL" | "POSITIVE" | "NEGATIVE";
 type TradeSortKey = "createdAtMs" | "entryWindowSeconds" | "stakeUsd" | "bestAsk" | "distanceUsd" | "payoutUsd" | "netUsd";
 type TradeSortDirection = "asc" | "desc";
-type StrategySortKey = "evRoi" | "tradeCount" | "winRate" | "quoteCoverage" | "entryWindowSeconds" | "minDistanceUsd" | "maxAskPrice" | "maxDrawdown";
+type StrategySortKey =
+  | "evRoi"
+  | "expectedRoi"
+  | "expectedValueUsd"
+  | "edge"
+  | "averageAsk"
+  | "realWinProbability"
+  | "adjustedWinProbability"
+  | "tradeCount"
+  | "winRate"
+  | "quoteCoverage"
+  | "entryWindowSeconds"
+  | "minDistanceUsd"
+  | "maxAskPrice"
+  | "maxDrawdown";
 type StrategySortDirection = "asc" | "desc";
 type StrategyQualityFilter = "RELIABLE" | "ALL" | "POSITIVE" | "CURRENT";
 type OutcomeFilter = "ALL" | Outcome;
@@ -166,19 +180,19 @@ const outcomeOptions: Outcome[] = ["UP", "DOWN"];
 const ollamaPromptOptions = [
   {
     label: "Resumen",
-    prompt: "Resume las mejores estrategias confiables, el EV esperado y que mercados/lados parecen mas prometedores.",
+    prompt: "Resume las mejores estrategias confiables usando ROI EV, EV live, edge y probabilidad ajustada. Indica que mercados/lados parecen mas prometedores.",
   },
   {
     label: "Riesgos",
-    prompt: "Detecta riesgos de sobreajuste, baja cobertura, pocos trades y drawdown. Indica que no deberia usarse todavia.",
+    prompt: "Detecta riesgos de sobreajuste, baja cobertura, pocos trades, drawdown, asks 0.98/0.99 y edge insuficiente. Indica que no deberia usarse todavia.",
   },
   {
     label: "Actual vs mejor",
-    prompt: "Compara las estrategias actuales contra las mejores confiables por mercado/lado y explica que diferencias importan.",
+    prompt: "Compara las estrategias actuales contra las mejores confiables por mercado/lado usando P real, P ajustada, edge, ROI EV y EV live.",
   },
   {
     label: "Plan de prueba",
-    prompt: "Prop\u00f3n un plan de prueba conservador para validar estas estrategias sin aumentar riesgo live.",
+    prompt: "Prop\u00f3n un plan de prueba conservador para validar estas estrategias sin aumentar riesgo live, priorizando EV positivo y margen de seguridad.",
   },
 ];
 
@@ -265,6 +279,14 @@ export function App() {
   }
 
   async function saveSettings(next: UiSettings) {
+    await persistSettings(next, false);
+  }
+
+  async function applyStrategyFromAnalysis(strategy: StrategyCandidate) {
+    await persistSettings(applyStrategyToSettings(settings, strategy), true);
+  }
+
+  async function persistSettings(next: UiSettings, rethrow: boolean) {
     setBusy(true);
     setError(null);
     try {
@@ -273,6 +295,9 @@ export function App() {
       await refreshAll();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+      if (rethrow) {
+        throw caught;
+      }
     } finally {
       setBusy(false);
     }
@@ -360,8 +385,10 @@ export function App() {
           <AnalysisPanel
             analysis={analysis}
             busy={busy}
+            running={Boolean(status?.running)}
             onRefresh={loadAnalysis}
             onAnalyze={requestOllamaAnalysis}
+            onApplyStrategy={applyStrategyFromAnalysis}
           />
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
@@ -522,13 +549,17 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
 export function AnalysisPanel({
   analysis,
   busy,
+  running,
   onRefresh,
   onAnalyze,
+  onApplyStrategy,
 }: {
   analysis: StrategyAnalysisResponse | null;
   busy: boolean;
+  running: boolean;
   onRefresh: () => Promise<void>;
   onAnalyze: (prompt: string) => Promise<OllamaTradeAnalysisResponse>;
+  onApplyStrategy: (strategy: StrategyCandidate) => Promise<void>;
 }) {
   const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("ALL");
@@ -537,12 +568,16 @@ export function AnalysisPanel({
   const [prompt, setPrompt] = useState("");
   const [ollamaHistory, setOllamaHistory] = useState<OllamaHistoryEntry[]>(() => loadOllamaHistory());
   const [ollamaError, setOllamaError] = useState<string | null>(null);
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyCandidate | null>(null);
+  const [applyMessage, setApplyMessage] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const strategies = qualityFilter === "CURRENT" ? analysis?.currentStrategies ?? [] : analysis?.strategies ?? [];
   const bestReliableByOutcome = bestReliableStrategyByOutcome(analysis?.strategies ?? []);
   const filteredStrategies = strategies.filter((strategy) =>
     matchesStrategyFilters(strategy, marketFilter, outcomeFilter, qualityFilter),
   );
   const visibleStrategies = sortStrategies(filteredStrategies, sortState);
+  const selectedStrategyKey = selectedStrategy ? strategyKey(selectedStrategy) : undefined;
 
   useEffect(() => {
     saveOllamaHistory(ollamaHistory);
@@ -577,6 +612,26 @@ export function AnalysisPanel({
     }
   }
 
+  function selectStrategy(strategy: StrategyCandidate) {
+    setSelectedStrategy(strategy);
+    setApplyMessage(null);
+    setApplyError(null);
+  }
+
+  async function applySelectedStrategy() {
+    if (!selectedStrategy) {
+      return;
+    }
+    setApplyMessage(null);
+    setApplyError(null);
+    try {
+      await onApplyStrategy(selectedStrategy);
+      setApplyMessage(`Estrategia aplicada: ${strategyApplySummary(selectedStrategy)}.`);
+    } catch (caught) {
+      setApplyError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
   function deleteOllamaEntry(id: string) {
     setOllamaHistory((current) => current.filter((entry) => entry.id !== id));
   }
@@ -596,7 +651,7 @@ export function AnalysisPanel({
       <div className="hero-metrics compact analysis-metrics">
         <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />
         <Metric label="Confiables" value={String(analysis?.summary.reliableStrategyCount ?? 0)} />
-        <Metric label="Mejor EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
+        <Metric label="Mejor ROI EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
         <Metric label="Trades fiables" value={String(analysis?.summary.bestReliableTradeCount ?? 0)} />
       </div>
 
@@ -658,6 +713,29 @@ export function AnalysisPanel({
         </div>
       </div>
 
+      <div className="strategy-apply-bar">
+        <div>
+          <strong>{selectedStrategy ? strategyApplySummary(selectedStrategy) : "Sin estrategia seleccionada"}</strong>
+          <span>
+            {selectedStrategy
+              ? `ROI EV ${formatPercent(selectedStrategy.metrics.evRoi)} / EV live ${formatSignedUsd(selectedStrategy.metrics.expectedValueUsd)}`
+              : "Elige una fila o tarjeta para preparar sus parametros."}
+          </span>
+        </div>
+        <button
+          className="command primary"
+          type="button"
+          onClick={applySelectedStrategy}
+          disabled={!selectedStrategy || busy || running}
+          title={running ? "Deten el bot para aplicar cambios de estrategia" : "Aplicar estrategia seleccionada"}
+        >
+          <Save size={18} /> Aplicar estrategia
+        </button>
+      </div>
+
+      {applyMessage && <div className="notice success"><CheckCircle2 size={18} />{applyMessage}</div>}
+      {applyError && <div className="notice error"><AlertTriangle size={18} />{applyError}</div>}
+
       {analysis?.currentStrategies.length ? (
         <div className="current-strategy-grid">
           {analysis.currentStrategies.map((strategy) => (
@@ -665,6 +743,8 @@ export function AnalysisPanel({
               key={`${strategy.market}-${strategy.outcome}`}
               strategy={strategy}
               bestReliable={bestReliableByOutcome.get(strategyOutcomeKey(strategy))}
+              selected={selectedStrategyKey === strategyKey(strategy)}
+              onSelect={selectStrategy}
             />
           ))}
         </div>
@@ -677,6 +757,7 @@ export function AnalysisPanel({
           <table>
             <thead>
               <tr>
+                <th>Elegir</th>
                 <th>Mercado</th>
                 <th>Lado</th>
                 <th aria-sort={strategySortAria("entryWindowSeconds", sortState)}>
@@ -688,8 +769,23 @@ export function AnalysisPanel({
                 <th aria-sort={strategySortAria("maxAskPrice", sortState)}>
                   <StrategySortHeader label="Ask cap" sortKey="maxAskPrice" sortState={sortState} onSort={toggleSort} />
                 </th>
+                <th aria-sort={strategySortAria("averageAsk", sortState)}>
+                  <StrategySortHeader label="Ask prom" sortKey="averageAsk" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("realWinProbability", sortState)}>
+                  <StrategySortHeader label="P real" sortKey="realWinProbability" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("adjustedWinProbability", sortState)}>
+                  <StrategySortHeader label="P ajustada" sortKey="adjustedWinProbability" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("edge", sortState)}>
+                  <StrategySortHeader label="Edge" sortKey="edge" sortState={sortState} onSort={toggleSort} />
+                </th>
                 <th aria-sort={strategySortAria("evRoi", sortState)}>
-                  <StrategySortHeader label="EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
+                  <StrategySortHeader label="ROI EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
+                </th>
+                <th aria-sort={strategySortAria("expectedValueUsd", sortState)}>
+                  <StrategySortHeader label="EV live" sortKey="expectedValueUsd" sortState={sortState} onSort={toggleSort} />
                 </th>
                 <th>Conf.</th>
                 <th>Delta</th>
@@ -710,13 +806,28 @@ export function AnalysisPanel({
             </thead>
             <tbody>
               {visibleStrategies.map((strategy) => (
-                <tr key={strategyKey(strategy)}>
+                <tr className={selectedStrategyKey === strategyKey(strategy) ? "selected-row" : undefined} key={strategyKey(strategy)}>
+                  <td>
+                    <button
+                      className="command compact-command"
+                      type="button"
+                      onClick={() => selectStrategy(strategy)}
+                      aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
+                    >
+                      {selectedStrategyKey === strategyKey(strategy) ? "Elegida" : "Seleccionar"}
+                    </button>
+                  </td>
                   <td>{strategy.market}{strategy.isCurrent ? " actual" : ""}</td>
                   <td><span className={`side ${strategy.outcome.toLowerCase()}`}>{strategy.outcome}</span></td>
                   <td>{formatEntryWindow(strategy.entryWindowSeconds)}</td>
                   <td>{formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</td>
                   <td>{formatPrice(strategy.maxAskPrice)}</td>
+                  <td>{formatPrice(strategy.metrics.averageAsk)}</td>
+                  <td>{formatRatio(strategy.metrics.realWinProbability)}</td>
+                  <td>{formatRatio(strategy.metrics.adjustedWinProbability)}</td>
+                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.edge)}`}>{formatPercent(strategy.metrics.edge)}</span></td>
                   <td><span className={`pnl-value ${pnlTone(strategy.metrics.evRoi)}`}>{formatPercent(strategy.metrics.evRoi)}</span></td>
+                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.expectedValueUsd)}`}>{formatSignedUsd(strategy.metrics.expectedValueUsd)}</span></td>
                   <td><ConfidenceBadge confidence={strategy.confidence} /></td>
                   <td>{formatDelta(strategy.evDeltaVsCurrent)}</td>
                   <td>{strategy.metrics.tradeCount}</td>
@@ -784,21 +895,51 @@ export function AnalysisPanel({
   );
 }
 
-function StrategyMiniCard({ strategy, bestReliable }: { strategy: StrategyCandidate; bestReliable?: StrategyCandidate }) {
+function StrategyMiniCard({
+  strategy,
+  bestReliable,
+  selected,
+  onSelect,
+}: {
+  strategy: StrategyCandidate;
+  bestReliable?: StrategyCandidate;
+  selected: boolean;
+  onSelect: (strategy: StrategyCandidate) => void;
+}) {
   const reliableDelta =
     bestReliable?.metrics.evRoi !== undefined && strategy.metrics.evRoi !== undefined
       ? bestReliable.metrics.evRoi - strategy.metrics.evRoi
       : undefined;
   return (
-    <article className="strategy-mini-card">
-      <div>
+    <article className={`strategy-mini-card ${selected ? "selected" : ""}`}>
+      <div className="strategy-mini-heading">
         <strong>{strategy.market} {strategy.outcome}</strong>
         <span>{formatEntryWindow(strategy.entryWindowSeconds)} / {formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</span>
       </div>
-      <Metric label="EV" value={formatPercent(strategy.metrics.evRoi)} tone={pnlTone(strategy.metrics.evRoi)} />
+      <button
+        className="command compact-command"
+        type="button"
+        onClick={() => onSelect(strategy)}
+        aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
+      >
+        {selected ? "Elegida" : "Seleccionar"}
+      </button>
+      <Metric label="Estado" value={entryDecisionLabel(strategy)} tone={strategy.metrics.passesRecommendedEntry ? "positive" : "negative"} />
+      <Metric label="P real" value={formatRatio(strategy.metrics.realWinProbability)} />
+      <Metric label="P ajustada" value={formatRatio(strategy.metrics.adjustedWinProbability)} />
+      <Metric label="Edge" value={formatPercent(strategy.metrics.edge)} tone={pnlTone(strategy.metrics.edge)} />
+      <Metric label="EV live" value={formatSignedUsd(strategy.metrics.expectedValueUsd)} tone={pnlTone(strategy.metrics.expectedValueUsd)} />
+      <Metric label="Ask prom" value={formatPrice(strategy.metrics.averageAsk)} />
+      <Metric label="ROI EV" value={formatPercent(strategy.metrics.evRoi)} tone={pnlTone(strategy.metrics.evRoi)} />
       <Metric label="Trades" value={String(strategy.metrics.tradeCount)} />
       <ConfidenceBadge confidence={strategy.confidence} />
-      <small>{bestReliable ? `Mejor fiable ${formatPercent(bestReliable.metrics.evRoi)} (${formatDelta(reliableDelta)})` : "Sin fiable"}</small>
+      <small>
+        {[
+          `Hist. ${formatPercent(strategy.metrics.historicalRoi)}`,
+          evDecisionReasonLabel(strategy.metrics.evDecisionReason),
+          bestReliable ? `Mejor fiable ${formatPercent(bestReliable.metrics.evRoi)} (${formatDelta(reliableDelta)})` : "Sin fiable",
+        ].join(" / ")}
+      </small>
     </article>
   );
 }
@@ -1662,6 +1803,54 @@ function enabledMarketsFromOutcomeSettings(settings: UiSettings["enabledMarketOu
     .filter((market) => settings[market].UP || settings[market].DOWN);
 }
 
+function applyStrategyToSettings(settings: UiSettings, strategy: StrategyCandidate): UiSettings {
+  const minDistanceUsdByMarketOutcome = cloneOutcomeNumberSettings(settings.minDistanceUsdByMarketOutcome);
+  const entryWindowSecondsByMarketOutcome = cloneOutcomeNumberSettings(settings.entryWindowSecondsByMarketOutcome);
+  const maxAskPriceByMarketOutcome = cloneOutcomeNumberSettings(settings.maxAskPriceByMarketOutcome);
+
+  minDistanceUsdByMarketOutcome[strategy.market][strategy.outcome] = strategy.minDistanceUsd;
+  entryWindowSecondsByMarketOutcome[strategy.market][strategy.outcome] = strategy.entryWindowSeconds;
+  maxAskPriceByMarketOutcome[strategy.market][strategy.outcome] = strategy.maxAskPrice;
+
+  const minDistanceUsdByMarket = {
+    ...settings.minDistanceUsdByMarket,
+    [strategy.market]: minDistanceUsdByMarketOutcome[strategy.market].UP,
+  };
+  const entryWindowSecondsByMarket = {
+    ...settings.entryWindowSecondsByMarket,
+    [strategy.market]: entryWindowSecondsByMarketOutcome[strategy.market].UP,
+  };
+
+  return {
+    ...settings,
+    minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
+    minDistanceUsdByMarket,
+    minDistanceUsdByMarketOutcome,
+    entryWindowSeconds: entryWindowSecondsByMarket.BTC,
+    entryWindowSecondsByMarket,
+    entryWindowSecondsByMarketOutcome,
+    maxAskPrice: maxAskPriceByMarketOutcome.BTC.UP,
+    maxAskPriceByMarketOutcome,
+  };
+}
+
+function cloneOutcomeNumberSettings<T extends UiSettings["minDistanceUsdByMarketOutcome"]>(settings: T): T {
+  return {
+    BTC: { ...settings.BTC },
+    ETH: { ...settings.ETH },
+    DOGE: { ...settings.DOGE },
+  } as T;
+}
+
+function strategyApplySummary(strategy: StrategyCandidate): string {
+  return [
+    `${strategy.market} ${strategy.outcome}`,
+    formatEntryWindow(strategy.entryWindowSeconds),
+    formatMarketDistance(strategy.minDistanceUsd, strategy.market),
+    `Ask ${formatPrice(strategy.maxAskPrice)}`,
+  ].join(" / ");
+}
+
 function enabledOutcomeLabels(settings: UiSettings["enabledMarketOutcomes"] | undefined): string[] {
   if (!settings) {
     return [];
@@ -2001,9 +2190,39 @@ function riskFlagLabel(flag: StrategyRiskFlag): string {
     few_trades: "Pocos trades",
     low_quote_coverage: "Baja cobertura",
     negative_ev: "EV negativo",
+    insufficient_history: "Historial insuf.",
+    unsafe_edge: "Edge < 2%",
+    below_min_ev: "EV < 1%",
+    avoid_ask: "Ask evitable",
     high_drawdown: "Drawdown alto",
   };
   return labels[flag];
+}
+
+function entryDecisionLabel(strategy: StrategyCandidate): string {
+  return strategy.metrics.passesRecommendedEntry ? "Entrar\u00eda" : "No entra";
+}
+
+function evDecisionReasonLabel(reason: StrategyCandidate["metrics"]["evDecisionReason"]): string {
+  if (reason === "passes") {
+    return "Regla EV OK";
+  }
+  if (reason === "insufficient_history") {
+    return "Historial insuf.";
+  }
+  if (reason === "avoid_099") {
+    return "Evitar ask 0.99";
+  }
+  if (reason === "avoid_098") {
+    return "Evitar ask 0.98";
+  }
+  if (reason === "safety_margin") {
+    return "Edge < 2%";
+  }
+  if (reason === "minimum_expected_value") {
+    return "EV < 1%";
+  }
+  return "Sin EV";
 }
 
 function confidenceLabel(confidence: StrategyConfidence): string {
@@ -2018,7 +2237,7 @@ function confidenceLabel(confidence: StrategyConfidence): string {
 
 function emptyStrategyMessage(filter: StrategyQualityFilter): string {
   if (filter === "RELIABLE") {
-    return "Sin estrategias confiables todavia. Revisa Todas o acumula mas muestras.";
+    return "Sin estrategias confiables todavia. Revisa Todas o acumula mas muestras con EV conservador.";
   }
   if (filter === "POSITIVE") {
     return "Sin estrategias con EV positivo para estos filtros.";

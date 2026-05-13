@@ -17,7 +17,16 @@ describe("StrategyAnalysisEngine", () => {
     expect(current?.metrics.tradeCount).toBe(2);
     expect(current?.metrics.winCount).toBe(1);
     expect(current?.metrics.lossCount).toBe(1);
+    expect(current?.metrics.realWinProbability).toBeCloseTo(0.5);
+    expect(current?.metrics.adjustedWinProbability).toBeCloseTo(0.5);
+    expect(current?.metrics.edge).toBeCloseTo(0.1);
     expect(current?.metrics.evRoi).toBeCloseTo(0.25);
+    expect(current?.metrics.historicalRoi).toBeCloseTo(0.25);
+    expect(current?.metrics.expectedValueUsd).toBeCloseTo(0.25);
+    expect(current?.metrics.winProfitUsd).toBeCloseTo(1.5);
+    expect(current?.metrics.lossUsd).toBe(-1);
+    expect(current?.metrics.breakEvenProbability).toBeCloseTo(0.4);
+    expect(current?.metrics.passesRecommendedEntry).toBe(true);
   });
 
   it("evaluates UP and DOWN signals with side-specific distance", () => {
@@ -31,7 +40,10 @@ describe("StrategyAnalysisEngine", () => {
     expect(up?.metrics.signalCount).toBe(0);
     expect(down?.metrics.signalCount).toBe(1);
     expect(down?.metrics.tradeCount).toBe(1);
-    expect(down?.metrics.evRoi).toBeCloseTo(1);
+    expect(down?.metrics.realWinProbability).toBeCloseTo(1);
+    expect(down?.metrics.adjustedWinProbability).toBeCloseTo(2 / 3);
+    expect(down?.metrics.evRoi).toBeCloseTo(1 / 3);
+    expect(down?.metrics.historicalRoi).toBeCloseTo(1);
   });
 
   it("counts signals without trades when quotes are missing or above ask cap", () => {
@@ -81,6 +93,21 @@ describe("StrategyAnalysisEngine", () => {
     expect(response.strategies.length).toBeGreaterThan(1);
     expect(response.strategies[0].metrics.evRoi).toBeGreaterThanOrEqual(response.strategies[1].metrics.evRoi ?? -Infinity);
     expect(response.currentStrategies.find((strategy) => strategy.market === "BTC" && strategy.outcome === "UP")?.isCurrent).toBe(true);
+  });
+
+  it("marks 0.98 asks as non-entry under the safety-margin rule", () => {
+    const response = buildStrategyAnalysis(
+      Array.from({ length: 10 }, (_value, index) =>
+        sample({ slug: `btc-expensive-${index}`, distanceUsd: 12, ask: 0.98, winningOutcome: "UP" }),
+      ),
+      settings({ maxAskPrice: 0.98 }),
+    );
+
+    const current = response.currentStrategies.find((strategy) => strategy.market === "BTC" && strategy.outcome === "UP");
+    expect(current?.metrics.askGuidance).toBe("avoid_098");
+    expect(current?.metrics.passesRecommendedEntry).toBe(false);
+    expect(current?.metrics.evDecisionReason).toBe("avoid_098");
+    expect(current?.riskFlags).toEqual(expect.arrayContaining(["avoid_ask", "unsafe_edge"]));
   });
 });
 

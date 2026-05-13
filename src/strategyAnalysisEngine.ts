@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { readAnalyticsSamples } from "./analyticsRecorder.js";
+import { calculateExpectedValue } from "./expectedValue.js";
 import {
   getEntryWindowSeconds,
   getMarketOutcomeNumber,
@@ -46,6 +47,8 @@ export interface StrategyAnalysisSettings {
   entryWindowSecondsByMarketOutcome?: MarketOutcomeNumberSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  liveTradeAmountUsd?: number;
+  liveTradeAmountUsdByMarketOutcome?: MarketOutcomeNumberSettings;
 }
 
 interface CandidateObservation {
@@ -123,7 +126,14 @@ function buildCurrentStrategies(
         market,
         outcome,
         ...current,
-        metrics: simulateStrategy(marketSamples, outcome, current.entryWindowSeconds, current.minDistanceUsd, current.maxAskPrice),
+        metrics: simulateStrategy(
+          marketSamples,
+          outcome,
+          current.entryWindowSeconds,
+          current.minDistanceUsd,
+          current.maxAskPrice,
+          resolveLiveTradeAmountUsd(settings, market, outcome),
+        ),
         isCurrent: true,
       };
     });
@@ -152,7 +162,14 @@ function buildOutcomeStrategyGrid(
           entryWindowSeconds,
           minDistanceUsd,
           maxAskPrice,
-          metrics: simulateStrategy(samples, outcome, entryWindowSeconds, minDistanceUsd, maxAskPrice),
+          metrics: simulateStrategy(
+            samples,
+            outcome,
+            entryWindowSeconds,
+            minDistanceUsd,
+            maxAskPrice,
+            resolveLiveTradeAmountUsd(settings, market, outcome),
+          ),
           isCurrent:
             entryWindowSeconds === current.entryWindowSeconds &&
             minDistanceUsd === current.minDistanceUsd &&
@@ -226,6 +243,7 @@ function simulateStrategy(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
+  capitalUsd: number,
 ): StrategyMetrics {
   const observations: CandidateObservation[] = [];
   let signalCount = 0;
@@ -255,6 +273,17 @@ function simulateStrategy(
   const tradeCount = observations.length;
   const winCount = observations.filter((observation) => observation.won).length;
   const lossCount = tradeCount - winCount;
+  const averageAsk = tradeCount > 0 ? mean(observations.map((observation) => observation.ask)) : undefined;
+  const historicalRoi = tradeCount > 0 ? mean(returns) : undefined;
+  const expectedValue =
+    averageAsk !== undefined
+      ? calculateExpectedValue({
+          capitalUsd,
+          askPrice: averageAsk,
+          winCount,
+          tradeCount,
+        })
+      : undefined;
 
   return {
     sampleCount: samples.length,
@@ -263,9 +292,26 @@ function simulateStrategy(
     winCount,
     lossCount,
     quoteCoverage: signalCount > 0 ? tradeCount / signalCount : 0,
-    winRate: tradeCount > 0 ? winCount / tradeCount : undefined,
-    averageAsk: tradeCount > 0 ? mean(observations.map((observation) => observation.ask)) : undefined,
-    evRoi: tradeCount > 0 ? mean(returns) : undefined,
+    winRate: expectedValue?.realWinProbability,
+    realWinProbability: expectedValue?.realWinProbability,
+    adjustedWinProbability: expectedValue?.adjustedWinProbability,
+    averageAsk,
+    historicalRoi,
+    evRoi: expectedValue?.expectedRoi,
+    expectedRoi: expectedValue?.expectedRoi,
+    expectedValueUsd: expectedValue?.expectedValueUsd,
+    minExpectedValueUsd: expectedValue?.minExpectedValueUsd,
+    winProfitUsd: expectedValue?.winProfitUsd,
+    lossUsd: expectedValue?.lossUsd,
+    breakEvenProbability: expectedValue?.breakEvenProbability,
+    edge: expectedValue?.edge,
+    liveTradeAmountUsd: expectedValue?.capitalUsd,
+    askGuidance: expectedValue?.askGuidance,
+    passesBasicEntry: expectedValue?.passesBasicEntry,
+    passesSafetyMargin: expectedValue?.passesSafetyMargin,
+    passesExpectedValue: expectedValue?.passesExpectedValue,
+    passesRecommendedEntry: expectedValue?.passesRecommendedEntry,
+    evDecisionReason: expectedValue?.decisionReason,
     maxDrawdown: maxDrawdown(returns),
   };
 }
@@ -330,6 +376,7 @@ function strategyRiskFlags(metrics: StrategyMetrics): StrategyRiskFlag[] {
   const flags: StrategyRiskFlag[] = [];
   if (metrics.tradeCount === 0) {
     flags.push("no_trades");
+    flags.push("insufficient_history");
   } else if (metrics.tradeCount < MIN_RELIABLE_TRADES) {
     flags.push("few_trades");
   }
@@ -338,6 +385,15 @@ function strategyRiskFlags(metrics: StrategyMetrics): StrategyRiskFlag[] {
   }
   if (metrics.evRoi !== undefined && metrics.evRoi <= 0) {
     flags.push("negative_ev");
+  }
+  if (metrics.passesSafetyMargin === false) {
+    flags.push("unsafe_edge");
+  }
+  if (metrics.passesExpectedValue === false) {
+    flags.push("below_min_ev");
+  }
+  if (metrics.askGuidance === "avoid_098" || metrics.askGuidance === "avoid_099") {
+    flags.push("avoid_ask");
   }
   if (metrics.maxDrawdown > acceptableDrawdown(metrics.tradeCount)) {
     flags.push("high_drawdown");
@@ -351,6 +407,7 @@ function strategyConfidence(metrics: StrategyMetrics, riskFlags: StrategyRiskFla
     metrics.quoteCoverage >= MIN_HIGH_CONFIDENCE_QUOTE_COVERAGE &&
     metrics.evRoi !== undefined &&
     metrics.evRoi > 0 &&
+    metrics.passesRecommendedEntry === true &&
     !riskFlags.includes("high_drawdown")
   ) {
     return "high";
@@ -359,7 +416,8 @@ function strategyConfidence(metrics: StrategyMetrics, riskFlags: StrategyRiskFla
     metrics.tradeCount >= MIN_RELIABLE_TRADES &&
     metrics.quoteCoverage >= MIN_RELIABLE_QUOTE_COVERAGE &&
     metrics.evRoi !== undefined &&
-    metrics.evRoi > 0
+    metrics.evRoi > 0 &&
+    metrics.passesRecommendedEntry === true
   ) {
     return "medium";
   }
@@ -377,6 +435,19 @@ function strategyQualityScore(metrics: StrategyMetrics, confidence: StrategyConf
 
 function isReliableStrategy(strategy: StrategyCandidate): boolean {
   return strategy.confidence === "medium" || strategy.confidence === "high";
+}
+
+function resolveLiveTradeAmountUsd(
+  settings: StrategyAnalysisSettings,
+  market: MarketSymbol,
+  outcome: Outcome,
+): number {
+  return getMarketOutcomeNumber(
+    settings.liveTradeAmountUsdByMarketOutcome,
+    market,
+    outcome,
+    settings.liveTradeAmountUsd ?? 1,
+  );
 }
 
 function uniqueStrategies(strategies: StrategyCandidate[]): StrategyCandidate[] {

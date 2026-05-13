@@ -16,6 +16,7 @@ import type {
   TradeAttempt,
   WindowOpening,
 } from "./types.js";
+import type { ExpectedValueSnapshot } from "./expectedValue.js";
 import { extractTradeIds, summarizeLiveOrderFill } from "./tradeResolution.js";
 
 export interface ExecutionInput {
@@ -24,6 +25,7 @@ export interface ExecutionInput {
   amountUsd: number;
   maxAskPrice: number;
   quote: OrderbookQuote;
+  expectedValue?: ExpectedValueSnapshot;
   opening: WindowOpening;
   tick: BtcPriceTick;
   distanceUsd: number;
@@ -121,6 +123,7 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     amountUsd: input.amountUsd,
     maxAskPrice: input.maxAskPrice,
     bestAsk: input.quote.bestAsk,
+    expectedValue: input.expectedValue,
     estimatedShares: input.quote.estimatedSharesForAmount,
     openingPrice: input.opening.openingPrice,
     entryPrice: input.tick.value,

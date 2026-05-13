@@ -299,8 +299,10 @@ describe("UI frontend components", () => {
       <AnalysisPanel
         analysis={analysisResponse()}
         busy={false}
+        running={false}
         onRefresh={vi.fn(async () => undefined)}
         onAnalyze={onAnalyze}
+        onApplyStrategy={vi.fn(async () => undefined)}
       />,
     );
 
@@ -309,7 +311,9 @@ describe("UI frontend components", () => {
     expect(screen.getByText("BTC actual")).toBeInTheDocument();
     expect(screen.getAllByText("Media").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Resumen" })).toBeInTheDocument();
-    expect(screen.getAllByText("EV").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/EV/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("P ajustada").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Entrar\u00eda").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+25.0%").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Riesgos" }));
@@ -319,14 +323,41 @@ describe("UI frontend components", () => {
     expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
   });
 
+  it("selects and applies a strategy from Analysis", async () => {
+    const onApplyStrategy = vi.fn(async () => undefined);
+    render(
+      <AnalysisPanel
+        analysis={analysisResponse()}
+        busy={false}
+        running={false}
+        onRefresh={vi.fn(async () => undefined)}
+        onAnalyze={vi.fn(async () => ollamaResponse())}
+        onApplyStrategy={onApplyStrategy}
+      />,
+    );
+
+    const applyButton = screen.getByRole("button", { name: "Aplicar estrategia" });
+    expect(applyButton).toBeDisabled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
+    expect(applyButton).toBeEnabled();
+
+    fireEvent.click(applyButton);
+
+    await waitFor(() => expect(onApplyStrategy).toHaveBeenCalledWith(expect.objectContaining({ market: "BTC", outcome: "UP" })));
+    expect(await screen.findByText(/Estrategia aplicada/)).toBeInTheDocument();
+  });
+
   it("keeps Ollama responses until the user deletes them", async () => {
     const onAnalyze = vi.fn(async () => ollamaResponse());
     const firstRender = render(
       <AnalysisPanel
         analysis={analysisResponse()}
         busy={false}
+        running={false}
         onRefresh={vi.fn(async () => undefined)}
         onAnalyze={onAnalyze}
+        onApplyStrategy={vi.fn(async () => undefined)}
       />,
     );
 
@@ -339,8 +370,10 @@ describe("UI frontend components", () => {
       <AnalysisPanel
         analysis={analysisResponse()}
         busy={false}
+        running={false}
         onRefresh={vi.fn(async () => undefined)}
         onAnalyze={onAnalyze}
+        onApplyStrategy={vi.fn(async () => undefined)}
       />,
     );
 
@@ -351,18 +384,20 @@ describe("UI frontend components", () => {
     expect(screen.queryByText("Tesis: EV positivo.")).not.toBeInTheDocument();
   });
 
-  it("does not render removed AI recommendation controls", () => {
+  it("keeps old AI recommendation controls removed while showing strategy apply", () => {
     render(
       <AnalysisPanel
         analysis={analysisResponse()}
         busy={false}
+        running={false}
         onRefresh={vi.fn(async () => undefined)}
         onAnalyze={vi.fn(async () => ollamaResponse())}
+        onApplyStrategy={vi.fn(async () => undefined)}
       />,
     );
 
     expect(screen.queryByText("IA local")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Aplicar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aplicar estrategia" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Auto aplicar" })).not.toBeInTheDocument();
   });
 });
@@ -523,8 +558,25 @@ function analysisResponse(): StrategyAnalysisResponse {
       lossCount: 2,
       quoteCoverage: 1,
       winRate: 0.5,
+      realWinProbability: 0.5,
+      adjustedWinProbability: 0.625,
       averageAsk: 0.5,
+      historicalRoi: 0.25,
       evRoi: 0.25,
+      expectedRoi: 0.25,
+      expectedValueUsd: 0.25,
+      minExpectedValueUsd: 0.01,
+      winProfitUsd: 1,
+      lossUsd: -1,
+      breakEvenProbability: 0.5,
+      edge: 0.125,
+      liveTradeAmountUsd: 1,
+      askGuidance: "cheap",
+      passesBasicEntry: true,
+      passesSafetyMargin: true,
+      passesExpectedValue: true,
+      passesRecommendedEntry: true,
+      evDecisionReason: "passes",
       maxDrawdown: 1,
     },
   };

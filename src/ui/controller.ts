@@ -830,6 +830,7 @@ function summarizeTrade(trade: TradeAttempt) {
     outcome: trade.outcome,
     amountUsd: trade.amountUsd,
     bestAsk: trade.bestAsk,
+    expectedValue: trade.expectedValue,
     distanceUsd: trade.distanceUsd,
     entryWindowSeconds: trade.entryWindowSeconds,
     createdAtMs: trade.createdAtMs,
