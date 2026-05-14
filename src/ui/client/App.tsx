@@ -628,6 +628,8 @@ export function AnalysisPanel({
     matchesStrategyFilters(strategy, marketFilter, outcomeFilter, qualityFilter),
   );
   const visibleStrategies = sortStrategies(filteredStrategies, sortState);
+  const strategyCardLimit = 9;
+  const primaryStrategies = visibleStrategies.slice(0, strategyCardLimit);
   const selectedStrategyKey = selectedStrategy ? strategyKey(selectedStrategy) : undefined;
   const selectedStrategyPreview = selectedStrategy ? strategySettingsPreview(settings, selectedStrategy) : [];
 
@@ -770,14 +772,14 @@ export function AnalysisPanel({
           <div className="workspace-heading">
             <div>
               <span>Candidatas</span>
-              <strong>{visibleStrategies.length} estrategias visibles</strong>
+              <strong>{strategyCardCountLabel(primaryStrategies.length, visibleStrategies.length)}</strong>
             </div>
           </div>
           {visibleStrategies.length === 0 ? (
             <div className="empty-state strategy-empty">{emptyStrategyMessage(qualityFilter)}</div>
           ) : (
             <div className="strategy-card-grid">
-              {visibleStrategies.map((strategy) => (
+              {primaryStrategies.map((strategy) => (
                 <StrategyMiniCard
                   key={strategyKey(strategy)}
                   strategy={strategy}
@@ -2042,6 +2044,10 @@ function strategyApplySummary(strategy: StrategyCandidate): string {
     formatMarketDistance(strategy.minDistanceUsd, strategy.market),
     `Ask ${formatPrice(strategy.maxAskPrice)}`,
   ].join(" / ");
+}
+
+function strategyCardCountLabel(shown: number, total: number): string {
+  return total > shown ? `Mostrando ${shown} de ${total}` : `${total} estrategias visibles`;
 }
 
 function enabledOutcomeLabels(settings: UiSettings["enabledMarketOutcomes"] | undefined): string[] {
