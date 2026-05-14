@@ -59,6 +59,7 @@ describe("UI frontend components", () => {
 
     render(<App />);
     expect(screen.getByRole("button", { name: "Telegram" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
 
     expect(screen.getByRole("button", { name: "Análisis" })).toBeInTheDocument();
   });
@@ -138,6 +139,7 @@ describe("UI frontend components", () => {
     expect(screen.getByRole("button", { name: "Positivo" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Negativo" })).toBeInTheDocument();
     expect(screen.getByText("UP")).toBeInTheDocument();
+    expect(screen.getByText("UP").closest("td")).toHaveAttribute("data-label", "Lado");
     expect(screen.getByText("Gano")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Ventana" })).toBeInTheDocument();
     expect(screen.getAllByText("35s").length).toBeGreaterThanOrEqual(1);
@@ -254,18 +256,23 @@ describe("UI frontend components", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
     expect(screen.getByLabelText("Ventana Bitcoin UP")).toHaveValue("20");
-    expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
-    expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
     expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
     expect(screen.getByLabelText("Activar Bitcoin UP")).toBeChecked();
-    expect(screen.getByLabelText("Activar Ethereum UP")).not.toBeChecked();
     expect(screen.getByLabelText("Auto live Bitcoin UP")).not.toBeChecked();
     expect(screen.getByLabelText("Tras perder Bitcoin UP")).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar Ethereum" }));
+    expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
+    expect(screen.getByLabelText("Activar Ethereum UP")).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar Dogecoin" }));
+    expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
   });
 
   it("allows free-form number editing in settings", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Editar Dogecoin" }));
     const dogeDistance = screen.getByLabelText("Distancia Dogecoin UP");
     fireEvent.focus(dogeDistance);
     fireEvent.change(dogeDistance, { target: { value: "0." } });
@@ -276,6 +283,24 @@ describe("UI frontend components", () => {
 
     fireEvent.blur(dogeDistance);
     expect(dogeDistance).toHaveValue("0.00025");
+  });
+
+  it("saves the full settings draft after switching market editors", async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar Ethereum" }));
+    fireEvent.change(screen.getByLabelText("Ventana Ethereum DOWN"), { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      entryWindowSecondsByMarketOutcome: expect.objectContaining({
+        BTC: expect.objectContaining({ UP: 20 }),
+        ETH: expect.objectContaining({ DOWN: 45 }),
+        DOGE: expect.objectContaining({ UP: 20 }),
+      }),
+    }));
   });
 
   it("saves Telegram settings and sends a test notification", async () => {
@@ -331,6 +356,7 @@ describe("UI frontend components", () => {
     render(
       <AnalysisPanel
         analysis={analysisResponse()}
+        settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
@@ -342,6 +368,7 @@ describe("UI frontend components", () => {
     expect(screen.getByText("Análisis")).toBeInTheDocument();
     expect(screen.getAllByText("Confiables").length).toBeGreaterThan(0);
     expect(screen.getByText("BTC actual")).toBeInTheDocument();
+    expect(screen.getByText("BTC actual").closest("td")).toHaveAttribute("data-label", "Mercado");
     expect(screen.getAllByText("Media").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Resumen" })).toBeInTheDocument();
     expect(screen.getAllByText(/EV/).length).toBeGreaterThan(0);
@@ -356,11 +383,12 @@ describe("UI frontend components", () => {
     expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
   });
 
-  it("selects and applies a strategy from Analysis", async () => {
+  it("previews and confirms a strategy from Analysis", async () => {
     const onApplyStrategy = vi.fn(async () => undefined);
     render(
       <AnalysisPanel
         analysis={analysisResponse()}
+        settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
@@ -369,16 +397,41 @@ describe("UI frontend components", () => {
       />,
     );
 
-    const applyButton = screen.getByRole("button", { name: "Aplicar estrategia" });
-    expect(applyButton).toBeDisabled();
+    expect(screen.getByText("Selecciona una tarjeta para comparar valores actuales y nuevos antes de guardar.")).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
-    expect(applyButton).toBeEnabled();
+    expect(onApplyStrategy).not.toHaveBeenCalled();
 
-    fireEvent.click(applyButton);
+    const preview = screen.getByText("Preview").closest(".strategy-preview-panel") as HTMLElement;
+    expect(within(preview).getByText("Distancia")).toBeInTheDocument();
+    expect(within(preview).getByText("+20.00")).toBeInTheDocument();
+    expect(within(preview).getByText("+10.00")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar aplicacion" }));
 
     await waitFor(() => expect(onApplyStrategy).toHaveBeenCalledWith(expect.objectContaining({ market: "BTC", outcome: "UP" })));
     expect(await screen.findByText(/Estrategia aplicada/)).toBeInTheDocument();
+  });
+
+  it("blocks strategy confirmation while the bot is running", () => {
+    const onApplyStrategy = vi.fn(async () => undefined);
+    render(
+      <AnalysisPanel
+        analysis={analysisResponse()}
+        settings={settings()}
+        busy={false}
+        running={true}
+        onRefresh={vi.fn(async () => undefined)}
+        onAnalyze={vi.fn(async () => ollamaResponse())}
+        onApplyStrategy={onApplyStrategy}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
+
+    expect(screen.getByText("Deten el bot para aplicar cambios de estrategia.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirmar aplicacion" })).toBeDisabled();
+    expect(onApplyStrategy).not.toHaveBeenCalled();
   });
 
   it("keeps Ollama responses until the user deletes them", async () => {
@@ -386,6 +439,7 @@ describe("UI frontend components", () => {
     const firstRender = render(
       <AnalysisPanel
         analysis={analysisResponse()}
+        settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
@@ -402,6 +456,7 @@ describe("UI frontend components", () => {
     render(
       <AnalysisPanel
         analysis={analysisResponse()}
+        settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
@@ -417,10 +472,11 @@ describe("UI frontend components", () => {
     expect(screen.queryByText("Tesis: EV positivo.")).not.toBeInTheDocument();
   });
 
-  it("keeps old AI recommendation controls removed while showing strategy apply", () => {
+  it("keeps old AI recommendation controls removed while showing strategy preview", () => {
     render(
       <AnalysisPanel
         analysis={analysisResponse()}
+        settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
@@ -430,7 +486,7 @@ describe("UI frontend components", () => {
     );
 
     expect(screen.queryByText("IA local")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Aplicar estrategia" })).toBeInTheDocument();
+    expect(screen.getByText("Preview")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Auto aplicar" })).not.toBeInTheDocument();
   });
 });

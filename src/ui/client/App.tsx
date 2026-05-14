@@ -102,6 +102,13 @@ interface OllamaHistoryEntry {
   result: OllamaTradeAnalysisResponse;
 }
 
+interface StrategySettingsPreviewItem {
+  label: string;
+  current: string;
+  next: string;
+  changed: boolean;
+}
+
 const themeStorageKey = "polybot-theme";
 const ollamaHistoryStorageKey = "polybot-ollama-history";
 
@@ -397,6 +404,7 @@ export function App() {
         {tab === "analysis" && (
           <AnalysisPanel
             analysis={analysis}
+            settings={settings}
             busy={busy}
             running={Boolean(status?.running)}
             onRefresh={loadAnalysis}
@@ -589,6 +597,7 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
 
 export function AnalysisPanel({
   analysis,
+  settings,
   busy,
   running,
   onRefresh,
@@ -596,6 +605,7 @@ export function AnalysisPanel({
   onApplyStrategy,
 }: {
   analysis: StrategyAnalysisResponse | null;
+  settings: UiSettings;
   busy: boolean;
   running: boolean;
   onRefresh: () => Promise<void>;
@@ -619,6 +629,7 @@ export function AnalysisPanel({
   );
   const visibleStrategies = sortStrategies(filteredStrategies, sortState);
   const selectedStrategyKey = selectedStrategy ? strategyKey(selectedStrategy) : undefined;
+  const selectedStrategyPreview = selectedStrategy ? strategySettingsPreview(settings, selectedStrategy) : [];
 
   useEffect(() => {
     saveOllamaHistory(ollamaHistory);
@@ -754,133 +765,171 @@ export function AnalysisPanel({
         </div>
       </div>
 
-      <div className="strategy-apply-bar">
-        <div>
-          <strong>{selectedStrategy ? strategyApplySummary(selectedStrategy) : "Sin estrategia seleccionada"}</strong>
-          <span>
-            {selectedStrategy
-              ? `ROI EV ${formatPercent(selectedStrategy.metrics.evRoi)} / EV live ${formatSignedUsd(selectedStrategy.metrics.expectedValueUsd)}`
-              : "Elige una fila o tarjeta para preparar sus parametros."}
-          </span>
+      <div className="strategy-workspace">
+        <div className="strategy-candidate-pane">
+          <div className="workspace-heading">
+            <div>
+              <span>Candidatas</span>
+              <strong>{visibleStrategies.length} estrategias visibles</strong>
+            </div>
+          </div>
+          {visibleStrategies.length === 0 ? (
+            <div className="empty-state strategy-empty">{emptyStrategyMessage(qualityFilter)}</div>
+          ) : (
+            <div className="strategy-card-grid">
+              {visibleStrategies.map((strategy) => (
+                <StrategyMiniCard
+                  key={strategyKey(strategy)}
+                  strategy={strategy}
+                  bestReliable={bestReliableByOutcome.get(strategyOutcomeKey(strategy))}
+                  selected={selectedStrategyKey === strategyKey(strategy)}
+                  onSelect={selectStrategy}
+                />
+              ))}
+            </div>
+          )}
         </div>
-        <button
-          className="command primary"
-          type="button"
-          onClick={applySelectedStrategy}
-          disabled={!selectedStrategy || busy || running}
-          title={running ? "Deten el bot para aplicar cambios de estrategia" : "Aplicar estrategia seleccionada"}
-        >
-          <Save size={18} /> Aplicar estrategia
-        </button>
+
+        <aside className="strategy-preview-panel" aria-live="polite">
+          <div className="workspace-heading">
+            <div>
+              <span>Preview</span>
+              <strong>{selectedStrategy ? strategyApplySummary(selectedStrategy) : "Sin estrategia seleccionada"}</strong>
+            </div>
+          </div>
+          {selectedStrategy ? (
+            <>
+              <div className="hero-metrics compact preview-metrics">
+                <Metric label="ROI EV" value={formatPercent(selectedStrategy.metrics.evRoi)} tone={pnlTone(selectedStrategy.metrics.evRoi)} />
+                <Metric label="EV live" value={formatSignedUsd(selectedStrategy.metrics.expectedValueUsd)} tone={pnlTone(selectedStrategy.metrics.expectedValueUsd)} />
+                <Metric label="Edge" value={formatPercent(selectedStrategy.metrics.edge)} tone={pnlTone(selectedStrategy.metrics.edge)} />
+              </div>
+              <div className="strategy-preview-list">
+                {selectedStrategyPreview.map((item) => (
+                  <div className={`strategy-preview-row ${item.changed ? "changed" : ""}`} key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.current}</strong>
+                    <span aria-hidden="true">-&gt;</span>
+                    <strong>{item.next}</strong>
+                  </div>
+                ))}
+              </div>
+              {running && (
+                <div className="notice error compact-notice">
+                  <AlertTriangle size={18} />
+                  Deten el bot para aplicar cambios de estrategia.
+                </div>
+              )}
+              <button
+                className="command primary"
+                type="button"
+                onClick={applySelectedStrategy}
+                disabled={busy || running}
+                title={running ? "Deten el bot para aplicar cambios de estrategia" : "Confirmar aplicacion de estrategia"}
+              >
+                <Save size={18} /> Confirmar aplicacion
+              </button>
+            </>
+          ) : (
+            <div className="empty-state strategy-preview-empty">Selecciona una tarjeta para comparar valores actuales y nuevos antes de guardar.</div>
+          )}
+        </aside>
       </div>
 
       {applyMessage && <div className="notice success"><CheckCircle2 size={18} />{applyMessage}</div>}
       {applyError && <div className="notice error"><AlertTriangle size={18} />{applyError}</div>}
 
-      {analysis?.currentStrategies.length ? (
-        <div className="current-strategy-grid">
-          {analysis.currentStrategies.map((strategy) => (
-            <StrategyMiniCard
-              key={`${strategy.market}-${strategy.outcome}`}
-              strategy={strategy}
-              bestReliable={bestReliableByOutcome.get(strategyOutcomeKey(strategy))}
-              selected={selectedStrategyKey === strategyKey(strategy)}
-              onSelect={selectStrategy}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {visibleStrategies.length === 0 ? (
-        <div className="empty-state">{emptyStrategyMessage(qualityFilter)}</div>
-      ) : (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Elegir</th>
-                <th>Mercado</th>
-                <th>Lado</th>
-                <th aria-sort={strategySortAria("entryWindowSeconds", sortState)}>
-                  <StrategySortHeader label="Ventana" sortKey="entryWindowSeconds" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("minDistanceUsd", sortState)}>
-                  <StrategySortHeader label="Distancia" sortKey="minDistanceUsd" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("maxAskPrice", sortState)}>
-                  <StrategySortHeader label="Ask cap" sortKey="maxAskPrice" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("averageAsk", sortState)}>
-                  <StrategySortHeader label="Ask prom" sortKey="averageAsk" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("realWinProbability", sortState)}>
-                  <StrategySortHeader label="P real" sortKey="realWinProbability" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("adjustedWinProbability", sortState)}>
-                  <StrategySortHeader label="P ajustada" sortKey="adjustedWinProbability" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("edge", sortState)}>
-                  <StrategySortHeader label="Edge" sortKey="edge" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("evRoi", sortState)}>
-                  <StrategySortHeader label="ROI EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("expectedValueUsd", sortState)}>
-                  <StrategySortHeader label="EV live" sortKey="expectedValueUsd" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th>Conf.</th>
-                <th>Delta</th>
-                <th aria-sort={strategySortAria("tradeCount", sortState)}>
-                  <StrategySortHeader label="Trades" sortKey="tradeCount" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("winRate", sortState)}>
-                  <StrategySortHeader label="Win" sortKey="winRate" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("quoteCoverage", sortState)}>
-                  <StrategySortHeader label="Cobertura" sortKey="quoteCoverage" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th aria-sort={strategySortAria("maxDrawdown", sortState)}>
-                  <StrategySortHeader label="DD" sortKey="maxDrawdown" sortState={sortState} onSort={toggleSort} />
-                </th>
-                <th>Alertas</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleStrategies.map((strategy) => (
-                <tr className={selectedStrategyKey === strategyKey(strategy) ? "selected-row" : undefined} key={strategyKey(strategy)}>
-                  <td>
-                    <button
-                      className="command compact-command"
-                      type="button"
-                      onClick={() => selectStrategy(strategy)}
-                      aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
-                    >
-                      {selectedStrategyKey === strategyKey(strategy) ? "Elegida" : "Seleccionar"}
-                    </button>
-                  </td>
-                  <td>{strategy.market}{strategy.isCurrent ? " actual" : ""}</td>
-                  <td><span className={`side ${strategy.outcome.toLowerCase()}`}>{strategy.outcome}</span></td>
-                  <td>{formatEntryWindow(strategy.entryWindowSeconds)}</td>
-                  <td>{formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</td>
-                  <td>{formatPrice(strategy.maxAskPrice)}</td>
-                  <td>{formatPrice(strategy.metrics.averageAsk)}</td>
-                  <td>{formatRatio(strategy.metrics.realWinProbability)}</td>
-                  <td>{formatRatio(strategy.metrics.adjustedWinProbability)}</td>
-                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.edge)}`}>{formatPercent(strategy.metrics.edge)}</span></td>
-                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.evRoi)}`}>{formatPercent(strategy.metrics.evRoi)}</span></td>
-                  <td><span className={`pnl-value ${pnlTone(strategy.metrics.expectedValueUsd)}`}>{formatSignedUsd(strategy.metrics.expectedValueUsd)}</span></td>
-                  <td><ConfidenceBadge confidence={strategy.confidence} /></td>
-                  <td>{formatDelta(strategy.evDeltaVsCurrent)}</td>
-                  <td>{strategy.metrics.tradeCount}</td>
-                  <td>{formatRatio(strategy.metrics.winRate)}</td>
-                  <td>{formatRatio(strategy.metrics.quoteCoverage)}</td>
-                  <td>{strategy.metrics.maxDrawdown.toFixed(2)}</td>
-                  <td>{formatRiskFlags(strategy.riskFlags)}</td>
+      {visibleStrategies.length > 0 && (
+        <details className="strategy-detail-table">
+          <summary>Detalle completo</summary>
+          <div className="table-scroll strategy-table-scroll">
+            <table className="responsive-table strategy-table">
+              <thead>
+                <tr>
+                  <th>Elegir</th>
+                  <th>Mercado</th>
+                  <th>Lado</th>
+                  <th aria-sort={strategySortAria("entryWindowSeconds", sortState)}>
+                    <StrategySortHeader label="Ventana" sortKey="entryWindowSeconds" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("minDistanceUsd", sortState)}>
+                    <StrategySortHeader label="Distancia" sortKey="minDistanceUsd" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("maxAskPrice", sortState)}>
+                    <StrategySortHeader label="Ask cap" sortKey="maxAskPrice" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("averageAsk", sortState)}>
+                    <StrategySortHeader label="Ask prom" sortKey="averageAsk" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("realWinProbability", sortState)}>
+                    <StrategySortHeader label="P real" sortKey="realWinProbability" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("adjustedWinProbability", sortState)}>
+                    <StrategySortHeader label="P ajustada" sortKey="adjustedWinProbability" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("edge", sortState)}>
+                    <StrategySortHeader label="Edge" sortKey="edge" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("evRoi", sortState)}>
+                    <StrategySortHeader label="ROI EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("expectedValueUsd", sortState)}>
+                    <StrategySortHeader label="EV live" sortKey="expectedValueUsd" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th>Conf.</th>
+                  <th>Delta</th>
+                  <th aria-sort={strategySortAria("tradeCount", sortState)}>
+                    <StrategySortHeader label="Trades" sortKey="tradeCount" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("winRate", sortState)}>
+                    <StrategySortHeader label="Win" sortKey="winRate" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("quoteCoverage", sortState)}>
+                    <StrategySortHeader label="Cobertura" sortKey="quoteCoverage" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th aria-sort={strategySortAria("maxDrawdown", sortState)}>
+                    <StrategySortHeader label="DD" sortKey="maxDrawdown" sortState={sortState} onSort={toggleSort} />
+                  </th>
+                  <th>Alertas</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visibleStrategies.map((strategy) => (
+                  <tr className={selectedStrategyKey === strategyKey(strategy) ? "selected-row" : undefined} key={strategyKey(strategy)}>
+                    <td data-label="Elegir" className="strategy-action-cell">
+                      <button
+                        className="command compact-command"
+                        type="button"
+                        onClick={() => selectStrategy(strategy)}
+                        aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
+                      >
+                        {selectedStrategyKey === strategyKey(strategy) ? "Elegida" : "Seleccionar"}
+                      </button>
+                    </td>
+                    <td data-label="Mercado">{strategy.market}{strategy.isCurrent ? " actual" : ""}</td>
+                    <td data-label="Lado"><span className={`side ${strategy.outcome.toLowerCase()}`}>{strategy.outcome}</span></td>
+                    <td data-label="Ventana">{formatEntryWindow(strategy.entryWindowSeconds)}</td>
+                    <td data-label="Distancia">{formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</td>
+                    <td data-label="Ask cap">{formatPrice(strategy.maxAskPrice)}</td>
+                    <td data-label="Ask prom" className="strategy-secondary-cell">{formatPrice(strategy.metrics.averageAsk)}</td>
+                    <td data-label="P real" className="strategy-secondary-cell">{formatRatio(strategy.metrics.realWinProbability)}</td>
+                    <td data-label="P ajustada" className="strategy-secondary-cell">{formatRatio(strategy.metrics.adjustedWinProbability)}</td>
+                    <td data-label="Edge"><span className={`pnl-value ${pnlTone(strategy.metrics.edge)}`}>{formatPercent(strategy.metrics.edge)}</span></td>
+                    <td data-label="ROI EV"><span className={`pnl-value ${pnlTone(strategy.metrics.evRoi)}`}>{formatPercent(strategy.metrics.evRoi)}</span></td>
+                    <td data-label="EV live"><span className={`pnl-value ${pnlTone(strategy.metrics.expectedValueUsd)}`}>{formatSignedUsd(strategy.metrics.expectedValueUsd)}</span></td>
+                    <td data-label="Conf."><ConfidenceBadge confidence={strategy.confidence} /></td>
+                    <td data-label="Delta" className="strategy-secondary-cell">{formatDelta(strategy.evDeltaVsCurrent)}</td>
+                    <td data-label="Trades">{strategy.metrics.tradeCount}</td>
+                    <td data-label="Win" className="strategy-secondary-cell">{formatRatio(strategy.metrics.winRate)}</td>
+                    <td data-label="Cobertura" className="strategy-secondary-cell">{formatRatio(strategy.metrics.quoteCoverage)}</td>
+                    <td data-label="DD" className="strategy-secondary-cell">{strategy.metrics.maxDrawdown.toFixed(2)}</td>
+                    <td data-label="Alertas" className="strategy-alerts-cell">{formatRiskFlags(strategy.riskFlags)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
 
       <div className="ollama-panel">
@@ -1100,8 +1149,8 @@ export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; sett
       {filteredTrades.length === 0 ? (
         <div className="empty-state table-empty">{emptyTradesMessage(marketFilter, pnlFilter)}</div>
       ) : (
-        <div className="table-scroll">
-          <table>
+        <div className="table-scroll trade-table-scroll">
+          <table className="responsive-table trade-table">
             <thead>
               <tr className="average-row">
                 <th />
@@ -1150,17 +1199,17 @@ export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; sett
                 const marketSymbol = getTradeMarketSymbol(trade) ?? "BTC";
                 return (
                   <tr key={trade.id}>
-                    <td>{new Date(trade.createdAtMs).toLocaleString()}</td>
-                    <td>{tradeMarketLabel(trade)}</td>
-                    <td>{formatTradeEntryWindow(trade, settings)}</td>
-                    <td>{trade.mode.toUpperCase()}</td>
-                    <td><span className={`side ${trade.outcome.toLowerCase()}`}>{trade.outcome}</span></td>
-                    <td>{formatUsd(pnl.stakeUsd)}</td>
-                    <td>{formatPrice(trade.bestAsk)}</td>
-                    <td>{formatMarketDistance(trade.distanceUsd, marketSymbol)}</td>
-                    <td>{formatTradePayout(pnl)}</td>
-                    <td><span className={`pnl-value ${pnlTone(pnl.netUsd)}`}>{formatTradePnl(pnl)}</span></td>
-                    <td>{tradeStatusLabel(trade)}</td>
+                    <td data-label="Hora">{new Date(trade.createdAtMs).toLocaleString()}</td>
+                    <td data-label="Mercado">{tradeMarketLabel(trade)}</td>
+                    <td data-label="Ventana">{formatTradeEntryWindow(trade, settings)}</td>
+                    <td data-label="Modo">{trade.mode.toUpperCase()}</td>
+                    <td data-label="Lado"><span className={`side ${trade.outcome.toLowerCase()}`}>{trade.outcome}</span></td>
+                    <td data-label="Invertido">{formatUsd(pnl.stakeUsd)}</td>
+                    <td data-label="Ask">{formatPrice(trade.bestAsk)}</td>
+                    <td data-label="Distancia">{formatMarketDistance(trade.distanceUsd, marketSymbol)}</td>
+                    <td data-label="Reclamado">{formatTradePayout(pnl)}</td>
+                    <td data-label="P&L"><span className={`pnl-value ${pnlTone(pnl.netUsd)}`}>{formatTradePnl(pnl)}</span></td>
+                    <td data-label="Estado">{tradeStatusLabel(trade)}</td>
                   </tr>
                 );
               })}
@@ -1179,6 +1228,9 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
   onSave: (settings: UiSettings) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings);
+  const [selectedMarket, setSelectedMarket] = useState<MarketSymbol>("BTC");
+  const selectedMarketOption = marketOptions.find((market) => market.symbol === selectedMarket) ?? marketOptions[0];
+  const activeLabels = enabledOutcomeLabels(draft.enabledMarketOutcomes);
   useEffect(() => setDraft(settings), [settings]);
 
   function update(key: keyof UiSettings, value: number | boolean) {
@@ -1317,100 +1369,134 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
 
   return (
     <form className="panel settings-panel" onSubmit={submit}>
-      <div className="market-settings">
-        {marketOptions.map((market) => (
-          <div className="market-setting-row" key={market.symbol}>
-            <div className="market-setting-header">
-              <span className="market-code">{market.symbol}</span>
-              <strong>{market.label}</strong>
+      <div className="settings-summary-grid">
+        <Metric label="Lados activos" value={String(activeLabels.length)} />
+        <Metric label="Limite diario" value={formatUsd(draft.dailySpendLimitUsd)} />
+        <Metric label="Tick stale" value={`${draft.tickStaleMs}ms`} />
+        <Metric label="Poll" value={`${draft.pollIntervalMs}ms`} />
+      </div>
+      <p className="settings-active-line">{activeLabels.length > 0 ? `Activos: ${activeLabels.join(", ")}` : "Sin lados activos."}</p>
+
+      <div className="settings-workspace">
+        <div className="segmented-control settings-market-tabs" role="group" aria-label="Mercado de settings">
+          {marketOptions.map((market) => (
+            <button
+              className={`segment-button ${selectedMarket === market.symbol ? "active" : ""}`}
+              type="button"
+              key={market.symbol}
+              onClick={() => setSelectedMarket(market.symbol)}
+              aria-label={`Editar ${market.label}`}
+            >
+              {market.symbol}
+            </button>
+          ))}
+        </div>
+
+        <section className="market-setting-row settings-market-editor">
+          <div className="market-setting-header">
+            <div>
+              <span className="market-code">{selectedMarketOption.symbol}</span>
+              <strong>{selectedMarketOption.label}</strong>
             </div>
-            <div className="outcome-settings-grid">
-              {outcomeOptions.map((outcome) => (
-                <div className="outcome-setting-row" key={`${market.symbol}-${outcome}`}>
-                  <label className="switch-row outcome-enable">
-                    <input
-                      type="checkbox"
-                      aria-label={`Activar ${market.label} ${outcome}`}
-                      checked={draft.enabledMarketOutcomes[market.symbol][outcome]}
-                      onChange={(event) => toggleMarketOutcome(market.symbol, outcome, event.target.checked)}
-                      disabled={running}
-                    />
-                    <span className={`side ${outcome.toLowerCase()}`}>{outcome}</span>
-                  </label>
-                  <NumberField
-                    label={`Distancia ${market.label} ${outcome}`}
-                    value={draft.minDistanceUsdByMarketOutcome[market.symbol][outcome]}
-                    min={market.min}
-                    step={market.step}
-                    onChange={(value) => updateMarketDistance(market.symbol, outcome, value)}
-                  />
-                  <NumberField
-                    label={`Ventana ${market.label} ${outcome}`}
-                    value={draft.entryWindowSecondsByMarketOutcome[market.symbol][outcome]}
-                    min={1}
-                    step={1}
-                    onChange={(value) => updateMarketEntryWindow(market.symbol, outcome, value)}
-                  />
-                  <NumberField
-                    label={`Monto sim ${market.label} ${outcome}`}
-                    value={draft.simTradeAmountUsdByMarketOutcome[market.symbol][outcome]}
-                    min={0.1}
-                    step={0.1}
-                    onChange={(value) => updateMarketSimAmount(market.symbol, outcome, value)}
-                  />
-                  <NumberField
-                    label={`Monto live ${market.label} ${outcome}`}
-                    value={draft.liveTradeAmountUsdByMarketOutcome[market.symbol][outcome]}
-                    min={0.1}
-                    step={0.1}
-                    onChange={(value) => updateMarketLiveAmount(market.symbol, outcome, value)}
-                  />
-                  <NumberField
-                    label={`Ask cap ${market.label} ${outcome}`}
-                    value={draft.maxAskPriceByMarketOutcome[market.symbol][outcome]}
-                    min={0.01}
-                    max={1}
-                    step={0.01}
-                    onChange={(value) => updateMarketAskCap(market.symbol, outcome, value)}
-                  />
-                  <label className="switch-row compact-switch">
-                    <input
-                      type="checkbox"
-                      aria-label={`Auto live ${market.label} ${outcome}`}
-                      checked={draft.autoAdjustLiveByMarketOutcome[market.symbol][outcome]}
-                      onChange={(event) =>
-                        updateAutoAdjust("autoAdjustLiveByMarketOutcome", market.symbol, outcome, event.target.checked)}
-                      disabled={running}
-                    />
-                    <span>Auto live</span>
-                  </label>
-                  <label className="switch-row compact-switch">
-                    <input
-                      type="checkbox"
-                      aria-label={`Tras perder ${market.label} ${outcome}`}
-                      checked={draft.autoAdjustAfterLossByMarketOutcome[market.symbol][outcome]}
-                      onChange={(event) =>
-                        updateAutoAdjust("autoAdjustAfterLossByMarketOutcome", market.symbol, outcome, event.target.checked)}
-                      disabled={running}
-                    />
-                    <span>Tras perder</span>
-                  </label>
-                </div>
-              ))}
-            </div>
+            <span className="market-active-count">
+              {outcomeOptions.filter((outcome) => draft.enabledMarketOutcomes[selectedMarketOption.symbol][outcome]).length} activos
+            </span>
           </div>
-        ))}
+
+          <div className="outcome-settings-grid settings-outcome-cards">
+            {outcomeOptions.map((outcome) => (
+              <div className="outcome-setting-row" key={`${selectedMarketOption.symbol}-${outcome}`}>
+                <label className="switch-row outcome-enable">
+                  <input
+                    type="checkbox"
+                    aria-label={`Activar ${selectedMarketOption.label} ${outcome}`}
+                    checked={draft.enabledMarketOutcomes[selectedMarketOption.symbol][outcome]}
+                    onChange={(event) => toggleMarketOutcome(selectedMarketOption.symbol, outcome, event.target.checked)}
+                    disabled={running}
+                  />
+                  <span className={`side ${outcome.toLowerCase()}`}>{outcome}</span>
+                </label>
+                <NumberField
+                  label={`Distancia ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.minDistanceUsdByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={selectedMarketOption.min}
+                  step={selectedMarketOption.step}
+                  onChange={(value) => updateMarketDistance(selectedMarketOption.symbol, outcome, value)}
+                />
+                <NumberField
+                  label={`Ventana ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.entryWindowSecondsByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={1}
+                  step={1}
+                  onChange={(value) => updateMarketEntryWindow(selectedMarketOption.symbol, outcome, value)}
+                />
+                <NumberField
+                  label={`Monto sim ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.simTradeAmountUsdByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={0.1}
+                  step={0.1}
+                  onChange={(value) => updateMarketSimAmount(selectedMarketOption.symbol, outcome, value)}
+                />
+                <NumberField
+                  label={`Monto live ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.liveTradeAmountUsdByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={0.1}
+                  step={0.1}
+                  onChange={(value) => updateMarketLiveAmount(selectedMarketOption.symbol, outcome, value)}
+                />
+                <NumberField
+                  label={`Ask cap ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.maxAskPriceByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={0.01}
+                  max={1}
+                  step={0.01}
+                  onChange={(value) => updateMarketAskCap(selectedMarketOption.symbol, outcome, value)}
+                />
+                <label className="switch-row compact-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={`Auto live ${selectedMarketOption.label} ${outcome}`}
+                    checked={draft.autoAdjustLiveByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                    onChange={(event) =>
+                      updateAutoAdjust("autoAdjustLiveByMarketOutcome", selectedMarketOption.symbol, outcome, event.target.checked)}
+                    disabled={running}
+                  />
+                  <span>Auto live</span>
+                </label>
+                <label className="switch-row compact-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={`Tras perder ${selectedMarketOption.label} ${outcome}`}
+                    checked={draft.autoAdjustAfterLossByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                    onChange={(event) =>
+                      updateAutoAdjust("autoAdjustAfterLossByMarketOutcome", selectedMarketOption.symbol, outcome, event.target.checked)}
+                    disabled={running}
+                  />
+                  <span>Tras perder</span>
+                </label>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
-      <div className="settings-grid">
-        <NumberField label="Limite diario" value={draft.dailySpendLimitUsd} min={1} step={1} onChange={(value) => update("dailySpendLimitUsd", value)} />
-        <NumberField label="Tick stale ms" value={draft.tickStaleMs} min={1000} step={1000} onChange={(value) => update("tickStaleMs", value)} />
-        <NumberField label="Poll ms" value={draft.pollIntervalMs} min={250} step={250} onChange={(value) => update("pollIntervalMs", value)} />
-      </div>
-      <label className="switch-row">
-        <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
-        <span>Auto minimo live</span>
-      </label>
-      <div className="form-actions">
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <Settings size={18} />
+          <h2>Avanzado</h2>
+        </div>
+        <div className="settings-grid">
+          <NumberField label="Limite diario" value={draft.dailySpendLimitUsd} min={1} step={1} onChange={(value) => update("dailySpendLimitUsd", value)} />
+          <NumberField label="Tick stale ms" value={draft.tickStaleMs} min={1000} step={1000} onChange={(value) => update("tickStaleMs", value)} />
+          <NumberField label="Poll ms" value={draft.pollIntervalMs} min={250} step={250} onChange={(value) => update("pollIntervalMs", value)} />
+        </div>
+        <label className="switch-row">
+          <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
+          <span>Auto minimo live</span>
+        </label>
+      </section>
+
+      <div className="form-actions settings-save-actions">
         <button className="command primary" disabled={running || busy} type="submit">
           <Save size={18} /> Guardar
         </button>
@@ -1644,7 +1730,7 @@ function ResetConfirmModal({ running, busy, onCancel, onConfirm }: {
 
 function TabButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
-    <button className={`tab-button ${active ? "active" : ""}`} onClick={onClick}>
+    <button className={`tab-button ${active ? "active" : ""}`} type="button" aria-current={active ? "page" : undefined} onClick={onClick}>
       {icon}
       <span>{label}</span>
     </button>
@@ -1913,6 +1999,32 @@ function applyStrategyToSettings(settings: UiSettings, strategy: StrategyCandida
     maxAskPrice: maxAskPriceByMarketOutcome.BTC.UP,
     maxAskPriceByMarketOutcome,
   };
+}
+
+function strategySettingsPreview(settings: UiSettings, strategy: StrategyCandidate): StrategySettingsPreviewItem[] {
+  const currentDistance = settings.minDistanceUsdByMarketOutcome[strategy.market][strategy.outcome];
+  const currentWindow = settings.entryWindowSecondsByMarketOutcome[strategy.market][strategy.outcome];
+  const currentAskCap = settings.maxAskPriceByMarketOutcome[strategy.market][strategy.outcome];
+  return [
+    {
+      label: "Distancia",
+      current: formatMarketDistance(currentDistance, strategy.market),
+      next: formatMarketDistance(strategy.minDistanceUsd, strategy.market),
+      changed: currentDistance !== strategy.minDistanceUsd,
+    },
+    {
+      label: "Ventana",
+      current: formatEntryWindow(currentWindow),
+      next: formatEntryWindow(strategy.entryWindowSeconds),
+      changed: currentWindow !== strategy.entryWindowSeconds,
+    },
+    {
+      label: "Ask cap",
+      current: formatPrice(currentAskCap),
+      next: formatPrice(strategy.maxAskPrice),
+      changed: currentAskCap !== strategy.maxAskPrice,
+    },
+  ];
 }
 
 function cloneOutcomeNumberSettings<T extends UiSettings["minDistanceUsdByMarketOutcome"]>(settings: T): T {
