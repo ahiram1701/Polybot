@@ -191,6 +191,34 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("reuses unchanged state summaries for recent trades and status", async () => {
+    const listTrades = vi.fn(() => [
+      apiTrade({ id: "older", createdAtMs: 1 }),
+      apiTrade({ id: "newer", createdAtMs: 2 }),
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      getLoadedSignature: vi.fn(() => "state:1"),
+      listTrades,
+      getPnlResetAtMs: vi.fn(() => ({})),
+      getDailySpend: vi.fn(() => 2),
+      getOpening: vi.fn(() => undefined),
+    } as unknown as StateStore;
+    const controller = new BotController(await baseConfig(false, { enabledMarkets: [] }), {
+      stateFactory: () => state,
+      startPriceFeed: false,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await expect(controller.getTrades(1)).resolves.toEqual([expect.objectContaining({ id: "newer" })]);
+    await expect(controller.getTrades(1)).resolves.toEqual([expect.objectContaining({ id: "newer" })]);
+    await controller.getStatus();
+    await controller.getStatus();
+
+    expect(listTrades).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
   it("rejects empty Ollama prompts", async () => {
     const controller = new BotController(await baseConfig(false, { ollamaApiKey: "ollama-key" }), {
       strategyAnalysisEngine: fakeStrategyAnalysisEngine(analysisResponse()),
@@ -454,7 +482,7 @@ function analysisResponse(): StrategyAnalysisResponse {
   };
 }
 
-function apiTrade(): TradeAttempt {
+function apiTrade(overrides: Partial<TradeAttempt> = {}): TradeAttempt {
   return {
     id: "api-trade",
     asset: "BTC",
@@ -473,5 +501,6 @@ function apiTrade(): TradeAttempt {
     windowStartMs: 1,
     endMs: 2,
     createdAtMs: 3,
+    ...overrides,
   };
 }

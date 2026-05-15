@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readAnalyticsSamples } from "./analyticsRecorder.js";
@@ -57,17 +58,44 @@ interface CandidateObservation {
   returnRoi: number;
 }
 
+interface CandidateSimulation {
+  sampleCount: number;
+  signalCount: number;
+  observations: CandidateObservation[];
+}
+
 type BaseStrategyCandidate = Omit<
   StrategyCandidate,
   "confidence" | "riskFlags" | "qualityScore" | "evDeltaVsCurrent"
 >;
 
 export class StrategyAnalysisEngine {
+  private cache?: { key: string; response: StrategyAnalysisResponse };
+  private readonly pending = new Map<string, Promise<StrategyAnalysisResponse>>();
+
   constructor(private readonly dataDir: string) {}
 
   async analyze(settings: StrategyAnalysisSettings, nowMs = Date.now()): Promise<StrategyAnalysisResponse> {
-    const samples = await readAnalyticsSamples(join(this.dataDir, "analytics.jsonl"));
-    return buildStrategyAnalysis(samples, settings, nowMs);
+    const analyticsPath = join(this.dataDir, "analytics.jsonl");
+    const key = `${await analyticsFileSignature(analyticsPath)}:${strategySettingsCacheKey(settings)}`;
+    if (this.cache?.key === key) {
+      return withGeneratedAt(this.cache.response, nowMs);
+    }
+
+    const existing = this.pending.get(key);
+    if (existing) {
+      return withGeneratedAt(await existing, nowMs);
+    }
+
+    const pending = readAnalyticsSamples(analyticsPath).then((samples) => buildStrategyAnalysis(samples, settings, nowMs));
+    this.pending.set(key, pending);
+    try {
+      const response = await pending;
+      this.cache = { key, response };
+      return withGeneratedAt(response, nowMs);
+    } finally {
+      this.pending.delete(key);
+    }
   }
 }
 
@@ -155,6 +183,7 @@ function buildOutcomeStrategyGrid(
 
   for (const entryWindowSeconds of CANDIDATE_WINDOWS) {
     for (const minDistanceUsd of distances) {
+      const simulation = buildCandidateSimulation(samples, outcome, entryWindowSeconds, minDistanceUsd);
       for (const maxAskPrice of askCaps) {
         candidates.push({
           market,
@@ -162,14 +191,7 @@ function buildOutcomeStrategyGrid(
           entryWindowSeconds,
           minDistanceUsd,
           maxAskPrice,
-          metrics: simulateStrategy(
-            samples,
-            outcome,
-            entryWindowSeconds,
-            minDistanceUsd,
-            maxAskPrice,
-            resolveLiveTradeAmountUsd(settings, market, outcome),
-          ),
+          metrics: metricsFromSimulation(simulation, maxAskPrice, resolveLiveTradeAmountUsd(settings, market, outcome)),
           isCurrent:
             entryWindowSeconds === current.entryWindowSeconds &&
             minDistanceUsd === current.minDistanceUsd &&
@@ -245,6 +267,19 @@ function simulateStrategy(
   maxAskPrice: number,
   capitalUsd: number,
 ): StrategyMetrics {
+  return metricsFromSimulation(
+    buildCandidateSimulation(samples, outcome, entryWindowSeconds, minDistanceUsd),
+    maxAskPrice,
+    capitalUsd,
+  );
+}
+
+function buildCandidateSimulation(
+  samples: AnalyticsSample[],
+  outcome: Outcome,
+  entryWindowSeconds: number,
+  minDistanceUsd: number,
+): CandidateSimulation {
   const observations: CandidateObservation[] = [];
   let signalCount = 0;
 
@@ -257,7 +292,7 @@ function simulateStrategy(
 
     const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
     const ask = quote ? getAsk(quote, outcome) : undefined;
-    if (!isPositiveFinite(ask) || ask > maxAskPrice || !sample.winningOutcome) {
+    if (!isPositiveFinite(ask) || !sample.winningOutcome) {
       continue;
     }
 
@@ -269,6 +304,15 @@ function simulateStrategy(
     });
   }
 
+  return { sampleCount: samples.length, signalCount, observations };
+}
+
+function metricsFromSimulation(
+  simulation: CandidateSimulation,
+  maxAskPrice: number,
+  capitalUsd: number,
+): StrategyMetrics {
+  const observations = simulation.observations.filter((observation) => observation.ask <= maxAskPrice);
   const returns = observations.map((observation) => observation.returnRoi);
   const tradeCount = observations.length;
   const winCount = observations.filter((observation) => observation.won).length;
@@ -286,12 +330,12 @@ function simulateStrategy(
       : undefined;
 
   return {
-    sampleCount: samples.length,
-    signalCount,
+    sampleCount: simulation.sampleCount,
+    signalCount: simulation.signalCount,
     tradeCount,
     winCount,
     lossCount,
-    quoteCoverage: signalCount > 0 ? tradeCount / signalCount : 0,
+    quoteCoverage: simulation.signalCount > 0 ? tradeCount / simulation.signalCount : 0,
     winRate: expectedValue?.realWinProbability,
     realWinProbability: expectedValue?.realWinProbability,
     adjustedWinProbability: expectedValue?.adjustedWinProbability,
@@ -322,10 +366,18 @@ function findSignalTick(
   entryWindowSeconds: number,
   minDistanceUsd: number,
 ): AnalyticsTickPoint | undefined {
-  return sample.ticks
-    .filter((tick) => tick.secondsToEnd > 0 && tick.secondsToEnd <= entryWindowSeconds)
-    .sort((left, right) => left.timestampMs - right.timestampMs)
-    .find((tick) => outcomeDistance(tick, outcome) >= minDistanceUsd);
+  let best: AnalyticsTickPoint | undefined;
+  for (const tick of sample.ticks) {
+    if (
+      tick.secondsToEnd > 0 &&
+      tick.secondsToEnd <= entryWindowSeconds &&
+      outcomeDistance(tick, outcome) >= minDistanceUsd &&
+      (!best || tick.timestampMs < best.timestampMs)
+    ) {
+      best = tick;
+    }
+  }
+  return best;
 }
 
 function outcomeDistance(tick: AnalyticsTickPoint, outcome: Outcome): number {
@@ -333,10 +385,16 @@ function outcomeDistance(tick: AnalyticsTickPoint, outcome: Outcome): number {
 }
 
 function findClosestQuote(quotes: AnalyticsQuotePoint[], timestampMs: number): AnalyticsQuotePoint | undefined {
-  return quotes
-    .map((quote) => ({ quote, distanceMs: Math.abs(quote.timestampMs - timestampMs) }))
-    .filter((item) => item.distanceMs <= QUOTE_MATCH_WINDOW_MS)
-    .sort((left, right) => left.distanceMs - right.distanceMs)[0]?.quote;
+  let best: AnalyticsQuotePoint | undefined;
+  let bestDistanceMs = Infinity;
+  for (const quote of quotes) {
+    const distanceMs = Math.abs(quote.timestampMs - timestampMs);
+    if (distanceMs <= QUOTE_MATCH_WINDOW_MS && distanceMs < bestDistanceMs) {
+      best = quote;
+      bestDistanceMs = distanceMs;
+    }
+  }
+  return best;
 }
 
 function getAsk(quote: AnalyticsQuotePoint, outcome: Outcome): number | undefined {
@@ -509,6 +567,36 @@ function quantile(values: number[], percentile: number): number | undefined {
 function roundToStep(market: MarketSymbol, value: number, step: number): number {
   const decimals = market === "DOGE" ? 6 : 2;
   return Number((Math.round(value / step) * step).toFixed(decimals));
+}
+
+async function analyticsFileSignature(path: string): Promise<string> {
+  try {
+    const stats = await stat(path, { bigint: true });
+    return `${stats.size}:${stats.mtimeNs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "missing";
+    }
+    throw error;
+  }
+}
+
+function strategySettingsCacheKey(settings: StrategyAnalysisSettings): string {
+  return JSON.stringify({
+    minDistanceUsdByMarket: settings.minDistanceUsdByMarket,
+    minDistanceUsdByMarketOutcome: settings.minDistanceUsdByMarketOutcome,
+    entryWindowSeconds: settings.entryWindowSeconds,
+    entryWindowSecondsByMarket: settings.entryWindowSecondsByMarket,
+    entryWindowSecondsByMarketOutcome: settings.entryWindowSecondsByMarketOutcome,
+    maxAskPrice: settings.maxAskPrice,
+    maxAskPriceByMarketOutcome: settings.maxAskPriceByMarketOutcome,
+    liveTradeAmountUsd: settings.liveTradeAmountUsd,
+    liveTradeAmountUsdByMarketOutcome: settings.liveTradeAmountUsdByMarketOutcome,
+  });
+}
+
+function withGeneratedAt(response: StrategyAnalysisResponse, generatedAtMs: number): StrategyAnalysisResponse {
+  return response.generatedAtMs === generatedAtMs ? response : { ...response, generatedAtMs };
 }
 
 function isPositiveFinite(value: unknown): value is number {

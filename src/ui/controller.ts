@@ -27,11 +27,13 @@ import {
   calculateTradePnl,
   emptyPnlSummaryByMode,
   EMPTY_PNL_SUMMARY,
+  type PnlSummary,
+  type PnlSummaryByMode,
 } from "../pnl.js";
 import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEngine.js";
 import { StateStore } from "../stateStore.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
-import { secondsToEnd } from "../time.js";
+import { dailySpendKey, secondsToEnd } from "../time.js";
 import type {
   BotConfig,
   MarketOutcomeNumberSettings,
@@ -98,6 +100,19 @@ export interface BotControllerDeps {
   startPriceFeed?: boolean;
 }
 
+interface CachedUiStateSummary {
+  signature: string;
+  spendKey: string;
+  dailySpendUsd: number;
+  tradesSorted: TradeAttempt[];
+  pnl: PnlSummary;
+  pnlByMode: PnlSummaryByMode;
+}
+
+interface UiStateSummary extends CachedUiStateSummary {
+  state: StateStore;
+}
+
 export class BotController {
   private runner?: RunnerLike;
   private runnerPromise?: Promise<void>;
@@ -120,6 +135,7 @@ export class BotController {
   private readonly fetchImpl: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
   private readonly unsubscribeLogger: () => boolean;
+  private stateSummaryCache?: CachedUiStateSummary;
 
   constructor(
     private readonly baseConfig: BotConfig,
@@ -218,6 +234,7 @@ export class BotController {
     const state = this.stateFactory();
     await state.load();
     await state.reset();
+    this.stateSummaryCache = undefined;
     this.logs.length = 0;
     logger.info("Polybot reset completed.", {
       cleared: ["state", "trades"],
@@ -230,6 +247,7 @@ export class BotController {
     const state = this.stateFactory();
     await state.load();
     await state.resetPnl(mode);
+    this.stateSummaryCache = undefined;
     logger.info("P&L reset completed.", { mode });
     return this.getStatus();
   }
@@ -361,15 +379,11 @@ export class BotController {
 
     const settings = await this.settingsStore.load(this.baseConfig);
     const analysis = await this.strategyAnalysisEngine.analyze(settings);
-    const state = this.stateFactory();
-    await state.load();
-    const allTrades = state.listTrades();
-    const trades = allTrades
-      .sort((left, right) => right.createdAtMs - left.createdAtMs)
-      .slice(0, 50);
-    const pnlResetAtMs = state.getPnlResetAtMs();
-    const pnl = calculateResetAwarePnlSummary(allTrades, pnlResetAtMs);
-    const pnlByMode = calculatePnlSummaryByMode(allTrades, pnlResetAtMs);
+    const stateSummary = await this.getStateSummary();
+    const allTrades = stateSummary.tradesSorted;
+    const trades = allTrades.slice(0, 50);
+    const pnl = stateSummary.pnl;
+    const pnlByMode = stateSummary.pnlByMode;
     const model = this.baseConfig.ollamaModel ?? DEFAULT_OLLAMA_MODEL;
     const host = (this.baseConfig.ollamaHost ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, "");
     const contextSummary = `${analysis.summary.sampleCount} muestras, ${analysis.strategies.length} estrategias rankeadas, ${trades.length} trades recientes.`;
@@ -432,12 +446,8 @@ export class BotController {
   }
 
   async getTrades(limit = 100) {
-    const state = this.stateFactory();
-    await state.load();
-    return state
-      .listTrades()
-      .sort((left, right) => right.createdAtMs - left.createdAtMs)
-      .slice(0, limit);
+    const stateSummary = await this.getStateSummary();
+    return stateSummary.tradesSorted.slice(0, limit);
   }
 
   async getStatus(): Promise<UiStatus> {
@@ -483,13 +493,8 @@ export class BotController {
 
   private async buildSnapshot(settings: UiSettings, config: BotConfig): Promise<Partial<UiStatus>> {
     const nowMs = Date.now();
-    const state = this.stateFactory();
-    await state.load();
-    const trades = state.listTrades();
-    const pnlResetAtMs = state.getPnlResetAtMs();
-    const pnl = calculateResetAwarePnlSummary(trades, pnlResetAtMs);
-    const pnlByMode = calculatePnlSummaryByMode(trades, pnlResetAtMs);
-    const dailySpendUsd = state.getDailySpend(nowMs);
+    const stateSummary = await this.getStateSummary(nowMs);
+    const { state, dailySpendUsd, pnl, pnlByMode } = stateSummary;
     const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
 
     if (enabledMarkets.length === 0) {
@@ -593,6 +598,37 @@ export class BotController {
           DOWN: this.resolveConfiguredMinDistance(config, marketSymbol, "DOWN"),
         },
       }),
+    };
+  }
+
+  private async getStateSummary(nowMs = Date.now()): Promise<UiStateSummary> {
+    const state = this.stateFactory();
+    await state.load();
+    const signature = getLoadedStateSignature(state);
+    const spendKey = dailySpendKey(nowMs);
+    if (signature && this.stateSummaryCache?.signature === signature && this.stateSummaryCache.spendKey === spendKey) {
+      return {
+        ...this.stateSummaryCache,
+        state,
+      };
+    }
+
+    const trades = state.listTrades();
+    const pnlResetAtMs = state.getPnlResetAtMs();
+    const summary: CachedUiStateSummary = {
+      signature: signature ?? `uncached:${nowMs}`,
+      spendKey,
+      dailySpendUsd: state.getDailySpend(nowMs),
+      tradesSorted: [...trades].sort((left, right) => right.createdAtMs - left.createdAtMs),
+      pnl: calculateResetAwarePnlSummary(trades, pnlResetAtMs),
+      pnlByMode: calculatePnlSummaryByMode(trades, pnlResetAtMs),
+    };
+    if (signature) {
+      this.stateSummaryCache = summary;
+    }
+    return {
+      ...summary,
+      state,
     };
   }
 
@@ -831,6 +867,11 @@ function cloneOutcomeSettings(settings: MarketOutcomeNumberSettings): MarketOutc
     ETH: { ...settings.ETH },
     DOGE: { ...settings.DOGE },
   };
+}
+
+function getLoadedStateSignature(state: StateStore): string | undefined {
+  const maybeState = state as StateStore & { getLoadedSignature?: () => string };
+  return typeof maybeState.getLoadedSignature === "function" ? maybeState.getLoadedSignature() : undefined;
 }
 
 function summarizeStrategyCandidate(candidate: StrategyCandidate) {

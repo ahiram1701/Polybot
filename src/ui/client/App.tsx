@@ -26,7 +26,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
 import { calculateTradePnl, type PnlSummary, type TradePnl } from "../../pnl.js";
@@ -209,25 +209,63 @@ export function App() {
   const [trades, setTrades] = useState<TradeAttempt[]>([]);
   const [settings, setSettings] = useState<UiSettings>(emptySettings);
   const [analysis, setAnalysis] = useState<StrategyAnalysisResponse | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisStale, setAnalysisStale] = useState(true);
   const [tab, setTab] = useState<Tab>("dashboard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveModal, setLiveModal] = useState(false);
   const [resetModal, setResetModal] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
+  const analysisRequestId = useRef(0);
 
   useEffect(() => {
-    void refreshAll();
+    void refreshCore();
     const events = new EventSource("/api/events");
+    let tradesRefreshTimer: number | undefined;
+    let tradesRefreshInFlight = false;
+    let tradesRefreshQueued = false;
+    const scheduleTradesRefresh = () => {
+      if (tradesRefreshTimer !== undefined) {
+        return;
+      }
+      tradesRefreshTimer = window.setTimeout(() => {
+        tradesRefreshTimer = undefined;
+        if (tradesRefreshInFlight) {
+          tradesRefreshQueued = true;
+          return;
+        }
+        tradesRefreshInFlight = true;
+        void loadTrades().finally(() => {
+          tradesRefreshInFlight = false;
+          if (tradesRefreshQueued) {
+            tradesRefreshQueued = false;
+            scheduleTradesRefresh();
+          }
+        });
+      }, 500);
+    };
     events.addEventListener("status", (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as { status: UiStatus };
       setStatus(payload.status);
     });
     events.addEventListener("log", () => {
-      void loadTrades();
+      scheduleTradesRefresh();
     });
-    return () => events.close();
+    return () => {
+      if (tradesRefreshTimer !== undefined) {
+        window.clearTimeout(tradesRefreshTimer);
+      }
+      events.close();
+    };
   }, []);
+
+  useEffect(() => {
+    if (tab === "analysis" && analysisStale && !analysisLoading) {
+      void loadAnalysis();
+    }
+  }, [tab, analysisStale, analysisLoading]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -239,17 +277,16 @@ export function App() {
     }
   }, [theme]);
 
-  async function refreshAll() {
+  async function refreshCore() {
     setError(null);
-    const [nextStatus, nextSettings, nextAnalysis] = await Promise.all([
+    const [nextStatus, nextSettings, nextTrades] = await Promise.all([
       api<UiStatus>("/api/status"),
       api<UiSettings>("/api/settings"),
-      api<StrategyAnalysisResponse>("/api/analysis/strategies"),
+      api<{ trades: TradeAttempt[] }>("/api/trades?limit=100"),
     ]);
     setStatus(nextStatus);
     setSettings(nextSettings);
-    setAnalysis(nextAnalysis);
-    await loadTrades();
+    setTrades(nextTrades.trades);
   }
 
   async function loadTrades() {
@@ -258,7 +295,26 @@ export function App() {
   }
 
   async function loadAnalysis() {
-    setAnalysis(await api<StrategyAnalysisResponse>("/api/analysis/strategies"));
+    const requestId = analysisRequestId.current + 1;
+    analysisRequestId.current = requestId;
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    try {
+      const nextAnalysis = await api<StrategyAnalysisResponse>("/api/analysis/strategies");
+      if (analysisRequestId.current === requestId) {
+        setAnalysis(nextAnalysis);
+        setAnalysisStale(false);
+      }
+    } catch (caught) {
+      if (analysisRequestId.current === requestId) {
+        setAnalysisError(caught instanceof Error ? caught.message : String(caught));
+        setAnalysisStale(false);
+      }
+    } finally {
+      if (analysisRequestId.current === requestId) {
+        setAnalysisLoading(false);
+      }
+    }
   }
 
   async function startBot(request: StartBotRequest) {
@@ -300,7 +356,8 @@ export function App() {
     try {
       const saved = await api<UiSettings>("/api/settings", { method: "PATCH", body: JSON.stringify(next) });
       setSettings(saved);
-      await refreshAll();
+      setAnalysisStale(true);
+      await refreshCore();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       if (rethrow) {
@@ -333,8 +390,10 @@ export function App() {
     try {
       setStatus(await api<UiStatus>("/api/bot/reset", { method: "POST" }));
       setTrades([]);
+      setAnalysis(null);
+      setAnalysisStale(true);
       setResetModal(false);
-      await refreshAll();
+      await refreshCore();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -392,7 +451,7 @@ export function App() {
               onOpenLive={() => setLiveModal(true)}
               onOpenReset={() => setResetModal(true)}
               onStop={stopBot}
-              onRefresh={() => refreshAll()}
+              onRefresh={() => refreshCore()}
             />
           </div>
         </header>
@@ -404,6 +463,9 @@ export function App() {
         {tab === "analysis" && (
           <AnalysisPanel
             analysis={analysis}
+            loading={analysisLoading}
+            loadError={analysisError}
+            stale={analysisStale}
             settings={settings}
             busy={busy}
             running={Boolean(status?.running)}
@@ -597,6 +659,9 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
 
 export function AnalysisPanel({
   analysis,
+  loading = false,
+  loadError = null,
+  stale = false,
   settings,
   busy,
   running,
@@ -605,6 +670,9 @@ export function AnalysisPanel({
   onApplyStrategy,
 }: {
   analysis: StrategyAnalysisResponse | null;
+  loading?: boolean;
+  loadError?: string | null;
+  stale?: boolean;
   settings: UiSettings;
   busy: boolean;
   running: boolean;
@@ -697,10 +765,29 @@ export function AnalysisPanel({
           <Brain size={18} />
           <h2>{"An\u00e1lisis"}</h2>
         </div>
-        <button className="command" type="button" onClick={onRefresh} disabled={busy}>
+        <button className="command" type="button" onClick={onRefresh} disabled={busy || loading}>
           <RefreshCw size={18} /> Actualizar
         </button>
       </div>
+
+      {loading && (
+        <div className="notice compact-notice">
+          <RefreshCw size={18} />
+          Calculando estrategias...
+        </div>
+      )}
+      {loadError && (
+        <div className="notice error compact-notice">
+          <AlertTriangle size={18} />
+          {loadError}
+        </div>
+      )}
+      {stale && analysis && !loading && !loadError && (
+        <div className="notice compact-notice">
+          <AlertTriangle size={18} />
+          Analisis pendiente de actualizar.
+        </div>
+      )}
 
       <div className="hero-metrics compact analysis-metrics">
         <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />

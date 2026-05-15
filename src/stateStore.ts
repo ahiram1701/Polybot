@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { BotState, Mode, TradeAttempt, TradeEvent, WindowOpening } from "./types.js";
@@ -12,9 +12,17 @@ const EMPTY_STATE: BotState = {
   pnlResetAtMs: {},
 };
 
+interface StateFileCacheEntry {
+  signature: string;
+  state: BotState;
+}
+
+const stateFileCache = new Map<string, StateFileCacheEntry>();
+
 export class StateStore {
   private state: BotState = structuredClone(EMPTY_STATE);
   private loaded = false;
+  private loadedSignature = "unloaded";
 
   constructor(private readonly dataDir: string) {}
 
@@ -27,6 +35,23 @@ export class StateStore {
   }
 
   async load(): Promise<void> {
+    let signature = await getStateFileSignature(this.statePath);
+    const cached = stateFileCache.get(this.statePath);
+    if (cached?.signature === signature) {
+      this.state = structuredClone(cached.state);
+      this.loadedSignature = signature;
+      this.loaded = true;
+      return;
+    }
+
+    if (signature === "missing") {
+      this.state = structuredClone(EMPTY_STATE);
+      this.loadedSignature = signature;
+      this.loaded = true;
+      stateFileCache.set(this.statePath, { signature, state: structuredClone(this.state) });
+      return;
+    }
+
     try {
       const contents = await readFile(this.statePath, "utf8");
       const parsed = JSON.parse(contents) as BotState;
@@ -41,9 +66,17 @@ export class StateStore {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
+      signature = "missing";
       this.state = structuredClone(EMPTY_STATE);
     }
+    this.loadedSignature = signature;
     this.loaded = true;
+    stateFileCache.set(this.statePath, { signature, state: structuredClone(this.state) });
+  }
+
+  getLoadedSignature(): string {
+    this.assertLoaded();
+    return this.loadedSignature;
   }
 
   getOpening(slug: string): WindowOpening | undefined {
@@ -165,12 +198,31 @@ export class StateStore {
     const tempPath = `${this.statePath}.tmp`;
     await writeFile(tempPath, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
     await rename(tempPath, this.statePath);
+    await this.refreshStateFileCache();
   }
 
   private assertLoaded(): void {
     if (!this.loaded) {
       throw new Error("StateStore.load() must be called before use.");
     }
+  }
+
+  private async refreshStateFileCache(): Promise<void> {
+    const signature = await getStateFileSignature(this.statePath);
+    this.loadedSignature = signature;
+    stateFileCache.set(this.statePath, { signature, state: structuredClone(this.state) });
+  }
+}
+
+async function getStateFileSignature(path: string): Promise<string> {
+  try {
+    const stats = await stat(path, { bigint: true });
+    return `${stats.size}:${stats.mtimeNs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "missing";
+    }
+    throw error;
   }
 }
 

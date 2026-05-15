@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("UI frontend components", () => {
-  it("shows the Analysis tab in the app navigation", () => {
+  it("does not load strategy analysis during the initial dashboard load", async () => {
     class FakeEventSource {
       readonly url: string;
       readonly withCredentials = false;
@@ -40,7 +40,7 @@ describe("UI frontend components", () => {
     }
 
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path === "/api/status") {
         return jsonResponse(status({ liveReady: false }));
@@ -55,13 +55,65 @@ describe("UI frontend components", () => {
         return jsonResponse({ trades: [] });
       }
       return jsonResponse({ error: "not found" }, 404);
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
     expect(screen.getByRole("button", { name: "Telegram" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/trades?limit=100"));
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain("/api/analysis/strategies");
 
     expect(screen.getByRole("button", { name: "Análisis" })).toBeInTheDocument();
+  });
+
+  it("loads strategy analysis when the Analysis tab opens", async () => {
+    class FakeEventSource {
+      readonly url: string;
+      readonly withCredentials = false;
+      readonly CONNECTING = 0;
+      readonly OPEN = 1;
+      readonly CLOSED = 2;
+      readyState = 1;
+      onerror: ((this: EventSource, event: Event) => unknown) | null = null;
+      onmessage: ((this: EventSource, event: MessageEvent) => unknown) | null = null;
+      onopen: ((this: EventSource, event: Event) => unknown) | null = null;
+
+      constructor(url: string | URL) {
+        this.url = String(url);
+      }
+
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() {
+        return true;
+      }
+      close() {}
+    }
+
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/status") {
+        return jsonResponse(status({ liveReady: false }));
+      }
+      if (path === "/api/settings") {
+        return jsonResponse(settings());
+      }
+      if (path === "/api/trades?limit=100") {
+        return jsonResponse({ trades: [] });
+      }
+      if (path === "/api/analysis/strategies") {
+        return jsonResponse(analysisResponse());
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /An/i }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/analysis/strategies"));
   });
 
   it("disables live control when live is not ready", () => {

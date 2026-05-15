@@ -103,8 +103,26 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
     const unsubscribe = controller.onEvent(send);
-    const statusTimer = setInterval(async () => {
-      send({ type: "status", status: await controller.getStatus() });
+    let statusInFlight = false;
+    const statusTimer = setInterval(() => {
+      if (statusInFlight) {
+        return;
+      }
+      statusInFlight = true;
+      controller.getStatus()
+        .then((status) => send({ type: "status", status }))
+        .catch((error) => send({
+          type: "log",
+          log: {
+            at: new Date().toISOString(),
+            level: "warn",
+            message: "UI status refresh failed.",
+            meta: { error: error instanceof Error ? error.message : String(error) },
+          },
+        }))
+        .finally(() => {
+          statusInFlight = false;
+        });
     }, 1_000);
 
     req.on("close", () => {
