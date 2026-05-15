@@ -104,6 +104,7 @@ export function buildStrategyAnalysis(
   settings: StrategyAnalysisSettings,
   nowMs = Date.now(),
 ): StrategyAnalysisResponse {
+  const sampleRange = getSampleRange(samples);
   const currentBaseStrategies = buildCurrentStrategies(samples, settings);
   const currentEvByOutcome = new Map(
     currentBaseStrategies.map((strategy) => [strategyOutcomeKey(strategy), strategy.metrics.evRoi]),
@@ -131,6 +132,7 @@ export function buildStrategyAnalysis(
     currentStrategies,
     summary: {
       sampleCount: samples.length,
+      ...sampleRange,
       strategyCount: candidates.length,
       currentStrategyCount: currentStrategies.length,
       reliableStrategyCount: candidates.filter(isReliableStrategy).length,
@@ -140,6 +142,22 @@ export function buildStrategyAnalysis(
       bestReliableTradeCount: bestReliable?.metrics.tradeCount,
     },
   };
+}
+
+function getSampleRange(
+  samples: AnalyticsSample[],
+): Pick<StrategyAnalysisResponse["summary"], "firstSampleAtMs" | "lastSampleAtMs"> {
+  let firstSampleAtMs: number | undefined;
+  let lastSampleAtMs: number | undefined;
+  for (const sample of samples) {
+    const sampleAtMs = sample.resolvedAtMs ?? sample.endMs ?? sample.windowStartMs;
+    if (!Number.isFinite(sampleAtMs)) {
+      continue;
+    }
+    firstSampleAtMs = firstSampleAtMs === undefined ? sampleAtMs : Math.min(firstSampleAtMs, sampleAtMs);
+    lastSampleAtMs = lastSampleAtMs === undefined ? sampleAtMs : Math.max(lastSampleAtMs, sampleAtMs);
+  }
+  return { firstSampleAtMs, lastSampleAtMs };
 }
 
 function buildCurrentStrategies(

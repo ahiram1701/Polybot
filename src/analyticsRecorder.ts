@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { marketSymbolFromSlug } from "./markets.js";
 import { secondsToEnd } from "./time.js";
 import type {
   AnalyticsQuotePoint,
@@ -10,10 +11,12 @@ import type {
   OrderbookQuote,
   Outcome,
   PriceTick,
+  TradeAttempt,
   WindowOpening,
 } from "./types.js";
 
 export const ANALYTICS_WINDOW_SECONDS = 60;
+const MAX_SAMPLE_RESOLUTION_DELAY_MS = 10 * 60 * 1000;
 
 export interface AnalyticsObservation {
   market: MarketInfo;
@@ -25,6 +28,7 @@ export interface AnalyticsObservation {
 
 export class AnalyticsRecorder {
   private readonly activeSamples = new Map<string, AnalyticsSample>();
+  private activeSamplesHydrated = false;
 
   constructor(private readonly dataDir: string) {}
 
@@ -32,26 +36,43 @@ export class AnalyticsRecorder {
     return join(this.dataDir, "analytics.jsonl");
   }
 
+  get activeSamplesPath(): string {
+    return join(this.dataDir, "analytics-active.json");
+  }
+
   async observeMarket(observation: AnalyticsObservation): Promise<void> {
+    await this.hydrateActiveSamples();
+    let changed = false;
+
     if (observation.tick) {
-      await this.resolveClosedSamples(observation.tick, observation.nowMs);
+      changed = (await this.resolveClosedSamples(observation.tick, observation.nowMs)) || changed;
       if (observation.tick.timestampMs >= observation.market.endMs) {
+        if (changed) {
+          await this.persistActiveSamples();
+        }
         return;
       }
     }
     if (!observation.opening) {
+      if (changed) {
+        await this.persistActiveSamples();
+      }
       return;
     }
 
-    const sample = this.getOrCreateSample(observation.market, observation.opening);
+    const { sample, created } = this.getOrCreateSample(observation.market, observation.opening);
+    changed = created || changed;
     if (observation.tick) {
-      this.recordTick(sample, observation.tick);
+      changed = this.recordTick(sample, observation.tick) || changed;
     }
     if (observation.quotes) {
-      this.recordQuote(sample, observation.quotes, observation.nowMs);
+      changed = this.recordQuote(sample, observation.quotes, observation.nowMs) || changed;
     }
     if (observation.tick) {
-      await this.resolveSampleIfClosed(sample, observation.tick, observation.nowMs);
+      changed = (await this.resolveSampleIfClosed(sample, observation.tick, observation.nowMs)) || changed;
+    }
+    if (changed) {
+      await this.persistActiveSamples();
     }
   }
 
@@ -59,10 +80,60 @@ export class AnalyticsRecorder {
     return readAnalyticsSamples(this.analyticsPath);
   }
 
-  private getOrCreateSample(market: MarketInfo, opening: WindowOpening): AnalyticsSample {
+  async recordResolvedTrade(trade: TradeAttempt, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
+    await this.hydrateActiveSamples();
+    const market = trade.asset ?? marketSymbolFromSlug(trade.slug);
+    if (
+      !market ||
+      !isFiniteNumber(trade.openingPrice) ||
+      !isFiniteNumber(trade.entryPrice) ||
+      resolution.finalTickTimestampMs - trade.endMs > MAX_SAMPLE_RESOLUTION_DELAY_MS
+    ) {
+      return;
+    }
+
+    const tickTimestampMs = clamp(
+      isFiniteNumber(trade.createdAtMs) ? trade.createdAtMs : trade.endMs - 1,
+      trade.windowStartMs + 1,
+      trade.endMs - 1,
+    );
+    const quotePoint = isPositiveFiniteNumber(trade.bestAsk)
+      ? [{
+          timestampMs: tickTimestampMs,
+          secondsToEnd: secondsToEnd(trade.endMs, tickTimestampMs),
+          upBestAsk: trade.outcome === "UP" ? trade.bestAsk : undefined,
+          downBestAsk: trade.outcome === "DOWN" ? trade.bestAsk : undefined,
+        } satisfies AnalyticsQuotePoint]
+      : [];
+
+    await this.appendSample({
+      version: 1,
+      market,
+      slug: trade.slug,
+      windowStartMs: trade.windowStartMs,
+      endMs: trade.endMs,
+      openingPrice: trade.openingPrice,
+      openingTickTimestampMs: trade.windowStartMs,
+      ticks: [
+        {
+          timestampMs: tickTimestampMs,
+          secondsToEnd: secondsToEnd(trade.endMs, tickTimestampMs),
+          price: trade.entryPrice,
+          distanceUsd: trade.entryPrice - trade.openingPrice,
+        },
+      ],
+      quotes: quotePoint,
+      finalPrice: resolution.finalPrice,
+      finalTickTimestampMs: resolution.finalTickTimestampMs,
+      winningOutcome: resolution.winningOutcome,
+      resolvedAtMs: resolution.resolvedAtMs,
+    });
+  }
+
+  private getOrCreateSample(market: MarketInfo, opening: WindowOpening): { sample: AnalyticsSample; created: boolean } {
     const existing = this.activeSamples.get(market.slug);
     if (existing) {
-      return existing;
+      return { sample: existing, created: false };
     }
 
     const sample: AnalyticsSample = {
@@ -77,16 +148,16 @@ export class AnalyticsRecorder {
       quotes: [],
     };
     this.activeSamples.set(market.slug, sample);
-    return sample;
+    return { sample, created: true };
   }
 
-  private recordTick(sample: AnalyticsSample, tick: PriceTick): void {
+  private recordTick(sample: AnalyticsSample, tick: PriceTick): boolean {
     if (tick.market !== sample.market) {
-      return;
+      return false;
     }
     const remainingSeconds = secondsToEnd(sample.endMs, tick.timestampMs);
     if (remainingSeconds < 0 || remainingSeconds > ANALYTICS_WINDOW_SECONDS) {
-      return;
+      return false;
     }
 
     const point: AnalyticsTickPoint = {
@@ -95,17 +166,17 @@ export class AnalyticsRecorder {
       price: tick.value,
       distanceUsd: tick.value - sample.openingPrice,
     };
-    upsertByTimestamp(sample.ticks, point);
+    return upsertByTimestamp(sample.ticks, point);
   }
 
   private recordQuote(
     sample: AnalyticsSample,
     quotes: Partial<Record<Outcome, OrderbookQuote>>,
     nowMs: number,
-  ): void {
+  ): boolean {
     const remainingSeconds = secondsToEnd(sample.endMs, nowMs);
     if (remainingSeconds <= 0 || remainingSeconds > ANALYTICS_WINDOW_SECONDS) {
-      return;
+      return false;
     }
 
     const point: AnalyticsQuotePoint = {
@@ -116,21 +187,27 @@ export class AnalyticsRecorder {
       downBestAsk: quotes.DOWN?.bestAsk,
       downBestBid: quotes.DOWN?.bestBid,
     };
-    upsertByTimestamp(sample.quotes, point);
+    return upsertByTimestamp(sample.quotes, point);
   }
 
-  private async resolveClosedSamples(tick: PriceTick, nowMs: number): Promise<void> {
+  private async resolveClosedSamples(tick: PriceTick, nowMs: number): Promise<boolean> {
+    let changed = false;
     const samples = [...this.activeSamples.values()].filter(
       (sample) => sample.market === tick.market && tick.timestampMs >= sample.endMs,
     );
     for (const sample of samples) {
-      await this.resolveSampleIfClosed(sample, tick, nowMs);
+      changed = (await this.resolveSampleIfClosed(sample, tick, nowMs)) || changed;
     }
+    return changed;
   }
 
-  private async resolveSampleIfClosed(sample: AnalyticsSample, tick: PriceTick, nowMs: number): Promise<void> {
+  private async resolveSampleIfClosed(sample: AnalyticsSample, tick: PriceTick, nowMs: number): Promise<boolean> {
     if (tick.market !== sample.market || tick.timestampMs < sample.endMs || sample.resolvedAtMs) {
-      return;
+      return false;
+    }
+    if (tick.timestampMs - sample.endMs > MAX_SAMPLE_RESOLUTION_DELAY_MS) {
+      this.activeSamples.delete(sample.slug);
+      return true;
     }
 
     const resolved: AnalyticsSample = {
@@ -144,6 +221,7 @@ export class AnalyticsRecorder {
     };
     await this.appendSample(resolved);
     this.activeSamples.delete(sample.slug);
+    return true;
   }
 
   private async appendSample(sample: AnalyticsSample): Promise<void> {
@@ -153,6 +231,39 @@ export class AnalyticsRecorder {
       `${JSON.stringify({ at: new Date().toISOString(), type: "analytics_sample", sample })}\n`,
       "utf8",
     );
+  }
+
+  private async hydrateActiveSamples(): Promise<void> {
+    if (this.activeSamplesHydrated) {
+      return;
+    }
+    this.activeSamplesHydrated = true;
+    let contents = "";
+    try {
+      contents = await readFile(this.activeSamplesPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+
+    const parsed = JSON.parse(contents) as unknown;
+    if (!Array.isArray(parsed)) {
+      return;
+    }
+    for (const item of parsed) {
+      if (isAnalyticsSample(item) && !item.resolvedAtMs) {
+        this.activeSamples.set(item.slug, item);
+      }
+    }
+  }
+
+  private async persistActiveSamples(): Promise<void> {
+    await mkdir(dirname(this.activeSamplesPath), { recursive: true });
+    const tempPath = `${this.activeSamplesPath}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify([...this.activeSamples.values()], null, 2)}\n`, "utf8");
+    await rename(tempPath, this.activeSamplesPath);
   }
 }
 
@@ -206,14 +317,15 @@ function isAnalyticsSample(value: unknown): value is AnalyticsSample {
   );
 }
 
-function upsertByTimestamp<T extends { timestampMs: number }>(items: T[], item: T): void {
+function upsertByTimestamp<T extends { timestampMs: number }>(items: T[], item: T): boolean {
   const existingIndex = items.findIndex((existing) => existing.timestampMs === item.timestampMs);
   if (existingIndex >= 0) {
     items[existingIndex] = item;
-    return;
+    return true;
   }
   items.push(item);
   items.sort((left, right) => left.timestampMs - right.timestampMs);
+  return true;
 }
 
 function sortByTimestamp<T extends { timestampMs: number }>(items: T[]): T[] {
@@ -222,4 +334,16 @@ function sortByTimestamp<T extends { timestampMs: number }>(items: T[]): T[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

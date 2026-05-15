@@ -14,6 +14,8 @@ describe("StrategyAnalysisEngine", () => {
     );
 
     const current = response.currentStrategies.find((strategy) => strategy.market === "BTC" && strategy.outcome === "UP");
+    expect(response.summary.firstSampleAtMs).toBe(Date.UTC(2026, 4, 8, 12, 5));
+    expect(response.summary.lastSampleAtMs).toBe(Date.UTC(2026, 4, 8, 12, 5));
     expect(current?.metrics.tradeCount).toBe(2);
     expect(current?.metrics.winCount).toBe(1);
     expect(current?.metrics.lossCount).toBe(1);

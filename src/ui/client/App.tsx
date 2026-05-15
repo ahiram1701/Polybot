@@ -111,6 +111,7 @@ interface StrategySettingsPreviewItem {
 
 const themeStorageKey = "polybot-theme";
 const ollamaHistoryStorageKey = "polybot-ollama-history";
+const analysisAutoRefreshMs = 60_000;
 
 const emptySettings: UiSettings = {
   minBtcDistanceUsd: 20,
@@ -219,6 +220,7 @@ export function App() {
   const [resetModal, setResetModal] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
   const analysisRequestId = useRef(0);
+  const analysisLoadingRef = useRef(false);
 
   useEffect(() => {
     void refreshCore();
@@ -268,6 +270,16 @@ export function App() {
   }, [tab, analysisStale, analysisLoading]);
 
   useEffect(() => {
+    if (tab !== "analysis" || !status?.running) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void loadAnalysis();
+    }, analysisAutoRefreshMs);
+    return () => window.clearInterval(timer);
+  }, [tab, status?.running]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     try {
@@ -295,6 +307,10 @@ export function App() {
   }
 
   async function loadAnalysis() {
+    if (analysisLoadingRef.current) {
+      return;
+    }
+    analysisLoadingRef.current = true;
     const requestId = analysisRequestId.current + 1;
     analysisRequestId.current = requestId;
     setAnalysisLoading(true);
@@ -311,6 +327,7 @@ export function App() {
         setAnalysisStale(false);
       }
     } finally {
+      analysisLoadingRef.current = false;
       if (analysisRequestId.current === requestId) {
         setAnalysisLoading(false);
       }
@@ -791,6 +808,7 @@ export function AnalysisPanel({
 
       <div className="hero-metrics compact analysis-metrics">
         <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />
+        <Metric label="Ultima muestra" value={formatDateTime(analysis?.summary.lastSampleAtMs)} />
         <Metric label="Confiables" value={String(analysis?.summary.reliableStrategyCount ?? 0)} />
         <Metric label="Mejor ROI EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
         <Metric label="Trades fiables" value={String(analysis?.summary.bestReliableTradeCount ?? 0)} />
@@ -2378,6 +2396,13 @@ function formatSignedUsd(value?: number): string {
   }
   const formatted = formatUsd(value);
   return value > 0 ? `+${formatted}` : formatted;
+}
+
+function formatDateTime(value?: number): string {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  return new Date(value).toLocaleString();
 }
 
 function formatPrice(value?: number): string {

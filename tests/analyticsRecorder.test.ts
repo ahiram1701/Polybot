@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AnalyticsRecorder } from "../src/analyticsRecorder.js";
-import type { MarketInfo, MarketSymbol, OrderbookQuote, Outcome, PriceTick, WindowOpening } from "../src/types.js";
+import type {
+  MarketInfo,
+  MarketSymbol,
+  OrderbookQuote,
+  Outcome,
+  PriceTick,
+  TradeAttempt,
+  WindowOpening,
+} from "../src/types.js";
 
 const temps: string[] = [];
 
@@ -63,6 +71,70 @@ describe("AnalyticsRecorder", () => {
     const samples = await recorder.readSamples();
     expect(samples.map((sample) => sample.slug)).toEqual([btc.slug, eth.slug]);
     expect(samples.map((sample) => sample.market)).toEqual(["BTC", "ETH"]);
+  });
+
+  it("restores active samples after a recorder restart", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const windowStartMs = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const market = marketInfo("BTC", windowStartMs);
+    const opening = openingInfo(market);
+
+    await new AnalyticsRecorder(dataDir).observeMarket({
+      market,
+      opening,
+      tick: priceTick("BTC", market.endMs - 20_000, 125),
+      quotes: quotes(),
+      nowMs: market.endMs - 20_000,
+    });
+    await new AnalyticsRecorder(dataDir).observeMarket({
+      market,
+      opening,
+      tick: priceTick("BTC", market.endMs, 130),
+      quotes: {},
+      nowMs: market.endMs,
+    });
+
+    const samples = await new AnalyticsRecorder(dataDir).readSamples();
+    expect(samples).toHaveLength(1);
+    expect(samples[0]).toMatchObject({
+      slug: market.slug,
+      finalPrice: 130,
+      winningOutcome: "UP",
+    });
+    expect(samples[0].ticks).toHaveLength(1);
+    expect(samples[0].quotes[0].upBestAsk).toBe(0.52);
+  });
+
+  it("writes a fallback analytics sample from a resolved trade", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const windowStartMs = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const market = marketInfo("BTC", windowStartMs);
+    const trade = tradeAttempt(market, "DOWN");
+
+    await new AnalyticsRecorder(dataDir).recordResolvedTrade(trade, {
+      resolvedAtMs: market.endMs + 1_000,
+      finalPrice: 88,
+      finalTickTimestampMs: market.endMs,
+      winningOutcome: "DOWN",
+      won: true,
+    });
+
+    const samples = await new AnalyticsRecorder(dataDir).readSamples();
+    expect(samples).toHaveLength(1);
+    expect(samples[0]).toMatchObject({
+      slug: market.slug,
+      market: "BTC",
+      openingPrice: 100,
+      finalPrice: 88,
+      winningOutcome: "DOWN",
+    });
+    expect(samples[0].ticks[0]).toMatchObject({
+      price: 90,
+      distanceUsd: -10,
+    });
+    expect(samples[0].quotes[0].downBestAsk).toBe(0.47);
   });
 });
 
@@ -143,5 +215,28 @@ function quote(tokenId: string, bestAsk: number): OrderbookQuote {
     availableUsdUnderCap: 100,
     estimatedSharesForAmount: 1 / bestAsk,
     rawAskLevels: [{ price: bestAsk, size: 100 }],
+  };
+}
+
+function tradeAttempt(market: MarketInfo, outcome: Outcome): TradeAttempt {
+  return {
+    id: `${market.slug}-trade`,
+    asset: market.asset,
+    slug: market.slug,
+    mode: "sim",
+    conditionId: market.conditionId,
+    outcome,
+    tokenId: market.outcomes[outcome].tokenId,
+    amountUsd: 1,
+    maxAskPrice: 0.98,
+    bestAsk: 0.47,
+    estimatedShares: 2.12,
+    openingPrice: 100,
+    entryPrice: outcome === "UP" ? 110 : 90,
+    distanceUsd: 10,
+    entryWindowSeconds: 30,
+    windowStartMs: market.windowStartMs,
+    endMs: market.endMs,
+    createdAtMs: market.endMs - 30_000,
   };
 }

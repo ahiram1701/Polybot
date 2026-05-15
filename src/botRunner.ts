@@ -730,6 +730,7 @@ export class BotRunner {
         continue;
       }
       await this.deps.state.recordTradeResolution(trade.slug, resolution, trade.mode);
+      await this.recordResolvedTradeAnalytics(trade, resolution);
       logger.info("Resolved trade.", {
         mode: trade.mode,
         slug: trade.slug,
@@ -742,6 +743,24 @@ export class BotRunner {
       if (!resolution.won) {
         await this.applyAfterLossAutoAdjustment(trade, nowMs);
       }
+    }
+  }
+
+  private async recordResolvedTradeAnalytics(
+    trade: TradeAttempt,
+    resolution: NonNullable<TradeAttempt["resolved"]>,
+  ): Promise<void> {
+    if (!this.deps.analyticsRecorder) {
+      return;
+    }
+    try {
+      await this.deps.analyticsRecorder.recordResolvedTrade(trade, resolution);
+    } catch (error) {
+      logger.warn("Resolved trade analytics fallback failed; continuing.", {
+        mode: trade.mode,
+        slug: trade.slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

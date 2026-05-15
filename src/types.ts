@@ -239,6 +239,8 @@ export interface StrategyCandidate {
 
 export interface StrategyAnalysisSummary {
   sampleCount: number;
+  firstSampleAtMs?: number;
+  lastSampleAtMs?: number;
   strategyCount: number;
   currentStrategyCount: number;
   reliableStrategyCount: number;
