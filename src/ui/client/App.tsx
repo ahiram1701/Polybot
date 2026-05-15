@@ -886,6 +886,8 @@ export function AnalysisPanel({
               <strong>{selectedStrategy ? strategyApplySummary(selectedStrategy) : "Sin estrategia seleccionada"}</strong>
             </div>
           </div>
+          {applyMessage && <div className="notice success compact-notice"><CheckCircle2 size={18} />{applyMessage}</div>}
+          {applyError && <div className="notice error compact-notice"><AlertTriangle size={18} />{applyError}</div>}
           {selectedStrategy ? (
             <>
               <div className="hero-metrics compact preview-metrics">
@@ -924,9 +926,6 @@ export function AnalysisPanel({
           )}
         </aside>
       </div>
-
-      {applyMessage && <div className="notice success"><CheckCircle2 size={18} />{applyMessage}</div>}
-      {applyError && <div className="notice error"><AlertTriangle size={18} />{applyError}</div>}
 
       {visibleStrategies.length > 0 && (
         <details className="strategy-detail-table">
