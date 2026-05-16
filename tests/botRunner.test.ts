@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AnalyticsRecorder } from "../src/analyticsRecorder.js";
 import { BotRunner } from "../src/botRunner.js";
 import type { ChainlinkPriceFeed } from "../src/chainlinkPriceFeed.js";
 import type { ExecutionInput, TradeExecutor } from "../src/executionEngine.js";
@@ -50,7 +51,7 @@ describe("BotRunner", () => {
 
     await runner.start();
 
-    expect(watcher.getCurrentMarket).toHaveBeenCalledTimes(2);
+    expect(watcher.getCurrentMarket).toHaveBeenCalledTimes(4);
     expect(priceFeed.stop).toHaveBeenCalled();
   });
 
@@ -167,6 +168,92 @@ describe("BotRunner", () => {
 
     expect(executor.execute).toHaveBeenCalledTimes(3);
     expect(trades.map((trade) => trade.asset)).toEqual(["BTC", "ETH", "DOGE"]);
+  });
+
+  it("records analytics for all supported markets even when trading is disabled", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const markets: Record<MarketSymbol, MarketInfo> = {
+      BTC: marketInfo("BTC", "btc", windowStartMs),
+      ETH: marketInfo("ETH", "eth", windowStartMs),
+      DOGE: marketInfo("DOGE", "doge", windowStartMs),
+    };
+    const openings = new Map(
+      Object.values(markets).map((market) => [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: market.asset === "DOGE" ? 0.1 : 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ]),
+    );
+    const watcher = {
+      getCurrentMarkets: vi.fn(async (requestedMarkets: MarketSymbol[]) =>
+        requestedMarkets.map((market) => markets[market]),
+      ),
+      getCurrentMarket: vi.fn(async () => null),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn((market: MarketSymbol = "BTC") => ({
+        market,
+        symbol: priceFeedSymbol(market),
+        value: market === "DOGE" ? 0.1007 : 130,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher,
+        orderbook: fakeOrderbook(),
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(watcher.getCurrentMarkets).toHaveBeenCalledWith(["BTC", "ETH", "DOGE"], nowMs);
+    expect(analyticsRecorder.observeMarket).toHaveBeenCalledTimes(3);
+    expect(executor.execute).not.toHaveBeenCalled();
   });
 
   it("uses the configured entry window for each market", async () => {

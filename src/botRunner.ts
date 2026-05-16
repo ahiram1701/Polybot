@@ -152,7 +152,7 @@ export class BotRunner {
     await this.deps.notifier?.notify({
       key: `bot-started:${this.config.mode}`,
       title: "Bot iniciado",
-      body: `Modo: ${this.config.mode}. Mercados: ${this.config.enabledMarkets.join(", ") || "ninguno"}.`,
+      body: `Modo: ${this.config.mode}. Mercados trading: ${this.config.enabledMarkets.join(", ") || "ninguno"}. Analitica: ${SUPPORTED_MARKETS.join(", ")}.`,
     });
 
     if (options.once) {
@@ -186,13 +186,9 @@ export class BotRunner {
     await this.resolveCompletedTrades(nowMs);
     await this.applyLiveAutoAdjustments(nowMs);
 
-    const markets = await this.getCurrentMarkets(nowMs);
-    if (this.config.enabledMarkets.length === 0) {
-      this.logSkipOnce("config", "no_markets_enabled");
-      return;
-    }
+    const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
     if (markets.length === 0) {
-      this.logSkipOnce("unknown", "market_not_found", { enabledMarkets: this.config.enabledMarkets });
+      this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
       return;
     }
 
@@ -214,6 +210,9 @@ export class BotRunner {
         quotes: analyticsQuotes,
         nowMs,
       });
+      if (!this.isMarketEnabledForTrading(market.asset)) {
+        continue;
+      }
       const signal = this.buildTradeSignal({
         market,
         opening,
@@ -231,17 +230,16 @@ export class BotRunner {
     await this.executeTradeCandidates(candidates);
   }
 
-  private async getCurrentMarkets(nowMs: number): Promise<MarketInfo[]> {
-    const enabledMarkets = this.config.enabledMarkets;
-    if (enabledMarkets.length === 0) {
+  private async getCurrentMarkets(marketsToFetch: readonly MarketSymbol[], nowMs: number): Promise<MarketInfo[]> {
+    if (marketsToFetch.length === 0) {
       return [];
     }
     if (this.deps.watcher.getCurrentMarkets) {
-      return this.deps.watcher.getCurrentMarkets(enabledMarkets, nowMs);
+      return this.deps.watcher.getCurrentMarkets([...marketsToFetch], nowMs);
     }
 
     const markets: MarketInfo[] = [];
-    for (const market of enabledMarkets) {
+    for (const market of marketsToFetch) {
       const currentMarket = await this.deps.watcher.getCurrentMarket(nowMs, market);
       if (currentMarket) {
         markets.push(currentMarket);
@@ -648,6 +646,10 @@ export class BotRunner {
 
   private isConfiguredOutcomeEnabled(market: MarketSymbol, outcome: Outcome): boolean {
     return getMarketOutcomeBoolean(this.config.enabledMarketOutcomes, market, outcome, this.config.enabledMarkets.includes(market));
+  }
+
+  private isMarketEnabledForTrading(market: MarketSymbol): boolean {
+    return OUTCOMES.some((outcome) => this.isConfiguredOutcomeEnabled(market, outcome));
   }
 
   private async getAnalyticsQuotes(
