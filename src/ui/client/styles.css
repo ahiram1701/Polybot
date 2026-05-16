@@ -756,6 +756,24 @@ th {
   margin-bottom: 0;
 }
 
+.analysis-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-input-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 .analysis-controls {
   display: flex;
   align-items: center;
@@ -1375,6 +1393,10 @@ tr.selected-row {
     display: grid;
   }
 
+  .analysis-toolbar-actions {
+    justify-content: flex-start;
+  }
+
   .hero-metrics,
   .hero-metrics.compact {
     grid-template-columns: 1fr;
@@ -1532,6 +1554,7 @@ tr.selected-row {
 
   .topbar-actions,
   .controlbar,
+  .analysis-toolbar-actions,
   .analysis-controls,
   .form-actions,
   .modal-actions {

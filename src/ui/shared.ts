@@ -105,6 +105,15 @@ export interface StartBotRequest {
   confirmLive?: boolean;
 }
 
+export interface AnalysisImportResponse {
+  importedCount: number;
+  duplicateCount: number;
+  skippedInvalidCount: number;
+  totalKnownSamples: number;
+  firstSampleAtMs?: number;
+  lastSampleAtMs?: number;
+}
+
 export interface TelegramNotificationSettings {
   enabled: boolean;
   configured: boolean;

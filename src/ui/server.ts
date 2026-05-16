@@ -49,6 +49,21 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.getStrategyAnalysis());
   }));
 
+  app.get("/api/analysis/samples/export", asyncHandler(async (_req, res) => {
+    const exported = await controller.exportAnalysisSamples();
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${exported.filename}"`);
+    res.send(exported.contents);
+  }));
+
+  app.post(
+    "/api/analysis/samples/import",
+    express.text({ type: ["text/plain", "application/x-ndjson", "application/jsonl"], limit: "50mb" }),
+    asyncHandler(async (req, res) => {
+      res.json(await controller.importAnalysisSamples(typeof req.body === "string" ? req.body : ""));
+    }),
+  );
+
   app.get("/api/notifications/telegram", asyncHandler(async (_req, res) => {
     res.json(await controller.getTelegramNotifications());
   }));
@@ -146,10 +161,24 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
       res.status(400).json({ error: "Invalid request.", issues: error.issues });
       return;
     }
+    if (isEntityTooLargeError(error)) {
+      res.status(413).json({ error: "Analysis import file is too large. Maximum size is 50 MB." });
+      return;
+    }
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   });
 
   return app;
+}
+
+function isEntityTooLargeError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  return (
+    "type" in error &&
+    (error as { type?: unknown }).type === "entity.too.large"
+  );
 }
 
 function asyncHandler(handler: (req: Request, res: Response) => Promise<void>) {

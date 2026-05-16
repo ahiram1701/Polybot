@@ -17,6 +17,7 @@ import type {
 
 export const ANALYTICS_WINDOW_SECONDS = 60;
 const MAX_SAMPLE_RESOLUTION_DELAY_MS = 10 * 60 * 1000;
+const ANALYTICS_RECORD_TYPE = "analytics_sample";
 
 export interface AnalyticsObservation {
   market: MarketInfo;
@@ -24,6 +25,22 @@ export interface AnalyticsObservation {
   tick?: PriceTick;
   quotes?: Partial<Record<Outcome, OrderbookQuote>>;
   nowMs: number;
+}
+
+export interface AnalyticsImportResult {
+  importedCount: number;
+  duplicateCount: number;
+  skippedInvalidCount: number;
+  totalKnownSamples: number;
+  firstSampleAtMs?: number;
+  lastSampleAtMs?: number;
+  validSampleCount: number;
+}
+
+export interface ParsedAnalyticsSamples {
+  samples: AnalyticsSample[];
+  duplicateCount: number;
+  skippedInvalidCount: number;
 }
 
 export class AnalyticsRecorder {
@@ -226,11 +243,7 @@ export class AnalyticsRecorder {
 
   private async appendSample(sample: AnalyticsSample): Promise<void> {
     await mkdir(dirname(this.analyticsPath), { recursive: true });
-    await appendFile(
-      this.analyticsPath,
-      `${JSON.stringify({ at: new Date().toISOString(), type: "analytics_sample", sample })}\n`,
-      "utf8",
-    );
+    await appendFile(this.analyticsPath, `${formatAnalyticsSampleLine(sample)}\n`, "utf8");
   }
 
   private async hydrateActiveSamples(): Promise<void> {
@@ -284,11 +297,105 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
       continue;
     }
     const sample = parseAnalyticsLine(line);
-    if (sample?.resolvedAtMs && sample.winningOutcome) {
+    if (sample && isResolvedAnalyticsSample(sample)) {
       latestBySlug.set(sample.slug, sample);
     }
   }
   return [...latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs);
+}
+
+export function serializeAnalyticsSamples(samples: AnalyticsSample[], at = new Date()): string {
+  if (samples.length === 0) {
+    return "";
+  }
+  return `${samples.map((sample) => formatAnalyticsSampleLine(sample, at)).join("\n")}\n`;
+}
+
+export function parseAnalyticsSamplesText(contents: string): ParsedAnalyticsSamples {
+  const latestBySlug = new Map<string, AnalyticsSample>();
+  let duplicateCount = 0;
+  let skippedInvalidCount = 0;
+
+  for (const line of contents.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    const sample = parseAnalyticsLine(line);
+    if (!sample || !isResolvedAnalyticsSample(sample)) {
+      skippedInvalidCount += 1;
+      continue;
+    }
+    if (latestBySlug.has(sample.slug)) {
+      duplicateCount += 1;
+    }
+    latestBySlug.set(sample.slug, sample);
+  }
+
+  return {
+    samples: [...latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs),
+    duplicateCount,
+    skippedInvalidCount,
+  };
+}
+
+export async function importAnalyticsSamples(
+  path: string,
+  contents: string,
+  importedAt = new Date(),
+): Promise<AnalyticsImportResult> {
+  const parsed = parseAnalyticsSamplesText(contents);
+  const existingSamples = await readAnalyticsSamples(path);
+  const existingSlugs = new Set(existingSamples.map((sample) => sample.slug));
+  const samplesToImport: AnalyticsSample[] = [];
+  let duplicateCount = parsed.duplicateCount;
+
+  for (const sample of parsed.samples) {
+    if (existingSlugs.has(sample.slug)) {
+      duplicateCount += 1;
+      continue;
+    }
+    samplesToImport.push(sample);
+  }
+
+  if (samplesToImport.length > 0) {
+    await appendAnalyticsSamples(path, samplesToImport, importedAt);
+  }
+
+  const knownSamples = samplesToImport.length > 0 ? await readAnalyticsSamples(path) : existingSamples;
+  const range = analyticsSampleRange(knownSamples);
+  return {
+    importedCount: samplesToImport.length,
+    duplicateCount,
+    skippedInvalidCount: parsed.skippedInvalidCount,
+    totalKnownSamples: knownSamples.length,
+    ...range,
+    validSampleCount: parsed.samples.length + parsed.duplicateCount,
+  };
+}
+
+export function analyticsSampleRange(
+  samples: AnalyticsSample[],
+): Pick<AnalyticsImportResult, "firstSampleAtMs" | "lastSampleAtMs"> {
+  let firstSampleAtMs: number | undefined;
+  let lastSampleAtMs: number | undefined;
+  for (const sample of samples) {
+    const sampleAtMs = sample.resolvedAtMs ?? sample.endMs ?? sample.windowStartMs;
+    if (!isFiniteNumber(sampleAtMs)) {
+      continue;
+    }
+    firstSampleAtMs = firstSampleAtMs === undefined ? sampleAtMs : Math.min(firstSampleAtMs, sampleAtMs);
+    lastSampleAtMs = lastSampleAtMs === undefined ? sampleAtMs : Math.max(lastSampleAtMs, sampleAtMs);
+  }
+  return { firstSampleAtMs, lastSampleAtMs };
+}
+
+async function appendAnalyticsSamples(path: string, samples: AnalyticsSample[], at: Date): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, serializeAnalyticsSamples(samples, at), "utf8");
+}
+
+function formatAnalyticsSampleLine(sample: AnalyticsSample, at = new Date()): string {
+  return JSON.stringify({ at: at.toISOString(), type: ANALYTICS_RECORD_TYPE, sample });
 }
 
 function parseAnalyticsLine(line: string): AnalyticsSample | undefined {
@@ -308,13 +415,54 @@ function isAnalyticsSample(value: unknown): value is AnalyticsSample {
   return (
     value.version === 1 &&
     typeof value.slug === "string" &&
-    typeof value.market === "string" &&
-    typeof value.windowStartMs === "number" &&
-    typeof value.endMs === "number" &&
-    typeof value.openingPrice === "number" &&
+    isMarketSymbol(value.market) &&
+    isFiniteNumber(value.windowStartMs) &&
+    isFiniteNumber(value.endMs) &&
+    isFiniteNumber(value.openingPrice) &&
+    isFiniteNumber(value.openingTickTimestampMs) &&
     Array.isArray(value.ticks) &&
-    Array.isArray(value.quotes)
+    value.ticks.every(isAnalyticsTickPoint) &&
+    Array.isArray(value.quotes) &&
+    value.quotes.every(isAnalyticsQuotePoint) &&
+    (value.finalPrice === undefined || isFiniteNumber(value.finalPrice)) &&
+    (value.finalTickTimestampMs === undefined || isFiniteNumber(value.finalTickTimestampMs)) &&
+    (value.winningOutcome === undefined || isOutcome(value.winningOutcome)) &&
+    (value.resolvedAtMs === undefined || isFiniteNumber(value.resolvedAtMs))
   );
+}
+
+function isResolvedAnalyticsSample(value: AnalyticsSample): boolean {
+  return isFiniteNumber(value.resolvedAtMs) && isOutcome(value.winningOutcome);
+}
+
+function isAnalyticsTickPoint(value: unknown): value is AnalyticsTickPoint {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.timestampMs) &&
+    isFiniteNumber(value.secondsToEnd) &&
+    isFiniteNumber(value.price) &&
+    isFiniteNumber(value.distanceUsd)
+  );
+}
+
+function isAnalyticsQuotePoint(value: unknown): value is AnalyticsQuotePoint {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.timestampMs) &&
+    isFiniteNumber(value.secondsToEnd) &&
+    (value.upBestAsk === undefined || isFiniteNumber(value.upBestAsk)) &&
+    (value.upBestBid === undefined || isFiniteNumber(value.upBestBid)) &&
+    (value.downBestAsk === undefined || isFiniteNumber(value.downBestAsk)) &&
+    (value.downBestBid === undefined || isFiniteNumber(value.downBestBid))
+  );
+}
+
+function isMarketSymbol(value: unknown): value is AnalyticsSample["market"] {
+  return value === "BTC" || value === "ETH" || value === "DOGE";
+}
+
+function isOutcome(value: unknown): value is Outcome {
+  return value === "UP" || value === "DOWN";
 }
 
 function upsertByTimestamp<T extends { timestampMs: number }>(items: T[], item: T): boolean {

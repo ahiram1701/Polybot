@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 
+import {
+  importAnalyticsSamples,
+  readAnalyticsSamples,
+  serializeAnalyticsSamples,
+} from "../analyticsRecorder.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import { type LogEntry, logger } from "../logger.js";
@@ -47,6 +53,7 @@ import type {
 } from "../types.js";
 import { BotRunner } from "../botRunner.js";
 import type {
+  AnalysisImportResponse,
   MarketStatusSnapshot,
   SanitizedConfig,
   TelegramNotificationPatch,
@@ -98,6 +105,12 @@ export interface BotControllerDeps {
   fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   startPriceFeed?: boolean;
+}
+
+export interface AnalysisExport {
+  filename: string;
+  contents: string;
+  sampleCount: number;
 }
 
 interface CachedUiStateSummary {
@@ -368,6 +381,27 @@ export class BotController {
     return this.strategyAnalysisEngine.analyze(settings);
   }
 
+  async exportAnalysisSamples(now = new Date()): Promise<AnalysisExport> {
+    const samples = await readAnalyticsSamples(this.analyticsPath());
+    return {
+      filename: analysisExportFilename(now),
+      contents: serializeAnalyticsSamples(samples, now),
+      sampleCount: samples.length,
+    };
+  }
+
+  async importAnalysisSamples(contents: string): Promise<AnalysisImportResponse> {
+    if (this.runnerPromise || this.runner) {
+      throw new ControllerError("Stop the bot before importing analysis data.", 409);
+    }
+    const result = await importAnalyticsSamples(this.analyticsPath(), contents);
+    if (result.validSampleCount === 0) {
+      throw new ControllerError("Analysis import did not include valid resolved samples.", 400);
+    }
+    const { validSampleCount: _validSampleCount, ...response } = result;
+    return response;
+  }
+
   async analyzeTradesWithOllama(prompt: string): Promise<OllamaTradeAnalysisResponse> {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) {
@@ -632,6 +666,10 @@ export class BotController {
     };
   }
 
+  private analyticsPath(): string {
+    return join(this.baseConfig.dataDir, "analytics.jsonl");
+  }
+
   private buildSignalReason(args: {
     market: MarketSymbol;
     marketActive: boolean;
@@ -826,6 +864,17 @@ export class BotController {
     }
     this.events.emit("event", { type: "log", log: entry } satisfies UiEvent);
   }
+}
+
+function analysisExportFilename(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  return `polybot-analysis-${year}${month}${day}-${hours}${minutes}${seconds}.jsonl`;
 }
 
 function mergeMarketValuesIntoOutcomeSettings(

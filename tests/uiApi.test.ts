@@ -4,9 +4,10 @@ import { join } from "node:path";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { importAnalyticsSamples, readAnalyticsSamples } from "../src/analyticsRecorder.js";
 import type { StrategyAnalysisEngine } from "../src/strategyAnalysisEngine.js";
 import { StateStore } from "../src/stateStore.js";
-import type { BotConfig, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
+import type { AnalyticsSample, BotConfig, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 import { BotController, type RunnerLike } from "../src/ui/controller.js";
 import { createUiApp } from "../src/ui/server.js";
 import type { UiStatus } from "../src/ui/shared.js";
@@ -188,6 +189,88 @@ describe("UI API", () => {
       expect(response.body.strategies[0].market).toBe("BTC");
       expect(response.body.currentStrategies[0].isCurrent).toBe(true);
     });
+    controller.dispose();
+  });
+
+  it("downloads analysis samples as jsonl", async () => {
+    const config = await baseConfig(false);
+    const sample = apiAnalyticsSample("BTC", Date.UTC(2026, 4, 8, 12, 0, 0));
+    await importAnalyticsSamples(join(config.dataDir, "analytics.jsonl"), JSON.stringify(sample));
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    const response = await request(app)
+      .get("/api/analysis/samples/export")
+      .expect(200)
+      .expect("Content-Type", /application\/x-ndjson/)
+      .expect("Content-Disposition", /attachment; filename="polybot-analysis-\d{8}-\d{6}\.jsonl"/);
+
+    expect(response.text).toContain('"type":"analytics_sample"');
+    expect(response.text).toContain(sample.slug);
+    controller.dispose();
+  });
+
+  it("imports analysis samples while stopped", async () => {
+    const config = await baseConfig(false);
+    const sample = apiAnalyticsSample("ETH", Date.UTC(2026, 4, 8, 12, 5, 0));
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .post("/api/analysis/samples/import")
+      .set("Content-Type", "text/plain")
+      .send(JSON.stringify(sample))
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.importedCount).toBe(1);
+        expect(response.body.duplicateCount).toBe(0);
+        expect(response.body.skippedInvalidCount).toBe(0);
+        expect(response.body.totalKnownSamples).toBe(1);
+        expect(response.body).not.toHaveProperty("validSampleCount");
+      });
+
+    await expect(readAnalyticsSamples(join(config.dataDir, "analytics.jsonl"))).resolves.toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("rejects analysis import while the bot is running", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).post("/api/bot/start").send({ mode: "sim" }).expect(200);
+    await request(app)
+      .post("/api/analysis/samples/import")
+      .set("Content-Type", "text/plain")
+      .send(JSON.stringify(apiAnalyticsSample("BTC", Date.UTC(2026, 4, 8, 12, 0, 0))))
+      .expect(409);
+    controller.dispose();
+  });
+
+  it("rejects analysis import without valid samples", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .post("/api/analysis/samples/import")
+      .set("Content-Type", "text/plain")
+      .send("not-json\n")
+      .expect(400);
     controller.dispose();
   });
 
@@ -438,6 +521,41 @@ function fakeStrategyAnalysisEngine(response: StrategyAnalysisResponse): Strateg
   return {
     analyze: async () => response,
   } as unknown as StrategyAnalysisEngine;
+}
+
+function apiAnalyticsSample(market: AnalyticsSample["market"], windowStartMs: number): AnalyticsSample {
+  const prefix = market.toLowerCase();
+  return {
+    version: 1,
+    market,
+    slug: `${prefix}-updown-5m-${Math.floor(windowStartMs / 1000)}`,
+    windowStartMs,
+    endMs: windowStartMs + 300_000,
+    openingPrice: 100,
+    openingTickTimestampMs: windowStartMs,
+    ticks: [
+      {
+        timestampMs: windowStartMs + 270_000,
+        secondsToEnd: 30,
+        price: 112,
+        distanceUsd: 12,
+      },
+    ],
+    quotes: [
+      {
+        timestampMs: windowStartMs + 270_000,
+        secondsToEnd: 30,
+        upBestAsk: 0.52,
+        upBestBid: 0.51,
+        downBestAsk: 0.49,
+        downBestBid: 0.48,
+      },
+    ],
+    finalPrice: 112,
+    finalTickTimestampMs: windowStartMs + 300_000,
+    winningOutcome: "UP",
+    resolvedAtMs: windowStartMs + 301_000,
+  };
 }
 
 function analysisResponse(): StrategyAnalysisResponse {

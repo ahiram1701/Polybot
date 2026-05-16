@@ -435,6 +435,43 @@ describe("UI frontend components", () => {
     expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
   });
 
+  it("exports and imports analysis data from the Analysis panel", async () => {
+    const onExport = vi.fn(async () => undefined);
+    const onImport = vi.fn(async () => ({
+      importedCount: 2,
+      duplicateCount: 1,
+      skippedInvalidCount: 1,
+      totalKnownSamples: 8,
+      firstSampleAtMs: Date.UTC(2026, 4, 8, 12),
+      lastSampleAtMs: Date.UTC(2026, 4, 8, 13),
+    }));
+    const onRefresh = vi.fn(async () => undefined);
+    render(
+      <AnalysisPanel
+        analysis={analysisResponse()}
+        settings={settings()}
+        busy={false}
+        running={false}
+        onRefresh={onRefresh}
+        onAnalyze={vi.fn(async () => ollamaResponse())}
+        onApplyStrategy={vi.fn(async () => undefined)}
+        onExport={onExport}
+        onImport={onImport}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Descargar" }));
+    await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Descarga de datos de Analisis iniciada.")).toBeInTheDocument();
+
+    const file = new File(["{}"], "polybot-analysis.jsonl", { type: "application/x-ndjson" });
+    fireEvent.change(screen.getByLabelText("Archivo de Analisis"), { target: { files: [file] } });
+
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith(file));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Datos importados: 2 nuevos, 1 duplicados, 1 invalidos, 8 totales.")).toBeInTheDocument();
+  });
+
   it("previews and confirms a strategy from Analysis", async () => {
     const onApplyStrategy = vi.fn(async () => undefined);
     render(
@@ -482,6 +519,8 @@ describe("UI frontend components", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
 
     expect(screen.getByText("Deten el bot para aplicar cambios de estrategia.")).toBeInTheDocument();
+    expect(screen.getByText("Deten el bot para importar datos de Analisis.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Importar" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Confirmar aplicacion" })).toBeDisabled();
     expect(onApplyStrategy).not.toHaveBeenCalled();
   });

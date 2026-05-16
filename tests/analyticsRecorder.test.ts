@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AnalyticsRecorder } from "../src/analyticsRecorder.js";
+import {
+  AnalyticsRecorder,
+  importAnalyticsSamples,
+  parseAnalyticsSamplesText,
+  readAnalyticsSamples,
+  serializeAnalyticsSamples,
+} from "../src/analyticsRecorder.js";
 import type {
   MarketInfo,
   MarketSymbol,
@@ -136,6 +142,63 @@ describe("AnalyticsRecorder", () => {
     });
     expect(samples[0].quotes[0].downBestAsk).toBe(0.47);
   });
+
+  it("serializes and parses wrapped analytics samples for export", async () => {
+    const sample = analyticsSample(marketInfo("BTC", Date.UTC(2026, 4, 8, 12, 0, 0)));
+
+    const contents = serializeAnalyticsSamples([sample], new Date(Date.UTC(2026, 4, 8, 12, 1, 0)));
+    const parsed = parseAnalyticsSamplesText(contents);
+
+    expect(contents).toContain('"type":"analytics_sample"');
+    expect(parsed.skippedInvalidCount).toBe(0);
+    expect(parsed.duplicateCount).toBe(0);
+    expect(parsed.samples).toEqual([sample]);
+  });
+
+  it("imports raw and wrapped samples while skipping invalid lines and duplicate slugs", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const earlier = analyticsSample(marketInfo("BTC", Date.UTC(2026, 4, 8, 12, 0, 0)), { finalPrice: 120 });
+    const firstEth = analyticsSample(marketInfo("ETH", Date.UTC(2026, 4, 8, 12, 5, 0)), { finalPrice: 210 });
+    const latestEth = analyticsSample(marketInfo("ETH", Date.UTC(2026, 4, 8, 12, 5, 0)), { finalPrice: 220 });
+
+    const result = await importAnalyticsSamples(
+      analyticsPath,
+      [
+        JSON.stringify({ type: "analytics_sample", sample: firstEth }),
+        "not-json",
+        JSON.stringify(earlier),
+        JSON.stringify(latestEth),
+      ].join("\n"),
+      new Date(Date.UTC(2026, 4, 8, 12, 10, 0)),
+    );
+
+    expect(result).toMatchObject({
+      importedCount: 2,
+      duplicateCount: 1,
+      skippedInvalidCount: 1,
+      totalKnownSamples: 2,
+      validSampleCount: 3,
+    });
+    const samples = await readAnalyticsSamples(analyticsPath);
+    expect(samples.map((sample) => sample.slug)).toEqual([earlier.slug, latestEth.slug]);
+    expect(samples[1].finalPrice).toBe(220);
+  });
+
+  it("does not import analytics samples already known by slug", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const sample = analyticsSample(marketInfo("BTC", Date.UTC(2026, 4, 8, 12, 0, 0)));
+
+    await importAnalyticsSamples(analyticsPath, JSON.stringify(sample));
+    const duplicateResult = await importAnalyticsSamples(analyticsPath, JSON.stringify(sample));
+
+    expect(duplicateResult.importedCount).toBe(0);
+    expect(duplicateResult.duplicateCount).toBe(1);
+    expect(duplicateResult.totalKnownSamples).toBe(1);
+  });
 });
 
 async function resolveSample(recorder: AnalyticsRecorder, market: MarketInfo): Promise<void> {
@@ -215,6 +278,47 @@ function quote(tokenId: string, bestAsk: number): OrderbookQuote {
     availableUsdUnderCap: 100,
     estimatedSharesForAmount: 1 / bestAsk,
     rawAskLevels: [{ price: bestAsk, size: 100 }],
+  };
+}
+
+function analyticsSample(market: MarketInfo, overrides: Partial<ReturnType<typeof analyticsSampleShape>> = {}): ReturnType<typeof analyticsSampleShape> {
+  return {
+    ...analyticsSampleShape(market),
+    ...overrides,
+  };
+}
+
+function analyticsSampleShape(market: MarketInfo) {
+  return {
+    version: 1 as const,
+    market: market.asset,
+    slug: market.slug,
+    windowStartMs: market.windowStartMs,
+    endMs: market.endMs,
+    openingPrice: 100,
+    openingTickTimestampMs: market.windowStartMs,
+    ticks: [
+      {
+        timestampMs: market.endMs - 30_000,
+        secondsToEnd: 30,
+        price: 112,
+        distanceUsd: 12,
+      },
+    ],
+    quotes: [
+      {
+        timestampMs: market.endMs - 30_000,
+        secondsToEnd: 30,
+        upBestAsk: 0.52,
+        upBestBid: 0.51,
+        downBestAsk: 0.49,
+        downBestBid: 0.48,
+      },
+    ],
+    finalPrice: 112,
+    finalTickTimestampMs: market.endMs,
+    winningOutcome: "UP" as const,
+    resolvedAtMs: market.endMs + 1_000,
   };
 }
 

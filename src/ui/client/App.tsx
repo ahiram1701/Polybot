@@ -6,6 +6,7 @@ import {
   Bell,
   Brain,
   CheckCircle2,
+  Download,
   DollarSign,
   Gauge,
   Moon,
@@ -25,6 +26,7 @@ import {
   Trash2,
   TrendingDown,
   TrendingUp,
+  Upload,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
@@ -43,6 +45,7 @@ import type {
   TradeAttempt,
 } from "../../types.js";
 import type {
+  AnalysisImportResponse,
   MarketStatusSnapshot,
   StartBotRequest,
   TelegramNotificationPatch,
@@ -401,6 +404,45 @@ export function App() {
     }
   }
 
+  async function downloadAnalysisSamples(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/analysis/samples/export");
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      const blob = await response.blob();
+      const filename = analysisExportFilename(response.headers.get("Content-Disposition"));
+      triggerFileDownload(blob, filename);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      throw caught;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importAnalysisSamples(file: File): Promise<AnalysisImportResponse> {
+    setBusy(true);
+    setError(null);
+    try {
+      const contents = await file.text();
+      const result = await api<AnalysisImportResponse>("/api/analysis/samples/import", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: contents,
+      });
+      setAnalysisStale(true);
+      return result;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      throw caught;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function resetPolybot() {
     setBusy(true);
     setError(null);
@@ -489,6 +531,8 @@ export function App() {
             onRefresh={loadAnalysis}
             onAnalyze={requestOllamaAnalysis}
             onApplyStrategy={applyStrategyFromAnalysis}
+            onExport={downloadAnalysisSamples}
+            onImport={importAnalysisSamples}
           />
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
@@ -685,6 +729,8 @@ export function AnalysisPanel({
   onRefresh,
   onAnalyze,
   onApplyStrategy,
+  onExport,
+  onImport,
 }: {
   analysis: StrategyAnalysisResponse | null;
   loading?: boolean;
@@ -696,6 +742,8 @@ export function AnalysisPanel({
   onRefresh: () => Promise<void>;
   onAnalyze: (prompt: string) => Promise<OllamaTradeAnalysisResponse>;
   onApplyStrategy: (strategy: StrategyCandidate) => Promise<void>;
+  onExport?: () => Promise<void>;
+  onImport?: (file: File) => Promise<AnalysisImportResponse>;
 }) {
   const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("ALL");
@@ -707,6 +755,10 @@ export function AnalysisPanel({
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyCandidate | null>(null);
   const [applyMessage, setApplyMessage] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferMessage, setTransferMessage] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const strategies = qualityFilter === "CURRENT" ? analysis?.currentStrategies ?? [] : analysis?.strategies ?? [];
   const bestReliableByOutcome = bestReliableStrategyByOutcome(analysis?.strategies ?? []);
   const filteredStrategies = strategies.filter((strategy) =>
@@ -775,6 +827,44 @@ export function AnalysisPanel({
     setOllamaHistory((current) => current.filter((entry) => entry.id !== id));
   }
 
+  async function exportAnalysisData() {
+    setTransferMessage(null);
+    setTransferError(null);
+    setTransferBusy(true);
+    try {
+      await onExport?.();
+      setTransferMessage("Descarga de datos de Analisis iniciada.");
+    } catch (caught) {
+      setTransferError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setTransferBusy(false);
+    }
+  }
+
+  function openImportFilePicker() {
+    setTransferMessage(null);
+    setTransferError(null);
+    importInputRef.current?.click();
+  }
+
+  async function importAnalysisData(file: File | undefined) {
+    if (!file || !onImport) {
+      return;
+    }
+    setTransferMessage(null);
+    setTransferError(null);
+    setTransferBusy(true);
+    try {
+      const result = await onImport(file);
+      await onRefresh();
+      setTransferMessage(formatAnalysisImportResult(result));
+    } catch (caught) {
+      setTransferError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setTransferBusy(false);
+    }
+  }
+
   return (
     <section className="panel analysis-panel">
       <div className="analysis-toolbar">
@@ -782,11 +872,55 @@ export function AnalysisPanel({
           <Brain size={18} />
           <h2>{"An\u00e1lisis"}</h2>
         </div>
-        <button className="command" type="button" onClick={onRefresh} disabled={busy || loading}>
-          <RefreshCw size={18} /> Actualizar
-        </button>
+        <div className="analysis-toolbar-actions">
+          <button className="command" type="button" onClick={exportAnalysisData} disabled={!onExport || busy || loading || transferBusy}>
+            <Download size={18} /> Descargar
+          </button>
+          <button
+            className="command"
+            type="button"
+            onClick={openImportFilePicker}
+            disabled={!onImport || running || busy || loading || transferBusy}
+            title={running ? "Deten el bot para importar datos de Analisis." : "Importar datos de Analisis"}
+          >
+            <Upload size={18} /> Importar
+          </button>
+          <input
+            ref={importInputRef}
+            className="file-input-hidden"
+            type="file"
+            accept=".jsonl,application/x-ndjson,text/plain"
+            aria-label="Archivo de Analisis"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              void importAnalysisData(file);
+            }}
+          />
+          <button className="command" type="button" onClick={onRefresh} disabled={busy || loading || transferBusy}>
+            <RefreshCw size={18} /> Actualizar
+          </button>
+        </div>
       </div>
 
+      {running && (
+        <div className="notice compact-notice">
+          <AlertTriangle size={18} />
+          Deten el bot para importar datos de Analisis.
+        </div>
+      )}
+      {transferMessage && (
+        <div className="notice success compact-notice">
+          <CheckCircle2 size={18} />
+          {transferMessage}
+        </div>
+      )}
+      {transferError && (
+        <div className="notice error compact-notice">
+          <AlertTriangle size={18} />
+          {transferError}
+        </div>
+      )}
       {loading && (
         <div className="notice compact-notice">
           <RefreshCw size={18} />
@@ -1976,6 +2110,47 @@ function parseNumberInput(value: string): number | undefined {
 
 function formatInputValue(value: number | undefined): string {
   return value !== undefined && Number.isFinite(value) ? String(value) : "";
+}
+
+function formatAnalysisImportResult(result: AnalysisImportResponse): string {
+  const parts = [
+    `${result.importedCount} nuevos`,
+    `${result.duplicateCount} duplicados`,
+    `${result.skippedInvalidCount} invalidos`,
+    `${result.totalKnownSamples} totales`,
+  ];
+  return `Datos importados: ${parts.join(", ")}.`;
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (text) {
+    try {
+      const payload = JSON.parse(text) as unknown;
+      if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") {
+        return payload.error;
+      }
+    } catch {
+      return text;
+    }
+  }
+  return text || `HTTP ${response.status}`;
+}
+
+function analysisExportFilename(header: string | null): string {
+  const match = header?.match(/filename="([^"]+)"/);
+  return match?.[1] ?? "polybot-analysis.jsonl";
+}
+
+function triggerFileDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
