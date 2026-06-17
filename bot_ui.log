@@ -1,0 +1,1 @@
+[2026-06-02T00:29:18.647Z] ERROR Bot crashed. {"error":"[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"sim\",\n      \"live\"\n    ],\n    \"path\": [\n      \"MODE\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"sim\\\"|\\\"live\\\"\"\n  }\n]"}

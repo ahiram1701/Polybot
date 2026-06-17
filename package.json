@@ -5,11 +5,12 @@
   "type": "module",
   "description": "Crypto Up/Down 5m Polymarket trading bot with simulation and live modes.",
   "scripts": {
-    "bot": "tsx src/index.ts",
+    "bot": "tsx src/ui/index.ts --auto-start=sim",
     "ui": "tsx src/ui/index.ts",
     "ui:sim": "tsx src/ui/index.ts --auto-start=sim",
     "ui:build": "vite build",
     "ui:preview": "tsx src/ui/index.ts --static",
+    "start:bot": "node dist/src/index.js",
     "start:ui": "node dist/src/ui/index.js --static",
     "service:install": "bash scripts/install-systemd.sh",
     "smoke:market": "tsx src/smoke/market.ts",

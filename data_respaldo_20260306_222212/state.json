@@ -1,0 +1,1214 @@
+{
+  "version": 1,
+  "openings": {
+    "btc-updown-5m-1780532400": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780532400",
+      "windowStartMs": 1780532400000,
+      "openingPrice": 64180.893936374145,
+      "openingTickTimestampMs": 1780532400000,
+      "capturedAtMs": 1780532401569
+    },
+    "eth-updown-5m-1780532400": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780532400",
+      "windowStartMs": 1780532400000,
+      "openingPrice": 1813.32974,
+      "openingTickTimestampMs": 1780532400000,
+      "capturedAtMs": 1780532401569
+    },
+    "doge-updown-5m-1780532400": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780532400",
+      "windowStartMs": 1780532400000,
+      "openingPrice": 0.091455,
+      "openingTickTimestampMs": 1780532400000,
+      "capturedAtMs": 1780532401569
+    },
+    "btc-updown-5m-1780532700": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780532700",
+      "windowStartMs": 1780532700000,
+      "openingPrice": 63923.69383229125,
+      "openingTickTimestampMs": 1780532700000,
+      "capturedAtMs": 1780532701361
+    },
+    "eth-updown-5m-1780532700": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780532700",
+      "windowStartMs": 1780532700000,
+      "openingPrice": 1806.7463,
+      "openingTickTimestampMs": 1780532700000,
+      "capturedAtMs": 1780532701361
+    },
+    "doge-updown-5m-1780532700": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780532700",
+      "windowStartMs": 1780532700000,
+      "openingPrice": 0.0911945140007927,
+      "openingTickTimestampMs": 1780532700000,
+      "capturedAtMs": 1780532701361
+    },
+    "btc-updown-5m-1780533000": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780533000",
+      "windowStartMs": 1780533000000,
+      "openingPrice": 63282.07987387608,
+      "openingTickTimestampMs": 1780533000000,
+      "capturedAtMs": 1780533000510
+    },
+    "eth-updown-5m-1780533000": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780533000",
+      "windowStartMs": 1780533000000,
+      "openingPrice": 1783.2937742442791,
+      "openingTickTimestampMs": 1780533000000,
+      "capturedAtMs": 1780533002664
+    },
+    "doge-updown-5m-1780533000": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780533000",
+      "windowStartMs": 1780533000000,
+      "openingPrice": 0.0898691001429806,
+      "openingTickTimestampMs": 1780533000000,
+      "capturedAtMs": 1780533002664
+    },
+    "btc-updown-5m-1780533300": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780533300",
+      "windowStartMs": 1780533300000,
+      "openingPrice": 63636.37463517905,
+      "openingTickTimestampMs": 1780533300000,
+      "capturedAtMs": 1780533300584
+    },
+    "eth-updown-5m-1780533300": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780533300",
+      "windowStartMs": 1780533300000,
+      "openingPrice": 1799.696915,
+      "openingTickTimestampMs": 1780533300000,
+      "capturedAtMs": 1780533302764
+    },
+    "doge-updown-5m-1780533300": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780533300",
+      "windowStartMs": 1780533300000,
+      "openingPrice": 0.0906798679225045,
+      "openingTickTimestampMs": 1780533300000,
+      "capturedAtMs": 1780533302764
+    },
+    "btc-updown-5m-1780533600": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780533600",
+      "windowStartMs": 1780533600000,
+      "openingPrice": 63046.9929563035,
+      "openingTickTimestampMs": 1780533600000,
+      "capturedAtMs": 1780533600949
+    },
+    "eth-updown-5m-1780533600": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780533600",
+      "windowStartMs": 1780533600000,
+      "openingPrice": 1782.889315,
+      "openingTickTimestampMs": 1780533600000,
+      "capturedAtMs": 1780533603131
+    },
+    "doge-updown-5m-1780533600": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780533600",
+      "windowStartMs": 1780533600000,
+      "openingPrice": 0.0899876035886823,
+      "openingTickTimestampMs": 1780533600000,
+      "capturedAtMs": 1780533603131
+    },
+    "btc-updown-5m-1780533900": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780533900",
+      "windowStartMs": 1780533900000,
+      "openingPrice": 63506.799129459345,
+      "openingTickTimestampMs": 1780533900000,
+      "capturedAtMs": 1780533900560
+    },
+    "eth-updown-5m-1780533900": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780533900",
+      "windowStartMs": 1780533900000,
+      "openingPrice": 1798.2316379269548,
+      "openingTickTimestampMs": 1780533900000,
+      "capturedAtMs": 1780533903823
+    },
+    "doge-updown-5m-1780533900": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780533900",
+      "windowStartMs": 1780533900000,
+      "openingPrice": 0.0909486,
+      "openingTickTimestampMs": 1780533900000,
+      "capturedAtMs": 1780533903823
+    },
+    "btc-updown-5m-1780534200": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780534200",
+      "windowStartMs": 1780534200000,
+      "openingPrice": 63168.45145061157,
+      "openingTickTimestampMs": 1780534200000,
+      "capturedAtMs": 1780534200151
+    },
+    "eth-updown-5m-1780534200": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780534200",
+      "windowStartMs": 1780534200000,
+      "openingPrice": 1788.2946569736278,
+      "openingTickTimestampMs": 1780534200000,
+      "capturedAtMs": 1780534204306
+    },
+    "doge-updown-5m-1780534200": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780534200",
+      "windowStartMs": 1780534200000,
+      "openingPrice": 0.0903756248353388,
+      "openingTickTimestampMs": 1780534200000,
+      "capturedAtMs": 1780534204306
+    },
+    "btc-updown-5m-1780534500": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780534500",
+      "windowStartMs": 1780534500000,
+      "openingPrice": 63105.3751315709,
+      "openingTickTimestampMs": 1780534500000,
+      "capturedAtMs": 1780534500349
+    },
+    "eth-updown-5m-1780534500": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780534500",
+      "windowStartMs": 1780534500000,
+      "openingPrice": 1787.279218961291,
+      "openingTickTimestampMs": 1780534500000,
+      "capturedAtMs": 1780534504662
+    },
+    "doge-updown-5m-1780534500": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780534500",
+      "windowStartMs": 1780534500000,
+      "openingPrice": 0.0903776039183402,
+      "openingTickTimestampMs": 1780534500000,
+      "capturedAtMs": 1780534504662
+    },
+    "btc-updown-5m-1780534800": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780534800",
+      "windowStartMs": 1780534800000,
+      "openingPrice": 63250.53223946625,
+      "openingTickTimestampMs": 1780534800000,
+      "capturedAtMs": 1780534800427
+    },
+    "eth-updown-5m-1780534800": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780534800",
+      "windowStartMs": 1780534800000,
+      "openingPrice": 1791.217609539713,
+      "openingTickTimestampMs": 1780534800000,
+      "capturedAtMs": 1780534804700
+    },
+    "doge-updown-5m-1780534800": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780534800",
+      "windowStartMs": 1780534800000,
+      "openingPrice": 0.0905721272633308,
+      "openingTickTimestampMs": 1780534800000,
+      "capturedAtMs": 1780534804700
+    },
+    "btc-updown-5m-1780535100": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780535100",
+      "windowStartMs": 1780535100000,
+      "openingPrice": 63303.30715119964,
+      "openingTickTimestampMs": 1780535100000,
+      "capturedAtMs": 1780535101713
+    },
+    "eth-updown-5m-1780535100": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780535100",
+      "windowStartMs": 1780535100000,
+      "openingPrice": 1795.3586392943575,
+      "openingTickTimestampMs": 1780535100000,
+      "capturedAtMs": 1780535105961
+    },
+    "doge-updown-5m-1780535100": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780535100",
+      "windowStartMs": 1780535100000,
+      "openingPrice": 0.0909138302935375,
+      "openingTickTimestampMs": 1780535100000,
+      "capturedAtMs": 1780535105961
+    },
+    "btc-updown-5m-1780535400": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780535400",
+      "windowStartMs": 1780535400000,
+      "openingPrice": 63222.4822,
+      "openingTickTimestampMs": 1780535400000,
+      "capturedAtMs": 1780535423603
+    },
+    "eth-updown-5m-1780535400": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780535400",
+      "windowStartMs": 1780535400000,
+      "openingPrice": 1788.16741,
+      "openingTickTimestampMs": 1780535400000,
+      "capturedAtMs": 1780535423603
+    },
+    "doge-updown-5m-1780535400": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780535400",
+      "windowStartMs": 1780535400000,
+      "openingPrice": 0.0905422855563614,
+      "openingTickTimestampMs": 1780535400000,
+      "capturedAtMs": 1780535423603
+    },
+    "btc-updown-5m-1780535700": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780535700",
+      "windowStartMs": 1780535700000,
+      "openingPrice": 63043.582712372336,
+      "openingTickTimestampMs": 1780535700000,
+      "capturedAtMs": 1780535701559
+    },
+    "eth-updown-5m-1780535700": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780535700",
+      "windowStartMs": 1780535700000,
+      "openingPrice": 1784.57355,
+      "openingTickTimestampMs": 1780535700000,
+      "capturedAtMs": 1780535701559
+    },
+    "doge-updown-5m-1780535700": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780535700",
+      "windowStartMs": 1780535700000,
+      "openingPrice": 0.09020954,
+      "openingTickTimestampMs": 1780535700000,
+      "capturedAtMs": 1780535701559
+    },
+    "btc-updown-5m-1780536000": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780536000",
+      "windowStartMs": 1780536000000,
+      "openingPrice": 62806.26268269147,
+      "openingTickTimestampMs": 1780536000000,
+      "capturedAtMs": 1780536000614
+    },
+    "eth-updown-5m-1780536000": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780536000",
+      "windowStartMs": 1780536000000,
+      "openingPrice": 1775.4962644307618,
+      "openingTickTimestampMs": 1780536000000,
+      "capturedAtMs": 1780536001995
+    },
+    "doge-updown-5m-1780536000": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780536000",
+      "windowStartMs": 1780536000000,
+      "openingPrice": 0.0896749767356389,
+      "openingTickTimestampMs": 1780536000000,
+      "capturedAtMs": 1780536001995
+    },
+    "btc-updown-5m-1780536300": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780536300",
+      "windowStartMs": 1780536300000,
+      "openingPrice": 62526.8121109593,
+      "openingTickTimestampMs": 1780536300000,
+      "capturedAtMs": 1780536301853
+    },
+    "eth-updown-5m-1780536300": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780536300",
+      "windowStartMs": 1780536300000,
+      "openingPrice": 1766.8962723612212,
+      "openingTickTimestampMs": 1780536300000,
+      "capturedAtMs": 1780536302915
+    },
+    "doge-updown-5m-1780536300": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780536300",
+      "windowStartMs": 1780536300000,
+      "openingPrice": 0.089030818,
+      "openingTickTimestampMs": 1780536300000,
+      "capturedAtMs": 1780536302915
+    },
+    "btc-updown-5m-1780536600": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780536600",
+      "windowStartMs": 1780536600000,
+      "openingPrice": 62622.89874905578,
+      "openingTickTimestampMs": 1780536600000,
+      "capturedAtMs": 1780536601214
+    },
+    "eth-updown-5m-1780536600": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780536600",
+      "windowStartMs": 1780536600000,
+      "openingPrice": 1771.5544850015215,
+      "openingTickTimestampMs": 1780536600000,
+      "capturedAtMs": 1780536603400
+    },
+    "doge-updown-5m-1780536600": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780536600",
+      "windowStartMs": 1780536600000,
+      "openingPrice": 0.089168371343619,
+      "openingTickTimestampMs": 1780536600000,
+      "capturedAtMs": 1780536603400
+    },
+    "btc-updown-5m-1780536900": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780536900",
+      "windowStartMs": 1780536900000,
+      "openingPrice": 62821.00132789818,
+      "openingTickTimestampMs": 1780536900000,
+      "capturedAtMs": 1780536901226
+    },
+    "eth-updown-5m-1780536900": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780536900",
+      "windowStartMs": 1780536900000,
+      "openingPrice": 1779.162715,
+      "openingTickTimestampMs": 1780536900000,
+      "capturedAtMs": 1780536903253
+    },
+    "doge-updown-5m-1780536900": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780536900",
+      "windowStartMs": 1780536900000,
+      "openingPrice": 0.0897044,
+      "openingTickTimestampMs": 1780536900000,
+      "capturedAtMs": 1780536903253
+    },
+    "btc-updown-5m-1780537200": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780537200",
+      "windowStartMs": 1780537200000,
+      "openingPrice": 62731.38167285481,
+      "openingTickTimestampMs": 1780537200000,
+      "capturedAtMs": 1780537201536
+    },
+    "eth-updown-5m-1780537200": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780537200",
+      "windowStartMs": 1780537200000,
+      "openingPrice": 1777.511375,
+      "openingTickTimestampMs": 1780537200000,
+      "capturedAtMs": 1780537203548
+    },
+    "doge-updown-5m-1780537200": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780537200",
+      "windowStartMs": 1780537200000,
+      "openingPrice": 0.0897217,
+      "openingTickTimestampMs": 1780537200000,
+      "capturedAtMs": 1780537203548
+    },
+    "btc-updown-5m-1780537500": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780537500",
+      "windowStartMs": 1780537500000,
+      "openingPrice": 62748.958852529686,
+      "openingTickTimestampMs": 1780537500000,
+      "capturedAtMs": 1780537500990
+    },
+    "eth-updown-5m-1780537500": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780537500",
+      "windowStartMs": 1780537500000,
+      "openingPrice": 1779.433335137324,
+      "openingTickTimestampMs": 1780537500000,
+      "capturedAtMs": 1780537504412
+    },
+    "doge-updown-5m-1780537500": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780537500",
+      "windowStartMs": 1780537500000,
+      "openingPrice": 0.089739,
+      "openingTickTimestampMs": 1780537500000,
+      "capturedAtMs": 1780537504412
+    },
+    "btc-updown-5m-1780537800": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780537800",
+      "windowStartMs": 1780537800000,
+      "openingPrice": 62441.375867969626,
+      "openingTickTimestampMs": 1780537800000,
+      "capturedAtMs": 1780537801151
+    },
+    "eth-updown-5m-1780537800": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780537800",
+      "windowStartMs": 1780537800000,
+      "openingPrice": 1770.97325,
+      "openingTickTimestampMs": 1780537800000,
+      "capturedAtMs": 1780537804378
+    },
+    "doge-updown-5m-1780537800": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780537800",
+      "windowStartMs": 1780537800000,
+      "openingPrice": 0.089224561915379,
+      "openingTickTimestampMs": 1780537800000,
+      "capturedAtMs": 1780537804378
+    },
+    "btc-updown-5m-1780538100": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780538100",
+      "windowStartMs": 1780538100000,
+      "openingPrice": 62169.769790079,
+      "openingTickTimestampMs": 1780538100000,
+      "capturedAtMs": 1780538100098
+    },
+    "eth-updown-5m-1780538100": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780538100",
+      "windowStartMs": 1780538100000,
+      "openingPrice": 1755.4568992795012,
+      "openingTickTimestampMs": 1780538100000,
+      "capturedAtMs": 1780538105400
+    },
+    "doge-updown-5m-1780538100": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780538100",
+      "windowStartMs": 1780538100000,
+      "openingPrice": 0.0882745,
+      "openingTickTimestampMs": 1780538100000,
+      "capturedAtMs": 1780538105400
+    },
+    "btc-updown-5m-1780538400": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780538400",
+      "windowStartMs": 1780538400000,
+      "openingPrice": 62100.327079057824,
+      "openingTickTimestampMs": 1780538400000,
+      "capturedAtMs": 1780538400599
+    },
+    "eth-updown-5m-1780538400": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780538400",
+      "windowStartMs": 1780538400000,
+      "openingPrice": 1757.6432229585243,
+      "openingTickTimestampMs": 1780538400000,
+      "capturedAtMs": 1780538405779
+    },
+    "doge-updown-5m-1780538400": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780538400",
+      "windowStartMs": 1780538400000,
+      "openingPrice": 0.088411989,
+      "openingTickTimestampMs": 1780538400000,
+      "capturedAtMs": 1780538405779
+    },
+    "btc-updown-5m-1780538700": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780538700",
+      "windowStartMs": 1780538700000,
+      "openingPrice": 61411.741165,
+      "openingTickTimestampMs": 1780538700000,
+      "capturedAtMs": 1780538700125
+    },
+    "eth-updown-5m-1780538700": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780538700",
+      "windowStartMs": 1780538700000,
+      "openingPrice": 1720.284315,
+      "openingTickTimestampMs": 1780538700000,
+      "capturedAtMs": 1780538701348
+    },
+    "doge-updown-5m-1780538700": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780538700",
+      "windowStartMs": 1780538700000,
+      "openingPrice": 0.0861398,
+      "openingTickTimestampMs": 1780538700000,
+      "capturedAtMs": 1780538701348
+    },
+    "btc-updown-5m-1780539000": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780539000",
+      "windowStartMs": 1780539000000,
+      "openingPrice": 61959.13684743939,
+      "openingTickTimestampMs": 1780539000000,
+      "capturedAtMs": 1780539001432
+    },
+    "eth-updown-5m-1780539000": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780539000",
+      "windowStartMs": 1780539000000,
+      "openingPrice": 1736.0035168214308,
+      "openingTickTimestampMs": 1780539000000,
+      "capturedAtMs": 1780539001432
+    },
+    "doge-updown-5m-1780539000": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780539000",
+      "windowStartMs": 1780539000000,
+      "openingPrice": 0.0871375199289544,
+      "openingTickTimestampMs": 1780539000000,
+      "capturedAtMs": 1780539001432
+    },
+    "btc-updown-5m-1780539300": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780539300",
+      "windowStartMs": 1780539300000,
+      "openingPrice": 62330.500823245995,
+      "openingTickTimestampMs": 1780539300000,
+      "capturedAtMs": 1780539300384
+    },
+    "eth-updown-5m-1780539300": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780539300",
+      "windowStartMs": 1780539300000,
+      "openingPrice": 1743.801135,
+      "openingTickTimestampMs": 1780539300000,
+      "capturedAtMs": 1780539302633
+    },
+    "doge-updown-5m-1780539300": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780539300",
+      "windowStartMs": 1780539300000,
+      "openingPrice": 0.0877988737347826,
+      "openingTickTimestampMs": 1780539300000,
+      "capturedAtMs": 1780539302633
+    },
+    "btc-updown-5m-1780539600": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780539600",
+      "windowStartMs": 1780539600000,
+      "openingPrice": 62449.10356522851,
+      "openingTickTimestampMs": 1780539600000,
+      "capturedAtMs": 1780539601948
+    },
+    "eth-updown-5m-1780539600": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780539600",
+      "windowStartMs": 1780539600000,
+      "openingPrice": 1746.4778672132848,
+      "openingTickTimestampMs": 1780539600000,
+      "capturedAtMs": 1780539605060
+    },
+    "doge-updown-5m-1780539600": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780539600",
+      "windowStartMs": 1780539600000,
+      "openingPrice": 0.08803538,
+      "openingTickTimestampMs": 1780539600000,
+      "capturedAtMs": 1780539605060
+    },
+    "btc-updown-5m-1780539900": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780539900",
+      "windowStartMs": 1780539900000,
+      "openingPrice": 62958.24971235097,
+      "openingTickTimestampMs": 1780539900000,
+      "capturedAtMs": 1780539901167
+    },
+    "eth-updown-5m-1780539900": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780539900",
+      "windowStartMs": 1780539900000,
+      "openingPrice": 1769.949246849624,
+      "openingTickTimestampMs": 1780539900000,
+      "capturedAtMs": 1780539905434
+    },
+    "doge-updown-5m-1780539900": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780539900",
+      "windowStartMs": 1780539900000,
+      "openingPrice": 0.088961648571847,
+      "openingTickTimestampMs": 1780539900000,
+      "capturedAtMs": 1780539905434
+    },
+    "btc-updown-5m-1780540200": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780540200",
+      "windowStartMs": 1780540200000,
+      "openingPrice": 62931.14838867662,
+      "openingTickTimestampMs": 1780540200000,
+      "capturedAtMs": 1780540200598
+    },
+    "eth-updown-5m-1780540200": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780540200",
+      "windowStartMs": 1780540200000,
+      "openingPrice": 1764.638078885884,
+      "openingTickTimestampMs": 1780540200000,
+      "capturedAtMs": 1780540200598
+    },
+    "doge-updown-5m-1780540200": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780540200",
+      "windowStartMs": 1780540200000,
+      "openingPrice": 0.0889167406311537,
+      "openingTickTimestampMs": 1780540200000,
+      "capturedAtMs": 1780540200598
+    },
+    "btc-updown-5m-1780540500": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780540500",
+      "windowStartMs": 1780540500000,
+      "openingPrice": 63217.129376608464,
+      "openingTickTimestampMs": 1780540500000,
+      "capturedAtMs": 1780540500831
+    },
+    "eth-updown-5m-1780540500": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780540500",
+      "windowStartMs": 1780540500000,
+      "openingPrice": 1766.9044988814887,
+      "openingTickTimestampMs": 1780540500000,
+      "capturedAtMs": 1780540502065
+    },
+    "doge-updown-5m-1780540500": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780540500",
+      "windowStartMs": 1780540500000,
+      "openingPrice": 0.0891456,
+      "openingTickTimestampMs": 1780540500000,
+      "capturedAtMs": 1780540502065
+    },
+    "btc-updown-5m-1780540800": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780540800",
+      "windowStartMs": 1780540800000,
+      "openingPrice": 63273.477365971106,
+      "openingTickTimestampMs": 1780540800000,
+      "capturedAtMs": 1780540801438
+    },
+    "eth-updown-5m-1780540800": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780540800",
+      "windowStartMs": 1780540800000,
+      "openingPrice": 1769.1857028819618,
+      "openingTickTimestampMs": 1780540800000,
+      "capturedAtMs": 1780540802512
+    },
+    "doge-updown-5m-1780540800": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780540800",
+      "windowStartMs": 1780540800000,
+      "openingPrice": 0.0893561337864713,
+      "openingTickTimestampMs": 1780540800000,
+      "capturedAtMs": 1780540802512
+    },
+    "btc-updown-5m-1780541100": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780541100",
+      "windowStartMs": 1780541100000,
+      "openingPrice": 63335.50614427751,
+      "openingTickTimestampMs": 1780541100000,
+      "capturedAtMs": 1780541101168
+    },
+    "eth-updown-5m-1780541100": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780541100",
+      "windowStartMs": 1780541100000,
+      "openingPrice": 1772.0125228972988,
+      "openingTickTimestampMs": 1780541100000,
+      "capturedAtMs": 1780541102297
+    },
+    "doge-updown-5m-1780541100": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780541100",
+      "windowStartMs": 1780541100000,
+      "openingPrice": 0.089518,
+      "openingTickTimestampMs": 1780541100000,
+      "capturedAtMs": 1780541102297
+    },
+    "btc-updown-5m-1780541400": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780541400",
+      "windowStartMs": 1780541400000,
+      "openingPrice": 63462.32455630737,
+      "openingTickTimestampMs": 1780541400000,
+      "capturedAtMs": 1780541401464
+    },
+    "eth-updown-5m-1780541400": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780541400",
+      "windowStartMs": 1780541400000,
+      "openingPrice": 1773.7430851368006,
+      "openingTickTimestampMs": 1780541400000,
+      "capturedAtMs": 1780541401464
+    },
+    "doge-updown-5m-1780541400": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780541400",
+      "windowStartMs": 1780541400000,
+      "openingPrice": 0.0896500983658781,
+      "openingTickTimestampMs": 1780541400000,
+      "capturedAtMs": 1780541401464
+    },
+    "btc-updown-5m-1780541700": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780541700",
+      "windowStartMs": 1780541700000,
+      "openingPrice": 63212.34946821614,
+      "openingTickTimestampMs": 1780541700000,
+      "capturedAtMs": 1780541701517
+    },
+    "eth-updown-5m-1780541700": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780541700",
+      "windowStartMs": 1780541700000,
+      "openingPrice": 1769.070827206485,
+      "openingTickTimestampMs": 1780541700000,
+      "capturedAtMs": 1780541703527
+    },
+    "doge-updown-5m-1780541700": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780541700",
+      "windowStartMs": 1780541700000,
+      "openingPrice": 0.0896207,
+      "openingTickTimestampMs": 1780541700000,
+      "capturedAtMs": 1780541703527
+    },
+    "btc-updown-5m-1780542000": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780542000",
+      "windowStartMs": 1780542000000,
+      "openingPrice": 63144.25887013026,
+      "openingTickTimestampMs": 1780542000000,
+      "capturedAtMs": 1780542000945
+    },
+    "eth-updown-5m-1780542000": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780542000",
+      "windowStartMs": 1780542000000,
+      "openingPrice": 1764.749805,
+      "openingTickTimestampMs": 1780542000000,
+      "capturedAtMs": 1780542004275
+    },
+    "doge-updown-5m-1780542000": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780542000",
+      "windowStartMs": 1780542000000,
+      "openingPrice": 0.0892688,
+      "openingTickTimestampMs": 1780542000000,
+      "capturedAtMs": 1780542004275
+    },
+    "btc-updown-5m-1780542300": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780542300",
+      "windowStartMs": 1780542300000,
+      "openingPrice": 63632.29101824496,
+      "openingTickTimestampMs": 1780542300000,
+      "capturedAtMs": 1780542407130
+    },
+    "eth-updown-5m-1780542300": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780542300",
+      "windowStartMs": 1780542300000,
+      "openingPrice": 1783.82785,
+      "openingTickTimestampMs": 1780542300000,
+      "capturedAtMs": 1780542407130
+    },
+    "doge-updown-5m-1780542300": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780542300",
+      "windowStartMs": 1780542300000,
+      "openingPrice": 0.0901146631933298,
+      "openingTickTimestampMs": 1780542300000,
+      "capturedAtMs": 1780542407130
+    },
+    "btc-updown-5m-1780542600": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780542600",
+      "windowStartMs": 1780542600000,
+      "openingPrice": 63747.48106824766,
+      "openingTickTimestampMs": 1780542600000,
+      "capturedAtMs": 1780542600099
+    },
+    "eth-updown-5m-1780542600": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780542600",
+      "windowStartMs": 1780542600000,
+      "openingPrice": 1789.4944624379148,
+      "openingTickTimestampMs": 1780542600000,
+      "capturedAtMs": 1780542605249
+    },
+    "doge-updown-5m-1780542600": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780542600",
+      "windowStartMs": 1780542600000,
+      "openingPrice": 0.0904761643459667,
+      "openingTickTimestampMs": 1780542600000,
+      "capturedAtMs": 1780542605249
+    },
+    "btc-updown-5m-1780542900": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780542900",
+      "windowStartMs": 1780542900000,
+      "openingPrice": 63885.13214903741,
+      "openingTickTimestampMs": 1780542900000,
+      "capturedAtMs": 1780542901214
+    },
+    "eth-updown-5m-1780542900": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780542900",
+      "windowStartMs": 1780542900000,
+      "openingPrice": 1791.4474482404953,
+      "openingTickTimestampMs": 1780542900000,
+      "capturedAtMs": 1780542905240
+    },
+    "doge-updown-5m-1780542900": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780542900",
+      "windowStartMs": 1780542900000,
+      "openingPrice": 0.0905554,
+      "openingTickTimestampMs": 1780542900000,
+      "capturedAtMs": 1780542905240
+    },
+    "btc-updown-5m-1780543200": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780543200",
+      "windowStartMs": 1780543200000,
+      "openingPrice": 64001.843355407895,
+      "openingTickTimestampMs": 1780543200000,
+      "capturedAtMs": 1780543201369
+    },
+    "eth-updown-5m-1780543200": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780543200",
+      "windowStartMs": 1780543200000,
+      "openingPrice": 1796.1188536361915,
+      "openingTickTimestampMs": 1780543200000,
+      "capturedAtMs": 1780543205479
+    },
+    "doge-updown-5m-1780543200": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780543200",
+      "windowStartMs": 1780543200000,
+      "openingPrice": 0.090884718368817,
+      "openingTickTimestampMs": 1780543200000,
+      "capturedAtMs": 1780543205479
+    },
+    "btc-updown-5m-1780543500": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780543500",
+      "windowStartMs": 1780543500000,
+      "openingPrice": 63833.88412143455,
+      "openingTickTimestampMs": 1780543500000,
+      "capturedAtMs": 1780543500283
+    },
+    "eth-updown-5m-1780543500": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780543500",
+      "windowStartMs": 1780543500000,
+      "openingPrice": 1792.200896538425,
+      "openingTickTimestampMs": 1780543500000,
+      "capturedAtMs": 1780543501523
+    },
+    "doge-updown-5m-1780543500": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780543500",
+      "windowStartMs": 1780543500000,
+      "openingPrice": 0.090711,
+      "openingTickTimestampMs": 1780543500000,
+      "capturedAtMs": 1780543501523
+    },
+    "btc-updown-5m-1780543800": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780543800",
+      "windowStartMs": 1780543800000,
+      "openingPrice": 63845.87180525809,
+      "openingTickTimestampMs": 1780543800000,
+      "capturedAtMs": 1780543801703
+    },
+    "eth-updown-5m-1780543800": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780543800",
+      "windowStartMs": 1780543800000,
+      "openingPrice": 1792.6696133541504,
+      "openingTickTimestampMs": 1780543800000,
+      "capturedAtMs": 1780543801703
+    },
+    "doge-updown-5m-1780543800": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780543800",
+      "windowStartMs": 1780543800000,
+      "openingPrice": 0.0906164,
+      "openingTickTimestampMs": 1780543800000,
+      "capturedAtMs": 1780543801703
+    },
+    "btc-updown-5m-1780544100": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780544100",
+      "windowStartMs": 1780544100000,
+      "openingPrice": 64379.05316632166,
+      "openingTickTimestampMs": 1780544100000,
+      "capturedAtMs": 1780544101265
+    },
+    "eth-updown-5m-1780544100": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780544100",
+      "windowStartMs": 1780544100000,
+      "openingPrice": 1806.4362767678006,
+      "openingTickTimestampMs": 1780544100000,
+      "capturedAtMs": 1780544102423
+    },
+    "doge-updown-5m-1780544100": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780544100",
+      "windowStartMs": 1780544100000,
+      "openingPrice": 0.0911513398194518,
+      "openingTickTimestampMs": 1780544100000,
+      "capturedAtMs": 1780544102423
+    },
+    "btc-updown-5m-1780544400": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780544400",
+      "windowStartMs": 1780544400000,
+      "openingPrice": 64407.57994506577,
+      "openingTickTimestampMs": 1780544400000,
+      "capturedAtMs": 1780544402705
+    },
+    "eth-updown-5m-1780544400": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780544400",
+      "windowStartMs": 1780544400000,
+      "openingPrice": 1806.403525,
+      "openingTickTimestampMs": 1780544400000,
+      "capturedAtMs": 1780544402705
+    },
+    "doge-updown-5m-1780544400": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780544400",
+      "windowStartMs": 1780544400000,
+      "openingPrice": 0.091210654686608,
+      "openingTickTimestampMs": 1780544400000,
+      "capturedAtMs": 1780544402705
+    },
+    "btc-updown-5m-1780544700": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780544700",
+      "windowStartMs": 1780544700000,
+      "openingPrice": 64310.460143695884,
+      "openingTickTimestampMs": 1780544700000,
+      "capturedAtMs": 1780544701090
+    },
+    "eth-updown-5m-1780544700": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780544700",
+      "windowStartMs": 1780544700000,
+      "openingPrice": 1806.50578,
+      "openingTickTimestampMs": 1780544700000,
+      "capturedAtMs": 1780544703409
+    },
+    "doge-updown-5m-1780544700": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780544700",
+      "windowStartMs": 1780544700000,
+      "openingPrice": 0.0913241667220254,
+      "openingTickTimestampMs": 1780544700000,
+      "capturedAtMs": 1780544703409
+    },
+    "btc-updown-5m-1780545000": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780545000",
+      "windowStartMs": 1780545000000,
+      "openingPrice": 64299.64327491604,
+      "openingTickTimestampMs": 1780545000000,
+      "capturedAtMs": 1780545001208
+    },
+    "eth-updown-5m-1780545000": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780545000",
+      "windowStartMs": 1780545000000,
+      "openingPrice": 1806.8355845174858,
+      "openingTickTimestampMs": 1780545000000,
+      "capturedAtMs": 1780545003241
+    },
+    "doge-updown-5m-1780545000": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780545000",
+      "windowStartMs": 1780545000000,
+      "openingPrice": 0.091205,
+      "openingTickTimestampMs": 1780545000000,
+      "capturedAtMs": 1780545003241
+    },
+    "btc-updown-5m-1780545300": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780545300",
+      "windowStartMs": 1780545300000,
+      "openingPrice": 64319.60462,
+      "openingTickTimestampMs": 1780545300000,
+      "capturedAtMs": 1780545301191
+    },
+    "eth-updown-5m-1780545300": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780545300",
+      "windowStartMs": 1780545300000,
+      "openingPrice": 1806.956330292982,
+      "openingTickTimestampMs": 1780545300000,
+      "capturedAtMs": 1780545303297
+    },
+    "doge-updown-5m-1780545300": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780545300",
+      "windowStartMs": 1780545300000,
+      "openingPrice": 0.0912180882499118,
+      "openingTickTimestampMs": 1780545300000,
+      "capturedAtMs": 1780545303297
+    },
+    "btc-updown-5m-1780545600": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780545600",
+      "windowStartMs": 1780545600000,
+      "openingPrice": 64289.15701908683,
+      "openingTickTimestampMs": 1780545600000,
+      "capturedAtMs": 1780545601153
+    },
+    "eth-updown-5m-1780545600": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780545600",
+      "windowStartMs": 1780545600000,
+      "openingPrice": 1807.0306139249114,
+      "openingTickTimestampMs": 1780545600000,
+      "capturedAtMs": 1780545603423
+    },
+    "doge-updown-5m-1780545600": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780545600",
+      "windowStartMs": 1780545600000,
+      "openingPrice": 0.0912248866059091,
+      "openingTickTimestampMs": 1780545600000,
+      "capturedAtMs": 1780545603423
+    },
+    "btc-updown-5m-1780545900": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780545900",
+      "windowStartMs": 1780545900000,
+      "openingPrice": 64437.193275726546,
+      "openingTickTimestampMs": 1780545900000,
+      "capturedAtMs": 1780545901557
+    },
+    "eth-updown-5m-1780545900": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780545900",
+      "windowStartMs": 1780545900000,
+      "openingPrice": 1810.5899231020048,
+      "openingTickTimestampMs": 1780545900000,
+      "capturedAtMs": 1780545904603
+    },
+    "doge-updown-5m-1780545900": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780545900",
+      "windowStartMs": 1780545900000,
+      "openingPrice": 0.0914136101665033,
+      "openingTickTimestampMs": 1780545900000,
+      "capturedAtMs": 1780545904603
+    },
+    "btc-updown-5m-1780546200": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780546200",
+      "windowStartMs": 1780546200000,
+      "openingPrice": 64298.47626843128,
+      "openingTickTimestampMs": 1780546200000,
+      "capturedAtMs": 1780546200343
+    },
+    "eth-updown-5m-1780546200": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780546200",
+      "windowStartMs": 1780546200000,
+      "openingPrice": 1806.3055799713056,
+      "openingTickTimestampMs": 1780546200000,
+      "capturedAtMs": 1780546204633
+    },
+    "doge-updown-5m-1780546200": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780546200",
+      "windowStartMs": 1780546200000,
+      "openingPrice": 0.0912320178280173,
+      "openingTickTimestampMs": 1780546200000,
+      "capturedAtMs": 1780546204633
+    },
+    "btc-updown-5m-1780546500": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780546500",
+      "windowStartMs": 1780546500000,
+      "openingPrice": 64553.35388037421,
+      "openingTickTimestampMs": 1780546500000,
+      "capturedAtMs": 1780546500223
+    },
+    "eth-updown-5m-1780546500": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780546500",
+      "windowStartMs": 1780546500000,
+      "openingPrice": 1811.77564,
+      "openingTickTimestampMs": 1780546500000,
+      "capturedAtMs": 1780546504491
+    },
+    "doge-updown-5m-1780546500": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780546500",
+      "windowStartMs": 1780546500000,
+      "openingPrice": 0.091363889,
+      "openingTickTimestampMs": 1780546500000,
+      "capturedAtMs": 1780546504491
+    },
+    "btc-updown-5m-1780546800": {
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780546800",
+      "windowStartMs": 1780546800000,
+      "openingPrice": 64531.461905,
+      "openingTickTimestampMs": 1780546800000,
+      "capturedAtMs": 1780546801392
+    },
+    "eth-updown-5m-1780546800": {
+      "asset": "ETH",
+      "slug": "eth-updown-5m-1780546800",
+      "windowStartMs": 1780546800000,
+      "openingPrice": 1810.732430677825,
+      "openingTickTimestampMs": 1780546800000,
+      "capturedAtMs": 1780546804426
+    },
+    "doge-updown-5m-1780546800": {
+      "asset": "DOGE",
+      "slug": "doge-updown-5m-1780546800",
+      "windowStartMs": 1780546800000,
+      "openingPrice": 0.091224145,
+      "openingTickTimestampMs": 1780546800000,
+      "capturedAtMs": 1780546804426
+    }
+  },
+  "tradedMarkets": {
+    "sim:btc-updown-5m-1780534200": {
+      "id": "btc-updown-5m-1780534200-sim-DOWN-1780534473210",
+      "asset": "BTC",
+      "slug": "btc-updown-5m-1780534200",
+      "mode": "sim",
+      "conditionId": "0xf54be66e6e75718633e3e3c4aa99028704e6518e8b4503f08548364e788a7529",
+      "outcome": "DOWN",
+      "tokenId": "82348848569344709839575582928816323274411436001452610335553660730270673652481",
+      "amountUsd": 1000,
+      "maxAskPrice": 0.8,
+      "bestAsk": 0.78,
+      "estimatedShares": 239.04000000000002,
+      "openingPrice": 63168.45145061157,
+      "entryPrice": 63111.420962337994,
+      "distanceUsd": 57.0304882735727,
+      "entryWindowSeconds": 53,
+      "windowStartMs": 1780534200000,
+      "endMs": 1780534500000,
+      "createdAtMs": 1780534473210,
+      "resolved": {
+        "resolvedAtMs": 1780534500349,
+        "finalPrice": 63105.3751315709,
+        "finalTickTimestampMs": 1780534500000,
+        "winningOutcome": "DOWN",
+        "won": true
+      }
+    }
+  },
+  "dailySpendUsd": {
+    "2026-06-04": 1000
+  },
+  "pnlResetAtMs": {}
+}

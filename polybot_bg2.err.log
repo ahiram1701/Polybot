@@ -1,0 +1,377 @@
+[31mWebSocket server error: Port 24678 is already in use[39m
+[CLOB Client] request error AxiosError [AggregateError]
+    at AxiosError.from (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/core/AxiosError.js:77:24)
+    at RedirectableRequest.handleRequestError (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/adapters/http.js:1051:27)
+    at RedirectableRequest.emit (node:events:508:28)
+    at eventHandlers.<computed> (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\follow-redirects\index.js:56:24)
+    at ClientRequest.emit (node:events:508:28)
+    at emitErrorEvent (node:_http_client:108:11)
+    at TLSSocket.socketErrorListener (node:_http_client:575:5)
+    at TLSSocket.emit (node:events:520:35)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at Axios.request (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/core/Axios.js:46:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async request (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\http-helpers\index.ts:38:9)
+    at async get (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\http-helpers\index.ts:88:16)
+    at async ClobClient.get (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\client.ts:1700:18)
+    at async OrderbookService.getQuote (C:\DEV\tests\Workspace de Yarbis\Polybot\src\orderbookService.ts:21:18)
+    at async Promise.allSettled (index 1)
+    at async BotRunner.getAnalyticsQuotes (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:663:24)
+    at async BotRunner.runOnce (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:204:31)
+    at async BotRunner.runLoopIteration (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:274:7) {
+  isAxiosError: true,
+  code: 'ETIMEDOUT',
+  config: [Object: null prototype] {
+    transitional: {
+      silentJSONParsing: true,
+      forcedJSONParsing: true,
+      clarifyTimeoutError: false,
+      legacyInterceptorReqResOrdering: true
+    },
+    adapter: [ 'xhr', 'http', 'fetch' ],
+    transformRequest: [ [Function: transformRequest] ],
+    transformResponse: [ [Function: transformResponse] ],
+    timeout: 0,
+    xsrfCookieName: 'XSRF-TOKEN',
+    xsrfHeaderName: 'X-XSRF-TOKEN',
+    maxContentLength: -1,
+    maxBodyLength: -1,
+    env: { FormData: [Function], Blob: [class Blob] },
+    validateStatus: [Function: validateStatus],
+    headers: Object [AxiosHeaders] {
+      Accept: 'application/json, text/plain, */*',
+      'Content-Type': undefined,
+      'User-Agent': 'axios/1.16.0',
+      'Accept-Encoding': 'gzip, compress, deflate, br'
+    },
+    method: 'get',
+    url: 'https://clob.polymarket.com/book',
+    params: {
+      token_id: '18103610629326558480722405388288569324582339813471741369378007447853468364363'
+    },
+    allowAbsoluteUrls: true,
+    data: undefined
+  },
+  request: <ref *1> Writable {
+    _events: {
+      close: undefined,
+      error: [Function: handleRequestError],
+      prefinish: undefined,
+      finish: undefined,
+      drain: undefined,
+      response: [Function: handleResponse],
+      socket: [Array],
+      abort: undefined
+    },
+    _writableState: WritableState {
+      highWaterMark: 16384,
+      length: 0,
+      corked: 0,
+      onwrite: [Function: bound onwrite],
+      writelen: 0,
+      bufferedIndex: 0,
+      pendingcb: 0,
+      Symbol(kState): 17581054,
+      Symbol(kBufferedValue): null,
+      Symbol(kErroredValue): [AggregateError]
+    },
+    _maxListeners: undefined,
+    _options: {
+      maxRedirects: 21,
+      maxBodyLength: Infinity,
+      protocol: 'https:',
+      path: '/book?token_id=18103610629326558480722405388288569324582339813471741369378007447853468364363',
+      method: 'GET',
+      headers: [Object: null prototype],
+      agents: [Object],
+      auth: undefined,
+      family: undefined,
+      beforeRedirect: [Function: dispatchBeforeRedirect],
+      beforeRedirects: [Object: null prototype],
+      http2Options: undefined,
+      hostname: 'clob.polymarket.com',
+      port: '',
+      agent: undefined,
+      insecureHTTPParser: false,
+      nativeProtocols: [Object],
+      sensitiveHeaders: [],
+      pathname: '/book',
+      search: '?token_id=18103610629326558480722405388288569324582339813471741369378007447853468364363'
+    },
+    _ended: true,
+    _ending: true,
+    _redirectCount: 0,
+    _redirects: [],
+    _requestBodyLength: 0,
+    _requestBodyBuffers: [],
+    _eventsCount: 3,
+    _onNativeResponse: [Function (anonymous)],
+    _headerFilter: /^(?:Authorization|Proxy-Authorization|Cookie)$/i,
+    _currentRequest: ClientRequest {
+      _events: [Object: null prototype],
+      _eventsCount: 2,
+      _maxListeners: undefined,
+      outputData: [],
+      outputSize: 0,
+      writable: true,
+      destroyed: true,
+      _last: true,
+      chunkedEncoding: false,
+      shouldKeepAlive: true,
+      maxRequestsOnConnectionReached: false,
+      _defaultKeepAlive: true,
+      useChunkedEncodingByDefault: false,
+      sendDate: false,
+      _removedConnection: false,
+      _removedContLen: false,
+      _removedTE: false,
+      strictContentLength: false,
+      _contentLength: 0,
+      _hasBody: true,
+      _trailer: '',
+      finished: true,
+      _headerSent: true,
+      _closed: false,
+      _header: 'GET /book?token_id=18103610629326558480722405388288569324582339813471741369378007447853468364363 HTTP/1.1\r\n' +
+        'Accept: application/json, text/plain, */*\r\n' +
+        'User-Agent: axios/1.16.0\r\n' +
+        'Accept-Encoding: gzip, compress, deflate, br\r\n' +
+        'Host: clob.polymarket.com\r\n' +
+        'Connection: keep-alive\r\n' +
+        '\r\n',
+      _keepAliveTimeout: 0,
+      _onPendingData: [Function: nop],
+      agent: [Agent],
+      socketPath: undefined,
+      method: 'GET',
+      maxHeaderSize: undefined,
+      insecureHTTPParser: false,
+      joinDuplicateHeaders: undefined,
+      path: '/book?token_id=18103610629326558480722405388288569324582339813471741369378007447853468364363',
+      _ended: false,
+      res: null,
+      aborted: false,
+      timeoutCb: [Function: emitRequestTimeout],
+      upgradeOrConnect: false,
+      parser: null,
+      maxHeadersCount: null,
+      reusedSocket: false,
+      host: 'clob.polymarket.com',
+      protocol: 'https:',
+      _redirectable: [Circular *1],
+      Symbol(shapeMode): false,
+      Symbol(kCapture): false,
+      Symbol(kBytesWritten): 0,
+      Symbol(kNeedDrain): false,
+      Symbol(corked): 0,
+      Symbol(kChunkedBuffer): [],
+      Symbol(kChunkedLength): 0,
+      Symbol(kSocket): [TLSSocket],
+      Symbol(kOutHeaders): [Object: null prototype],
+      Symbol(errored): null,
+      Symbol(kHighWaterMark): 16384,
+      Symbol(kRejectNonStandardBodyWrites): false,
+      Symbol(kUniqueHeaders): null,
+      Symbol(kError): [AggregateError]
+    },
+    _currentUrl: 'https://clob.polymarket.com/book?token_id=18103610629326558480722405388288569324582339813471741369378007447853468364363',
+    _timeout: null,
+    Symbol(shapeMode): true,
+    Symbol(kCapture): false
+  },
+  cause: AggregateError [ETIMEDOUT]: 
+      at internalConnectMultiple (node:net:1142:49)
+      at afterConnectMultiple (node:net:1723:7) {
+    code: 'ETIMEDOUT',
+    [errors]: [ [Error], [Error], [Error], [Error] ]
+  }
+}
+[CLOB Client] request error AxiosError [AggregateError]
+    at AxiosError.from (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/core/AxiosError.js:77:24)
+    at RedirectableRequest.handleRequestError (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/adapters/http.js:1051:27)
+    at RedirectableRequest.emit (node:events:508:28)
+    at eventHandlers.<computed> (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\follow-redirects\index.js:56:24)
+    at ClientRequest.emit (node:events:508:28)
+    at emitErrorEvent (node:_http_client:108:11)
+    at TLSSocket.socketErrorListener (node:_http_client:575:5)
+    at TLSSocket.emit (node:events:520:35)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at Axios.request (file:///C:/DEV/tests/Workspace%20de%20Yarbis/Polybot/node_modules/axios/lib/core/Axios.js:46:41)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async request (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\http-helpers\index.ts:38:9)
+    at async get (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\http-helpers\index.ts:88:16)
+    at async ClobClient.get (C:\DEV\tests\Workspace de Yarbis\Polybot\node_modules\@polymarket\clob-client-v2\src\client.ts:1700:18)
+    at async OrderbookService.getQuote (C:\DEV\tests\Workspace de Yarbis\Polybot\src\orderbookService.ts:21:18)
+    at async Promise.allSettled (index 0)
+    at async BotRunner.getAnalyticsQuotes (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:663:24)
+    at async BotRunner.runOnce (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:204:31)
+    at async BotRunner.runLoopIteration (C:\DEV\tests\Workspace de Yarbis\Polybot\src\botRunner.ts:274:7) {
+  isAxiosError: true,
+  code: 'ETIMEDOUT',
+  config: [Object: null prototype] {
+    transitional: {
+      silentJSONParsing: true,
+      forcedJSONParsing: true,
+      clarifyTimeoutError: false,
+      legacyInterceptorReqResOrdering: true
+    },
+    adapter: [ 'xhr', 'http', 'fetch' ],
+    transformRequest: [ [Function: transformRequest] ],
+    transformResponse: [ [Function: transformResponse] ],
+    timeout: 0,
+    xsrfCookieName: 'XSRF-TOKEN',
+    xsrfHeaderName: 'X-XSRF-TOKEN',
+    maxContentLength: -1,
+    maxBodyLength: -1,
+    env: { FormData: [Function], Blob: [class Blob] },
+    validateStatus: [Function: validateStatus],
+    headers: Object [AxiosHeaders] {
+      Accept: 'application/json, text/plain, */*',
+      'Content-Type': undefined,
+      'User-Agent': 'axios/1.16.0',
+      'Accept-Encoding': 'gzip, compress, deflate, br'
+    },
+    method: 'get',
+    url: 'https://clob.polymarket.com/book',
+    params: {
+      token_id: '106789761507664098528147295652615684238955608285504582484981137282021498963445'
+    },
+    allowAbsoluteUrls: true,
+    data: undefined
+  },
+  request: <ref *1> Writable {
+    _events: {
+      close: undefined,
+      error: [Function: handleRequestError],
+      prefinish: undefined,
+      finish: undefined,
+      drain: undefined,
+      response: [Function: handleResponse],
+      socket: [Array],
+      abort: undefined
+    },
+    _writableState: WritableState {
+      highWaterMark: 16384,
+      length: 0,
+      corked: 0,
+      onwrite: [Function: bound onwrite],
+      writelen: 0,
+      bufferedIndex: 0,
+      pendingcb: 0,
+      Symbol(kState): 17581054,
+      Symbol(kBufferedValue): null,
+      Symbol(kErroredValue): [AggregateError]
+    },
+    _maxListeners: undefined,
+    _options: {
+      maxRedirects: 21,
+      maxBodyLength: Infinity,
+      protocol: 'https:',
+      path: '/book?token_id=106789761507664098528147295652615684238955608285504582484981137282021498963445',
+      method: 'GET',
+      headers: [Object: null prototype],
+      agents: [Object],
+      auth: undefined,
+      family: undefined,
+      beforeRedirect: [Function: dispatchBeforeRedirect],
+      beforeRedirects: [Object: null prototype],
+      http2Options: undefined,
+      hostname: 'clob.polymarket.com',
+      port: '',
+      agent: undefined,
+      insecureHTTPParser: false,
+      nativeProtocols: [Object],
+      sensitiveHeaders: [],
+      pathname: '/book',
+      search: '?token_id=106789761507664098528147295652615684238955608285504582484981137282021498963445'
+    },
+    _ended: true,
+    _ending: true,
+    _redirectCount: 0,
+    _redirects: [],
+    _requestBodyLength: 0,
+    _requestBodyBuffers: [],
+    _eventsCount: 3,
+    _onNativeResponse: [Function (anonymous)],
+    _headerFilter: /^(?:Authorization|Proxy-Authorization|Cookie)$/i,
+    _currentRequest: ClientRequest {
+      _events: [Object: null prototype],
+      _eventsCount: 2,
+      _maxListeners: undefined,
+      outputData: [],
+      outputSize: 0,
+      writable: true,
+      destroyed: true,
+      _last: true,
+      chunkedEncoding: false,
+      shouldKeepAlive: true,
+      maxRequestsOnConnectionReached: false,
+      _defaultKeepAlive: true,
+      useChunkedEncodingByDefault: false,
+      sendDate: false,
+      _removedConnection: false,
+      _removedContLen: false,
+      _removedTE: false,
+      strictContentLength: false,
+      _contentLength: 0,
+      _hasBody: true,
+      _trailer: '',
+      finished: true,
+      _headerSent: true,
+      _closed: false,
+      _header: 'GET /book?token_id=106789761507664098528147295652615684238955608285504582484981137282021498963445 HTTP/1.1\r\n' +
+        'Accept: application/json, text/plain, */*\r\n' +
+        'User-Agent: axios/1.16.0\r\n' +
+        'Accept-Encoding: gzip, compress, deflate, br\r\n' +
+        'Host: clob.polymarket.com\r\n' +
+        'Connection: keep-alive\r\n' +
+        '\r\n',
+      _keepAliveTimeout: 0,
+      _onPendingData: [Function: nop],
+      agent: [Agent],
+      socketPath: undefined,
+      method: 'GET',
+      maxHeaderSize: undefined,
+      insecureHTTPParser: false,
+      joinDuplicateHeaders: undefined,
+      path: '/book?token_id=106789761507664098528147295652615684238955608285504582484981137282021498963445',
+      _ended: false,
+      res: null,
+      aborted: false,
+      timeoutCb: [Function: emitRequestTimeout],
+      upgradeOrConnect: false,
+      parser: null,
+      maxHeadersCount: null,
+      reusedSocket: false,
+      host: 'clob.polymarket.com',
+      protocol: 'https:',
+      _redirectable: [Circular *1],
+      Symbol(shapeMode): false,
+      Symbol(kCapture): false,
+      Symbol(kBytesWritten): 0,
+      Symbol(kNeedDrain): false,
+      Symbol(corked): 0,
+      Symbol(kChunkedBuffer): [],
+      Symbol(kChunkedLength): 0,
+      Symbol(kSocket): [TLSSocket],
+      Symbol(kOutHeaders): [Object: null prototype],
+      Symbol(errored): null,
+      Symbol(kHighWaterMark): 16384,
+      Symbol(kRejectNonStandardBodyWrites): false,
+      Symbol(kUniqueHeaders): null,
+      Symbol(kError): [AggregateError]
+    },
+    _currentUrl: 'https://clob.polymarket.com/book?token_id=106789761507664098528147295652615684238955608285504582484981137282021498963445',
+    _timeout: null,
+    Symbol(shapeMode): true,
+    Symbol(kCapture): false
+  },
+  cause: AggregateError [ETIMEDOUT]: 
+      at internalConnectMultiple (node:net:1142:49)
+      at afterConnectMultiple (node:net:1723:7) {
+    code: 'ETIMEDOUT',
+    [errors]: [ [Error], [Error], [Error], [Error] ]
+  }
+}

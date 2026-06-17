@@ -1,0 +1,9 @@
+npm error Missing script: "start:all"
+npm error
+npm error Did you mean one of these?
+npm error   npm run start:bot # run the "start:bot" package script
+npm error   npm run start:ui # run the "start:ui" package script
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+npm error A complete log of this run can be found in: C:\WINDOWS\system32\config\systemprofile\AppData\Local\npm-cache\_logs\2026-06-16T06_05_40_392Z-debug-0.log

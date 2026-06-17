@@ -261,7 +261,13 @@ export class AnalyticsRecorder {
       throw error;
     }
 
-    const parsed = JSON.parse(contents) as unknown;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents);
+    } catch {
+      console.warn("[analyticsRecorder] analytics-active.json corrupt, starting fresh");
+      return;
+    }
     if (!Array.isArray(parsed)) {
       return;
     }
@@ -493,5 +499,5 @@ function isPositiveFiniteNumber(value: unknown): value is number {
 }
 
 function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+  return Math.min(Math.max(value, min), max);
 }

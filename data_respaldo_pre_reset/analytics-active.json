@@ -1,0 +1,35 @@
+[
+  {
+    "version": 1,
+    "market": "BTC",
+    "slug": "btc-updown-5m-1780532100",
+    "windowStartMs": 1780532100000,
+    "endMs": 1780532400000,
+    "openingPrice": 64225.69480855157,
+    "openingTickTimestampMs": 1780532100000,
+    "ticks": [],
+    "quotes": []
+  },
+  {
+    "version": 1,
+    "market": "ETH",
+    "slug": "eth-updown-5m-1780532100",
+    "windowStartMs": 1780532100000,
+    "endMs": 1780532400000,
+    "openingPrice": 1814.5461441371867,
+    "openingTickTimestampMs": 1780532100000,
+    "ticks": [],
+    "quotes": []
+  },
+  {
+    "version": 1,
+    "market": "DOGE",
+    "slug": "doge-updown-5m-1780532100",
+    "windowStartMs": 1780532100000,
+    "endMs": 1780532400000,
+    "openingPrice": 0.0916136236630324,
+    "openingTickTimestampMs": 1780532100000,
+    "ticks": [],
+    "quotes": []
+  }
+]
