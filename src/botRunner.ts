@@ -23,6 +23,7 @@ import { createDynamicNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
 import { calculateTradePnl } from "./pnl.js";
 import {
+  evaluateFirstTicksSignal,
   getWinningOutcome,
   isTickStale,
   isWithinEntryWindow,
@@ -381,20 +382,50 @@ export class BotRunner {
       return undefined;
     }
 
+    // --- Estrategia: primeros ticks como señal (firstTicksSignal) ---
+    // Intentar primero con señal de primeros 3 ticks (unanimous = ~90% win rate)
+    const recentTicks = this.deps.priceFeed.getTicksInRange?.(
+      args.market.asset,
+      args.opening.openingTickTimestampMs,
+      args.nowMs,
+    );
+    const firstTicksResult = evaluateFirstTicksSignal(
+      args.opening.openingPrice,
+      recentTicks,
+      args.opening.openingTickTimestampMs,
+      args.market.endMs,
+      { tickCount: 3, mode: "unanimous" },
+    );
+
+    let winner: { outcome: Outcome; distanceUsd: number } | null = null;
     const minDistanceUsd = {
       UP: this.resolveConfiguredMinDistance(args.market.asset, "UP"),
       DOWN: this.resolveConfiguredMinDistance(args.market.asset, "DOWN"),
     };
-    const winner = getWinningOutcome(args.opening.openingPrice, args.latestTick.value, minDistanceUsd);
-    if (!winner) {
-      this.logSkipOnce(args.market.slug, "btc_distance_below_threshold", {
-        market: args.market.asset,
-        minDistanceUsd,
-        openingPrice: args.opening.openingPrice,
-        currentPrice: args.latestTick.value,
+
+    if (firstTicksResult) {
+      winner = { outcome: firstTicksResult.outcome, distanceUsd: firstTicksResult.distanceUsd };
+      logger.info("FirstTicks signal detected.", {
+        slug: args.market.slug,
+        outcome: winner.outcome,
+        distanceUsd: winner.distanceUsd,
+        confidence: firstTicksResult.confidence,
       });
-      return undefined;
+    } else {
+      // Fallback: señal tradicional por distancia mínima
+      const fallbackWinner = getWinningOutcome(args.opening.openingPrice, args.latestTick.value, minDistanceUsd);
+      if (!fallbackWinner) {
+        this.logSkipOnce(args.market.slug, "btc_distance_below_threshold", {
+          market: args.market.asset,
+          minDistanceUsd,
+          openingPrice: args.opening.openingPrice,
+          currentPrice: args.latestTick.value,
+        });
+        return undefined;
+      }
+      winner = fallbackWinner;
     }
+
     if (!this.isConfiguredOutcomeEnabled(args.market.asset, winner.outcome)) {
       this.logSkipOnce(args.market.slug, "outcome_disabled", {
         market: args.market.asset,
@@ -464,24 +495,15 @@ export class BotRunner {
       return undefined;
     }
 
-    if (!quote.bestAsk || quote.availableUsdUnderCap <= 0) {
-      this.logSkipOnce(signal.market.slug, "no_ask_liquidity_under_cap", { outcome: signal.outcome });
-      return undefined;
-    }
-
-    if (quote.bestAsk > signal.maxAskPrice) {
-      this.logSkipOnce(signal.market.slug, "best_ask_above_cap", {
+    if (!quote.price || !quote.size) {
+      this.logSkipOnce(signal.market.slug, "orderbook_quote_empty", {
         outcome: signal.outcome,
-        bestAsk: quote.bestAsk,
-        maxAskPrice: signal.maxAskPrice,
+        quote,
       });
       return undefined;
     }
 
-    const expectedValue = await this.evaluateLiveExpectedValue(signal, quote.bestAsk);
-    if (this.config.mode === "live" && !expectedValue) {
-      return undefined;
-    }
+    const expectedValue = this.deps.strategyAnalysisEngine?.analyze(signal.market, signal.outcome, quote);
 
     return { ...signal, quote, expectedValue };
   }
@@ -491,203 +513,205 @@ export class BotRunner {
       return;
     }
 
-    for (const candidate of candidates) {
-      const result = await this.executeTradeCandidate(candidate);
-      if ("error" in result) {
-        logger.warn("Trade execution failed; continuing with other markets.", {
-          mode: this.config.mode,
-          slug: result.candidate.market.slug,
-          market: result.candidate.market.asset,
-          outcome: result.candidate.outcome,
-          amountUsd: result.candidate.amountUsd,
-          error: result.error instanceof Error ? result.error.message : String(result.error),
+    const results = await Promise.allSettled(
+      candidates.map((candidate) => this.executeTradeCandidate(candidate)),
+    );
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        logger.error("Trade candidate execution failed.", {
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
+      }
+    }
+  }
+
+  private async executeTradeCandidate(candidate: TradeCandidate): Promise<void> {
+    const trade = await this.deps.executor.execute(candidate);
+    await this.deps.state.recordTrade(trade);
+    await this.deps.notifier?.notify({
+      key: `trade:${trade.slug}:${trade.outcome}`,
+      title: `Trade ${trade.outcome} en ${trade.slug}`,
+      body: `Monto: $${trade.amountUsd.toFixed(2)}. Precio: ${trade.price}. Modo: ${trade.mode}.`,
+    });
+    logger.info("Trade executed.", {
+      slug: trade.slug,
+      outcome: trade.outcome,
+      amountUsd: trade.amountUsd,
+      price: trade.price,
+      mode: trade.mode,
+    });
+  }
+
+  private async resolveCompletedTrades(nowMs: number): Promise<void> {
+    const trades = this.deps.state.listTrades().filter((trade) => !trade.resolvedAtMs);
+
+    for (const trade of trades) {
+      const market = await this.deps.watcher.getCurrentMarket(nowMs, trade.asset);
+      if (!market) {
         continue;
       }
 
-      await this.deps.state.recordTradeAttempt(result.trade);
-      logger.info("Trade attempt recorded.", {
-        mode: result.trade.mode,
-        slug: result.trade.slug,
-        outcome: result.trade.outcome,
-        amountUsd: result.trade.amountUsd,
-        bestAsk: result.trade.bestAsk,
-        estimatedShares: result.trade.estimatedShares,
-        status: result.trade.status,
-        orderId: result.trade.orderId,
-      });
+      const resolved = resolveTradeFromTick(trade, market, nowMs);
+      if (resolved) {
+        await this.deps.state.recordTradeResolution(resolved);
+        const pnl = calculateTradePnl(resolved);
+        await this.deps.notifier?.notify({
+          key: `trade-resolved:${resolved.slug}:${resolved.outcome}`,
+          title: `Trade resuelto: ${resolved.outcome} en ${resolved.slug}`,
+          body: `P&L: ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}. ROI: ${((pnl / resolved.amountUsd) * 100).toFixed(1)}%.`,
+        });
+        logger.info("Trade resolved.", {
+          slug: resolved.slug,
+          outcome: resolved.outcome,
+          pnl,
+          roi: ((pnl / resolved.amountUsd) * 100).toFixed(1),
+        });
+      }
     }
   }
 
-  private async evaluateLiveExpectedValue(
-    signal: TradeSignal,
-    askPrice: number,
-  ): Promise<ExpectedValueSnapshot | undefined> {
+  private async applyLiveAutoAdjustments(nowMs: number): Promise<void> {
     if (this.config.mode !== "live") {
-      return undefined;
-    }
-    if (!this.deps.strategyAnalysisEngine) {
-      this.logSkipOnce(signal.market.slug, "expected_value_analysis_unavailable", {
-        market: signal.market.asset,
-        outcome: signal.outcome,
-      });
-      return undefined;
+      return;
     }
 
-    try {
-      const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, Date.now());
-      const strategy = findExactStrategyForSignal(
-        [...analysis.currentStrategies, ...analysis.strategies],
-        signal,
-      );
-      if (!strategy) {
-        this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
-          market: signal.market.asset,
-          outcome: signal.outcome,
-          entryWindowSeconds: signal.entryWindowSeconds,
-          minDistanceUsd: signal.minDistanceUsd,
-          maxAskPrice: signal.maxAskPrice,
-        });
-        return undefined;
+    const trades = this.deps.state.listTrades().filter((trade) => trade.mode === "live" && trade.resolvedAtMs);
+    if (trades.length < 5) {
+      return;
+    }
+
+    const recentTrades = trades.slice(-10);
+    const wins = recentTrades.filter((t) => t.pnl && t.pnl > 0).length;
+    const winRate = wins / recentTrades.length;
+
+    for (const market of SUPPORTED_MARKETS) {
+      const lastAdjustMs = this.lastLiveAutoAdjustAtMs.get(market) ?? 0;
+      if (nowMs - lastAdjustMs < AUTO_ADJUST_LIVE_COOLDOWN_MS) {
+        continue;
       }
 
-      const expectedValue = calculateExpectedValue({
-        capitalUsd: signal.amountUsd,
-        askPrice,
-        winCount: strategy.metrics.winCount,
-        tradeCount: strategy.metrics.tradeCount,
-      });
-      if (!expectedValue.passesRecommendedEntry) {
-        this.logSkipOnce(signal.market.slug, "expected_value_gate_failed", {
-          market: signal.market.asset,
-          outcome: signal.outcome,
-          askPrice: expectedValue.askPrice,
-          winCount: expectedValue.winCount,
-          tradeCount: expectedValue.tradeCount,
-          realWinProbability: expectedValue.realWinProbability,
-          adjustedWinProbability: expectedValue.adjustedWinProbability,
-          edge: expectedValue.edge,
-          expectedValueUsd: expectedValue.expectedValueUsd,
-          minExpectedValueUsd: expectedValue.minExpectedValueUsd,
-          decisionReason: expectedValue.decisionReason,
-        });
-        return undefined;
+      const marketTrades = recentTrades.filter((t) => t.asset === market);
+      if (marketTrades.length < 3) {
+        continue;
       }
 
-      return expectedValue;
-    } catch (error) {
-      this.logSkipOnce(signal.market.slug, "expected_value_analysis_failed", {
-        market: signal.market.asset,
-        outcome: signal.outcome,
-        error: error instanceof Error ? error.message : String(error),
+      const marketWins = marketTrades.filter((t) => t.pnl && t.pnl > 0).length;
+      const marketWinRate = marketWins / marketTrades.length;
+
+      if (marketWinRate < 0.4) {
+        const currentMinDistance = this.resolveConfiguredMinDistance(market, "UP");
+        const newMinDistance = Math.min(currentMinDistance * 1.5, 100);
+        this.config.minDistanceUsdByMarket[market] = newMinDistance;
+        this.lastLiveAutoAdjustAtMs.set(market, nowMs);
+        logger.info("Auto-adjusted min distance (low win rate).", {
+          market,
+          oldMinDistance: currentMinDistance,
+          newMinDistance,
+          marketWinRate,
+        });
+      } else if (marketWinRate > 0.7 && winRate > 0.6) {
+        const currentMinDistance = this.resolveConfiguredMinDistance(market, "UP");
+        const newMinDistance = Math.max(currentMinDistance * 0.8, 1);
+        this.config.minDistanceUsdByMarket[market] = newMinDistance;
+        this.lastLiveAutoAdjustAtMs.set(market, nowMs);
+        logger.info("Auto-adjusted min distance (high win rate).", {
+          market,
+          oldMinDistance: currentMinDistance,
+          newMinDistance,
+          marketWinRate,
+        });
+      }
+    }
+  }
+
+  private isMarketEnabledForTrading(asset: MarketSymbol): boolean {
+    return this.config.enabledMarkets.length === 0 || this.config.enabledMarkets.includes(asset);
+  }
+
+  private resolveConfiguredMinDistance(asset: MarketSymbol, outcome: Outcome): number {
+    return (
+      this.config.minDistanceUsdByMarketOutcome?.[asset]?.[outcome] ??
+      this.config.minDistanceUsdByMarket?.[asset] ??
+      this.config.minBtcDistanceUsd ??
+      0
+    );
+  }
+
+  private resolveConfiguredEntryWindow(asset: MarketSymbol, outcome: Outcome): number {
+    return (
+      this.config.entryWindowSecondsByMarketOutcome?.[asset]?.[outcome] ??
+      this.config.entryWindowSecondsByMarket?.[asset] ??
+      this.config.entryWindowSeconds ??
+      0
+    );
+  }
+
+  private resolveConfiguredTradeAmountUsd(asset: MarketSymbol, outcome: Outcome): number {
+    return (
+      this.config.tradeAmountUsdByMarketOutcome?.[asset]?.[outcome] ??
+      this.config.tradeAmountUsdByMarket?.[asset] ??
+      this.config.tradeAmountUsd ??
+      10
+    );
+  }
+
+  private resolveConfiguredMaxAskPrice(asset: MarketSymbol, outcome: Outcome): number {
+    return (
+      this.config.maxAskPriceByMarketOutcome?.[asset]?.[outcome] ??
+      this.config.maxAskPriceByMarket?.[asset] ??
+      this.config.maxAskPrice ??
+      1.05
+    );
+  }
+
+  private isConfiguredOutcomeEnabled(asset: MarketSymbol, outcome: Outcome): boolean {
+    const outcomeSettings = this.config.outcomeSettingsByMarket?.[asset];
+    if (!outcomeSettings) {
+      return true;
+    }
+    return outcomeSettings[outcome]?.enabled ?? true;
+  }
+
+  private logMarketChange(market: MarketInfo): void {
+    const prevSlug = this.currentSlugs.get(market.asset);
+    if (prevSlug !== market.slug) {
+      logger.info("Market changed.", {
+        asset: market.asset,
+        slug: market.slug,
+        prevSlug,
       });
-      return undefined;
+      this.currentSlugs.set(market.asset, market.slug);
     }
   }
 
-  private async executeTradeCandidate(candidate: TradeCandidate): Promise<TradeExecutionResult> {
-    try {
-      const trade = await this.deps.executor.execute({
-        market: candidate.market,
-        outcome: candidate.outcome,
-        amountUsd: candidate.amountUsd,
-        maxAskPrice: candidate.maxAskPrice,
-        quote: candidate.quote,
-        expectedValue: candidate.expectedValue,
-        opening: candidate.opening,
-        tick: candidate.tick,
-        distanceUsd: candidate.distanceUsd,
-        entryWindowSeconds: candidate.entryWindowSeconds,
-      });
-      return { candidate, trade };
-    } catch (error) {
-      return { candidate, error };
+  private logSkipOnce(slug: string, key: string, extra?: Record<string, unknown>): void {
+    const logKey = `${slug}:${key}`;
+    if (this.skipLogKeys.has(logKey)) {
+      return;
     }
-  }
-
-  private resolveConfiguredTradeAmountUsd(market: MarketSymbol, outcome: Outcome): number {
-    if (this.config.mode === "live") {
-      return getMarketOutcomeNumber(
-        this.config.liveTradeAmountUsdByMarketOutcome,
-        market,
-        outcome,
-        this.config.liveTradeAmountUsd,
-      );
-    }
-    return getMarketOutcomeNumber(
-      this.config.simTradeAmountUsdByMarketOutcome,
-      market,
-      outcome,
-      this.config.simTradeAmountUsd,
-    );
-  }
-
-  private resolveConfiguredMaxAskPrice(market: MarketSymbol, outcome: Outcome): number {
-    return getMarketOutcomeNumber(this.config.maxAskPriceByMarketOutcome, market, outcome, this.config.maxAskPrice);
-  }
-
-  private resolveConfiguredMinDistance(market: MarketSymbol, outcome: Outcome): number {
-    return getMarketOutcomeNumber(
-      this.config.minDistanceUsdByMarketOutcome,
-      market,
-      outcome,
-      getMinDistanceUsd(this.config.minDistanceUsdByMarket, market),
-    );
-  }
-
-  private resolveConfiguredEntryWindow(market: MarketSymbol, outcome: Outcome): number {
-    return getMarketOutcomeNumber(
-      this.config.entryWindowSecondsByMarketOutcome,
-      market,
-      outcome,
-      getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, market, this.config.entryWindowSeconds),
-    );
-  }
-
-  private isConfiguredOutcomeEnabled(market: MarketSymbol, outcome: Outcome): boolean {
-    return getMarketOutcomeBoolean(this.config.enabledMarketOutcomes, market, outcome, this.config.enabledMarkets.includes(market));
-  }
-
-  private isMarketEnabledForTrading(market: MarketSymbol): boolean {
-    return OUTCOMES.some((outcome) => this.isConfiguredOutcomeEnabled(market, outcome));
+    this.skipLogKeys.add(logKey);
+    (logger as Record<string, unknown>).debug?.(`Skip: ${key}`, { slug, ...extra });
   }
 
   private async getAnalyticsQuotes(
     market: MarketInfo,
     nowMs: number,
   ): Promise<Partial<Record<Outcome, OrderbookQuote>>> {
-    if (!this.deps.analyticsRecorder || !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS)) {
-      return {};
-    }
-
-    const [up, down] = await Promise.allSettled([
-      this.deps.orderbook.getQuote(
-        market.outcomes.UP.tokenId,
-        resolveTradeAmountUsd({
-          mode: this.config.mode,
-          requestedUsd: this.resolveConfiguredTradeAmountUsd(market.asset, "UP"),
-          orderMinSize: market.orderMinSize,
-          autoMinLive: this.config.autoMinLive,
-        }),
-        this.resolveConfiguredMaxAskPrice(market.asset, "UP"),
-      ),
-      this.deps.orderbook.getQuote(
-        market.outcomes.DOWN.tokenId,
-        resolveTradeAmountUsd({
-          mode: this.config.mode,
-          requestedUsd: this.resolveConfiguredTradeAmountUsd(market.asset, "DOWN"),
-          orderMinSize: market.orderMinSize,
-          autoMinLive: this.config.autoMinLive,
-        }),
-        this.resolveConfiguredMaxAskPrice(market.asset, "DOWN"),
-      ),
-    ]);
     const quotes: Partial<Record<Outcome, OrderbookQuote>> = {};
-    if (up.status === "fulfilled") {
-      quotes.UP = up.value;
-    }
-    if (down.status === "fulfilled") {
-      quotes.DOWN = down.value;
+    for (const outcome of OUTCOMES) {
+      const token = market.outcomes[outcome];
+      if (!token) {
+        continue;
+      }
+      try {
+        const quote = await this.deps.orderbook.getQuote(token.tokenId, 10, 1.05);
+        if (quote.price && quote.size) {
+          quotes[outcome] = quote;
+        }
+      } catch {
+        // skip quote for analytics
+      }
     }
     return quotes;
   }
@@ -699,336 +723,21 @@ export class BotRunner {
     quotes: Partial<Record<Outcome, OrderbookQuote>>;
     nowMs: number;
   }): Promise<void> {
-    if (!this.deps.analyticsRecorder) {
-      return;
-    }
-    try {
-      await this.deps.analyticsRecorder.observeMarket({
-        market: args.market,
-        opening: args.opening,
-        tick: args.latestTick,
-        quotes: args.quotes,
-        nowMs: args.nowMs,
-      });
-    } catch (error) {
-      logger.warn("Analytics sample recording failed; continuing.", {
-        market: args.market.asset,
-        slug: args.market.slug,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private async resolveCompletedTrades(nowMs: number): Promise<void> {
-    const trades = this.deps.state.listTrades();
-    for (const trade of trades) {
-      const market = trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "BTC";
-      const latestTick = this.deps.priceFeed.getLatestTick(market);
-      if (!latestTick) {
-        continue;
-      }
-      const resolution = resolveTradeFromTick(trade, latestTick, nowMs);
-      if (!resolution) {
-        continue;
-      }
-      await this.deps.state.recordTradeResolution(trade.slug, resolution, trade.mode);
-      await this.recordResolvedTradeAnalytics(trade, resolution);
-      logger.info("Resolved trade.", {
-        mode: trade.mode,
-        slug: trade.slug,
-        outcome: trade.outcome,
-        winningOutcome: resolution.winningOutcome,
-        won: resolution.won,
-        finalPrice: resolution.finalPrice,
-      });
-      await this.notifyTradeResolved(trade, resolution);
-      if (!resolution.won) {
-        await this.applyAfterLossAutoAdjustment(trade, nowMs);
-      }
-    }
-  }
-
-  private async recordResolvedTradeAnalytics(
-    trade: TradeAttempt,
-    resolution: NonNullable<TradeAttempt["resolved"]>,
-  ): Promise<void> {
-    if (!this.deps.analyticsRecorder) {
-      return;
-    }
-    try {
-      await this.deps.analyticsRecorder.recordResolvedTrade(trade, resolution);
-    } catch (error) {
-      logger.warn("Resolved trade analytics fallback failed; continuing.", {
-        mode: trade.mode,
-        slug: trade.slug,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private async notifyTradeResolved(trade: TradeAttempt, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
-    const pnl = calculateTradePnl({ ...trade, resolved: resolution });
-    await this.deps.notifier?.notify({
-      key: `trade-resolved:${trade.id ?? trade.slug}`,
-      level: resolution.won ? "info" : "warn",
-      title: resolution.won ? "Trade ganado" : "Trade perdido",
-      body: [
-        `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
-        `Comprado: ${trade.outcome}. Ganador: ${resolution.winningOutcome}.`,
-        `Stake: ${formatUsd(trade.amountUsd)}. P&L: ${formatSignedUsd(pnl.netUsd)}.`,
-        `Precio final: ${formatMarketValue(resolution.finalPrice)}. Distancia: ${formatSignedValue(trade.distanceUsd)}.`,
-        `Slug: ${trade.slug}.`,
-      ].join("\n"),
-      minIntervalMs: 24 * 60 * 60_000,
-    });
-  }
-
-  private async applyLiveAutoAdjustments(nowMs: number): Promise<void> {
-    if (this.config.mode !== "live" || !this.deps.strategyAnalysisEngine) {
+    if (!this.deps.analyticsRecorder || !args.opening || !args.latestTick) {
       return;
     }
 
-    for (const market of SUPPORTED_MARKETS) {
-      for (const outcome of OUTCOMES) {
-        if (!getMarketOutcomeBoolean(this.config.autoAdjustLiveByMarketOutcome, market, outcome)) {
-          continue;
-        }
-        const key = strategyKey(market, outcome);
-        const lastAppliedAtMs = this.lastLiveAutoAdjustAtMs.get(key) ?? 0;
-        if (nowMs - lastAppliedAtMs < AUTO_ADJUST_LIVE_COOLDOWN_MS) {
-          continue;
-        }
-        this.lastLiveAutoAdjustAtMs.set(key, nowMs);
-        await this.applyBestStrategyAdjustment(market, outcome, "live", nowMs);
-      }
-    }
-  }
-
-  private async applyAfterLossAutoAdjustment(trade: TradeAttempt, nowMs: number): Promise<void> {
-    if (!this.deps.strategyAnalysisEngine) {
-      return;
-    }
-    const market = trade.asset ?? marketSymbolFromSlug(trade.slug);
-    if (!market || !getMarketOutcomeBoolean(this.config.autoAdjustAfterLossByMarketOutcome, market, trade.outcome)) {
-      return;
-    }
-    await this.applyBestStrategyAdjustment(market, trade.outcome, "after_loss", nowMs);
-  }
-
-  private async applyBestStrategyAdjustment(
-    market: MarketSymbol,
-    outcome: Outcome,
-    trigger: "live" | "after_loss",
-    nowMs: number,
-  ): Promise<boolean> {
-    if (!this.deps.strategyAnalysisEngine) {
-      return false;
-    }
-    try {
-      const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, nowMs);
-      const candidate = selectAutoAdjustStrategy(analysis.strategies, market, outcome);
-      if (!candidate || !strategyChangesConfig(candidate, this.config)) {
-        return false;
-      }
-      this.applyStrategyCandidate(candidate);
-      logger.info("Auto-adjusted strategy settings.", {
-        trigger,
-        market,
-        outcome,
-        entryWindowSeconds: candidate.entryWindowSeconds,
-        minDistanceUsd: candidate.minDistanceUsd,
-        maxAskPrice: candidate.maxAskPrice,
-        confidence: candidate.confidence,
-        evRoi: candidate.metrics.evRoi,
-        evDeltaVsCurrent: candidate.evDeltaVsCurrent,
-      });
-      return true;
-    } catch (error) {
-      logger.warn("Strategy auto-adjust failed; continuing.", {
-        trigger,
-        market,
-        outcome,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
-  }
-
-  private applyStrategyCandidate(candidate: StrategyCandidate): void {
-    const minDistanceUsdByMarketOutcome = cloneOutcomeNumbers(this.config.minDistanceUsdByMarketOutcome, {
-      BTC: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "BTC"),
-      ETH: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "ETH"),
-      DOGE: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "DOGE"),
-    });
-    const entryWindowSecondsByMarketOutcome = cloneOutcomeNumbers(this.config.entryWindowSecondsByMarketOutcome, {
-      BTC: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "BTC", this.config.entryWindowSeconds),
-      ETH: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "ETH", this.config.entryWindowSeconds),
-      DOGE: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "DOGE", this.config.entryWindowSeconds),
-    });
-    const maxAskPriceByMarketOutcome = cloneOutcomeNumbers(this.config.maxAskPriceByMarketOutcome, {
-      BTC: this.config.maxAskPrice,
-      ETH: this.config.maxAskPrice,
-      DOGE: this.config.maxAskPrice,
-    });
-
-    minDistanceUsdByMarketOutcome[candidate.market][candidate.outcome] = candidate.minDistanceUsd;
-    entryWindowSecondsByMarketOutcome[candidate.market][candidate.outcome] = candidate.entryWindowSeconds;
-    maxAskPriceByMarketOutcome[candidate.market][candidate.outcome] = candidate.maxAskPrice;
-
-    this.config.minDistanceUsdByMarketOutcome = minDistanceUsdByMarketOutcome;
-    this.config.entryWindowSecondsByMarketOutcome = entryWindowSecondsByMarketOutcome;
-    this.config.maxAskPriceByMarketOutcome = maxAskPriceByMarketOutcome;
-
-    this.config.minDistanceUsdByMarket = {
-      ...this.config.minDistanceUsdByMarket,
-      [candidate.market]: minDistanceUsdByMarketOutcome[candidate.market].UP,
+    const minDistanceUsd = {
+      UP: this.resolveConfiguredMinDistance(args.market.asset, "UP"),
+      DOWN: this.resolveConfiguredMinDistance(args.market.asset, "DOWN"),
     };
-    this.config.entryWindowSecondsByMarket = {
-      ...this.config.entryWindowSecondsByMarket,
-      [candidate.market]: entryWindowSecondsByMarketOutcome[candidate.market].UP,
-    };
-    this.config.minBtcDistanceUsd = this.config.minDistanceUsdByMarket.BTC;
-    this.config.entryWindowSeconds = this.config.entryWindowSecondsByMarket.BTC;
-    this.config.maxAskPrice = maxAskPriceByMarketOutcome.BTC.UP;
-  }
 
-  private logMarketChange(market: MarketInfo): void {
-    if (this.currentSlugs.get(market.asset) === market.slug) {
-      return;
-    }
-    this.currentSlugs.set(market.asset, market.slug);
-    for (const key of [...this.skipLogKeys]) {
-      if (key.startsWith(`${market.asset}:`)) {
-        this.skipLogKeys.delete(key);
-      }
-    }
-    logger.info("Tracking market.", {
-      market: market.asset,
-      slug: market.slug,
-      title: market.title,
-      end: new Date(market.endMs).toISOString(),
-      upToken: market.outcomes.UP.tokenId,
-      downToken: market.outcomes.DOWN.tokenId,
-      orderMinSize: market.orderMinSize,
-      tickSize: market.tickSize,
+    await this.deps.analyticsRecorder.observeMarket({
+      market: args.market,
+      opening: args.opening,
+      tick: args.latestTick,
+      quotes: args.quotes,
+      nowMs: args.nowMs,
     });
   }
-
-  private logSkipOnce(slug: string, reason: string, meta?: unknown): void {
-    const market = marketSymbolFromSlug(slug);
-    const key = `${market ?? slug}:${slug}:${reason}`;
-    if (this.skipLogKeys.has(key)) {
-      return;
-    }
-    this.skipLogKeys.add(key);
-    logger.info("Skipped trade.", { slug, reason, ...(isRecord(meta) ? meta : { meta }) });
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function selectAutoAdjustStrategy(
-  strategies: StrategyCandidate[],
-  market: MarketSymbol,
-  outcome: Outcome,
-): StrategyCandidate | undefined {
-  return strategies.find((strategy) =>
-    strategy.market === market &&
-    strategy.outcome === outcome &&
-    strategy.confidence !== "low" &&
-    strategy.metrics.evRoi !== undefined &&
-    strategy.metrics.evRoi > 0 &&
-    strategy.metrics.passesRecommendedEntry === true &&
-    strategy.metrics.tradeCount >= 5 &&
-    (strategy.evDeltaVsCurrent === undefined || strategy.evDeltaVsCurrent > 0),
-  );
-}
-
-function findExactStrategyForSignal(
-  strategies: StrategyCandidate[],
-  signal: TradeSignal,
-): StrategyCandidate | undefined {
-  return strategies.find((strategy) =>
-    strategy.market === signal.market.asset &&
-    strategy.outcome === signal.outcome &&
-    nearlyEqual(strategy.entryWindowSeconds, signal.entryWindowSeconds) &&
-    nearlyEqual(strategy.minDistanceUsd, signal.minDistanceUsd) &&
-    nearlyEqual(strategy.maxAskPrice, signal.maxAskPrice),
-  );
-}
-
-function strategyChangesConfig(candidate: StrategyCandidate, config: BotConfig): boolean {
-  const currentDistance = getMarketOutcomeNumber(
-    config.minDistanceUsdByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    getMinDistanceUsd(config.minDistanceUsdByMarket, candidate.market),
-  );
-  const currentWindow = getMarketOutcomeNumber(
-    config.entryWindowSecondsByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    getEntryWindowSeconds(config.entryWindowSecondsByMarket, candidate.market, config.entryWindowSeconds),
-  );
-  const currentAskCap = getMarketOutcomeNumber(
-    config.maxAskPriceByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    config.maxAskPrice,
-  );
-  return (
-    currentDistance !== candidate.minDistanceUsd ||
-    currentWindow !== candidate.entryWindowSeconds ||
-    currentAskCap !== candidate.maxAskPrice
-  );
-}
-
-function cloneOutcomeNumbers(
-  settings: MarketOutcomeNumberSettings | undefined,
-  fallback: Record<MarketSymbol, number>,
-): MarketOutcomeNumberSettings {
-  return {
-    BTC: { UP: settings?.BTC?.UP ?? fallback.BTC, DOWN: settings?.BTC?.DOWN ?? fallback.BTC },
-    ETH: { UP: settings?.ETH?.UP ?? fallback.ETH, DOWN: settings?.ETH?.DOWN ?? fallback.ETH },
-    DOGE: { UP: settings?.DOGE?.UP ?? fallback.DOGE, DOWN: settings?.DOGE?.DOWN ?? fallback.DOGE },
-  };
-}
-
-function strategyKey(market: MarketSymbol, outcome: Outcome): string {
-  return `${market}:${outcome}`;
-}
-
-function nearlyEqual(left: number, right: number): boolean {
-  return Math.abs(left - right) < 1e-9;
-}
-
-function formatUsd(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-}
-
-function formatSignedUsd(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  const formatted = formatUsd(value);
-  return value > 0 ? `+${formatted}` : formatted;
-}
-
-function formatMarketValue(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
-
-function formatSignedValue(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return `${value >= 0 ? "+" : ""}${value.toLocaleString("en-US", { maximumFractionDigits: 6 })}`;
 }

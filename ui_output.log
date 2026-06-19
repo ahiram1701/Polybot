@@ -1,27 +1,118 @@
-[2m5:14:17 a.m.[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m Re-optimizing dependencies because vite config has changed
-[2026-06-17T11:14:17.366Z] INFO Polybot UI listening. {"url":"http://0.0.0.0:8788","host":"0.0.0.0","port":8788,"staticClient":false}
-[2026-06-17T11:14:17.428Z] INFO Bot started. {"mode":"sim","enabledMarkets":["BTC","ETH","DOGE"],"minDistanceUsdByMarket":{"BTC":12,"ETH":2,"DOGE":0.0003},"minDistanceUsdByMarketOutcome":{"BTC":{"UP":12,"DOWN":12},"ETH":{"UP":2,"DOWN":2},"DOGE":{"UP":0.0003,"DOWN":0.0003}},"entryWindowSeconds":32,"entryWindowSecondsByMarket":{"BTC":32,"ETH":32,"DOGE":32},"entryWindowSecondsByMarketOutcome":{"BTC":{"UP":32,"DOWN":32},"ETH":{"UP":32,"DOWN":32},"DOGE":{"UP":32,"DOWN":32}},"maxAskPrice":0.75,"maxAskPriceByMarketOutcome":{"BTC":{"UP":0.75,"DOWN":0.75},"ETH":{"UP":0.75,"DOWN":0.75},"DOGE":{"UP":0.75,"DOWN":0.75}},"dailySpendLimitUsd":1000}
-[2026-06-17T11:14:17.636Z] INFO Connected to Polymarket RTDS Chainlink feed.
-[2026-06-17T11:14:17.654Z] INFO Tracking market. {"market":"BTC","slug":"btc-updown-5m-1781694600","title":"Bitcoin Up or Down - June 17, 7:10AM-7:15AM ET","end":"2026-06-17T11:15:00.000Z","upToken":"92278889560705500608653597249321801265761830848173384514626246670827251112827","downToken":"19130813876112859614594492787447655457290356265362338661046151937801437857926","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:14:18.018Z] INFO Connected to Polymarket RTDS Chainlink feed.
-[2026-06-17T11:14:18.024Z] INFO Skipped trade. {"slug":"btc-updown-5m-1781694600","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:14:18.025Z] INFO Tracking market. {"market":"ETH","slug":"eth-updown-5m-1781694600","title":"Ethereum Up or Down - June 17, 7:10AM-7:15AM ET","end":"2026-06-17T11:15:00.000Z","upToken":"105525381132985189051932143045234954502783972368741776612162809899980888658708","downToken":"60049222529482506672981641867716875737539082157727825147948168975314940411476","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:14:18.242Z] INFO Skipped trade. {"slug":"eth-updown-5m-1781694600","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:14:18.242Z] INFO Tracking market. {"market":"DOGE","slug":"doge-updown-5m-1781694600","title":"Dogecoin Up or Down - June 17, 7:10AM-7:15AM ET","end":"2026-06-17T11:15:00.000Z","upToken":"17404601900788613384393754265363431825643234101378380298585672970508902594236","downToken":"82538268986676921246374799608295629718249238432410528884103643769201338595846","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:14:18.460Z] INFO Skipped trade. {"slug":"doge-updown-5m-1781694600","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:15:00.747Z] INFO Tracking market. {"market":"BTC","slug":"btc-updown-5m-1781694900","title":"Bitcoin Up or Down - June 17, 7:15AM-7:20AM ET","end":"2026-06-17T11:20:00.000Z","upToken":"2654379746574699299731265040475624160112025464728648370060218230157179429126","downToken":"104546007466937325224033518533123356601379539421989556485919462066435495126277","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:15:00.748Z] INFO Skipped trade. {"slug":"btc-updown-5m-1781694900","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:15:00.748Z] INFO Tracking market. {"market":"ETH","slug":"eth-updown-5m-1781694900","title":"Ethereum Up or Down - June 17, 7:15AM-7:20AM ET","end":"2026-06-17T11:20:00.000Z","upToken":"24583998106023966933030821805636751499227804924307310238882764167894142957774","downToken":"56667883597579859834679407958666006514198311243528909658670568147743963400038","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:15:00.748Z] INFO Skipped trade. {"slug":"eth-updown-5m-1781694900","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:15:00.748Z] INFO Tracking market. {"market":"DOGE","slug":"doge-updown-5m-1781694900","title":"Dogecoin Up or Down - June 17, 7:15AM-7:20AM ET","end":"2026-06-17T11:20:00.000Z","upToken":"10600130144652534014639247558718621033973513730557195435334004792155348970024","downToken":"28994042646852831382182860829464449938753049539820108938672839640209172600356","orderMinSize":5,"tickSize":"0.01"}
-[2026-06-17T11:15:00.748Z] INFO Skipped trade. {"slug":"doge-updown-5m-1781694900","reason":"missing_opening_chainlink_tick"}
-[2026-06-17T11:15:01.814Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781694900","openingPrice":64539.89654463453,"tickTimestamp":"2026-06-17T11:15:00.000Z"}
-[2026-06-17T11:15:01.818Z] INFO Skipped trade. {"slug":"btc-updown-5m-1781694900","reason":"btc_distance_below_threshold","market":"BTC","minDistanceUsd":{"UP":12,"DOWN":12},"openingPrice":64539.89654463453,"currentPrice":64539.89654463453}
-[2026-06-17T11:15:03.874Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781694900","openingPrice":1763.37495,"tickTimestamp":"2026-06-17T11:15:00.000Z"}
-[2026-06-17T11:15:03.878Z] INFO Skipped trade. {"slug":"eth-updown-5m-1781694900","reason":"btc_distance_below_threshold","market":"ETH","minDistanceUsd":{"UP":2,"DOWN":2},"openingPrice":1763.37495,"currentPrice":1763.623015}
-[2026-06-17T11:15:03.925Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781694900","openingPrice":0.08571,"tickTimestamp":"2026-06-17T11:15:00.000Z"}
-[2026-06-17T11:15:03.931Z] INFO Skipped trade. {"slug":"doge-updown-5m-1781694900","reason":"btc_distance_below_threshold","market":"DOGE","minDistanceUsd":{"UP":0.0003,"DOWN":0.0003},"openingPrice":0.08571,"currentPrice":0.0857245}
-[2026-06-17T11:17:53.782Z] INFO Skipped trade. {"slug":"btc-updown-5m-1781694900","reason":"stale_chainlink_tick","tickTimestamp":"2026-06-17T11:17:15.000Z"}
-[2026-06-17T11:17:53.783Z] INFO Skipped trade. {"slug":"eth-updown-5m-1781694900","reason":"stale_chainlink_tick","tickTimestamp":"2026-06-17T11:17:12.000Z"}
-[2026-06-17T11:17:53.784Z] INFO Skipped trade. {"slug":"doge-updown-5m-1781694900","reason":"stale_chainlink_tick","tickTimestamp":"2026-06-17T11:17:12.000Z"}
-^C
+[2026-06-19T22:02:11.111Z] INFO Polybot UI listening. {"url":"http://0.0.0.0:8788","host":"0.0.0.0","port":8788,"staticClient":false}
+[2026-06-19T22:02:11.181Z] INFO Bot started. {"mode":"sim","enabledMarkets":["BTC","ETH","DOGE"],"minDistanceUsdByMarket":{"BTC":5,"ETH":1,"DOGE":0.0001},"minDistanceUsdByMarketOutcome":{"BTC":{"UP":5,"DOWN":5},"ETH":{"UP":1,"DOWN":1},"DOGE":{"UP":0.0001,"DOWN":0.0001}},"entryWindowSeconds":60,"entryWindowSecondsByMarket":{"BTC":60,"ETH":60,"DOGE":60},"entryWindowSecondsByMarketOutcome":{"BTC":{"UP":60,"DOWN":60},"ETH":{"UP":60,"DOWN":60},"DOGE":{"UP":60,"DOWN":60}},"maxAskPrice":0.75,"maxAskPriceByMarketOutcome":{"BTC":{"UP":0.75,"DOWN":0.75},"ETH":{"UP":0.75,"DOWN":0.75},"DOGE":{"UP":0.75,"DOWN":0.75}},"dailySpendLimitUsd":1000}
+[2026-06-19T22:02:11.518Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781906400"}
+[2026-06-19T22:02:11.601Z] INFO Connected to Polymarket RTDS Chainlink feed.
+[2026-06-19T22:02:11.782Z] INFO Connected to Polymarket RTDS Chainlink feed.
+[2026-06-19T22:02:12.011Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781906400"}
+[2026-06-19T22:02:12.471Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781906400"}
+[2026-06-19T22:05:01.768Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781906700","prevSlug":"btc-updown-5m-1781906400"}
+[2026-06-19T22:05:01.863Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781906700","openingPrice":63030.1054144764,"tickTimestamp":"2026-06-19T22:05:00.000Z"}
+[2026-06-19T22:05:02.248Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781906700","prevSlug":"eth-updown-5m-1781906400"}
+[2026-06-19T22:05:02.323Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781906700","openingPrice":1700.2584813626268,"tickTimestamp":"2026-06-19T22:05:00.000Z"}
+[2026-06-19T22:05:02.742Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781906700","prevSlug":"doge-updown-5m-1781906400"}
+[2026-06-19T22:05:02.804Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781906700","openingPrice":0.0828395,"tickTimestamp":"2026-06-19T22:05:00.000Z"}
+[2026-06-19T22:10:02.201Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781907000","prevSlug":"btc-updown-5m-1781906700"}
+[2026-06-19T22:10:02.247Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781907000","openingPrice":63036.532742556185,"tickTimestamp":"2026-06-19T22:10:00.000Z"}
+[2026-06-19T22:10:02.620Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781907000","prevSlug":"eth-updown-5m-1781906700"}
+[2026-06-19T22:10:03.015Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781907000","prevSlug":"doge-updown-5m-1781906700"}
+[2026-06-19T22:10:03.063Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781907000","openingPrice":0.0828902,"tickTimestamp":"2026-06-19T22:10:00.000Z"}
+[2026-06-19T22:10:04.911Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781907000","openingPrice":1700.8094661119053,"tickTimestamp":"2026-06-19T22:10:00.000Z"}
+[2026-06-19T22:14:52.966Z] WARN Bot loop iteration failed; retrying. {"error":"ENOENT: no such file or directory, rename 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json.tmp' -> 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json'"}
+[2026-06-19T22:15:00.744Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781907300","prevSlug":"btc-updown-5m-1781907000"}
+[2026-06-19T22:15:01.128Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781907300","prevSlug":"eth-updown-5m-1781907000"}
+[2026-06-19T22:15:01.555Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781907300","prevSlug":"doge-updown-5m-1781907000"}
+[2026-06-19T22:15:03.001Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781907300","openingPrice":63037.9881,"tickTimestamp":"2026-06-19T22:15:00.000Z"}
+[2026-06-19T22:15:03.417Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781907300","openingPrice":1701.22368,"tickTimestamp":"2026-06-19T22:15:00.000Z"}
+[2026-06-19T22:15:03.832Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781907300","openingPrice":0.0829682,"tickTimestamp":"2026-06-19T22:15:00.000Z"}
+[2026-06-19T22:20:01.996Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781907600","prevSlug":"btc-updown-5m-1781907300"}
+[2026-06-19T22:20:02.041Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781907600","openingPrice":63131.71011,"tickTimestamp":"2026-06-19T22:20:00.000Z"}
+[2026-06-19T22:20:02.433Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781907600","prevSlug":"eth-updown-5m-1781907300"}
+[2026-06-19T22:20:02.835Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781907600","prevSlug":"doge-updown-5m-1781907300"}
+[2026-06-19T22:20:04.651Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781907600","openingPrice":1703.6255418072444,"tickTimestamp":"2026-06-19T22:20:00.000Z"}
+[2026-06-19T22:20:05.054Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781907600","openingPrice":0.083032138,"tickTimestamp":"2026-06-19T22:20:00.000Z"}
+[2026-06-19T22:25:00.821Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781907900","prevSlug":"btc-updown-5m-1781907600"}
+[2026-06-19T22:25:01.235Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781907900","prevSlug":"eth-updown-5m-1781907600"}
+[2026-06-19T22:25:01.692Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781907900","prevSlug":"doge-updown-5m-1781907600"}
+[2026-06-19T22:25:03.110Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781907900","openingPrice":63224.8249592141,"tickTimestamp":"2026-06-19T22:25:00.000Z"}
+[2026-06-19T22:25:05.697Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781907900","openingPrice":1706.800635,"tickTimestamp":"2026-06-19T22:25:00.000Z"}
+[2026-06-19T22:25:06.152Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781907900","openingPrice":0.0830845,"tickTimestamp":"2026-06-19T22:25:00.000Z"}
+[2026-06-19T22:30:02.374Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781908200","prevSlug":"btc-updown-5m-1781907900"}
+[2026-06-19T22:30:02.428Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781908200","openingPrice":63207.149228510636,"tickTimestamp":"2026-06-19T22:30:00.000Z"}
+[2026-06-19T22:30:02.849Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781908200","prevSlug":"eth-updown-5m-1781907900"}
+[2026-06-19T22:30:03.240Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781908200","prevSlug":"doge-updown-5m-1781907900"}
+[2026-06-19T22:30:05.136Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781908200","openingPrice":1706.795105,"tickTimestamp":"2026-06-19T22:30:00.000Z"}
+[2026-06-19T22:30:05.600Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781908200","openingPrice":0.0830665,"tickTimestamp":"2026-06-19T22:30:00.000Z"}
+[2026-06-19T22:35:01.153Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781908500","prevSlug":"btc-updown-5m-1781908200"}
+[2026-06-19T22:35:01.537Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781908500","prevSlug":"eth-updown-5m-1781908200"}
+[2026-06-19T22:35:01.922Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781908500","prevSlug":"doge-updown-5m-1781908200"}
+[2026-06-19T22:35:03.380Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781908500","openingPrice":63216.18054249921,"tickTimestamp":"2026-06-19T22:35:00.000Z"}
+[2026-06-19T22:35:05.942Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781908500","openingPrice":1706.38412,"tickTimestamp":"2026-06-19T22:35:00.000Z"}
+[2026-06-19T22:35:06.417Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781908500","openingPrice":0.0830874,"tickTimestamp":"2026-06-19T22:35:00.000Z"}
+[2026-06-19T22:40:00.872Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781908800","prevSlug":"btc-updown-5m-1781908500"}
+[2026-06-19T22:40:01.232Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781908800","prevSlug":"eth-updown-5m-1781908500"}
+[2026-06-19T22:40:01.639Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781908800","prevSlug":"doge-updown-5m-1781908500"}
+[2026-06-19T22:40:03.091Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781908800","openingPrice":63220.10123682036,"tickTimestamp":"2026-06-19T22:40:00.000Z"}
+[2026-06-19T22:40:05.721Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781908800","openingPrice":1706.073285,"tickTimestamp":"2026-06-19T22:40:00.000Z"}
+[2026-06-19T22:40:06.136Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781908800","openingPrice":0.0830915,"tickTimestamp":"2026-06-19T22:40:00.000Z"}
+[2026-06-19T22:45:02.448Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781909100","prevSlug":"btc-updown-5m-1781908800"}
+[2026-06-19T22:45:02.513Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781909100","openingPrice":63261.168444155825,"tickTimestamp":"2026-06-19T22:45:00.000Z"}
+[2026-06-19T22:45:02.934Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781909100","prevSlug":"eth-updown-5m-1781908800"}
+[2026-06-19T22:45:02.980Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781909100","openingPrice":1706.574275,"tickTimestamp":"2026-06-19T22:45:00.000Z"}
+[2026-06-19T22:45:03.410Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781909100","prevSlug":"doge-updown-5m-1781908800"}
+[2026-06-19T22:45:03.456Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781909100","openingPrice":0.0831269,"tickTimestamp":"2026-06-19T22:45:00.000Z"}
+[2026-06-19T22:50:00.968Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781909400","prevSlug":"btc-updown-5m-1781909100"}
+[2026-06-19T22:50:01.379Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781909400","prevSlug":"eth-updown-5m-1781909100"}
+[2026-06-19T22:50:01.453Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781909400","openingPrice":1707.54914,"tickTimestamp":"2026-06-19T22:50:00.000Z"}
+[2026-06-19T22:50:01.835Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781909400","prevSlug":"doge-updown-5m-1781909100"}
+[2026-06-19T22:50:01.901Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781909400","openingPrice":0.0831968,"tickTimestamp":"2026-06-19T22:50:00.000Z"}
+[2026-06-19T22:50:03.516Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781909400","openingPrice":63303.184856573855,"tickTimestamp":"2026-06-19T22:50:00.000Z"}
+[2026-06-19T22:54:01.639Z] WARN Bot loop iteration failed; retrying. {"error":"ENOENT: no such file or directory, rename 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json.tmp' -> 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json'"}
+[2026-06-19T22:54:13.249Z] WARN Bot loop iteration failed; retrying. {"error":"ENOENT: no such file or directory, rename 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json.tmp' -> 'C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y\\data\\analytics-active.json'"}
+[2026-06-19T22:55:01.058Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781909700","prevSlug":"btc-updown-5m-1781909400"}
+[2026-06-19T22:55:01.446Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781909700","prevSlug":"eth-updown-5m-1781909400"}
+[2026-06-19T22:55:01.794Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781909700","prevSlug":"doge-updown-5m-1781909400"}
+[2026-06-19T22:55:01.893Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781909700","openingPrice":0.0831827194089806,"tickTimestamp":"2026-06-19T22:55:00.000Z"}
+[2026-06-19T22:55:03.391Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781909700","openingPrice":63284.51561886546,"tickTimestamp":"2026-06-19T22:55:00.000Z"}
+[2026-06-19T22:55:03.829Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781909700","openingPrice":1706.9081682632889,"tickTimestamp":"2026-06-19T22:55:00.000Z"}
+[2026-06-19T23:00:00.609Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781910000","prevSlug":"btc-updown-5m-1781909700"}
+[2026-06-19T23:00:01.081Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781910000","prevSlug":"eth-updown-5m-1781909700"}
+[2026-06-19T23:00:01.446Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781910000","prevSlug":"doge-updown-5m-1781909700"}
+[2026-06-19T23:00:02.890Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781910000","openingPrice":63257.09441,"tickTimestamp":"2026-06-19T23:00:00.000Z"}
+[2026-06-19T23:00:03.323Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781910000","openingPrice":1706.061965,"tickTimestamp":"2026-06-19T23:00:00.000Z"}
+[2026-06-19T23:00:03.813Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781910000","openingPrice":0.0831666,"tickTimestamp":"2026-06-19T23:00:00.000Z"}
+[2026-06-19T23:05:01.609Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781910300","prevSlug":"btc-updown-5m-1781910000"}
+[2026-06-19T23:05:01.718Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781910300","openingPrice":63236.053405,"tickTimestamp":"2026-06-19T23:05:00.000Z"}
+[2026-06-19T23:05:02.191Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781910300","prevSlug":"eth-updown-5m-1781910000"}
+[2026-06-19T23:05:02.563Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781910300","prevSlug":"doge-updown-5m-1781910000"}
+[2026-06-19T23:05:02.678Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781910300","openingPrice":0.0831549,"tickTimestamp":"2026-06-19T23:05:00.000Z"}
+[2026-06-19T23:05:04.530Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781910300","openingPrice":1705.999169045933,"tickTimestamp":"2026-06-19T23:05:00.000Z"}
+[2026-06-19T23:10:01.295Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781910600","prevSlug":"btc-updown-5m-1781910300"}
+[2026-06-19T23:10:01.719Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781910600","prevSlug":"eth-updown-5m-1781910300"}
+[2026-06-19T23:10:02.115Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781910600","prevSlug":"doge-updown-5m-1781910300"}
+[2026-06-19T23:10:03.696Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781910600","openingPrice":63226.52821962652,"tickTimestamp":"2026-06-19T23:10:00.000Z"}
+[2026-06-19T23:10:04.149Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781910600","openingPrice":1704.4069599706525,"tickTimestamp":"2026-06-19T23:10:00.000Z"}
+[2026-06-19T23:10:04.621Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781910600","openingPrice":0.083111885,"tickTimestamp":"2026-06-19T23:10:00.000Z"}
+[2026-06-19T23:15:02.244Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781910900","prevSlug":"btc-updown-5m-1781910600"}
+[2026-06-19T23:15:02.299Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781910900","openingPrice":63234.542225,"tickTimestamp":"2026-06-19T23:15:00.000Z"}
+[2026-06-19T23:15:02.665Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781910900","prevSlug":"eth-updown-5m-1781910600"}
+[2026-06-19T23:15:03.047Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781910900","prevSlug":"doge-updown-5m-1781910600"}
+[2026-06-19T23:15:04.870Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781910900","openingPrice":1704.1888244108213,"tickTimestamp":"2026-06-19T23:15:00.000Z"}
+[2026-06-19T23:15:05.299Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781910900","openingPrice":0.083085872288357,"tickTimestamp":"2026-06-19T23:15:00.000Z"}
+[2026-06-19T23:20:00.894Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781911200","prevSlug":"btc-updown-5m-1781910900"}
+[2026-06-19T23:20:01.298Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781911200","prevSlug":"eth-updown-5m-1781910900"}
+[2026-06-19T23:20:01.725Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781911200","prevSlug":"doge-updown-5m-1781910900"}
+[2026-06-19T23:20:03.216Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781911200","openingPrice":63246.44773246668,"tickTimestamp":"2026-06-19T23:20:00.000Z"}
+[2026-06-19T23:20:04.017Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781911200","openingPrice":0.0831118,"tickTimestamp":"2026-06-19T23:20:00.000Z"}
+[2026-06-19T23:20:05.830Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781911200","openingPrice":1704.645855,"tickTimestamp":"2026-06-19T23:20:00.000Z"}
+[2026-06-19T23:25:01.739Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781911500","prevSlug":"btc-updown-5m-1781911200"}
+[2026-06-19T23:25:01.825Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781911500","openingPrice":63257.35684096311,"tickTimestamp":"2026-06-19T23:25:00.000Z"}
+[2026-06-19T23:25:02.190Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781911500","prevSlug":"eth-updown-5m-1781911200"}
+[2026-06-19T23:25:02.585Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781911500","prevSlug":"doge-updown-5m-1781911200"}
+[2026-06-19T23:25:04.409Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781911500","openingPrice":1705.8952885521865,"tickTimestamp":"2026-06-19T23:25:00.000Z"}
+[2026-06-19T23:25:04.963Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781911500","openingPrice":0.0831571055948784,"tickTimestamp":"2026-06-19T23:25:00.000Z"}
+[2026-06-19T23:30:01.602Z] INFO Market changed. {"asset":"BTC","slug":"btc-updown-5m-1781911800","prevSlug":"btc-updown-5m-1781911500"}
+[2026-06-19T23:30:01.722Z] INFO Captured Chainlink opening tick. {"slug":"btc-updown-5m-1781911800","openingPrice":63260.99042481896,"tickTimestamp":"2026-06-19T23:30:00.000Z"}
+[2026-06-19T23:30:02.177Z] INFO Market changed. {"asset":"ETH","slug":"eth-updown-5m-1781911800","prevSlug":"eth-updown-5m-1781911500"}
+[2026-06-19T23:30:02.779Z] INFO Market changed. {"asset":"DOGE","slug":"doge-updown-5m-1781911800","prevSlug":"doge-updown-5m-1781911500"}
+[2026-06-19T23:30:04.765Z] INFO Captured Chainlink opening tick. {"slug":"eth-updown-5m-1781911800","openingPrice":1706.4747761155782,"tickTimestamp":"2026-06-19T23:30:00.000Z"}
+[2026-06-19T23:30:05.316Z] INFO Captured Chainlink opening tick. {"slug":"doge-updown-5m-1781911800","openingPrice":0.083258272,"tickTimestamp":"2026-06-19T23:30:00.000Z"}

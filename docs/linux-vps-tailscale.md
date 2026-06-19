@@ -51,8 +51,8 @@ Edita `.env`:
 ```env
 MODE=sim
 POLYBOT_UI_HOST=0.0.0.0
-POLYBOT_UI_PORT=8787
-POLYBOT_PUBLIC_URL=http://TU-IP-TAILSCALE:8787
+POLYBOT_UI_PORT=8788
+POLYBOT_PUBLIC_URL=http://TU-IP-TAILSCALE:8788
 ENABLED_MARKETS=BTC,ETH,DOGE
 ```
 
@@ -69,17 +69,17 @@ tailscale ip -4
 Instala Tailscale en el iPhone, inicia sesion en la misma tailnet y abre:
 
 ```text
-http://TU-IP-TAILSCALE:8787
+http://TU-IP-TAILSCALE:8788
 ```
 
 ## 4. Bloquear acceso publico
 
-Permite SSH y Tailscale, pero no publiques `8787` a internet:
+Permite SSH y Tailscale, pero no publiques `8788` a internet:
 
 ```bash
 sudo ufw allow OpenSSH
-sudo ufw allow in on tailscale0 to any port 8787 proto tcp
-sudo ufw deny 8787/tcp
+sudo ufw allow in on tailscale0 to any port 8788 proto tcp
+sudo ufw deny 8788/tcp
 sudo ufw enable
 sudo ufw status verbose
 ```
@@ -91,7 +91,7 @@ Crea un bot con BotFather y consigue tu `chat_id`. En `.env`:
 ```env
 TELEGRAM_BOT_TOKEN=123456:token
 TELEGRAM_CHAT_ID=123456789
-POLYBOT_PUBLIC_URL=http://TU-IP-TAILSCALE:8787
+POLYBOT_PUBLIC_URL=http://TU-IP-TAILSCALE:8788
 ```
 
 Polybot avisara cuando la UI quede lista, cuando el bot arranque o se detenga, cuando haya errores criticos y cuando el autoajuste aplique cambios.

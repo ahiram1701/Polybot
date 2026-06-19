@@ -53,6 +53,13 @@ export class ChainlinkPriceFeed {
     return this.recentTicks.get(market)?.find((tick) => tick.timestampMs >= startMs && tick.timestampMs <= endMs);
   }
 
+  /** Devuelve todos los ticks de un mercado dentro del rango [startMs, endMs] */
+  getTicksInRange(market: MarketSymbol, startMs: number, endMs: number): PriceTick[] {
+    return (this.recentTicks.get(market) ?? []).filter(
+      (tick) => tick.timestampMs >= startMs && tick.timestampMs <= endMs,
+    );
+  }
+
   onTick(handler: TickHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
@@ -75,6 +82,7 @@ export class ChainlinkPriceFeed {
       });
 
       const timeout = setTimeout(() => {
+        clearTimeout(timeout);
         unsubscribe();
         reject(new Error(`Timed out waiting ${timeoutMs}ms for Chainlink ${market}/USD tick.`));
       }, timeoutMs);

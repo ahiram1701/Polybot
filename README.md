@@ -29,7 +29,7 @@ Ese lanzador:
 
 - Crea `.env` si todavia no existe.
 - Instala dependencias si falta `node_modules`.
-- Abre `http://127.0.0.1:8787` en el navegador.
+- Abre `http://127.0.0.1:8788` en el navegador.
 - Inicia la UI y arranca simulacion automaticamente.
 - Reinicia una instancia vieja si ya estaba abierta, para cargar cambios en `.env`.
 
@@ -47,7 +47,7 @@ Tambien puedes usar terminal:
 npm run ui
 ```
 
-Abre `http://127.0.0.1:8787`.
+Abre `http://127.0.0.1:8788`.
 
 En la UI puedes:
 
@@ -60,7 +60,7 @@ En la UI puedes:
 - Ver si live esta listo sin exponer private keys.
 - Ver en `Trades` si una posicion live con fill detectado termino `Gano` o `Perdio`.
 
-La UI escucha solo en `127.0.0.1:8787`.
+La UI escucha solo en `127.0.0.1:8788`.
 
 ## Linux VPS 24/7 Con Tailscale
 
@@ -99,7 +99,7 @@ Si ves `Run this script as the deploy user, not as root`, el build estuvo bien, 
 
 El servicio levanta solo la UI. Live queda apagado hasta que lo inicies manualmente desde la interfaz, incluso despues de reiniciar el VPS.
 
-Para usarlo desde iPhone, instala Tailscale en el VPS y en el iPhone, deja `POLYBOT_UI_HOST=0.0.0.0`, configura `POLYBOT_PUBLIC_URL` con la URL o IP Tailscale, y bloquea el puerto `8787` para internet publico con firewall. Guia completa: [`docs/linux-vps-tailscale.md`](docs/linux-vps-tailscale.md).
+Para usarlo desde iPhone, instala Tailscale en el VPS y en el iPhone, deja `POLYBOT_UI_HOST=0.0.0.0`, configura `POLYBOT_PUBLIC_URL` con la URL o IP Tailscale, y bloquea el puerto `8788` para internet publico con firewall. Guia completa: [`docs/linux-vps-tailscale.md`](docs/linux-vps-tailscale.md).
 
 ## Uso Por CLI
 
@@ -168,11 +168,17 @@ POLYMARKET_FUNDER_ADDRESS=0x...
 - `OLLAMA_MODEL=gpt-oss:120b`: modelo usado por el analisis bajo demanda.
 - `POLYGON_RPC_URL=https://polygon-rpc.com`: RPC usado por el cliente live para firmar/crear credenciales Polymarket.
 - `POLYBOT_UI_HOST=127.0.0.1`: host de la UI. En VPS con Tailscale usa `0.0.0.0` y firewall.
-- `POLYBOT_UI_PORT=8787`: puerto de la UI.
+- `POLYBOT_UI_PORT=8788`: puerto de la UI.
 - `POLYBOT_PUBLIC_URL=`: URL Tailscale que se muestra en logs y avisos Telegram.
 - `TELEGRAM_BOT_TOKEN=` y `TELEGRAM_CHAT_ID=`: opcionales; activan avisos de UI lista, errores y arranques/detenciones.
 
 Los cambios hechos desde la UI se guardan en `data/ui-config.json` y se aplican al proximo arranque del bot.
+
+### Notas sobre cambios recientes
+
+- La distancia minima (`MIN_*_DISTANCE_USD`) se usa como **fallback** cuando la estrategia `firstTicksSignal` (primeros 3 ticks unanimes) no produce senal.
+- `MAX_ASK_PRICE` ya no se evalua contra `bestAsk` del quote en `buildTradeCandidate`; ahora se pasa al `OrderbookService` que filtra internamente. `buildTradeCandidate` verifica que `quote.price` y `quote.size` existan.
+- No hay parametros `.env` dedicados para `firstTicksSignal`; la configuracion es fija: 3 ticks, modo `unanimous`. Para cambiar estos valores, edita `botRunner.ts` linea ~397.
 
 ## Smoke Test
 
@@ -183,6 +189,21 @@ npm run smoke:market
 ```
 
 Esto descubre el mercado BTC actual, lee orderbooks de `UP/DOWN` y espera un tick Chainlink BTC/USD.
+
+## Validacion de FirstTicksSignal
+
+Para validar la estrategia de primeros ticks contra datos historicos:
+
+```bash
+node scripts/validate_first_ticks.cjs
+```
+
+Esto procesa `data/analytics.jsonl` y genera un reporte en `data/first_ticks_validation.json` con:
+
+- Win rate por estrategia (`first_tick`, `majority`, `unanimous`, `cumulative_distance`).
+- Variantes por cantidad de ticks (1, 2, 3, 5).
+- Desglose por mercado (BTC, ETH, DOGE).
+- Estimacion de ROI asumiendo 80% payout y $100 por trade.
 
 ## Tests Y Build
 
@@ -258,14 +279,43 @@ Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud de
 
 - Mercados: `btc-updown-5m-{epoch}`, `eth-updown-5m-{epoch}` y `doge-updown-5m-{epoch}`.
 - Precio inicial: primer tick Chainlink del simbolo (`btc/usd`, `eth/usd` o `doge/usd`) capturado al inicio de la ventana.
+
+### Estrategia primaria: FirstTicksSignal
+
+Polybot usa primero la estrategia de **primeros 3 ticks como senal unanime** (`evaluateFirstTicksSignal` en `signalEngine.ts`).
+
+- Toma los primeros 3 ticks Chainlink recibidos tras la apertura de la ventana (via `getTicksInRange` en `ChainlinkPriceFeed`).
+- Si los 3 ticks apuntan en la misma direccion (todos > apertura o todos < apertura), esa es la senal.
+- Validado con datos historicos (17k+ muestras, 4-19 jun 2026): **~90% win rate** en BTC con modo `unanimous` y 3 ticks.
+- La distancia usada es la acumulada desde apertura hasta el ultimo de los 3 ticks.
+- Si no hay unanimidad, cae al fallback tradicional.
+
+### Fallback: Distancia minima
+
+Si `firstTicksSignal` no produce senal, Polybot usa la regla clasica:
+
 - Compra `UP` si `precioActual - precioInicial` supera la distancia configurada para ese mercado/lado.
 - Compra `DOWN` si `precioInicial - precioActual` supera la distancia configurada para ese mercado/lado.
+
+### Condiciones comunes
+
 - Solo compra dentro de la ventana configurada para ese mercado/lado: `0 < segundosParaCierre <= ventanaDelMercadoLado`.
-- Salta si el tick esta stale, no hay liquidez, `bestAsk` supera el ask cap del mercado/lado, el mercado no acepta ordenes, ya se intento ese mercado o se alcanzo el limite diario.
+- Salta si el tick esta stale, no hay liquidez (`quote.price` o `quote.size` vacio), el mercado no acepta ordenes, ya se intento ese mercado o se alcanzo el limite diario.
+- En modo live, si `strategyAnalysisEngine` esta disponible, evalua el expected value del quote antes de decidir.
+
+### Ejecucion de trades
+
+- Los trades candidatos se ejecutan en **paralelo** con `Promise.allSettled`.
+- Cada trade se registra en estado, se notifica y se resuelve automaticamente al cierre de la ventana mediante `resolveCompletedTrades()`.
+- La resolucion usa el tick Chainlink posterior al cierre para determinar si fue `Gano` o `Perdio`.
+
+### Autoajuste post-perdida (live)
+
+Cuando un trade live se resuelve como perdida, Polybot puede ajustar automaticamente distancia, ventana y ask cap hacia la mejor estrategia EV confiable disponible para ese mercado/lado. Esto se configura desde la pestana `Analisis` en la UI.
 
 ## Problemas Comunes
 
 - `Live bloqueado`: faltan credenciales en `.env` o falta confirmacion live.
 - `Sin apertura`: el bot arranco tarde y no capturo el tick inicial Chainlink; saltara esa ventana.
 - `Tick stale`: no estan llegando ticks recientes de RTDS.
-- `Puerto ocupado`: detiene el proceso que usa `8787` o arranca con `POLYBOT_UI_PORT=8788`.
+- `Puerto ocupado`: detiene el proceso que usa `8788` o arranca con otro `POLYBOT_UI_PORT`.

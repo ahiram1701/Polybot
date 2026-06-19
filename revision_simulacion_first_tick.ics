@@ -1,0 +1,19 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Yarbis//Local Agent//ES
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:yarbis-411271dbaac0442b9fc1905d6603bcbb@local
+DTSTAMP:20260619T223811Z
+DTSTART:20260620T160000
+DTEND:20260620T163000
+SUMMARY:Revisar Polybot - resultados simulación first_tick
+DESCRIPTION:Revisar analytics.jsonl del bot Polybot para evaluar resultados
+  de la estrategia first_tick (3 ticks\, unanimous) tras 24h de simulación.
+ \n\nPuntos a revisar:\n1. Cuántos trades generó\n2. Win rate (ganados/perd
+ idos)\n3. ROI simulado\n4. Si first_tick generó más señales que la estrate
+ gia anterior\n5. Decidir si pasar a live con $1/trade
+LOCATION:C:\\DEV\\tests\\Workspace de Yarbis\\Polybot-Y
+END:VEVENT
+END:VCALENDAR

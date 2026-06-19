@@ -31,16 +31,16 @@ if not exist "node_modules" (
 )
 
 set EXISTING_PID=
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do set EXISTING_PID=%%a
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8788" ^| findstr "LISTENING"') do set EXISTING_PID=%%a
 if defined EXISTING_PID (
   echo Reiniciando Polybot para cargar cambios nuevos...
   taskkill /PID %EXISTING_PID% /F >nul 2>nul
   timeout /t 2 /nobreak >nul
 )
 
-start "Polybot Browser Opener" cmd /c "timeout /t 5 /nobreak >nul & start "" http://127.0.0.1:8787"
+start "Polybot Browser Opener" cmd /c "timeout /t 5 /nobreak >nul & start "" http://127.0.0.1:8788"
 
-echo Abriendo http://127.0.0.1:8787
+echo Abriendo http://127.0.0.1:8788
 echo La simulacion arrancara automaticamente. Para detener todo, cierra esta ventana o usa Ctrl+C.
 echo.
 
