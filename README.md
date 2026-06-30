@@ -252,6 +252,8 @@ En `Settings`, cada mercado/lado (`BTC UP`, `BTC DOWN`, etc.) puede activar dos 
 
 El autoajuste usa solo estrategias con EV positivo y confianza suficiente; si no hay datos confiables, no cambia la configuracion.
 
+En `Settings > Avanzado` tambien existe `Autoajuste predictivo en tiempo real` (`aiAutoApplyLive`). Es un modelo estadistico local (backtesting walk-forward + estimacion de probabilidad por k-NN; no usa LLM ni internet), no un modelo de lenguaje. Cuando esta activo y el bot corre, Polybot evalua periodicamente las muestras de `Analisis` con ese motor predictivo y, solo cuando hay alta confianza dentro de las guardas, aplica automaticamente la mejor ventana y distancia por mercado al bot en ejecucion (sim o live) sin reiniciar. Respeta un cooldown interno de 30 min entre cambios y registra cada ajuste en los logs. Actívalo antes de iniciar el bot. La pestana expone tambien `GET /api/analysis/recommendations` para inspeccionar las recomendaciones sin aplicarlas. No confundir con el analisis de Ollama Cloud (abajo), que si es un LLM y solo da texto sin tocar la configuracion.
+
 Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud desde la misma pestana. Polybot adjunta solo contexto agregado: P&L, trades recientes resumidos, estrategias actuales y top estrategias EV. No envia credenciales, `.env` ni respuestas crudas de ordenes.
 
 ## Regla De Entrada

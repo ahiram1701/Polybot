@@ -824,9 +824,15 @@ th {
 
 .workspace-heading span,
 .settings-active-line,
+.settings-hint,
 .market-active-count {
   color: var(--muted);
   font-size: 12px;
+}
+
+.settings-hint {
+  margin: 6px 0 0;
+  line-height: 1.45;
 }
 
 .workspace-heading strong,

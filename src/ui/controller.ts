@@ -27,6 +27,7 @@ import {
   type Notifier,
 } from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
+import { RecommendationEngine, type RecommendationSettings } from "../recommendationEngine.js";
 import {
   calculatePnlSummaryByMode,
   calculateResetAwarePnlSummary,
@@ -41,6 +42,8 @@ import { StateStore } from "../stateStore.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import { dailySpendKey, secondsToEnd } from "../time.js";
 import type {
+  AiRecommendation,
+  AiRecommendationsResponse,
   BotConfig,
   MarketOutcomeNumberSettings,
   MarketSymbol,
@@ -67,6 +70,7 @@ import { applySettings, UiSettingsStore } from "./settings.js";
 
 const DEFAULT_OLLAMA_HOST = "https://ollama.com";
 const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
+const AI_AUTO_APPLY_POLL_MS = 60_000;
 
 export class ControllerError extends Error {
   constructor(
@@ -100,6 +104,7 @@ export interface BotControllerDeps {
   orderbook?: Pick<OrderbookService, "getQuote">;
   priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
   strategyAnalysisEngine?: StrategyAnalysisEngine;
+  recommendationEngine?: Pick<RecommendationEngine, "recommend">;
   notifier?: Notifier;
   snapshotProvider?: () => Promise<Partial<UiStatus>>;
   fetch?: typeof fetch;
@@ -141,6 +146,7 @@ export class BotController {
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
   private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
   private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
+  private readonly recommendationEngine: Pick<RecommendationEngine, "recommend">;
   private readonly telegramStore: TelegramNotificationStore;
   private readonly notifier: Notifier;
   private readonly runnerFactory: (config: BotConfig) => RunnerLike;
@@ -149,6 +155,8 @@ export class BotController {
   private readonly env: NodeJS.ProcessEnv;
   private readonly unsubscribeLogger: () => boolean;
   private stateSummaryCache?: CachedUiStateSummary;
+  private aiAutoApplyTimer?: ReturnType<typeof setInterval>;
+  private aiAutoApplyInFlight = false;
 
   constructor(
     private readonly baseConfig: BotConfig,
@@ -161,9 +169,10 @@ export class BotController {
     this.orderbook = deps.orderbook ?? OrderbookService.create(baseConfig.clobHost);
     this.priceFeed = deps.priceFeed ?? new ChainlinkPriceFeed(baseConfig.rtdsUrl);
     this.strategyAnalysisEngine = deps.strategyAnalysisEngine ?? new StrategyAnalysisEngine(baseConfig.dataDir);
+    this.recommendationEngine = deps.recommendationEngine ?? new RecommendationEngine(baseConfig.dataDir);
     this.telegramStore = new TelegramNotificationStore(baseConfig.dataDir, baseConfig, this.env);
     this.notifier = deps.notifier ?? createDynamicNotifier(baseConfig, { fetchFn: deps.fetch, env: this.env });
-    this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config));
+    this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config, { priceFeed: this.priceFeed }));
     this.snapshotProvider = deps.snapshotProvider;
     this.fetchImpl = deps.fetch ?? fetch;
     this.unsubscribeLogger = logger.subscribe((entry) => this.pushLog(entry));
@@ -175,6 +184,7 @@ export class BotController {
 
   dispose(): void {
     this.stopped = true;
+    this.stopAiAutoApplyLoop();
     this.runner?.stop();
     this.priceFeed.stop();
     this.unsubscribeLogger();
@@ -222,12 +232,15 @@ export class BotController {
         this.runnerPromise = undefined;
         this.runner = undefined;
         this.startedAtMs = undefined;
+        this.stopAiAutoApplyLoop();
       });
 
+    this.startAiAutoApplyLoop();
     return this.getStatus();
   }
 
   async stop(): Promise<UiStatus> {
+    this.stopAiAutoApplyLoop();
     this.runner?.stop();
     this.runner = undefined;
     this.runnerPromise = undefined;
@@ -237,6 +250,7 @@ export class BotController {
 
   async reset(): Promise<UiStatus> {
     if (this.runnerPromise || this.runner) {
+      this.stopAiAutoApplyLoop();
       this.runner?.stop();
       this.runner = undefined;
       this.runnerPromise = undefined;
@@ -379,6 +393,86 @@ export class BotController {
   async getStrategyAnalysis(): Promise<StrategyAnalysisResponse> {
     const settings = await this.settingsStore.load(this.baseConfig);
     return this.strategyAnalysisEngine.analyze(settings);
+  }
+
+  async getAiRecommendations(nowMs = Date.now()): Promise<AiRecommendationsResponse> {
+    const settings = await this.settingsStore.load(this.baseConfig);
+    return this.recommendationEngine.recommend(toRecommendationSettings(settings), nowMs);
+  }
+
+  private startAiAutoApplyLoop(): void {
+    if (this.aiAutoApplyTimer || this.stopped) {
+      return;
+    }
+    this.aiAutoApplyTimer = setInterval(() => {
+      void this.runAiAutoApplyTick();
+    }, AI_AUTO_APPLY_POLL_MS);
+    if (typeof this.aiAutoApplyTimer.unref === "function") {
+      this.aiAutoApplyTimer.unref();
+    }
+  }
+
+  private stopAiAutoApplyLoop(): void {
+    if (this.aiAutoApplyTimer) {
+      clearInterval(this.aiAutoApplyTimer);
+      this.aiAutoApplyTimer = undefined;
+    }
+  }
+
+  async runAiAutoApplyTick(nowMs = Date.now()): Promise<ApplicableRecommendation[]> {
+    if (this.aiAutoApplyInFlight || this.stopped || !this.runner || !this.runnerPromise) {
+      return [];
+    }
+    this.aiAutoApplyInFlight = true;
+    try {
+      const settings = await this.settingsStore.load(this.baseConfig);
+      if (!settings.aiAutoApplyLive) {
+        return [];
+      }
+      const response = await this.recommendationEngine.recommend(toRecommendationSettings(settings), nowMs);
+      const applicable = response.recommendations.filter(isApplicableRecommendation);
+      if (applicable.length === 0) {
+        return [];
+      }
+      const nextSettings = applyRecommendationsToSettings(settings, applicable, nowMs);
+      const saved = await this.settingsStore.save(nextSettings);
+      this.stateSummaryCache = undefined;
+      this.runner?.updateStrategySettings?.({
+        minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
+        minDistanceUsdByMarketOutcome: saved.minDistanceUsdByMarketOutcome,
+        entryWindowSeconds: saved.entryWindowSeconds,
+        entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
+        entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
+      });
+      logger.info("Autoajuste predictivo aplico recomendaciones en tiempo real.", {
+        markets: applicable.map((recommendation) => ({
+          market: recommendation.market,
+          entryWindowSeconds: recommendation.recommended.entryWindowSeconds,
+          minDistanceUsd: recommendation.recommended.minDistanceUsd,
+          confidence: recommendation.confidence,
+          improvementAdjustedRoi: recommendation.improvementAdjustedRoi,
+        })),
+      });
+      void this.notifier.notify({
+        key: "ai-auto-apply",
+        title: "Autoajuste predictivo aplicado",
+        body: applicable
+          .map(
+            (recommendation) =>
+              `${recommendation.market}: ventana ${recommendation.recommended.entryWindowSeconds}s, distancia ${recommendation.recommended.minDistanceUsd}.`,
+          )
+          .join("\n"),
+        minIntervalMs: 5 * 60_000,
+      });
+      return applicable;
+    } catch (error) {
+      logger.warn("Autoajuste predictivo fallo; se reintenta en el proximo ciclo.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    } finally {
+      this.aiAutoApplyInFlight = false;
+    }
   }
 
   async exportAnalysisSamples(now = new Date()): Promise<AnalysisExport> {
@@ -899,6 +993,56 @@ function marketValuesFromOutcomeSettings(
     BTC: values.BTC?.UP ?? current.BTC,
     ETH: values.ETH?.UP ?? current.ETH,
     DOGE: values.DOGE?.UP ?? current.DOGE,
+  };
+}
+
+type ApplicableRecommendation = AiRecommendation & {
+  recommended: NonNullable<AiRecommendation["recommended"]>;
+};
+
+function isApplicableRecommendation(recommendation: AiRecommendation): recommendation is ApplicableRecommendation {
+  return recommendation.canAutoApply && recommendation.recommended !== undefined;
+}
+
+function toRecommendationSettings(settings: UiSettings): RecommendationSettings {
+  return {
+    minDistanceUsdByMarket: settings.minDistanceUsdByMarket,
+    entryWindowSecondsByMarket: settings.entryWindowSecondsByMarket,
+    entryWindowSeconds: settings.entryWindowSeconds,
+    maxAskPrice: settings.maxAskPrice,
+    aiLastAppliedAtMs: settings.aiLastAppliedAtMs,
+  };
+}
+
+function applyRecommendationsToSettings(
+  settings: UiSettings,
+  recommendations: ApplicableRecommendation[],
+  nowMs: number,
+): UiSettings {
+  const minDistanceUsdByMarket = { ...settings.minDistanceUsdByMarket };
+  const entryWindowSecondsByMarket = { ...settings.entryWindowSecondsByMarket };
+  const minDistanceUsdByMarketOutcome = cloneOutcomeSettings(settings.minDistanceUsdByMarketOutcome);
+  const entryWindowSecondsByMarketOutcome = cloneOutcomeSettings(settings.entryWindowSecondsByMarketOutcome);
+
+  for (const { market, recommended } of recommendations) {
+    minDistanceUsdByMarket[market] = recommended.minDistanceUsd;
+    entryWindowSecondsByMarket[market] = recommended.entryWindowSeconds;
+    minDistanceUsdByMarketOutcome[market] = { UP: recommended.minDistanceUsd, DOWN: recommended.minDistanceUsd };
+    entryWindowSecondsByMarketOutcome[market] = {
+      UP: recommended.entryWindowSeconds,
+      DOWN: recommended.entryWindowSeconds,
+    };
+  }
+
+  return {
+    ...settings,
+    minBtcDistanceUsd: minDistanceUsdByMarket.BTC,
+    minDistanceUsdByMarket,
+    minDistanceUsdByMarketOutcome,
+    entryWindowSeconds: entryWindowSecondsByMarket.BTC,
+    entryWindowSecondsByMarket,
+    entryWindowSecondsByMarketOutcome,
+    aiLastAppliedAtMs: nowMs,
   };
 }
 

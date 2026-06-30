@@ -77,6 +77,15 @@ describe("BotRunner", () => {
     expect(priceFeed.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("does not stop a borrowed (shared) price feed", () => {
+    const priceFeed = fakePriceFeed();
+    const runner = BotRunner.create(baseConfig(), { priceFeed });
+
+    runner.stop();
+
+    expect(priceFeed.stop).not.toHaveBeenCalled();
+  });
+
   it("can trade BTC, ETH, and DOGE in the same iteration", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

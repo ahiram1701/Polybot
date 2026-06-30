@@ -1734,6 +1734,20 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
           <span>Auto minimo live</span>
         </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.aiAutoApplyLive}
+            onChange={(event) => update("aiAutoApplyLive", event.target.checked)}
+            disabled={running}
+          />
+          <span>Autoajuste predictivo en tiempo real</span>
+        </label>
+        <p className="settings-hint">
+          Un modelo estadistico local (backtesting walk-forward + estimacion k-NN, sin LLM ni internet) evalua las muestras de
+          Analisis mientras el bot corre y aplica automaticamente la mejor ventana y distancia por mercado cuando hay alta
+          confianza y dentro de las guardas. Actívalo antes de iniciar el bot.
+        </p>
       </section>
 
       <div className="form-actions settings-save-actions">

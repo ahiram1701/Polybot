@@ -7,7 +7,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { importAnalyticsSamples, readAnalyticsSamples } from "../src/analyticsRecorder.js";
 import type { StrategyAnalysisEngine } from "../src/strategyAnalysisEngine.js";
 import { StateStore } from "../src/stateStore.js";
-import type { AnalyticsSample, BotConfig, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
+import type {
+  AiRecommendation,
+  AiRecommendationsResponse,
+  AnalyticsSample,
+  BotConfig,
+  StrategyAnalysisResponse,
+  StrategyCandidate,
+  TradeAttempt,
+} from "../src/types.js";
+import type { RecommendationEngine } from "../src/recommendationEngine.js";
 import { BotController, type RunnerLike } from "../src/ui/controller.js";
 import { createUiApp } from "../src/ui/server.js";
 import type { UiStatus } from "../src/ui/shared.js";
@@ -17,6 +26,15 @@ class FakeRunner implements RunnerLike {
     return new Promise(() => undefined);
   }
   stop(): void {}
+}
+
+type StrategySettingsUpdate = Parameters<NonNullable<RunnerLike["updateStrategySettings"]>>[0];
+
+class RecordingRunner extends FakeRunner {
+  readonly updates: StrategySettingsUpdate[] = [];
+  updateStrategySettings(settings: StrategySettingsUpdate): void {
+    this.updates.push(settings);
+  }
 }
 
 const temps: string[] = [];
@@ -189,6 +207,63 @@ describe("UI API", () => {
       expect(response.body.strategies[0].market).toBe("BTC");
       expect(response.body.currentStrategies[0].isCurrent).toBe(true);
     });
+    controller.dispose();
+  });
+
+  it("returns AI recommendations", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      recommendationEngine: fakeRecommendationEngine(recommendationsResponse()),
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).get("/api/analysis/recommendations").expect(200).expect((response) => {
+      expect(response.body.recommendations).toHaveLength(1);
+      expect(response.body.recommendations[0].market).toBe("BTC");
+      expect(response.body.recommendations[0].canAutoApply).toBe(true);
+    });
+    controller.dispose();
+  });
+
+  it("auto-applies AI recommendations into the running bot when enabled", async () => {
+    const config = await baseConfig(false);
+    const recordingRunner = new RecordingRunner();
+    const controller = new BotController(config, {
+      recommendationEngine: fakeRecommendationEngine(recommendationsResponse()),
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => recordingRunner,
+    });
+
+    await controller.patchSettings({ aiAutoApplyLive: true });
+    await controller.start("sim");
+
+    const applied = await controller.runAiAutoApplyTick();
+    expect(applied.map((recommendation) => recommendation.market)).toEqual(["BTC"]);
+    expect(recordingRunner.updates).toHaveLength(1);
+    const [update] = recordingRunner.updates;
+    expect(update?.entryWindowSecondsByMarketOutcome?.BTC).toEqual({ UP: 18, DOWN: 18 });
+    expect(update?.minDistanceUsdByMarketOutcome?.BTC).toEqual({ UP: 22, DOWN: 22 });
+
+    const settings = await controller.getSettings();
+    expect(settings.entryWindowSecondsByMarket.BTC).toBe(18);
+    expect(settings.minDistanceUsdByMarket.BTC).toBe(22);
+    expect(settings.aiLastAppliedAtMs).toEqual(expect.any(Number));
+    controller.dispose();
+  });
+
+  it("skips AI auto-apply when the toggle is off", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      recommendationEngine: fakeRecommendationEngine(recommendationsResponse()),
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new RecordingRunner(),
+    });
+
+    await controller.start("sim");
+    await expect(controller.runAiAutoApplyTick()).resolves.toEqual([]);
     controller.dispose();
   });
 
@@ -521,6 +596,49 @@ function fakeStrategyAnalysisEngine(response: StrategyAnalysisResponse): Strateg
   return {
     analyze: async () => response,
   } as unknown as StrategyAnalysisEngine;
+}
+
+function fakeRecommendationEngine(response: AiRecommendationsResponse): Pick<RecommendationEngine, "recommend"> {
+  return {
+    recommend: async () => response,
+  };
+}
+
+function recommendationsResponse(): AiRecommendationsResponse {
+  const metrics = {
+    sampleCount: 60,
+    signalCount: 40,
+    tradeCount: 35,
+    winCount: 22,
+    lossCount: 13,
+    quoteCoverage: 0.9,
+    averageRoi: 0.12,
+    adjustedRoi: 0.1,
+    expectedRoi: 0.08,
+    walkForwardRoi: 0.07,
+    lowerBoundRoi: 0.05,
+    overfitRisk: 0.2,
+    predictedWinProbability: 0.6,
+    calibrationError: 0.1,
+    maxDrawdown: 1.5,
+  };
+  const recommendation: AiRecommendation = {
+    market: "BTC",
+    status: "ready",
+    confidence: "high",
+    generatedAtMs: Date.UTC(2026, 4, 8, 12, 0, 0),
+    current: { entryWindowSeconds: 20, minDistanceUsd: 20, metrics },
+    recommended: { entryWindowSeconds: 18, minDistanceUsd: 22, metrics },
+    improvementAdjustedRoi: 0.05,
+    sampleCount: 60,
+    reason: "Alta confianza.",
+    canApply: true,
+    canAutoApply: true,
+  };
+  return {
+    generatedAtMs: Date.UTC(2026, 4, 8, 12, 0, 0),
+    recommendations: [recommendation],
+  };
 }
 
 function apiAnalyticsSample(market: AnalyticsSample["market"], windowStartMs: number): AnalyticsSample {

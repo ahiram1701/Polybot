@@ -6,6 +6,8 @@ import { ControllerError, type BotController } from "./controller.js";
 import { patchSettingsSchema } from "./settings.js";
 import type { StartBotRequest, UiEvent } from "./shared.js";
 
+const ANALYSIS_IMPORT_LIMIT = "512mb";
+
 const startRequestSchema = z.object({
   mode: z.enum(["sim", "live"]),
   confirmLive: z.boolean().optional(),
@@ -49,6 +51,10 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.getStrategyAnalysis());
   }));
 
+  app.get("/api/analysis/recommendations", asyncHandler(async (_req, res) => {
+    res.json(await controller.getAiRecommendations());
+  }));
+
   app.get("/api/analysis/samples/export", asyncHandler(async (_req, res) => {
     const exported = await controller.exportAnalysisSamples();
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -58,7 +64,7 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
 
   app.post(
     "/api/analysis/samples/import",
-    express.text({ type: ["text/plain", "application/x-ndjson", "application/jsonl"], limit: "50mb" }),
+    express.text({ type: ["text/plain", "application/x-ndjson", "application/jsonl"], limit: ANALYSIS_IMPORT_LIMIT }),
     asyncHandler(async (req, res) => {
       res.json(await controller.importAnalysisSamples(typeof req.body === "string" ? req.body : ""));
     }),
@@ -162,7 +168,7 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
       return;
     }
     if (isEntityTooLargeError(error)) {
-      res.status(413).json({ error: "Analysis import file is too large. Maximum size is 50 MB." });
+      res.status(413).json({ error: `Analysis import file is too large. Maximum size is ${ANALYSIS_IMPORT_LIMIT}.` });
       return;
     }
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });

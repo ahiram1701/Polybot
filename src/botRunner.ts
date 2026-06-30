@@ -52,10 +52,19 @@ interface MarketWatcherLike {
   getCurrentMarkets?(markets: MarketSymbol[], nowMs?: number): Promise<MarketInfo[]>;
 }
 
+export interface RunnerPriceFeed {
+  start(): void;
+  stop(): void;
+  getLatestTick(market?: MarketSymbol): BtcPriceTick | undefined;
+  getTickInRange?(market: MarketSymbol, startMs: number, endMs: number): BtcPriceTick | undefined;
+}
+
 interface BotDependencies {
   watcher: MarketWatcherLike;
   orderbook: OrderbookService;
-  priceFeed: ChainlinkPriceFeed;
+  priceFeed: RunnerPriceFeed;
+  /** When false the price feed is shared/owned externally and must not be stopped by the runner. */
+  ownsPriceFeed?: boolean;
   state: StateStore;
   executor: TradeExecutor;
   reconciler: TradeReconciler;
@@ -96,11 +105,12 @@ export class BotRunner {
     private readonly deps: BotDependencies,
   ) {}
 
-  static create(config: BotConfig): BotRunner {
+  static create(config: BotConfig, overrides: { priceFeed?: RunnerPriceFeed } = {}): BotRunner {
     return new BotRunner(config, {
       watcher: new MarketWatcher(config.gammaHost),
       orderbook: OrderbookService.create(config.clobHost),
-      priceFeed: new ChainlinkPriceFeed(config.rtdsUrl),
+      priceFeed: overrides.priceFeed ?? new ChainlinkPriceFeed(config.rtdsUrl),
+      ownsPriceFeed: overrides.priceFeed === undefined,
       state: new StateStore(config.dataDir),
       executor: config.mode === "live" ? new LiveExecutionEngine(config) : new SimulationExecutionEngine(config),
       reconciler: config.mode === "live" ? new LiveTradeReconciler(config) : new NoopTradeReconciler(),
@@ -159,7 +169,7 @@ export class BotRunner {
       try {
         await this.runOnce();
       } finally {
-        this.deps.priceFeed.stop();
+        this.stopPriceFeed();
         await this.notifyStopped();
       }
       return;
@@ -171,14 +181,20 @@ export class BotRunner {
         await sleep(this.config.pollIntervalMs);
       }
     } finally {
-      this.deps.priceFeed.stop();
+      this.stopPriceFeed();
       await this.notifyStopped();
     }
   }
 
   stop(): void {
     this.stopped = true;
-    this.deps.priceFeed.stop();
+    this.stopPriceFeed();
+  }
+
+  private stopPriceFeed(): void {
+    if (this.deps.ownsPriceFeed ?? true) {
+      this.deps.priceFeed.stop();
+    }
   }
 
   async runOnce(nowMs = Date.now()): Promise<void> {
@@ -337,10 +353,7 @@ export class BotRunner {
 
   private getOpeningTick(market: MarketInfo, latestTick: BtcPriceTick | undefined): BtcPriceTick | undefined {
     const captureDeadlineMs = market.windowStartMs + this.config.openingCaptureGraceMs;
-    const priceFeed = this.deps.priceFeed as ChainlinkPriceFeed & {
-      getTickInRange?: (market: MarketSymbol, startMs: number, endMs: number) => BtcPriceTick | undefined;
-    };
-    return priceFeed.getTickInRange?.(market.asset, market.windowStartMs, captureDeadlineMs) ?? latestTick;
+    return this.deps.priceFeed.getTickInRange?.(market.asset, market.windowStartMs, captureDeadlineMs) ?? latestTick;
   }
 
   private buildTradeSignal(args: {
