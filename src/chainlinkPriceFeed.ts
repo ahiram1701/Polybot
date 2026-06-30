@@ -9,11 +9,11 @@ type TickHandler = (tick: PriceTick) => void;
 export class ChainlinkPriceFeed {
   private socket?: WebSocket;
   private pingTimer?: NodeJS.Timeout;
-  private snapshotRefreshTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = true;
   private latestTick?: PriceTick;
-  private lastMessageAtMs = 0;
+  private lastTickAtMs = 0;
+  private reconnectAttempts = 0;
   private readonly latestTicks = new Map<MarketSymbol, PriceTick>();
   private readonly recentTicks = new Map<MarketSymbol, PriceTick[]>();
   private readonly handlers = new Set<TickHandler>();
@@ -23,8 +23,8 @@ export class ChainlinkPriceFeed {
     private readonly reconnectDelayMs = 3_000,
     private readonly markets: readonly MarketSymbol[] = SUPPORTED_MARKETS,
     private readonly historyWindowMs = 10 * 60 * 1000,
-    private readonly snapshotRefreshMs = 5_000,
-    private readonly inactivityTimeoutMs = 15_000,
+    private readonly noTickTimeoutMs = 30_000,
+    private readonly maxReconnectDelayMs = 30_000,
   ) {}
 
   start(): void {
@@ -32,6 +32,7 @@ export class ChainlinkPriceFeed {
       return;
     }
     this.stopped = false;
+    this.reconnectAttempts = 0;
     this.connect();
   }
 
@@ -42,9 +43,7 @@ export class ChainlinkPriceFeed {
       this.reconnectTimer = undefined;
     }
     this.clearPing();
-    this.clearSnapshotRefresh();
-    this.socket?.close();
-    this.socket = undefined;
+    this.cleanupSocket();
   }
 
   getLatestTick(market: MarketSymbol = "BTC"): PriceTick | undefined {
@@ -84,35 +83,81 @@ export class ChainlinkPriceFeed {
   }
 
   private connect(): void {
-    this.socket = new WebSocket(this.url);
+    // Drop any previous socket (and its listeners) so only one connection is ever live.
+    this.cleanupSocket();
 
-    this.socket.on("open", () => {
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
+    // Give the fresh connection a grace period to deliver its first tick before the
+    // watchdog considers it dead.
+    this.lastTickAtMs = Date.now();
+
+    socket.on("open", () => {
+      if (this.socket !== socket) {
+        socket.close();
+        return;
+      }
       logger.info("Connected to Polymarket RTDS Chainlink feed.");
-      this.lastMessageAtMs = Date.now();
+      this.reconnectAttempts = 0;
+      this.lastTickAtMs = Date.now();
       this.subscribe();
       this.startPing();
-      this.startSnapshotRefresh();
     });
 
-    this.socket.on("message", (data) => {
+    socket.on("message", (data) => {
+      if (this.socket !== socket) {
+        return;
+      }
       this.handleRawMessage(data.toString());
     });
 
-    this.socket.on("error", (error) => {
+    socket.on("error", (error) => {
       if (this.stopped) {
         return;
       }
       logger.warn("RTDS websocket error.", { error: error.message });
     });
 
-    this.socket.on("close", () => {
+    socket.on("close", () => {
+      if (this.socket !== socket) {
+        // A newer socket already replaced this one; ignore the stale close.
+        return;
+      }
       this.clearPing();
-      this.clearSnapshotRefresh();
       if (!this.stopped) {
-        logger.warn("RTDS websocket closed; reconnecting soon.");
-        this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelayMs);
+        this.scheduleReconnect();
       }
     });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) {
+      return;
+    }
+    this.reconnectAttempts += 1;
+    const delay = Math.min(this.reconnectDelayMs * 2 ** (this.reconnectAttempts - 1), this.maxReconnectDelayMs);
+    logger.warn("RTDS websocket closed; reconnecting soon.", {
+      attempt: this.reconnectAttempts,
+      delayMs: delay,
+    });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
+  private cleanupSocket(): void {
+    if (!this.socket) {
+      return;
+    }
+    const socket = this.socket;
+    this.socket = undefined;
+    socket.removeAllListeners();
+    try {
+      socket.terminate();
+    } catch {
+      // ignore teardown errors
+    }
   }
 
   private subscribe(markets: readonly MarketSymbol[] = this.markets): void {
@@ -132,35 +177,23 @@ export class ChainlinkPriceFeed {
     );
   }
 
-  private startSnapshotRefresh(): void {
-    this.clearSnapshotRefresh();
-    const snapshotMarkets = this.markets;
-    if (snapshotMarkets.length === 0) {
-      return;
-    }
-
-    this.snapshotRefreshTimer = setInterval(() => {
-      if (this.socket?.readyState === WebSocket.OPEN) {
-        this.subscribe(snapshotMarkets);
-      }
-    }, this.snapshotRefreshMs);
-  }
-
   private startPing(): void {
     this.clearPing();
     this.pingTimer = setInterval(() => {
-      if (this.socket?.readyState !== WebSocket.OPEN) {
+      const socket = this.socket;
+      if (socket?.readyState !== WebSocket.OPEN) {
         return;
       }
-      if (this.lastMessageAtMs > 0 && Date.now() - this.lastMessageAtMs > this.inactivityTimeoutMs) {
-        logger.warn("RTDS feed inactive; forcing reconnect.", {
-          lastMessageAtMs: this.lastMessageAtMs,
-          inactiveMs: Date.now() - this.lastMessageAtMs,
+      // Watchdog: reconnect when the feed stops delivering *valid ticks* — not merely
+      // any message. A flood of non-tick frames must not be mistaken for a healthy feed.
+      if (this.lastTickAtMs > 0 && Date.now() - this.lastTickAtMs > this.noTickTimeoutMs) {
+        logger.warn("RTDS feed delivering no ticks; forcing reconnect.", {
+          inactiveMs: Date.now() - this.lastTickAtMs,
         });
-        this.socket.close();
+        socket.close();
         return;
       }
-      this.socket.send("PING");
+      socket.send("PING");
     }, 5_000);
   }
 
@@ -171,15 +204,7 @@ export class ChainlinkPriceFeed {
     }
   }
 
-  private clearSnapshotRefresh(): void {
-    if (this.snapshotRefreshTimer) {
-      clearInterval(this.snapshotRefreshTimer);
-      this.snapshotRefreshTimer = undefined;
-    }
-  }
-
   private handleRawMessage(raw: string): void {
-    this.lastMessageAtMs = Date.now();
     if (!raw || raw === "PONG" || raw === "PING") {
       return;
     }
@@ -194,6 +219,7 @@ export class ChainlinkPriceFeed {
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     for (const message of messages) {
       for (const tick of parseChainlinkTicks(message)) {
+        this.lastTickAtMs = Date.now();
         this.rememberTick(tick);
         this.latestTick = tick;
         this.latestTicks.set(tick.market, tick);
