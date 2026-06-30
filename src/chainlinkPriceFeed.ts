@@ -13,6 +13,7 @@ export class ChainlinkPriceFeed {
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = true;
   private latestTick?: PriceTick;
+  private lastMessageAtMs = 0;
   private readonly latestTicks = new Map<MarketSymbol, PriceTick>();
   private readonly recentTicks = new Map<MarketSymbol, PriceTick[]>();
   private readonly handlers = new Set<TickHandler>();
@@ -23,6 +24,7 @@ export class ChainlinkPriceFeed {
     private readonly markets: readonly MarketSymbol[] = SUPPORTED_MARKETS,
     private readonly historyWindowMs = 10 * 60 * 1000,
     private readonly snapshotRefreshMs = 5_000,
+    private readonly inactivityTimeoutMs = 15_000,
   ) {}
 
   start(): void {
@@ -86,6 +88,7 @@ export class ChainlinkPriceFeed {
 
     this.socket.on("open", () => {
       logger.info("Connected to Polymarket RTDS Chainlink feed.");
+      this.lastMessageAtMs = Date.now();
       this.subscribe();
       this.startPing();
       this.startSnapshotRefresh();
@@ -146,9 +149,18 @@ export class ChainlinkPriceFeed {
   private startPing(): void {
     this.clearPing();
     this.pingTimer = setInterval(() => {
-      if (this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send("PING");
+      if (this.socket?.readyState !== WebSocket.OPEN) {
+        return;
       }
+      if (this.lastMessageAtMs > 0 && Date.now() - this.lastMessageAtMs > this.inactivityTimeoutMs) {
+        logger.warn("RTDS feed inactive; forcing reconnect.", {
+          lastMessageAtMs: this.lastMessageAtMs,
+          inactiveMs: Date.now() - this.lastMessageAtMs,
+        });
+        this.socket.close();
+        return;
+      }
+      this.socket.send("PING");
     }, 5_000);
   }
 
@@ -167,6 +179,7 @@ export class ChainlinkPriceFeed {
   }
 
   private handleRawMessage(raw: string): void {
+    this.lastMessageAtMs = Date.now();
     if (!raw || raw === "PONG" || raw === "PING") {
       return;
     }
