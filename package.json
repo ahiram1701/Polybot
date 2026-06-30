@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Crypto Up/Down 5m Polymarket trading bot with simulation and live modes.",
   "scripts": {
+    "start": "npm run ui:build && npm run ui:preview",
     "bot": "tsx src/index.ts",
     "ui": "tsx src/ui/index.ts",
     "ui:sim": "tsx src/ui/index.ts --auto-start=sim",

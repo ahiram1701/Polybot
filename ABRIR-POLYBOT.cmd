@@ -34,5 +34,17 @@ if defined EXISTING_PID (
 )
 
 start "Polybot Browser Opener" cmd /c "timeout /t 5 /nobreak >nul & start "" http://127.0.0.1:8787"
+
+set "TSIP=100.99.240.111"
+for /f "tokens=*" %%a in ('tailscale ip -4 2^>nul') do set "TSIP=%%a"
+
+echo Abriendo en esta PC: http://127.0.0.1:8787
+echo.
+echo ================================================
+echo   EN TU CELULAR (con Tailscale activo) abre:
+echo       http://%TSIP%:8787
+echo ================================================
+echo.
+
 call npm run ui
 pause
