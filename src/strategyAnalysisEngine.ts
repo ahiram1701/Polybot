@@ -30,6 +30,9 @@ const QUOTE_MATCH_WINDOW_MS = 6_000;
 const CANDIDATE_WINDOWS = Array.from({ length: 56 }, (_value, index) => 5 + index);
 const ASK_CAP_CANDIDATES = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98];
 const TOP_STRATEGY_LIMIT = 100;
+// Bound the per-market history fed into the strategy grid so a single analyze() pass stays fast
+// and never blocks the event loop. Recent windows best reflect the current market regime.
+const MAX_STRATEGY_SAMPLES_PER_MARKET = 300;
 const MIN_RELIABLE_TRADES = 5;
 const MIN_RELIABLE_QUOTE_COVERAGE = 0.2;
 const MIN_HIGH_CONFIDENCE_TRADES = 20;
@@ -104,14 +107,15 @@ export function buildStrategyAnalysis(
   settings: StrategyAnalysisSettings,
   nowMs = Date.now(),
 ): StrategyAnalysisResponse {
-  const sampleRange = getSampleRange(samples);
-  const currentBaseStrategies = buildCurrentStrategies(samples, settings);
+  const analysisSamples = recentSamplesPerMarket(samples);
+  const sampleRange = getSampleRange(analysisSamples);
+  const currentBaseStrategies = buildCurrentStrategies(analysisSamples, settings);
   const currentEvByOutcome = new Map(
     currentBaseStrategies.map((strategy) => [strategyOutcomeKey(strategy), strategy.metrics.evRoi]),
   );
   const currentStrategies = currentBaseStrategies.map((strategy) => annotateStrategy(strategy, currentEvByOutcome));
   const candidates = SUPPORTED_MARKETS.flatMap((market) => {
-    const marketSamples = samples.filter((sample) => sample.market === market);
+    const marketSamples = analysisSamples.filter((sample) => sample.market === market);
     return OUTCOMES.flatMap((outcome) => buildOutcomeStrategyGrid(market, outcome, marketSamples, settings));
   }).map((strategy) => annotateStrategy(strategy, currentEvByOutcome));
   const rankedRaw = candidates
@@ -131,7 +135,7 @@ export function buildStrategyAnalysis(
     strategies: ranked,
     currentStrategies,
     summary: {
-      sampleCount: samples.length,
+      sampleCount: analysisSamples.length,
       ...sampleRange,
       strategyCount: candidates.length,
       currentStrategyCount: currentStrategies.length,
@@ -142,6 +146,24 @@ export function buildStrategyAnalysis(
       bestReliableTradeCount: bestReliable?.metrics.tradeCount,
     },
   };
+}
+
+function recentSamplesPerMarket(samples: AnalyticsSample[]): AnalyticsSample[] {
+  const result: AnalyticsSample[] = [];
+  for (const market of SUPPORTED_MARKETS) {
+    const marketSamples = samples.filter((sample) => sample.market === market);
+    if (marketSamples.length <= MAX_STRATEGY_SAMPLES_PER_MARKET) {
+      result.push(...marketSamples);
+      continue;
+    }
+    result.push(
+      ...marketSamples
+        .slice()
+        .sort((left, right) => left.windowStartMs - right.windowStartMs)
+        .slice(-MAX_STRATEGY_SAMPLES_PER_MARKET),
+    );
+  }
+  return result;
 }
 
 function getSampleRange(

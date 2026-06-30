@@ -18,6 +18,11 @@ import type {
 export const ANALYTICS_WINDOW_SECONDS = 60;
 const MAX_SAMPLE_RESOLUTION_DELAY_MS = 10 * 60 * 1000;
 const ANALYTICS_RECORD_TYPE = "analytics_sample";
+// Retention: keep at most this many (most recent) resolved samples on disk so analytics.jsonl
+// cannot grow without bound. The slack is a high-water margin so we rewrite the file rarely
+// (~every ANALYTICS_PRUNE_SLACK new samples) instead of on every append.
+const MAX_ANALYTICS_SAMPLES = 6000;
+const ANALYTICS_PRUNE_SLACK = 600;
 
 export interface AnalyticsObservation {
   market: MarketInfo;
@@ -46,8 +51,13 @@ export interface ParsedAnalyticsSamples {
 export class AnalyticsRecorder {
   private readonly activeSamples = new Map<string, AnalyticsSample>();
   private activeSamplesHydrated = false;
+  private analyticsSampleCount?: number;
 
-  constructor(private readonly dataDir: string) {}
+  constructor(
+    private readonly dataDir: string,
+    private readonly maxSamples = MAX_ANALYTICS_SAMPLES,
+    private readonly pruneSlack = ANALYTICS_PRUNE_SLACK,
+  ) {}
 
   get analyticsPath(): string {
     return join(this.dataDir, "analytics.jsonl");
@@ -244,6 +254,19 @@ export class AnalyticsRecorder {
   private async appendSample(sample: AnalyticsSample): Promise<void> {
     await mkdir(dirname(this.analyticsPath), { recursive: true });
     await appendFile(this.analyticsPath, `${formatAnalyticsSampleLine(sample)}\n`, "utf8");
+    await this.maybePruneAnalytics();
+  }
+
+  private async maybePruneAnalytics(): Promise<void> {
+    // First append after start: reconcile the count against disk and trim any legacy backlog.
+    if (this.analyticsSampleCount === undefined) {
+      this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
+      return;
+    }
+    this.analyticsSampleCount += 1;
+    if (this.analyticsSampleCount > this.maxSamples + this.pruneSlack) {
+      this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
+    }
   }
 
   private async hydrateActiveSamples(): Promise<void> {
@@ -359,6 +382,7 @@ export async function importAnalyticsSamples(
 
   if (samplesToImport.length > 0) {
     await appendAnalyticsSamples(path, samplesToImport, importedAt);
+    await trimAnalyticsFileToMostRecent(path, MAX_ANALYTICS_SAMPLES);
   }
 
   const knownSamples = samplesToImport.length > 0 ? await readAnalyticsSamples(path) : existingSamples;
@@ -392,6 +416,24 @@ export function analyticsSampleRange(
 async function appendAnalyticsSamples(path: string, samples: AnalyticsSample[], at: Date): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await appendFile(path, serializeAnalyticsSamples(samples, at), "utf8");
+}
+
+/**
+ * Trim the analytics file so it keeps at most `maxSamples` of the most recent (highest windowStartMs)
+ * resolved samples. Reads via readAnalyticsSamples (deduped + sorted ascending), keeps the tail, and
+ * rewrites atomically via temp + rename. No-op when already within the limit. Returns the kept count.
+ */
+export async function trimAnalyticsFileToMostRecent(path: string, maxSamples: number): Promise<number> {
+  const samples = await readAnalyticsSamples(path);
+  if (samples.length <= maxSamples) {
+    return samples.length;
+  }
+  const kept = samples.slice(-maxSamples);
+  const tempPath = `${path}.tmp`;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(tempPath, serializeAnalyticsSamples(kept), "utf8");
+  await rename(tempPath, path);
+  return kept.length;
 }
 
 function formatAnalyticsSampleLine(sample: AnalyticsSample, at = new Date()): string {

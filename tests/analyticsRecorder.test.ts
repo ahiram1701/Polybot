@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   parseAnalyticsSamplesText,
   readAnalyticsSamples,
   serializeAnalyticsSamples,
+  trimAnalyticsFileToMostRecent,
 } from "../src/analyticsRecorder.js";
 import type {
   MarketInfo,
@@ -184,6 +185,59 @@ describe("AnalyticsRecorder", () => {
     const samples = await readAnalyticsSamples(analyticsPath);
     expect(samples.map((sample) => sample.slug)).toEqual([earlier.slug, latestEth.slug]);
     expect(samples[1].finalPrice).toBe(220);
+  });
+
+  it("trims the analytics file to the most recent samples and collapses duplicate slugs", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const samples = Array.from({ length: 12 }, (_value, index) =>
+      analyticsSample(marketInfo("BTC", base + index * 300_000)),
+    );
+    // Append the oldest sample a second time (newer finalPrice) to exercise slug de-duplication.
+    const duplicate = { ...samples[0], finalPrice: 999 };
+    await writeFile(analyticsPath, serializeAnalyticsSamples([...samples, duplicate]), "utf8");
+
+    const kept = await trimAnalyticsFileToMostRecent(analyticsPath, 5);
+
+    expect(kept).toBe(5);
+    const remaining = await readAnalyticsSamples(analyticsPath);
+    expect(remaining).toHaveLength(5);
+    expect(remaining.map((sample) => sample.windowStartMs)).toEqual(
+      samples.slice(-5).map((sample) => sample.windowStartMs),
+    );
+  });
+
+  it("leaves the analytics file untouched when within the limit", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const samples = Array.from({ length: 3 }, (_value, index) =>
+      analyticsSample(marketInfo("ETH", base + index * 300_000)),
+    );
+    await writeFile(analyticsPath, serializeAnalyticsSamples(samples), "utf8");
+
+    const kept = await trimAnalyticsFileToMostRecent(analyticsPath, 5);
+
+    expect(kept).toBe(3);
+    expect(await readAnalyticsSamples(analyticsPath)).toHaveLength(3);
+  });
+
+  it("prunes resolved samples to the configured limit as the recorder writes", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const recorder = new AnalyticsRecorder(dataDir, 3, 0);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+
+    for (let index = 0; index < 6; index += 1) {
+      await resolveSample(recorder, marketInfo("BTC", base + index * 300_000));
+    }
+
+    const samples = await recorder.readSamples();
+    expect(samples.length).toBeLessThanOrEqual(3);
+    expect(Math.max(...samples.map((sample) => sample.windowStartMs))).toBe(base + 5 * 300_000);
   });
 
   it("does not import analytics samples already known by slug", async () => {

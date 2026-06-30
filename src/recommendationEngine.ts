@@ -26,6 +26,10 @@ const MAX_AUTO_DISTANCE_CHANGE_RATIO = 0.15;
 const AUTO_APPLY_COOLDOWN_MS = 30 * 60_000;
 const QUOTE_MATCH_WINDOW_MS = 6_000;
 const WALK_FORWARD_MIN_TRAINING_TRADES = 5;
+// Cap the per-market history fed into the (near O(n^2)) walk-forward grid search so a single
+// recommend() pass stays in the low-seconds range and never blocks the event loop for minutes.
+// The most recent windows are also the most relevant to the current market regime.
+const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 300;
 const CANDIDATE_WINDOWS = Array.from({ length: 56 }, (_value, index) => 5 + index);
 const DISTANCE_STEPS: Record<MarketSymbol, number> = {
   BTC: 1,
@@ -86,9 +90,20 @@ export function buildRecommendations(
   return {
     generatedAtMs: nowMs,
     recommendations: SUPPORTED_MARKETS.map((market) =>
-      buildMarketRecommendation(market, samples.filter((sample) => sample.market === market), settings, nowMs),
+      buildMarketRecommendation(market, recentMarketSamples(samples, market), settings, nowMs),
     ),
   };
+}
+
+function recentMarketSamples(samples: AnalyticsSample[], market: MarketSymbol): AnalyticsSample[] {
+  const marketSamples = samples.filter((sample) => sample.market === market);
+  if (marketSamples.length <= MAX_RECOMMENDATION_SAMPLES_PER_MARKET) {
+    return marketSamples;
+  }
+  return marketSamples
+    .slice()
+    .sort((left, right) => left.windowStartMs - right.windowStartMs)
+    .slice(-MAX_RECOMMENDATION_SAMPLES_PER_MARKET);
 }
 
 function buildMarketRecommendation(
