@@ -27,7 +27,7 @@ import {
   type Notifier,
 } from "../notifier.js";
 import { OrderbookService } from "../orderbookService.js";
-import { RecommendationEngine, type RecommendationSettings } from "../recommendationEngine.js";
+import { autoApplyThresholdsForMode, RecommendationEngine, type RecommendationSettings } from "../recommendationEngine.js";
 import {
   calculatePnlSummaryByMode,
   calculateResetAwarePnlSummary,
@@ -397,7 +397,11 @@ export class BotController {
 
   async getAiRecommendations(nowMs = Date.now()): Promise<AiRecommendationsResponse> {
     const settings = await this.settingsStore.load(this.baseConfig);
-    return this.recommendationEngine.recommend(toRecommendationSettings(settings), nowMs);
+    return this.recommendationEngine.recommend(
+      toRecommendationSettings(settings),
+      nowMs,
+      autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
+    );
   }
 
   private startAiAutoApplyLoop(): void {
@@ -429,7 +433,11 @@ export class BotController {
       if (!settings.aiAutoApplyLive) {
         return [];
       }
-      const response = await this.recommendationEngine.recommend(toRecommendationSettings(settings), nowMs);
+      const response = await this.recommendationEngine.recommend(
+        toRecommendationSettings(settings),
+        nowMs,
+        autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
+      );
       const applicable = response.recommendations.filter(isApplicableRecommendation);
       if (applicable.length === 0) {
         return [];

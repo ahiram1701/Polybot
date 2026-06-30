@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRecommendations } from "../src/recommendationEngine.js";
+import {
+  buildRecommendations,
+  LIVE_AUTO_APPLY_THRESHOLDS,
+  SIM_AUTO_APPLY_THRESHOLDS,
+} from "../src/recommendationEngine.js";
 import type { AnalyticsSample, MarketSymbol, Outcome } from "../src/types.js";
 
 describe("RecommendationEngine", () => {
@@ -18,6 +22,28 @@ describe("RecommendationEngine", () => {
     expect(btc?.recommended?.metrics.expectedRoi).toBeGreaterThan(0);
     expect(btc?.recommended?.metrics.walkForwardRoi).toBeGreaterThan(0);
     expect(btc?.recommended?.metrics.overfitRisk).toBeLessThanOrEqual(0.45);
+  });
+
+  it("auto-applies a far optimum in sim but holds it back under strict live thresholds", () => {
+    const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true));
+    // Current entry window (10s) is far below the predictive optimum (~22s), so the change exceeds
+    // the strict live rail but stays within the relaxed sim rail.
+    const farSettings = {
+      ...settings(),
+      entryWindowSeconds: 10,
+      entryWindowSecondsByMarket: { BTC: 10, ETH: 10, DOGE: 10 },
+    };
+
+    const sim = buildRecommendations(samples, farSettings, undefined, undefined, SIM_AUTO_APPLY_THRESHOLDS).recommendations.find(
+      (recommendation) => recommendation.market === "BTC",
+    );
+    const live = buildRecommendations(samples, farSettings, undefined, undefined, LIVE_AUTO_APPLY_THRESHOLDS).recommendations.find(
+      (recommendation) => recommendation.market === "BTC",
+    );
+
+    expect(sim?.canAutoApply).toBe(true);
+    expect(live?.canAutoApply).toBe(false);
+    expect(live?.canApply).toBe(true);
   });
 
   it("keeps low-sample markets exploratory", () => {

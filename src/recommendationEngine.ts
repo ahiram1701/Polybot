@@ -11,24 +11,66 @@ import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
   MarketSymbol,
+  Mode,
   Outcome,
   RecommendationCandidate,
   RecommendationMetrics,
 } from "./types.js";
 
 const MIN_READY_SAMPLES = 10;
-const MIN_AUTO_SAMPLES = 40;
 const MIN_AUTO_TRADES = 20;
-const MIN_QUOTE_COVERAGE_FOR_AUTO = 0.8;
-const MIN_ADJUSTED_ROI_IMPROVEMENT_FOR_AUTO = 0.03;
-const MAX_AUTO_WINDOW_CHANGE_SECONDS = 5;
-const MAX_AUTO_DISTANCE_CHANGE_RATIO = 0.15;
+
+export interface AutoApplyThresholds {
+  minAutoSamples: number;
+  minAutoTrades: number;
+  minQuoteCoverage: number;
+  minAdjustedRoiImprovement: number;
+  maxOverfitRisk: number;
+  // How far a single auto-apply may move from the current settings. In live this is a tight rail
+  // (only fine-tune in small steps); in sim it is loose enough to converge to the optimum.
+  maxWindowChangeSeconds: number;
+  maxDistanceChangeRatio: number;
+}
+
+// Live moves real money: keep strict gates (many executable trades + high quote coverage required)
+// and only allow small fine-tuning steps per apply.
+export const LIVE_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
+  minAutoSamples: 40,
+  minAutoTrades: 20,
+  minQuoteCoverage: 0.8,
+  minAdjustedRoiImprovement: 0.03,
+  maxOverfitRisk: 0.45,
+  maxWindowChangeSeconds: 5,
+  maxDistanceChangeRatio: 0.15,
+};
+
+// Sim is paper money: relax the volume/coverage gates to match the thin real liquidity of these
+// 5-minute markets (~1-3% of windows executable), so the autoajuste can actually act, and allow
+// it to converge to the recommended optimum. The quality gates (out-of-sample ROI > 0, overfit
+// <= max, ROI improvement) still guard against bad strategies.
+export const SIM_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
+  minAutoSamples: 40,
+  minAutoTrades: 5,
+  minQuoteCoverage: 0.02,
+  minAdjustedRoiImprovement: 0.03,
+  maxOverfitRisk: 0.45,
+  maxWindowChangeSeconds: 60,
+  maxDistanceChangeRatio: 10,
+};
+
+export function autoApplyThresholdsForMode(mode: Mode): AutoApplyThresholds {
+  return mode === "live" ? LIVE_AUTO_APPLY_THRESHOLDS : SIM_AUTO_APPLY_THRESHOLDS;
+}
 const AUTO_APPLY_COOLDOWN_MS = 30 * 60_000;
 const QUOTE_MATCH_WINDOW_MS = 6_000;
 const WALK_FORWARD_MIN_TRAINING_TRADES = 5;
-// Cap the per-market history fed into the (near O(n^2)) walk-forward grid search so a single
-// recommend() pass stays in the low-seconds range and never blocks the event loop for minutes.
-// The most recent windows are also the most relevant to the current market regime.
+// k-NN walk-forward only considers the most recent observations as neighbours. This keeps the
+// per-candidate cost linear (O(obs * window)) instead of O(obs^2), so we can feed in much more
+// history (for trade-count significance) without the grid search blowing up the event loop.
+// Recent neighbours are also more relevant to the current regime.
+const WALK_FORWARD_TRAINING_WINDOW = 300;
+// Per-market history fed into the grid search. With the bounded k-NN above the cost scales
+// ~linearly, so we keep enough executable trades to reach statistical significance.
 const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 300;
 const CANDIDATE_WINDOWS = Array.from({ length: 56 }, (_value, index) => 5 + index);
 const DISTANCE_STEPS: Record<MarketSymbol, number> = {
@@ -76,9 +118,13 @@ interface WalkForwardPrediction {
 export class RecommendationEngine {
   constructor(private readonly dataDir: string) {}
 
-  async recommend(settings: RecommendationSettings, nowMs = Date.now()): Promise<AiRecommendationsResponse> {
+  async recommend(
+    settings: RecommendationSettings,
+    nowMs = Date.now(),
+    thresholds: AutoApplyThresholds = LIVE_AUTO_APPLY_THRESHOLDS,
+  ): Promise<AiRecommendationsResponse> {
     const samples = await readAnalyticsSamples(join(this.dataDir, "analytics.jsonl"));
-    return buildRecommendations(samples, settings, nowMs);
+    return buildRecommendations(samples, settings, nowMs, MAX_RECOMMENDATION_SAMPLES_PER_MARKET, thresholds);
   }
 }
 
@@ -86,24 +132,26 @@ export function buildRecommendations(
   samples: AnalyticsSample[],
   settings: RecommendationSettings,
   nowMs = Date.now(),
+  maxSamplesPerMarket = MAX_RECOMMENDATION_SAMPLES_PER_MARKET,
+  thresholds: AutoApplyThresholds = LIVE_AUTO_APPLY_THRESHOLDS,
 ): AiRecommendationsResponse {
   return {
     generatedAtMs: nowMs,
     recommendations: SUPPORTED_MARKETS.map((market) =>
-      buildMarketRecommendation(market, recentMarketSamples(samples, market), settings, nowMs),
+      buildMarketRecommendation(market, recentMarketSamples(samples, market, maxSamplesPerMarket), settings, nowMs, thresholds),
     ),
   };
 }
 
-function recentMarketSamples(samples: AnalyticsSample[], market: MarketSymbol): AnalyticsSample[] {
+function recentMarketSamples(samples: AnalyticsSample[], market: MarketSymbol, limit: number): AnalyticsSample[] {
   const marketSamples = samples.filter((sample) => sample.market === market);
-  if (marketSamples.length <= MAX_RECOMMENDATION_SAMPLES_PER_MARKET) {
+  if (marketSamples.length <= limit) {
     return marketSamples;
   }
   return marketSamples
     .slice()
     .sort((left, right) => left.windowStartMs - right.windowStartMs)
-    .slice(-MAX_RECOMMENDATION_SAMPLES_PER_MARKET);
+    .slice(-limit);
 }
 
 function buildMarketRecommendation(
@@ -111,6 +159,7 @@ function buildMarketRecommendation(
   samples: AnalyticsSample[],
   settings: RecommendationSettings,
   nowMs: number,
+  thresholds: AutoApplyThresholds,
 ): AiRecommendation {
   const currentWindow = settings.entryWindowSecondsByMarket[market] ?? settings.entryWindowSeconds;
   const currentDistance = getMinDistanceUsd(settings.minDistanceUsdByMarket, market);
@@ -126,7 +175,7 @@ function buildMarketRecommendation(
       ? best.metrics.adjustedRoi - current.metrics.adjustedRoi
       : best.metrics.adjustedRoi;
   const status = samples.length >= MIN_READY_SAMPLES ? "ready" : "insufficient_data";
-  const confidence = getConfidence(samples.length, best.metrics, improvementAdjustedRoi);
+  const confidence = getConfidence(samples.length, best.metrics, improvementAdjustedRoi, thresholds);
   const changed =
     best.entryWindowSeconds !== current.entryWindowSeconds ||
     best.minDistanceUsd !== current.minDistanceUsd;
@@ -141,15 +190,15 @@ function buildMarketRecommendation(
     canApply &&
     !cooldownActive &&
     confidence === "high" &&
-    best.metrics.tradeCount >= MIN_AUTO_TRADES &&
-    best.metrics.quoteCoverage >= MIN_QUOTE_COVERAGE_FOR_AUTO &&
+    best.metrics.tradeCount >= thresholds.minAutoTrades &&
+    best.metrics.quoteCoverage >= thresholds.minQuoteCoverage &&
     best.metrics.expectedRoi !== undefined &&
     best.metrics.expectedRoi > 0 &&
     best.metrics.walkForwardRoi !== undefined &&
     best.metrics.walkForwardRoi > 0 &&
     improvementAdjustedRoi !== undefined &&
-    improvementAdjustedRoi >= MIN_ADJUSTED_ROI_IMPROVEMENT_FOR_AUTO &&
-    isWithinAutoApplyChange(current, best);
+    improvementAdjustedRoi >= thresholds.minAdjustedRoiImprovement &&
+    isWithinAutoApplyChange(current, best, thresholds);
 
   return {
     market,
@@ -344,10 +393,10 @@ function buildCandidateObservations(
 function buildWalkForwardPredictions(observations: CandidateObservation[]): WalkForwardPrediction[] {
   const predictions: WalkForwardPrediction[] = [];
   for (let index = 0; index < observations.length; index += 1) {
-    const training = observations.slice(0, index);
-    if (training.length < WALK_FORWARD_MIN_TRAINING_TRADES) {
+    if (index < WALK_FORWARD_MIN_TRAINING_TRADES) {
       continue;
     }
+    const training = observations.slice(Math.max(0, index - WALK_FORWARD_TRAINING_WINDOW), index);
     const observation = observations[index];
     const predictedWinProbability = predictWinProbability(training, observation);
     predictions.push({
@@ -466,18 +515,19 @@ function getConfidence(
   sampleCount: number,
   metrics: RecommendationMetrics,
   improvementAdjustedRoi: number | undefined,
+  thresholds: AutoApplyThresholds,
 ): "low" | "medium" | "high" {
   if (
-    sampleCount >= MIN_AUTO_SAMPLES &&
-    metrics.tradeCount >= MIN_AUTO_TRADES &&
-    metrics.quoteCoverage >= MIN_QUOTE_COVERAGE_FOR_AUTO &&
+    sampleCount >= thresholds.minAutoSamples &&
+    metrics.tradeCount >= thresholds.minAutoTrades &&
+    metrics.quoteCoverage >= thresholds.minQuoteCoverage &&
     metrics.expectedRoi !== undefined &&
     metrics.expectedRoi > 0 &&
     metrics.walkForwardRoi !== undefined &&
     metrics.walkForwardRoi > 0 &&
-    metrics.overfitRisk <= 0.45 &&
+    metrics.overfitRisk <= thresholds.maxOverfitRisk &&
     improvementAdjustedRoi !== undefined &&
-    improvementAdjustedRoi >= MIN_ADJUSTED_ROI_IMPROVEMENT_FOR_AUTO
+    improvementAdjustedRoi >= thresholds.minAdjustedRoiImprovement
   ) {
     return "high";
   }
@@ -521,13 +571,17 @@ function isAutoApplyCooldownActive(lastAppliedAtMs: number | undefined, nowMs: n
   return lastAppliedAtMs !== undefined && nowMs - lastAppliedAtMs < AUTO_APPLY_COOLDOWN_MS;
 }
 
-function isWithinAutoApplyChange(current: RecommendationCandidate, recommended: RecommendationCandidate): boolean {
+function isWithinAutoApplyChange(
+  current: RecommendationCandidate,
+  recommended: RecommendationCandidate,
+  thresholds: AutoApplyThresholds,
+): boolean {
   const windowChange = Math.abs(recommended.entryWindowSeconds - current.entryWindowSeconds);
   const distanceChangeRatio =
     current.minDistanceUsd > 0
       ? Math.abs(recommended.minDistanceUsd - current.minDistanceUsd) / current.minDistanceUsd
       : Infinity;
-  return windowChange <= MAX_AUTO_WINDOW_CHANGE_SECONDS && distanceChangeRatio <= MAX_AUTO_DISTANCE_CHANGE_RATIO;
+  return windowChange <= thresholds.maxWindowChangeSeconds && distanceChangeRatio <= thresholds.maxDistanceChangeRatio;
 }
 
 function smallSamplePenalty(tradeCount: number): number {
