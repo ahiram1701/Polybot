@@ -19,6 +19,11 @@ if not exist ".env" (
   copy ".env.example" ".env" >nul
 )
 
+if not exist ".mcp.json" (
+  echo Activando config MCP para agentes IA (.mcp.json)...
+  copy ".mcp.json.example" ".mcp.json" >nul
+)
+
 if not exist "node_modules" (
   echo Instalando dependencias. Esto puede tardar unos minutos la primera vez...
   call npm install

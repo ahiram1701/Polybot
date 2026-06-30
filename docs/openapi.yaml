@@ -1,0 +1,308 @@
+openapi: 3.0.3
+info:
+  title: Polybot Control API
+  version: "0.1.0"
+  description: >
+    API HTTP local de Polybot (bot de trading Polymarket cripto Up/Down 5m).
+    Es el unico plano de control: la UI, el servidor MCP y la CLI la usan.
+    Sin autenticacion; pensada para uso local (127.0.0.1). live mueve dinero real.
+servers:
+  - url: http://127.0.0.1:8787
+    description: Servidor local por defecto
+tags:
+  - name: estado
+  - name: analisis
+  - name: control
+  - name: notificaciones
+paths:
+  /api/status:
+    get:
+      tags: [estado]
+      summary: Estado completo del bot
+      responses:
+        "200":
+          description: Estado actual
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+  /api/trades:
+    get:
+      tags: [estado]
+      summary: Trades recientes (mas nuevos primero)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Lista de trades
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trades:
+                    type: array
+                    items: { type: object }
+  /api/settings:
+    get:
+      tags: [control]
+      summary: Settings actuales
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+    patch:
+      tags: [control]
+      summary: Aplica un patch parcial de settings
+      description: Responde 409 si el bot esta corriendo. Detén el bot primero.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: Settings resultantes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/analysis/strategies:
+    get:
+      tags: [analisis]
+      summary: EV historico por estrategia
+      responses:
+        "200":
+          description: Analisis de estrategias
+          content: { application/json: { schema: { type: object } } }
+  /api/analysis/recommendations:
+    get:
+      tags: [analisis]
+      summary: Recomendaciones del modelo predictivo (walk-forward + k-NN)
+      responses:
+        "200":
+          description: Recomendaciones por mercado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recommendations" }
+  /api/analysis/samples/export:
+    get:
+      tags: [analisis]
+      summary: Exporta las muestras de Analisis como NDJSON
+      responses:
+        "200":
+          description: Archivo .jsonl
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+  /api/analysis/samples/import:
+    post:
+      tags: [analisis]
+      summary: Importa muestras de Analisis (.jsonl)
+      description: Responde 409 si el bot esta corriendo. Maximo 512MB.
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string }
+      responses:
+        "200":
+          description: Resumen de import
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnalysisImport" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+  /api/notifications/telegram:
+    get:
+      tags: [notificaciones]
+      summary: Config de Telegram (sin exponer el token)
+      responses:
+        "200":
+          description: Config
+          content: { application/json: { schema: { type: object } } }
+    patch:
+      tags: [notificaciones]
+      summary: Actualiza config de Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                botToken: { type: string }
+                chatId: { type: string }
+                publicUrl: { type: string }
+      responses:
+        "200":
+          description: Config resultante
+          content: { application/json: { schema: { type: object } } }
+  /api/notifications/telegram/test:
+    post:
+      tags: [notificaciones]
+      summary: Envia un mensaje de prueba
+      responses:
+        "200":
+          description: Resultado
+          content: { application/json: { schema: { type: object } } }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/analysis/ollama:
+    post:
+      tags: [analisis]
+      summary: Analisis LLM via Ollama Cloud (solo texto)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Analisis generado
+          content: { application/json: { schema: { type: object } } }
+        "409": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /api/bot/start:
+    post:
+      tags: [control]
+      summary: Arranca el bot
+      description: mode 'live' MUEVE DINERO REAL y requiere confirmLive true mas llaves en .env.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [sim, live] }
+                confirmLive: { type: boolean }
+      responses:
+        "200":
+          description: Estado tras arrancar
+          content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/bot/stop:
+    post:
+      tags: [control]
+      summary: Detiene el bot
+      responses:
+        "200":
+          description: Estado tras detener
+          content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } }
+  /api/bot/reset:
+    post:
+      tags: [control]
+      summary: Limpia estado y trades (conserva settings)
+      responses:
+        "200":
+          description: Estado tras reset
+          content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } }
+  /api/pnl/reset:
+    post:
+      tags: [control]
+      summary: Resetea el P&L mostrado de un modo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [sim, live] }
+      responses:
+        "200":
+          description: Estado tras reset de P&L
+          content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } }
+  /api/events:
+    get:
+      tags: [estado]
+      summary: Stream SSE de status y logs
+      responses:
+        "200":
+          description: Eventos server-sent (text/event-stream)
+          content:
+            text/event-stream:
+              schema: { type: string }
+components:
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              issues: { type: array, items: { type: object } }
+  schemas:
+    Status:
+      type: object
+      properties:
+        running: { type: boolean }
+        mode: { type: string, enum: [sim, live] }
+        startedAtMs: { type: number }
+        lastError: { type: string }
+        settings: { $ref: "#/components/schemas/Settings" }
+        markets: { type: array, items: { type: object } }
+        signal: { type: object }
+        dailySpendUsd: { type: number }
+        pnl: { type: object }
+        pnlByMode: { type: object }
+        logs: { type: array, items: { type: object } }
+    Settings:
+      type: object
+      description: Settings del bot (todas las claves opcionales en PATCH).
+      properties:
+        minBtcDistanceUsd: { type: number }
+        enabledMarkets:
+          type: array
+          items: { type: string, enum: [BTC, ETH, DOGE] }
+        minDistanceUsdByMarket: { type: object }
+        entryWindowSeconds: { type: number }
+        entryWindowSecondsByMarket: { type: object }
+        simTradeAmountUsd: { type: number }
+        liveTradeAmountUsd: { type: number }
+        autoMinLive: { type: boolean }
+        maxAskPrice: { type: number }
+        dailySpendLimitUsd: { type: number }
+        tickStaleMs: { type: number }
+        pollIntervalMs: { type: number }
+        aiAutoApplyLive: { type: boolean }
+    Recommendations:
+      type: object
+      properties:
+        generatedAtMs: { type: number }
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              market: { type: string, enum: [BTC, ETH, DOGE] }
+              status: { type: string, enum: [insufficient_data, ready] }
+              confidence: { type: string, enum: [low, medium, high] }
+              canApply: { type: boolean }
+              canAutoApply: { type: boolean }
+              recommended: { type: object }
+              reason: { type: string }
+    AnalysisImport:
+      type: object
+      properties:
+        importedCount: { type: integer }
+        duplicateCount: { type: integer }
+        skippedInvalidCount: { type: integer }
+        totalKnownSamples: { type: integer }
+        firstSampleAtMs: { type: number }
+        lastSampleAtMs: { type: number }

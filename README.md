@@ -103,6 +103,16 @@ El servicio levanta solo la UI. Live queda apagado hasta que lo inicies manualme
 
 Para usarlo desde iPhone, instala Tailscale en el VPS y en el iPhone, deja `POLYBOT_UI_HOST=0.0.0.0`, configura `POLYBOT_PUBLIC_URL` con la URL o IP Tailscale, y bloquea el puerto `8787` para internet publico con firewall. Guia completa: [`docs/linux-vps-tailscale.md`](docs/linux-vps-tailscale.md).
 
+## Uso Por Agentes IA
+
+Polybot se puede operar desde un agente IA por tres vias sobre el mismo plano de control (la API HTTP local, con el servidor corriendo):
+
+- **MCP**: `npm run mcp` expone herramientas `polybot_*` (estado, trades, analisis, recomendaciones, start/stop, settings, etc.) por stdio.
+- **CLI con salida JSON**: `npm run cli -- status`, `npm run cli -- analysis recommend`, `npm run cli -- start --mode sim`, `npm run cli -- help`.
+- **HTTP directo**: spec en [`docs/openapi.yaml`](docs/openapi.yaml).
+
+Guia completa para agentes (seguridad, flujo recomendado, config MCP, tabla de endpoints): [`AGENTS.md`](AGENTS.md). `mode: "live"` mueve dinero real y requiere `confirmLive`; con `POLYBOT_MCP_ALLOW_WRITE=false` el MCP queda en solo lectura.
+
 ## Uso Por CLI
 
 Simulacion continua:

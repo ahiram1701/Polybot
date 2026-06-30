@@ -17,6 +17,10 @@ if not exist ".env" (
   copy ".env.example" ".env" >nul
 )
 
+if not exist ".mcp.json" (
+  copy ".mcp.json.example" ".mcp.json" >nul
+)
+
 if not exist "node_modules" (
   call npm install
   if errorlevel 1 (

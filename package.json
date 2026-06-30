@@ -4,8 +4,13 @@
   "private": true,
   "type": "module",
   "description": "Crypto Up/Down 5m Polymarket trading bot with simulation and live modes.",
+  "bin": {
+    "polybot": "dist/src/cli/index.js"
+  },
   "scripts": {
     "start": "npm run ui:build && npm run ui:preview",
+    "mcp": "tsx src/mcp/index.ts",
+    "cli": "tsx src/cli/index.ts",
     "bot": "tsx src/index.ts",
     "ui": "tsx src/ui/index.ts",
     "ui:sim": "tsx src/ui/index.ts --auto-start=sim",
@@ -22,6 +27,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@polymarket/clob-client-v2": "^1.0.3",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

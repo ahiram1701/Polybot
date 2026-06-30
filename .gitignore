@@ -4,5 +4,6 @@ data/
 .env
 .env.*
 !.env.example
+.mcp.json
 npm-debug.log*
 ui-server.log
