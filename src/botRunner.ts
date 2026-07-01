@@ -51,9 +51,9 @@ import type {
 const AUTO_ADJUST_LIVE_COOLDOWN_MS = 60_000;
 // Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
-const DEFAULT_EV_SAFETY_MARGIN = 0.08;
+const DEFAULT_EV_SAFETY_MARGIN = 0.03;
 const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
-const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
+const DEFAULT_EV_MIN_HISTORY_TRADES = 10;
 
 interface MarketWatcherLike {
   getCurrentMarket(nowMs?: number, market?: MarketSymbol): Promise<MarketInfo | null>;

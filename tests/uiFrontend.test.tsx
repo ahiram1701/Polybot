@@ -342,6 +342,15 @@ describe("UI frontend components", () => {
     expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
   });
 
+  it("exposes the EV gate controls in settings", () => {
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "Gate de EV" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Margen de seguridad")).toHaveValue("0.03");
+    expect(screen.getByLabelText("Historia mínima (trades)")).toHaveValue("10");
+    expect(screen.getByRole("checkbox", { name: "Exigir valor esperado positivo" })).toBeChecked();
+  });
+
   it("allows free-form number editing in settings", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
@@ -657,6 +666,10 @@ function settings(): UiSettings {
     dailySpendLimitUsd: 50,
     maxDailyLossUsd: 0,
     maxConsecutiveLosses: 0,
+    requirePositiveEv: true,
+    evSafetyMargin: 0.03,
+    evMinHistoryTrades: 10,
+    evMinExpectedRoi: 0.01,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,
     openingCaptureGraceMs: 15_000,

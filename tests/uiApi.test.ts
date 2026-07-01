@@ -116,6 +116,37 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("patches the EV gate from the UI and applies it to the runtime config", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({ requirePositiveEv: false, evSafetyMargin: 0.02, evMinHistoryTrades: 8, evMinExpectedRoi: 0.005 })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.requirePositiveEv).toBe(false);
+        expect(response.body.evSafetyMargin).toBe(0.02);
+        expect(response.body.evMinHistoryTrades).toBe(8);
+        expect(response.body.evMinExpectedRoi).toBe(0.005);
+      });
+
+    const settings = await controller.getSettings();
+    expect(settings.requirePositiveEv).toBe(false);
+    expect(settings.evSafetyMargin).toBe(0.02);
+    expect(settings.evMinHistoryTrades).toBe(8);
+
+    const status = await controller.getStatus();
+    expect(status.config.evSafetyMargin).toBe(0.02);
+    expect(status.config.evMinHistoryTrades).toBe(8);
+    expect(status.config.requirePositiveEv).toBe(false);
+    controller.dispose();
+  });
+
   it("patches enabled markets from the UI", async () => {
     const controller = new BotController(await baseConfig(false), {
       startPriceFeed: false,

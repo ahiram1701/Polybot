@@ -178,6 +178,10 @@ const emptySettings: UiSettings = {
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   maxConsecutiveLosses: 0,
+  requirePositiveEv: true,
+  evSafetyMargin: 0.03,
+  evMinHistoryTrades: 10,
+  evMinExpectedRoi: 0.01,
   tickStaleMs: 10_000,
   pollIntervalMs: 1_000,
   openingCaptureGraceMs: 15_000,
@@ -1937,6 +1941,53 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           Circuit breaker (0 = desactivado). Si la pérdida realizada del día (UTC) o la racha de pérdidas cruza el
           límite, el bot deja de operar hasta el día siguiente — sigue observando para analítica. Aplica al modo en
           ejecución. Editable con el bot detenido.
+        </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <ShieldAlert size={18} />
+          <h2>Gate de EV</h2>
+        </div>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.requirePositiveEv}
+            onChange={(event) => update("requirePositiveEv", event.target.checked)}
+            disabled={running}
+          />
+          <span>Exigir valor esperado positivo</span>
+        </label>
+        <div className="settings-grid">
+          <NumberField
+            label="Margen de seguridad"
+            value={draft.evSafetyMargin}
+            min={0}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => update("evSafetyMargin", value)}
+          />
+          <NumberField
+            label="Historia mínima (trades)"
+            value={draft.evMinHistoryTrades}
+            min={0}
+            step={1}
+            onChange={(value) => update("evMinHistoryTrades", value)}
+          />
+          <NumberField
+            label="ROI esperado mín"
+            value={draft.evMinExpectedRoi}
+            min={0}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => update("evMinExpectedRoi", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          Solo opera setups con ventaja real y EV positivo tras comisiones. <strong>Menor margen = opera más seguido</strong>
+          {" "}(recomendado 0.03; 0.08 era demasiado estricto y casi nunca operaba). "Historia mínima" es cuántas muestras
+          resueltas necesita el setup antes de confiar en su tasa de acierto. Apagar el gate opera cualquier señal (más
+          riesgo). Editable con el bot detenido.
         </p>
       </section>
 
