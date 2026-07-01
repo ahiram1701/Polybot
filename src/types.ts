@@ -20,6 +20,9 @@ export interface BotConfig {
   enabledMarketOutcomes?: MarketOutcomeBooleanSettings;
   minDistanceUsdByMarket: MarketDistanceSettings;
   minDistanceUsdByMarketOutcome?: MarketOutcomeNumberSettings;
+  // Hard per-market distance floor: the edge comes from strong moves, so the effective distance is
+  // max(configured, floor). Config always sets it; optional so test/config literals may omit it.
+  minDistanceFloorUsdByMarket?: MarketDistanceSettings;
   entryWindowSeconds: number;
   entryWindowSecondsByMarket: MarketEntryWindowSettings;
   entryWindowSecondsByMarketOutcome?: MarketOutcomeNumberSettings;

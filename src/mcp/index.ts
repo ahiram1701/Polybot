@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { PolybotApiError, PolybotClient } from "../agent/client.js";
+import { summarizeStatus } from "../agent/statusSummary.js";
 import type { UiSettings } from "../ui/shared.js";
 
 const ALLOW_WRITE = (process.env.POLYBOT_MCP_ALLOW_WRITE ?? "true").toLowerCase() !== "false";
@@ -40,8 +41,68 @@ const server = new McpServer({ name: "polybot", version: "0.1.0" });
 
 server.registerTool(
   "polybot_get_status",
-  { description: "Estado completo de Polybot: running, modo, mercados, signal, P&L, dailySpend y ultimos logs." },
-  async () => guard(() => client.getStatus()),
+  {
+    description:
+      "Estado COMPACTO de Polybot para agentes (read-only): running/modo, senal por mercado, P&L por modo, gasto diario " +
+      "y un resumen de razones de skip recientes (por que no opera). Pasa verbose:true para el status crudo completo (~150KB).",
+    inputSchema: {
+      verbose: z.boolean().optional().describe("true = status crudo completo (grande). Por defecto compacto."),
+    },
+  },
+  async ({ verbose }) =>
+    guard(async () => {
+      const status = await client.getStatus();
+      return verbose ? status : summarizeStatus(status);
+    }),
+);
+
+server.registerTool(
+  "polybot_get_logs",
+  {
+    description:
+      "Logs recientes del bot (mas nuevos primero), opcionalmente filtrados por nivel o meta.reason. Read-only. " +
+      "El status compacto ya trae un resumen de skips; usa esto solo si necesitas el detalle crudo.",
+    inputSchema: {
+      limit: z.number().int().positive().max(300).optional(),
+      level: z.string().optional().describe("Filtra por nivel (info/warn/error)."),
+      reason: z.string().optional().describe("Filtra por meta.reason (p. ej. no_ask_liquidity_under_cap)."),
+    },
+  },
+  async ({ limit, level, reason }) =>
+    guard(async () => {
+      const status = await client.getStatus();
+      let logs = status.logs ?? [];
+      if (level) {
+        logs = logs.filter((entry) => entry.level === level);
+      }
+      if (reason) {
+        logs = logs.filter(
+          (entry) =>
+            entry.meta !== null &&
+            typeof entry.meta === "object" &&
+            (entry.meta as { reason?: unknown }).reason === reason,
+        );
+      }
+      return { logs: logs.slice(0, limit ?? 40) };
+    }),
+);
+
+server.registerTool(
+  "polybot_estimate_setup",
+  {
+    description:
+      "EV historico AGREGADO de un setup (mercado/lado/ventana/distancia/cap): winCount, tradeCount, winRate, evRoi, edge. " +
+      "Read-only, no opera. Util para que el agente razone o tunee la estrategia. Distancia en USD, ventana en segundos.",
+    inputSchema: {
+      market: z.enum(["BTC", "ETH", "DOGE"]),
+      outcome: z.enum(["UP", "DOWN"]),
+      entryWindowSeconds: z.number().positive(),
+      minDistanceUsd: z.number().positive(),
+      maxAskPrice: z.number().gt(0).lte(1),
+      capitalUsd: z.number().positive().optional().describe("Capital por trade (default 10)."),
+    },
+  },
+  async (params) => guard(() => client.estimateSetup(params)),
 );
 
 server.registerTool(

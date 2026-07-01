@@ -1,8 +1,11 @@
 import type {
   AiRecommendationsResponse,
+  MarketSymbol,
   Mode,
   OllamaTradeAnalysisResponse,
+  Outcome,
   StrategyAnalysisResponse,
+  StrategyMetrics,
   TradeAttempt,
 } from "../types.js";
 import type {
@@ -36,6 +39,17 @@ export interface AnalysisExportResult {
   filename: string;
   contents: string;
 }
+
+export interface SetupEvParams {
+  market: MarketSymbol;
+  outcome: Outcome;
+  entryWindowSeconds: number;
+  minDistanceUsd: number;
+  maxAskPrice: number;
+  capitalUsd?: number;
+}
+
+export type SetupEvResult = StrategyMetrics & { market: MarketSymbol; outcome: Outcome };
 
 type HttpMethod = "GET" | "POST" | "PATCH";
 
@@ -80,6 +94,20 @@ export class PolybotClient {
 
   getRecommendations(): Promise<AiRecommendationsResponse> {
     return this.requestJson("GET", "/api/analysis/recommendations");
+  }
+
+  estimateSetup(params: SetupEvParams): Promise<SetupEvResult> {
+    const query = new URLSearchParams({
+      market: params.market,
+      outcome: params.outcome,
+      entryWindowSeconds: String(params.entryWindowSeconds),
+      minDistanceUsd: String(params.minDistanceUsd),
+      maxAskPrice: String(params.maxAskPrice),
+    });
+    if (params.capitalUsd !== undefined) {
+      query.set("capitalUsd", String(params.capitalUsd));
+    }
+    return this.requestJson("GET", `/api/analysis/setup-ev?${query.toString()}`);
   }
 
   async exportSamples(): Promise<AnalysisExportResult> {

@@ -89,6 +89,23 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Recommendations" }
+  /api/analysis/setup-ev:
+    get:
+      tags: [analisis]
+      summary: EV historico agregado de un setup (mercado/lado/ventana/distancia/cap)
+      parameters:
+        - { name: market, in: query, required: true, schema: { type: string, enum: [BTC, ETH, DOGE] } }
+        - { name: outcome, in: query, required: true, schema: { type: string, enum: [UP, DOWN] } }
+        - { name: entryWindowSeconds, in: query, required: true, schema: { type: number } }
+        - { name: minDistanceUsd, in: query, required: true, schema: { type: number } }
+        - { name: maxAskPrice, in: query, required: true, schema: { type: number } }
+        - { name: capitalUsd, in: query, required: false, schema: { type: number } }
+      responses:
+        "200":
+          description: Metricas del setup (winCount, tradeCount, winRate, evRoi, edge, ...)
+          content:
+            application/json:
+              schema: { type: object }
   /api/analysis/samples/export:
     get:
       tags: [analisis]

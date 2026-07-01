@@ -101,7 +101,10 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(true),
-  EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.05),
+  EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.08),
+  MIN_DISTANCE_FLOOR_BTC: z.coerce.number().nonnegative().default(20),
+  MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(1),
+  MIN_DISTANCE_FLOOR_DOGE: z.coerce.number().nonnegative().default(0.0005),
   EV_MIN_EXPECTED_ROI: z.coerce.number().gte(0).lt(1).default(0.01),
   EV_MIN_HISTORY_TRADES: z.coerce.number().int().nonnegative().default(15),
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
@@ -254,6 +257,11 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     maxAskPriceByMarketOutcome,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evSafetyMargin: env.EV_SAFETY_MARGIN,
+    minDistanceFloorUsdByMarket: {
+      BTC: env.MIN_DISTANCE_FLOOR_BTC,
+      ETH: env.MIN_DISTANCE_FLOOR_ETH,
+      DOGE: env.MIN_DISTANCE_FLOOR_DOGE,
+    },
     evMinExpectedRoi: env.EV_MIN_EXPECTED_ROI,
     evMinHistoryTrades: env.EV_MIN_HISTORY_TRADES,
     dailySpendLimitUsd: env.DAILY_SPEND_LIMIT_USD,

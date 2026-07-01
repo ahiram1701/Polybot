@@ -78,6 +78,19 @@ describe("PolybotClient (agent interface)", () => {
     expect(Array.isArray(recommendations.recommendations)).toBe(true);
   });
 
+  it("estimates setup EV via the analysis endpoint", async () => {
+    const client = await startClient();
+    const result = await client.estimateSetup({
+      market: "BTC",
+      outcome: "UP",
+      entryWindowSeconds: 58,
+      minDistanceUsd: 20,
+      maxAskPrice: 0.85,
+    });
+    // Empty temp dataDir => no analytics samples, so the aggregate is zero but well-formed.
+    expect(result).toMatchObject({ market: "BTC", outcome: "UP", tradeCount: 0, winCount: 0 });
+  });
+
   it("gives a clear connection error when the server is down", async () => {
     const client = new PolybotClient({ baseUrl: "http://127.0.0.1:1" });
     await expect(client.getStatus()).rejects.toBeInstanceOf(PolybotApiError);

@@ -18,6 +18,14 @@ const pnlResetRequestSchema = z.object({
 const ollamaAnalysisRequestSchema = z.object({
   prompt: z.string().trim().min(1),
 });
+const setupEvQuerySchema = z.object({
+  market: z.enum(["BTC", "ETH", "DOGE"]),
+  outcome: z.enum(["UP", "DOWN"]),
+  entryWindowSeconds: z.coerce.number().positive(),
+  minDistanceUsd: z.coerce.number().positive(),
+  maxAskPrice: z.coerce.number().gt(0).lte(1),
+  capitalUsd: z.coerce.number().positive().optional(),
+});
 const telegramNotificationsPatchSchema = z.object({
   enabled: z.boolean().optional(),
   botToken: z.string().optional(),
@@ -53,6 +61,10 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
 
   app.get("/api/analysis/recommendations", asyncHandler(async (_req, res) => {
     res.json(await controller.getAiRecommendations());
+  }));
+
+  app.get("/api/analysis/setup-ev", asyncHandler(async (req, res) => {
+    res.json(await controller.estimateSetupEv(setupEvQuerySchema.parse(req.query)));
   }));
 
   app.get("/api/analysis/samples/export", asyncHandler(async (_req, res) => {

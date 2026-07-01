@@ -52,6 +52,7 @@ import type {
   Outcome,
   StrategyAnalysisResponse,
   StrategyCandidate,
+  StrategyMetrics,
   TradeAttempt,
 } from "../types.js";
 import { BotRunner } from "../botRunner.js";
@@ -402,6 +403,27 @@ export class BotController {
     return this.strategyAnalysisEngine.analyze(settings);
   }
 
+  async estimateSetupEv(params: {
+    market: MarketSymbol;
+    outcome: Outcome;
+    entryWindowSeconds: number;
+    minDistanceUsd: number;
+    maxAskPrice: number;
+    capitalUsd?: number;
+  }): Promise<{ market: MarketSymbol; outcome: Outcome } & StrategyMetrics> {
+    const metrics = await this.strategyAnalysisEngine.estimateSetupWinRate(
+      params.market,
+      params.outcome,
+      {
+        entryWindowSeconds: params.entryWindowSeconds,
+        minDistanceUsd: params.minDistanceUsd,
+        maxAskPrice: params.maxAskPrice,
+      },
+      params.capitalUsd ?? 10,
+    );
+    return { market: params.market, outcome: params.outcome, ...metrics };
+  }
+
   async getAiRecommendations(nowMs = Date.now()): Promise<AiRecommendationsResponse> {
     const settings = await this.settingsStore.load(this.baseConfig);
     return this.recommendationEngine.recommend(
@@ -449,7 +471,12 @@ export class BotController {
       if (applicable.length === 0) {
         return [];
       }
-      const nextSettings = applyRecommendationsToSettings(settings, applicable, nowMs);
+      const nextSettings = applyRecommendationsToSettings(
+        settings,
+        applicable,
+        nowMs,
+        this.baseConfig.minDistanceFloorUsdByMarket,
+      );
       const saved = await this.settingsStore.save(nextSettings);
       this.stateSummaryCache = undefined;
       this.runner?.updateStrategySettings?.({
@@ -1033,6 +1060,7 @@ function applyRecommendationsToSettings(
   settings: UiSettings,
   recommendations: ApplicableRecommendation[],
   nowMs: number,
+  distanceFloors?: Partial<Record<MarketSymbol, number>>,
 ): UiSettings {
   const minDistanceUsdByMarket = { ...settings.minDistanceUsdByMarket };
   const entryWindowSecondsByMarket = { ...settings.entryWindowSecondsByMarket };
@@ -1040,9 +1068,11 @@ function applyRecommendationsToSettings(
   const entryWindowSecondsByMarketOutcome = cloneOutcomeSettings(settings.entryWindowSecondsByMarketOutcome);
 
   for (const { market, recommended } of recommendations) {
-    minDistanceUsdByMarket[market] = recommended.minDistanceUsd;
+    // Never let the auto-adjust push distance below the market's edge floor.
+    const distance = Math.max(recommended.minDistanceUsd, distanceFloors?.[market] ?? 0);
+    minDistanceUsdByMarket[market] = distance;
     entryWindowSecondsByMarket[market] = recommended.entryWindowSeconds;
-    minDistanceUsdByMarketOutcome[market] = { UP: recommended.minDistanceUsd, DOWN: recommended.minDistanceUsd };
+    minDistanceUsdByMarketOutcome[market] = { UP: distance, DOWN: distance };
     entryWindowSecondsByMarketOutcome[market] = {
       UP: recommended.entryWindowSeconds,
       DOWN: recommended.entryWindowSeconds,

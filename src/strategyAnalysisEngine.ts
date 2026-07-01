@@ -74,9 +74,47 @@ type BaseStrategyCandidate = Omit<
 
 export class StrategyAnalysisEngine {
   private cache?: { key: string; response: StrategyAnalysisResponse };
+  private samplesCache?: { signature: string; samples: AnalyticsSample[] };
   private readonly pending = new Map<string, Promise<StrategyAnalysisResponse>>();
 
   constructor(private readonly dataDir: string) {}
+
+  /**
+   * Aggregate win/trade history for a specific setup (market/outcome/window/distance/cap), computed
+   * directly over the recent analytics samples. Unlike an exact strategy-grid lookup this always
+   * returns the current setup's stats (no brittle nearlyEqual match), so the live EV gate never
+   * fails with a spurious "history not found" when the params shift.
+   */
+  async estimateSetupWinRate(
+    market: MarketSymbol,
+    outcome: Outcome,
+    params: { entryWindowSeconds: number; minDistanceUsd: number; maxAskPrice: number },
+    capitalUsd: number,
+  ): Promise<StrategyMetrics> {
+    const samples = await this.loadSamples();
+    const marketSamples = samples.filter((sample) => sample.market === market);
+    return simulateStrategy(
+      marketSamples,
+      outcome,
+      params.entryWindowSeconds,
+      params.minDistanceUsd,
+      params.maxAskPrice,
+      capitalUsd,
+    );
+  }
+
+  private async loadSamples(): Promise<AnalyticsSample[]> {
+    // Simulating a SINGLE setup is O(samples), so use the full retained history (not the 300/market
+    // cap the expensive grid needs) to give the win-rate estimate enough executable trades.
+    const analyticsPath = join(this.dataDir, "analytics.jsonl");
+    const signature = await analyticsFileSignature(analyticsPath);
+    if (this.samplesCache?.signature === signature) {
+      return this.samplesCache.samples;
+    }
+    const samples = await readAnalyticsSamples(analyticsPath);
+    this.samplesCache = { signature, samples };
+    return samples;
+  }
 
   async analyze(settings: StrategyAnalysisSettings, nowMs = Date.now()): Promise<StrategyAnalysisResponse> {
     const analyticsPath = join(this.dataDir, "analytics.jsonl");

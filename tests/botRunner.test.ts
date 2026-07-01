@@ -704,6 +704,7 @@ describe("BotRunner", () => {
     } satisfies TradeExecutor;
     const strategyAnalysisEngine = {
       analyze: vi.fn(async () => strategyAnalysisResponse(bestStrategy("BTC", "UP", 35, 10, 0.8))),
+      estimateSetupWinRate: vi.fn(async () => bestStrategy("BTC", "UP", 35, 10, 0.8).metrics),
     };
 
     const runner = new BotRunner(
@@ -791,6 +792,9 @@ describe("BotRunner", () => {
           lossCount: 5,
         })),
       ),
+      estimateSetupWinRate: vi.fn(
+        async () => bestStrategy("BTC", "UP", 20, 20, 0.98, { tradeCount: 20, winCount: 15, lossCount: 5 }).metrics,
+      ),
     };
 
     const runner = new BotRunner(
@@ -812,7 +816,7 @@ describe("BotRunner", () => {
 
     await runner.runOnce(nowMs);
 
-    expect(strategyAnalysisEngine.analyze).toHaveBeenCalled();
+    expect(strategyAnalysisEngine.estimateSetupWinRate).toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
@@ -874,6 +878,9 @@ describe("BotRunner", () => {
           winCount: 18,
           lossCount: 2,
         })),
+      ),
+      estimateSetupWinRate: vi.fn(
+        async () => bestStrategy("BTC", "UP", 20, 20, 0.98, { tradeCount: 20, winCount: 18, lossCount: 2 }).metrics,
       ),
     };
 
@@ -1020,6 +1027,9 @@ describe("BotRunner", () => {
           lossCount: 5,
         })),
       ),
+      estimateSetupWinRate: vi.fn(
+        async () => bestStrategy("BTC", "UP", 20, 20, 0.98, { tradeCount: 20, winCount: 15, lossCount: 5 }).metrics,
+      ),
     };
 
     const runner = new BotRunner(
@@ -1041,7 +1051,70 @@ describe("BotRunner", () => {
 
     await runner.runOnce(nowMs);
 
-    expect(strategyAnalysisEngine.analyze).toHaveBeenCalled();
+    expect(strategyAnalysisEngine.estimateSetupWinRate).toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
+  it("does not trade when the price move is below the distance floor", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "sim",
+        requirePositiveEv: false,
+        minDistanceUsdByMarket: { BTC: 8, ETH: 5, DOGE: 0.0005 },
+        minDistanceUsdByMarketOutcome: {
+          BTC: { UP: 8, DOWN: 8 },
+          ETH: { UP: 5, DOWN: 5 },
+          DOGE: { UP: 0.0005, DOWN: 0.0005 },
+        },
+        minDistanceFloorUsdByMarket: { BTC: 25, ETH: 1, DOGE: 0.0005 },
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.5),
+        // Price 115 vs opening 100 => distance 15: above the configured 8 but below the 25 floor.
+        priceFeed: livePriceFeed("BTC", 115, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
     expect(executor.execute).not.toHaveBeenCalled();
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
@@ -1085,6 +1158,9 @@ describe("BotRunner", () => {
           winCount: 0,
           lossCount: 0,
         })),
+      ),
+      estimateSetupWinRate: vi.fn(
+        async () => bestStrategy("BTC", "UP", 20, 20, 0.98, { tradeCount: 0, winCount: 0, lossCount: 0 }).metrics,
       ),
     };
 
@@ -1200,6 +1276,7 @@ describe("BotRunner", () => {
     } satisfies TradeExecutor;
     const strategyAnalysisEngine = {
       analyze: vi.fn(async () => strategyAnalysisResponse(bestStrategy("BTC", "UP", 35, 10, 0.8))),
+      estimateSetupWinRate: vi.fn(async () => bestStrategy("BTC", "UP", 35, 10, 0.8).metrics),
     };
 
     const runner = new BotRunner(

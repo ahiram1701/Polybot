@@ -50,7 +50,7 @@ import type {
 const AUTO_ADJUST_LIVE_COOLDOWN_MS = 60_000;
 // Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
-const DEFAULT_EV_SAFETY_MARGIN = 0.05;
+const DEFAULT_EV_SAFETY_MARGIN = 0.08;
 const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
 const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 
@@ -76,7 +76,7 @@ interface BotDependencies {
   executor: TradeExecutor;
   reconciler: TradeReconciler;
   analyticsRecorder?: AnalyticsRecorder;
-  strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze">;
+  strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze" | "estimateSetupWinRate">;
   notifier?: Notifier;
 }
 
@@ -559,20 +559,27 @@ export class BotRunner {
     }
 
     try {
-      const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, Date.now());
-      const strategy = findExactStrategyForSignal(
-        [...analysis.currentStrategies, ...analysis.strategies],
-        signal,
+      // Aggregate win/trade history for THIS exact setup (market/outcome/window/distance/cap),
+      // computed directly from recent samples — robust to param churn (no brittle exact-bucket match).
+      const metrics = await this.deps.strategyAnalysisEngine.estimateSetupWinRate(
+        signal.market.asset,
+        signal.outcome,
+        {
+          entryWindowSeconds: signal.entryWindowSeconds,
+          minDistanceUsd: signal.minDistanceUsd,
+          maxAskPrice: signal.maxAskPrice,
+        },
+        signal.amountUsd,
       );
       const minHistoryTrades = this.config.evMinHistoryTrades ?? DEFAULT_EV_MIN_HISTORY_TRADES;
-      if (!strategy || strategy.metrics.tradeCount < minHistoryTrades) {
+      if (metrics.tradeCount < minHistoryTrades) {
         this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
           market: signal.market.asset,
           outcome: signal.outcome,
           entryWindowSeconds: signal.entryWindowSeconds,
           minDistanceUsd: signal.minDistanceUsd,
           maxAskPrice: signal.maxAskPrice,
-          tradeCount: strategy?.metrics.tradeCount ?? 0,
+          tradeCount: metrics.tradeCount,
           minHistoryTrades,
         });
         return undefined;
@@ -584,8 +591,8 @@ export class BotRunner {
       const expectedValue = calculateExpectedValue({
         capitalUsd: signal.amountUsd,
         askPrice,
-        winCount: strategy.metrics.winCount,
-        tradeCount: strategy.metrics.tradeCount,
+        winCount: metrics.winCount,
+        tradeCount: metrics.tradeCount,
         safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
         minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
       });
@@ -659,12 +666,16 @@ export class BotRunner {
   }
 
   private resolveConfiguredMinDistance(market: MarketSymbol, outcome: Outcome): number {
-    return getMarketOutcomeNumber(
+    const configured = getMarketOutcomeNumber(
       this.config.minDistanceUsdByMarketOutcome,
       market,
       outcome,
       getMinDistanceUsd(this.config.minDistanceUsdByMarket, market),
     );
+    // Hard floor: the edge comes from strong moves; never trade below the market's distance floor,
+    // regardless of config or auto-adjust.
+    const floor = this.config.minDistanceFloorUsdByMarket?.[market];
+    return floor !== undefined ? Math.max(configured, floor) : configured;
   }
 
   private resolveConfiguredEntryWindow(market: MarketSymbol, outcome: Outcome): number {
@@ -978,19 +989,6 @@ function selectAutoAdjustStrategy(
   );
 }
 
-function findExactStrategyForSignal(
-  strategies: StrategyCandidate[],
-  signal: TradeSignal,
-): StrategyCandidate | undefined {
-  return strategies.find((strategy) =>
-    strategy.market === signal.market.asset &&
-    strategy.outcome === signal.outcome &&
-    nearlyEqual(strategy.entryWindowSeconds, signal.entryWindowSeconds) &&
-    nearlyEqual(strategy.minDistanceUsd, signal.minDistanceUsd) &&
-    nearlyEqual(strategy.maxAskPrice, signal.maxAskPrice),
-  );
-}
-
 function strategyChangesConfig(candidate: StrategyCandidate, config: BotConfig): boolean {
   const currentDistance = getMarketOutcomeNumber(
     config.minDistanceUsdByMarketOutcome,
@@ -1030,10 +1028,6 @@ function cloneOutcomeNumbers(
 
 function strategyKey(market: MarketSymbol, outcome: Outcome): string {
   return `${market}:${outcome}`;
-}
-
-function nearlyEqual(left: number, right: number): boolean {
-  return Math.abs(left - right) < 1e-9;
 }
 
 function formatUsd(value?: number): string {
