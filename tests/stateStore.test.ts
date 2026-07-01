@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,6 +51,25 @@ describe("StateStore trade mode separation", () => {
     await resetReloaded.load();
     expect(resetReloaded.getPnlResetAtMs().sim).toBe(10);
     expect(resetReloaded.listTrades()).toHaveLength(2);
+  });
+
+  it("recovers a P&L reset from the durable trades log when state.json is clobbered", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+    await store.recordTradeAttempt(trade({ slug: "btc-updown-5m-reset", mode: "sim", id: "sim-reset" }));
+    await store.resetPnl("sim", 12345);
+
+    // Simulate the clobber bug: state.json rewritten with an empty pnlResetAtMs.
+    const statePath = join(dataDir, "state.json");
+    const clobbered = JSON.parse(await readFile(statePath, "utf8"));
+    clobbered.pnlResetAtMs = {};
+    await writeFile(statePath, `${JSON.stringify(clobbered)}\n`);
+
+    const reloaded = new StateStore(dataDir);
+    await reloaded.load();
+    expect(reloaded.getPnlResetAtMs().sim).toBe(12345);
   });
 });
 

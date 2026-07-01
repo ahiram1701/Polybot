@@ -46,32 +46,77 @@ export class StateStore {
 
     if (signature === "missing") {
       this.state = structuredClone(EMPTY_STATE);
-      this.loadedSignature = signature;
-      this.loaded = true;
-      stateFileCache.set(this.statePath, { signature, state: structuredClone(this.state) });
-      return;
+    } else {
+      try {
+        const contents = await readFile(this.statePath, "utf8");
+        const parsed = JSON.parse(contents) as BotState;
+        this.state = {
+          version: 1,
+          openings: parsed.openings ?? {},
+          tradedMarkets: normalizeTradedMarkets(parsed.tradedMarkets ?? {}),
+          dailySpendUsd: parsed.dailySpendUsd ?? {},
+          pnlResetAtMs: normalizePnlResetAtMs(parsed.pnlResetAtMs),
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+        signature = "missing";
+        this.state = structuredClone(EMPTY_STATE);
+      }
     }
 
-    try {
-      const contents = await readFile(this.statePath, "utf8");
-      const parsed = JSON.parse(contents) as BotState;
-      this.state = {
-        version: 1,
-        openings: parsed.openings ?? {},
-        tradedMarkets: normalizeTradedMarkets(parsed.tradedMarkets ?? {}),
-        dailySpendUsd: parsed.dailySpendUsd ?? {},
-        pnlResetAtMs: normalizePnlResetAtMs(parsed.pnlResetAtMs),
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-      signature = "missing";
-      this.state = structuredClone(EMPTY_STATE);
-    }
+    // The P&L reset marker in state.json is fragile (a stale in-memory save can wipe it), but the
+    // pnl_reset events are durable in the append-only trades log. Reconcile from the log so a reset
+    // survives even if state.json was clobbered, and self-heals on the next save.
+    this.state.pnlResetAtMs = await this.reconcilePnlResetFromLog(this.state.pnlResetAtMs ?? {});
+
     this.loadedSignature = signature;
     this.loaded = true;
     stateFileCache.set(this.statePath, { signature, state: structuredClone(this.state) });
+  }
+
+  private async reconcilePnlResetFromLog(
+    current: Partial<Record<Mode, number>>,
+  ): Promise<Partial<Record<Mode, number>>> {
+    let contents: string;
+    try {
+      contents = await readFile(this.tradesPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return current;
+      }
+      throw error;
+    }
+
+    const merged: Partial<Record<Mode, number>> = { ...current };
+    for (const line of contents.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!event || typeof event !== "object") {
+        continue;
+      }
+      const record = event as { type?: unknown; mode?: unknown; resetAtMs?: unknown };
+      if (
+        record.type === "pnl_reset" &&
+        (record.mode === "sim" || record.mode === "live") &&
+        typeof record.resetAtMs === "number" &&
+        Number.isFinite(record.resetAtMs)
+      ) {
+        const previous = merged[record.mode];
+        if (previous === undefined || record.resetAtMs > previous) {
+          merged[record.mode] = record.resetAtMs;
+        }
+      }
+    }
+    return merged;
   }
 
   getLoadedSignature(): string {
