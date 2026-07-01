@@ -97,6 +97,13 @@ const envSchema = z.object({
   MAX_ASK_PRICE_ETH_DOWN: optionalAskPrice,
   MAX_ASK_PRICE_DOGE_UP: optionalAskPrice,
   MAX_ASK_PRICE_DOGE_DOWN: optionalAskPrice,
+  REQUIRE_POSITIVE_EV: z
+    .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(true),
+  EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.05),
+  EV_MIN_EXPECTED_ROI: z.coerce.number().gte(0).lt(1).default(0.01),
+  EV_MIN_HISTORY_TRADES: z.coerce.number().int().nonnegative().default(15),
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
@@ -245,6 +252,10 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     autoMinLive: env.AUTO_MIN_LIVE,
     maxAskPrice: env.MAX_ASK_PRICE,
     maxAskPriceByMarketOutcome,
+    requirePositiveEv: env.REQUIRE_POSITIVE_EV,
+    evSafetyMargin: env.EV_SAFETY_MARGIN,
+    evMinExpectedRoi: env.EV_MIN_EXPECTED_ROI,
+    evMinHistoryTrades: env.EV_MIN_HISTORY_TRADES,
     dailySpendLimitUsd: env.DAILY_SPEND_LIMIT_USD,
     tickStaleMs: env.TICK_STALE_MS,
     pollIntervalMs: env.POLL_INTERVAL_MS,

@@ -32,6 +32,12 @@ export interface BotConfig {
   autoAdjustAfterLossByMarketOutcome?: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.
+  // Optional so test/config literals may omit them; config.ts always sets them and botRunner defaults them.
+  requirePositiveEv?: boolean;
+  evSafetyMargin?: number;
+  evMinExpectedRoi?: number;
+  evMinHistoryTrades?: number;
   dailySpendLimitUsd: number;
   tickStaleMs: number;
   pollIntervalMs: number;

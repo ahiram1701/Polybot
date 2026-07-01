@@ -1,6 +1,7 @@
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
+import { defaultTakerFeeRateBps } from "./fees.js";
 import {
   LiveExecutionEngine,
   resolveTradeAmountUsd,
@@ -38,6 +39,7 @@ import type {
   MarketInfo,
   MarketOutcomeNumberSettings,
   MarketSymbol,
+  Mode,
   OrderbookQuote,
   Outcome,
   StrategyCandidate,
@@ -46,6 +48,11 @@ import type {
 } from "./types.js";
 
 const AUTO_ADJUST_LIVE_COOLDOWN_MS = 60_000;
+// Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
+const DEFAULT_REQUIRE_POSITIVE_EV = true;
+const DEFAULT_EV_SAFETY_MARGIN = 0.05;
+const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
+const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 
 interface MarketWatcherLike {
   getCurrentMarket(nowMs?: number, market?: MarketSymbol): Promise<MarketInfo | null>;
@@ -142,6 +149,12 @@ export class BotRunner {
       entryWindowSecondsByMarket: this.config.entryWindowSecondsByMarket,
       entryWindowSecondsByMarketOutcome: this.config.entryWindowSecondsByMarketOutcome,
     });
+  }
+
+  // Reset P&L through the running bot's own state instance so the in-memory state carries the cut,
+  // and subsequent saves preserve it (a separate state instance would be clobbered on the next save).
+  async resetPnl(mode: Mode): Promise<void> {
+    await this.deps.state.resetPnl(mode);
   }
 
   async start(options: { once?: boolean } = {}): Promise<void> {
@@ -491,8 +504,9 @@ export class BotRunner {
       return undefined;
     }
 
-    const expectedValue = await this.evaluateLiveExpectedValue(signal, quote.bestAsk);
-    if (this.config.mode === "live" && !expectedValue) {
+    const requirePositiveEv = this.config.requirePositiveEv ?? DEFAULT_REQUIRE_POSITIVE_EV;
+    const expectedValue = requirePositiveEv ? await this.evaluateExpectedValue(signal, quote.bestAsk) : undefined;
+    if (requirePositiveEv && !expectedValue) {
       return undefined;
     }
 
@@ -532,13 +546,10 @@ export class BotRunner {
     }
   }
 
-  private async evaluateLiveExpectedValue(
+  private async evaluateExpectedValue(
     signal: TradeSignal,
     askPrice: number,
   ): Promise<ExpectedValueSnapshot | undefined> {
-    if (this.config.mode !== "live") {
-      return undefined;
-    }
     if (!this.deps.strategyAnalysisEngine) {
       this.logSkipOnce(signal.market.slug, "expected_value_analysis_unavailable", {
         market: signal.market.asset,
@@ -553,22 +564,30 @@ export class BotRunner {
         [...analysis.currentStrategies, ...analysis.strategies],
         signal,
       );
-      if (!strategy) {
+      const minHistoryTrades = this.config.evMinHistoryTrades ?? DEFAULT_EV_MIN_HISTORY_TRADES;
+      if (!strategy || strategy.metrics.tradeCount < minHistoryTrades) {
         this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
           market: signal.market.asset,
           outcome: signal.outcome,
           entryWindowSeconds: signal.entryWindowSeconds,
           minDistanceUsd: signal.minDistanceUsd,
           maxAskPrice: signal.maxAskPrice,
+          tradeCount: strategy?.metrics.tradeCount ?? 0,
+          minHistoryTrades,
         });
         return undefined;
       }
 
+      // Fee-aware: a trade must clear the round-trip taker fee (which scales with price) plus the
+      // configured ROI buffer, on top of the win-probability safety margin.
+      const feeFraction = (defaultTakerFeeRateBps(signal.market.asset) / 10_000) * (1 - askPrice);
       const expectedValue = calculateExpectedValue({
         capitalUsd: signal.amountUsd,
         askPrice,
         winCount: strategy.metrics.winCount,
         tradeCount: strategy.metrics.tradeCount,
+        safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
+        minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
       });
       if (!expectedValue.passesRecommendedEntry) {
         this.logSkipOnce(signal.market.slug, "expected_value_gate_failed", {

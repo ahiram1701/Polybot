@@ -786,9 +786,9 @@ describe("BotRunner", () => {
     const strategyAnalysisEngine = {
       analyze: vi.fn(async () =>
         strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
-          tradeCount: 10,
-          winCount: 8,
-          lossCount: 2,
+          tradeCount: 20,
+          winCount: 15,
+          lossCount: 5,
         })),
       ),
     };
@@ -797,6 +797,7 @@ describe("BotRunner", () => {
       {
         ...baseConfig(),
         mode: "live",
+        requirePositiveEv: true,
       },
       {
         watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
@@ -869,9 +870,9 @@ describe("BotRunner", () => {
     const strategyAnalysisEngine = {
       analyze: vi.fn(async () =>
         strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
-          tradeCount: 10,
-          winCount: 9,
-          lossCount: 1,
+          tradeCount: 20,
+          winCount: 18,
+          lossCount: 2,
         })),
       ),
     };
@@ -880,6 +881,7 @@ describe("BotRunner", () => {
       {
         ...baseConfig(),
         mode: "live",
+        requirePositiveEv: true,
       },
       {
         watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
@@ -898,7 +900,7 @@ describe("BotRunner", () => {
       expect.objectContaining({
         expectedValue: expect.objectContaining({
           askPrice: 0.7,
-          adjustedWinProbability: 10 / 12,
+          adjustedWinProbability: 19 / 22,
           passesRecommendedEntry: true,
         }),
       }),
@@ -978,6 +980,72 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).toHaveBeenCalled();
   });
 
+  it("blocks simulation trades that fail the EV gate when requirePositiveEv is on", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+    const strategyAnalysisEngine = {
+      analyze: vi.fn(async () =>
+        strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, {
+          tradeCount: 20,
+          winCount: 15,
+          lossCount: 5,
+        })),
+      ),
+    };
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "sim",
+        requirePositiveEv: true,
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.9),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        strategyAnalysisEngine,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(strategyAnalysisEngine.analyze).toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
   it("blocks live trades with no exact strategy history at normal asks", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -1024,6 +1092,7 @@ describe("BotRunner", () => {
       {
         ...baseConfig(),
         mode: "live",
+        requirePositiveEv: true,
       },
       {
         watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
@@ -1455,6 +1524,7 @@ function baseConfig(): BotConfig {
     liveTradeAmountUsd: 1,
     autoMinLive: true,
     maxAskPrice: 0.98,
+    requirePositiveEv: false,
     dailySpendLimitUsd: 50,
     tickStaleMs: 10_000,
     pollIntervalMs: 1,

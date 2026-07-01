@@ -94,6 +94,7 @@ export interface RunnerLike {
       | "entryWindowSecondsByMarketOutcome"
     >,
   ): void;
+  resetPnl?(mode: Mode): Promise<void>;
 }
 
 export interface BotControllerDeps {
@@ -271,9 +272,15 @@ export class BotController {
   }
 
   async resetPnl(mode: Mode): Promise<UiStatus> {
-    const state = this.stateFactory();
-    await state.load();
-    await state.resetPnl(mode);
+    if (this.runner?.resetPnl) {
+      // Route through the running bot's own state instance; otherwise its next save would clobber
+      // the reset with its stale in-memory state.
+      await this.runner.resetPnl(mode);
+    } else {
+      const state = this.stateFactory();
+      await state.load();
+      await state.resetPnl(mode);
+    }
     this.stateSummaryCache = undefined;
     logger.info("P&L reset completed.", { mode });
     return this.getStatus();
