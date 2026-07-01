@@ -2,6 +2,7 @@ import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
+import { evaluateRiskCircuitBreaker, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
   resolveTradeAmountUsd,
@@ -31,7 +32,7 @@ import {
 } from "./signalEngine.js";
 import { StateStore } from "./stateStore.js";
 import { StrategyAnalysisEngine } from "./strategyAnalysisEngine.js";
-import { sleep } from "./time.js";
+import { dailySpendKey, sleep } from "./time.js";
 import { resolveTradeFromTick } from "./tradeResolution.js";
 import type {
   BotConfig,
@@ -64,6 +65,7 @@ export interface RunnerPriceFeed {
   stop(): void;
   getLatestTick(market?: MarketSymbol): BtcPriceTick | undefined;
   getTickInRange?(market: MarketSymbol, startMs: number, endMs: number): BtcPriceTick | undefined;
+  getOpeningTick?(market: MarketSymbol, windowStartMs: number, graceMs: number): BtcPriceTick | undefined;
 }
 
 interface BotDependencies {
@@ -225,6 +227,15 @@ export class BotRunner {
     const analyticsQuotesBySlug = new Map<string, Partial<Record<Outcome, OrderbookQuote>>>();
     const dailySpendUsd = this.deps.state.getDailySpend(nowMs);
     let reservedSpendUsd = 0;
+    const riskHalt = evaluateRiskCircuitBreaker(
+      this.deps.state.listTrades(),
+      this.config.mode,
+      { maxDailyLossUsd: this.config.maxDailyLossUsd, maxConsecutiveLosses: this.config.maxConsecutiveLosses },
+      nowMs,
+    );
+    if (riskHalt.tripped) {
+      this.notifyRiskHalt(riskHalt, nowMs);
+    }
 
     for (const market of markets) {
       const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
@@ -239,6 +250,15 @@ export class BotRunner {
         quotes: analyticsQuotes,
         nowMs,
       });
+      // Risk circuit breaker halts trading (never analytics) for the rest of the UTC day.
+      if (riskHalt.tripped) {
+        this.logSkipOnce(market.slug, "risk_circuit_breaker", {
+          reason: riskHalt.reason,
+          dailyLossUsd: riskHalt.dailyLossUsd,
+          consecutiveLosses: riskHalt.consecutiveLosses,
+        });
+        continue;
+      }
       if (!this.isMarketEnabledForTrading(market.asset)) {
         continue;
       }
@@ -323,6 +343,20 @@ export class BotRunner {
     });
   }
 
+  private notifyRiskHalt(status: RiskHaltStatus, nowMs: number): void {
+    const body =
+      status.reason === "daily_loss_limit"
+        ? `Perdida diaria $${status.dailyLossUsd.toFixed(2)} (modo ${this.config.mode}).`
+        : `${status.consecutiveLosses} perdidas seguidas (modo ${this.config.mode}).`;
+    void this.deps.notifier?.notify({
+      key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs)}:${status.reason}`,
+      level: "warn",
+      title: "Circuit breaker de riesgo activado",
+      body: `${body} Trading detenido hasta el proximo dia UTC.`,
+      minIntervalMs: 6 * 60 * 60_000,
+    });
+  }
+
   private async ensureOpening(
     market: MarketInfo,
     latestTick: BtcPriceTick | undefined,
@@ -365,8 +399,14 @@ export class BotRunner {
   }
 
   private getOpeningTick(market: MarketInfo, latestTick: BtcPriceTick | undefined): BtcPriceTick | undefined {
-    const captureDeadlineMs = market.windowStartMs + this.config.openingCaptureGraceMs;
-    return this.deps.priceFeed.getTickInRange?.(market.asset, market.windowStartMs, captureDeadlineMs) ?? latestTick;
+    const grace = this.config.openingCaptureGraceMs;
+    // Prefer the symmetric-grace opening tick (accepts the last price just before window start for
+    // sparsely-updated feeds); fall back to the in-window range and finally the latest tick.
+    return (
+      this.deps.priceFeed.getOpeningTick?.(market.asset, market.windowStartMs, grace) ??
+      this.deps.priceFeed.getTickInRange?.(market.asset, market.windowStartMs, market.windowStartMs + grace) ??
+      latestTick
+    );
   }
 
   private buildTradeSignal(args: {

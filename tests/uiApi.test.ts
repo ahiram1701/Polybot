@@ -93,6 +93,29 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("patches the risk circuit breaker limits from the UI", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({ maxDailyLossUsd: 40, maxConsecutiveLosses: 3 })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.maxDailyLossUsd).toBe(40);
+        expect(response.body.maxConsecutiveLosses).toBe(3);
+      });
+
+    const settings = await controller.getSettings();
+    expect(settings.maxDailyLossUsd).toBe(40);
+    expect(settings.maxConsecutiveLosses).toBe(3);
+    controller.dispose();
+  });
+
   it("patches enabled markets from the UI", async () => {
     const controller = new BotController(await baseConfig(false), {
       startPriceFeed: false,

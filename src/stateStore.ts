@@ -12,6 +12,11 @@ const EMPTY_STATE: BotState = {
   pnlResetAtMs: {},
 };
 
+// Openings are only needed for the current 5-minute window (at trade time) and for recent display.
+// Keep an hour's worth so they never accumulate unbounded (the map used to grow forever), while
+// still covering the current window plus a generous margin of recent ones.
+const OPENINGS_RETENTION_MS = 60 * 60 * 1000;
+
 interface StateFileCacheEntry {
   signature: string;
   state: BotState;
@@ -162,8 +167,46 @@ export class StateStore {
 
   async saveOpening(opening: WindowOpening): Promise<void> {
     this.assertLoaded();
+    // Union in any openings another instance persisted since we loaded, so an opening write never
+    // drops openings this in-memory copy didn't know about (the same "stale in-memory save" hazard
+    // the pnl_reset reconciliation guards against). Then bound growth by pruning old ones.
+    await this.reconcileOpeningsFromDisk();
     this.state.openings[opening.slug] = opening;
+    this.pruneOpenings(opening.windowStartMs);
     await this.save();
+  }
+
+  private pruneOpenings(nowMs: number): void {
+    const cutoff = nowMs - OPENINGS_RETENTION_MS;
+    for (const [slug, opening] of Object.entries(this.state.openings)) {
+      if (opening.windowStartMs < cutoff) {
+        delete this.state.openings[slug];
+      }
+    }
+  }
+
+  private async reconcileOpeningsFromDisk(): Promise<void> {
+    let contents: string;
+    try {
+      contents = await readFile(this.statePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    let parsed: BotState;
+    try {
+      parsed = JSON.parse(contents) as BotState;
+    } catch {
+      return;
+    }
+    for (const [slug, opening] of Object.entries(parsed.openings ?? {})) {
+      // In-memory wins for a slug we already hold; only fill in ones we're missing.
+      if (!(slug in this.state.openings) && opening) {
+        this.state.openings[slug] = opening;
+      }
+    }
   }
 
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {

@@ -42,6 +42,10 @@ export interface BotConfig {
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
   dailySpendLimitUsd: number;
+  // Risk circuit breaker (0 = disabled): halt trading for the rest of the UTC day when today's
+  // realized loss or consecutive-loss streak crosses these. Optional so config/test literals may omit.
+  maxDailyLossUsd?: number;
+  maxConsecutiveLosses?: number;
   tickStaleMs: number;
   pollIntervalMs: number;
   openingCaptureGraceMs: number;

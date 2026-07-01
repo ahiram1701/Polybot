@@ -1,5 +1,6 @@
 import type { LogEntry } from "../logger.js";
-import type { PnlSummary, PnlSummaryByMode } from "../pnl.js";
+import type { PnlResetAtMsByMode, PnlSummary, PnlSummaryByMode } from "../pnl.js";
+import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type {
   MarketDistanceSettings,
   MarketEntryWindowSettings,
@@ -34,6 +35,8 @@ export interface UiSettings {
   maxAskPrice: number;
   maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   dailySpendLimitUsd: number;
+  maxDailyLossUsd: number;
+  maxConsecutiveLosses: number;
   tickStaleMs: number;
   pollIntervalMs: number;
   openingCaptureGraceMs: number;
@@ -92,6 +95,11 @@ export interface UiStatus {
   dailySpendUsd: number;
   pnl: PnlSummary;
   pnlByMode: PnlSummaryByMode;
+  // Lifetime PnL ignoring the P&L reset marker (post-reset figures are in `pnl`/`pnlByMode`).
+  pnlHistoricalByMode: PnlSummaryByMode;
+  // When each mode's P&L was last reset (epoch ms). Absent/omitted mode = never reset.
+  pnlResetAtMs: PnlResetAtMsByMode;
+  riskHalt?: RiskHaltStatus;
   logs: LogEntry[];
   snapshotError?: string;
 }

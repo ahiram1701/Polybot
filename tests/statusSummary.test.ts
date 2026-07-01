@@ -42,6 +42,11 @@ function buildStatus(overrides: Partial<UiStatus> = {}): UiStatus {
     signal: { reason: "btc_distance_below_threshold", inEntryWindow: false },
     pnl,
     pnlByMode: { sim: pnl, live: { ...pnl, realizedUsd: 0, resolvedCount: 0, wonCount: 0, lostCount: 0, roiPct: undefined } },
+    pnlHistoricalByMode: {
+      sim: { ...pnl, realizedUsd: 5, resolvedCount: 20, wonCount: 12, lostCount: 8 },
+      live: { ...pnl, realizedUsd: 0, resolvedCount: 0, wonCount: 0, lostCount: 0, roiPct: undefined },
+    },
+    pnlResetAtMs: { sim: 1_700_000_000_000 },
     logs: [
       { at: "t3", level: "info", message: "Skipped trade.", meta: { reason: "no_ask_liquidity_under_cap" } },
       { at: "t2", level: "info", message: "Skipped trade.", meta: { reason: "no_ask_liquidity_under_cap" } },
@@ -78,6 +83,19 @@ describe("summarizeStatus", () => {
       lostCount: 3,
       pendingCount: 0,
     });
+  });
+
+  it("exposes lifetime (historical) PnL and reset markers alongside post-reset PnL", () => {
+    const compact = summarizeStatus(buildStatus(), { nowMs: 4000 });
+    expect(compact.pnlHistoricalByMode.sim).toMatchObject({
+      realizedUsd: 5,
+      resolvedCount: 20,
+      wonCount: 12,
+      lostCount: 8,
+    });
+    // Post-reset figures remain distinct from lifetime figures.
+    expect(compact.pnlByMode.sim.resolvedCount).toBe(10);
+    expect(compact.pnlResetAtMs).toEqual({ sim: 1_700_000_000_000 });
   });
 
   it("folds recent skip reasons into a structured summary", () => {

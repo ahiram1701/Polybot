@@ -1,5 +1,6 @@
 import type { LogEntry } from "../logger.js";
-import type { PnlSummary } from "../pnl.js";
+import type { PnlResetAtMsByMode, PnlSummary } from "../pnl.js";
+import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type { MarketSymbol, Mode, Outcome } from "../types.js";
 import type { UiStatus } from "../ui/shared.js";
 
@@ -43,7 +44,13 @@ export interface CompactStatus {
   dailySpendUsd: number;
   dailySpendLimitUsd?: number;
   markets: CompactMarket[];
+  // Post-reset PnL: only trades since each mode's last P&L reset (see `pnlResetAtMs`).
   pnlByMode: { sim: CompactPnl; live: CompactPnl };
+  // Lifetime PnL across all trades, ignoring the P&L reset.
+  pnlHistoricalByMode: { sim: CompactPnl; live: CompactPnl };
+  // When each mode's P&L was last reset (epoch ms); omitted = never reset.
+  pnlResetAtMs: PnlResetAtMsByMode;
+  riskHalt?: RiskHaltStatus;
   recentActivity: RecentActivity;
 }
 
@@ -83,6 +90,12 @@ export function summarizeStatus(
       sim: compactPnl(status.pnlByMode.sim),
       live: compactPnl(status.pnlByMode.live),
     },
+    pnlHistoricalByMode: {
+      sim: compactPnl(status.pnlHistoricalByMode.sim),
+      live: compactPnl(status.pnlHistoricalByMode.live),
+    },
+    pnlResetAtMs: status.pnlResetAtMs ?? {},
+    riskHalt: status.riskHalt,
     recentActivity: summarizeLogs(status.logs ?? [], sampleSize),
   };
 }

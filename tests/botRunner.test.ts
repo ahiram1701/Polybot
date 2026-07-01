@@ -265,6 +265,92 @@ describe("BotRunner", () => {
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
+  it("halts trading when the risk circuit breaker trips, but keeps recording analytics", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const losingTrade: TradeAttempt = {
+      id: "loss-1",
+      slug: "btc-updown-5m-prev",
+      mode: "sim",
+      outcome: "UP",
+      tokenId: "token",
+      amountUsd: 10,
+      maxAskPrice: 0.98,
+      bestAsk: 0.5,
+      estimatedShares: 20,
+      openingPrice: 100,
+      entryPrice: 90,
+      distanceUsd: -10,
+      entryWindowSeconds: 30,
+      windowStartMs: 1,
+      endMs: 2,
+      createdAtMs: nowMs - 60_000,
+      resolved: {
+        resolvedAtMs: nowMs,
+        finalPrice: 90,
+        finalTickTimestampMs: nowMs,
+        winningOutcome: "DOWN",
+        won: false,
+      },
+    };
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => [losingTrade]),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute while halted");
+      }),
+    } satisfies TradeExecutor;
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "sim",
+        requirePositiveEv: false,
+        maxConsecutiveLosses: 1,
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(analyticsRecorder.observeMarket).toHaveBeenCalled();
+  });
+
   it("uses the configured entry window for each market", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

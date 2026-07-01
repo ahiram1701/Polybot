@@ -9,6 +9,7 @@ type TickHandler = (tick: PriceTick) => void;
 export class ChainlinkPriceFeed {
   private socket?: WebSocket;
   private pingTimer?: NodeJS.Timeout;
+  private snapshotRefreshTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = true;
   private latestTick?: PriceTick;
@@ -25,6 +26,10 @@ export class ChainlinkPriceFeed {
     private readonly historyWindowMs = 10 * 60 * 1000,
     private readonly noTickTimeoutMs = 30_000,
     private readonly maxReconnectDelayMs = 30_000,
+    // Re-subscribe on an interval to pull fresh snapshots. Chainlink pushes some assets (ETH/DOGE)
+    // infrequently, so without this their ticks go stale between the sparse streaming updates and
+    // the opening tick can't be captured. Must be well under the opening capture grace (~15s).
+    private readonly snapshotRefreshMs = 5_000,
   ) {}
 
   start(): void {
@@ -43,6 +48,7 @@ export class ChainlinkPriceFeed {
       this.reconnectTimer = undefined;
     }
     this.clearPing();
+    this.clearSnapshotRefresh();
     this.cleanupSocket();
   }
 
@@ -52,6 +58,29 @@ export class ChainlinkPriceFeed {
 
   getTickInRange(market: MarketSymbol, startMs: number, endMs: number): PriceTick | undefined {
     return this.recentTicks.get(market)?.find((tick) => tick.timestampMs >= startMs && tick.timestampMs <= endMs);
+  }
+
+  /**
+   * Best tick to represent the window opening: the most recent tick within a symmetric grace around
+   * the window start. Chainlink prices are step functions, so for sparsely-updated assets (ETH/DOGE)
+   * the last tick just BEFORE the window start is the price in effect at the open — accepting it
+   * avoids "missing opening" when no fresh update lands inside the window.
+   */
+  getOpeningTick(market: MarketSymbol, windowStartMs: number, graceMs: number): PriceTick | undefined {
+    const ticks = this.recentTicks.get(market);
+    if (!ticks) {
+      return undefined;
+    }
+    const lo = windowStartMs - graceMs;
+    const hi = windowStartMs + graceMs;
+    let best: PriceTick | undefined;
+    for (const tick of ticks) {
+      // recentTicks is kept sorted ascending, so the last match is the most recent in range.
+      if (tick.timestampMs >= lo && tick.timestampMs <= hi) {
+        best = tick;
+      }
+    }
+    return best;
   }
 
   onTick(handler: TickHandler): () => void {
@@ -102,6 +131,7 @@ export class ChainlinkPriceFeed {
       this.lastTickAtMs = Date.now();
       this.subscribe();
       this.startPing();
+      this.startSnapshotRefresh();
     });
 
     socket.on("message", (data) => {
@@ -124,6 +154,7 @@ export class ChainlinkPriceFeed {
         return;
       }
       this.clearPing();
+      this.clearSnapshotRefresh();
       if (!this.stopped) {
         this.scheduleReconnect();
       }
@@ -201,6 +232,25 @@ export class ChainlinkPriceFeed {
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = undefined;
+    }
+  }
+
+  private startSnapshotRefresh(): void {
+    this.clearSnapshotRefresh();
+    if (this.markets.length === 0 || this.snapshotRefreshMs <= 0) {
+      return;
+    }
+    this.snapshotRefreshTimer = setInterval(() => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.subscribe();
+      }
+    }, this.snapshotRefreshMs);
+  }
+
+  private clearSnapshotRefresh(): void {
+    if (this.snapshotRefreshTimer) {
+      clearInterval(this.snapshotRefreshTimer);
+      this.snapshotRefreshTimer = undefined;
     }
   }
 

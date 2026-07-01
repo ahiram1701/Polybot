@@ -34,6 +34,7 @@ import {
   calculateTradePnl,
   emptyPnlSummaryByMode,
   EMPTY_PNL_SUMMARY,
+  type PnlResetAtMsByMode,
   type PnlSummary,
   type PnlSummaryByMode,
 } from "../pnl.js";
@@ -45,6 +46,7 @@ import type {
   AiRecommendation,
   AiRecommendationsResponse,
   BotConfig,
+  MarketInfo,
   MarketOutcomeNumberSettings,
   MarketSymbol,
   Mode,
@@ -54,8 +56,10 @@ import type {
   StrategyCandidate,
   StrategyMetrics,
   TradeAttempt,
+  WindowOpening,
 } from "../types.js";
 import { BotRunner } from "../botRunner.js";
+import { evaluateRiskCircuitBreaker } from "../riskCircuitBreaker.js";
 import type {
   AnalysisImportResponse,
   MarketStatusSnapshot,
@@ -104,7 +108,7 @@ export interface BotControllerDeps {
   stateFactory?: () => StateStore;
   watcher?: Pick<MarketWatcher, "getCurrentMarket">;
   orderbook?: Pick<OrderbookService, "getQuote">;
-  priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
+  priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick">;
   strategyAnalysisEngine?: StrategyAnalysisEngine;
   recommendationEngine?: Pick<RecommendationEngine, "recommend">;
   notifier?: Notifier;
@@ -127,6 +131,10 @@ interface CachedUiStateSummary {
   tradesSorted: TradeAttempt[];
   pnl: PnlSummary;
   pnlByMode: PnlSummaryByMode;
+  // All-time PnL ignoring the P&L reset marker, so agents/UI can see lifetime performance
+  // alongside the post-reset figures.
+  pnlHistoricalByMode: PnlSummaryByMode;
+  pnlResetAtMs: PnlResetAtMsByMode;
 }
 
 interface UiStateSummary extends CachedUiStateSummary {
@@ -146,7 +154,7 @@ export class BotController {
   private readonly stateFactory: () => StateStore;
   private readonly watcher: Pick<MarketWatcher, "getCurrentMarket">;
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
-  private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick">;
+  private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick">;
   private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
   private readonly recommendationEngine: Pick<RecommendationEngine, "recommend">;
   private readonly telegramStore: TelegramNotificationStore;
@@ -633,6 +641,8 @@ export class BotController {
         dailySpendUsd: 0,
         pnl: EMPTY_PNL_SUMMARY,
         pnlByMode: emptyPnlSummaryByMode(),
+        pnlHistoricalByMode: emptyPnlSummaryByMode(),
+        pnlResetAtMs: {},
         snapshotError: error instanceof Error ? error.message : String(error),
       };
     }
@@ -652,6 +662,9 @@ export class BotController {
       dailySpendUsd: snapshot.dailySpendUsd ?? 0,
       pnl: snapshot.pnl ?? EMPTY_PNL_SUMMARY,
       pnlByMode: snapshot.pnlByMode ?? emptyPnlSummaryByMode(),
+      pnlHistoricalByMode: snapshot.pnlHistoricalByMode ?? emptyPnlSummaryByMode(),
+      pnlResetAtMs: snapshot.pnlResetAtMs ?? {},
+      riskHalt: snapshot.riskHalt,
       logs: [...this.logs].reverse(),
       market: primaryMarket?.market ?? snapshot.market,
       opening: primaryMarket?.opening ?? snapshot.opening,
@@ -664,8 +677,15 @@ export class BotController {
   private async buildSnapshot(settings: UiSettings, config: BotConfig): Promise<Partial<UiStatus>> {
     const nowMs = Date.now();
     const stateSummary = await this.getStateSummary(nowMs);
-    const { state, dailySpendUsd, pnl, pnlByMode } = stateSummary;
+    const { state, tradesSorted, dailySpendUsd, pnl, pnlByMode, pnlHistoricalByMode, pnlResetAtMs } = stateSummary;
     const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
+    // Reuse the already-fetched trades (respects the state-summary cache; no extra listTrades call).
+    const riskHalt = evaluateRiskCircuitBreaker(
+      tradesSorted,
+      config.mode,
+      { maxDailyLossUsd: config.maxDailyLossUsd, maxConsecutiveLosses: config.maxConsecutiveLosses },
+      nowMs,
+    );
 
     if (enabledMarkets.length === 0) {
       return {
@@ -673,6 +693,9 @@ export class BotController {
         dailySpendUsd,
         pnl,
         pnlByMode,
+        pnlHistoricalByMode,
+        pnlResetAtMs,
+        riskHalt,
         signal: { reason: "no_markets_enabled", inEntryWindow: false },
       };
     }
@@ -691,6 +714,9 @@ export class BotController {
       dailySpendUsd,
       pnl,
       pnlByMode,
+      pnlHistoricalByMode,
+      pnlResetAtMs,
+      riskHalt,
       signal: primaryMarket?.signal ?? { reason: "market_not_found", inEntryWindow: false },
     };
   }
@@ -713,7 +739,10 @@ export class BotController {
       };
     }
 
-    const opening = state.getOpening(market.slug);
+    // Fall back to deriving the opening from the price feed's tick history when the persisted state
+    // lacks it (e.g. sparsely-updated ETH/DOGE whose opening isn't in this reader's state instance),
+    // so the UI reflects the same opening the bot is trading on instead of showing "missing opening".
+    const opening = state.getOpening(market.slug) ?? this.deriveOpeningFromFeed(marketSymbol, market, config);
     const secondsRemaining = secondsToEnd(market.endMs, nowMs);
     const entryWindowSecondsByOutcome = {
       UP: this.resolveConfiguredEntryWindow(config, marketSymbol, "UP"),
@@ -771,6 +800,25 @@ export class BotController {
     };
   }
 
+  private deriveOpeningFromFeed(
+    marketSymbol: MarketSymbol,
+    market: MarketInfo,
+    config: BotConfig,
+  ): WindowOpening | undefined {
+    const tick = this.priceFeed.getOpeningTick?.(marketSymbol, market.windowStartMs, config.openingCaptureGraceMs);
+    if (!tick) {
+      return undefined;
+    }
+    return {
+      asset: marketSymbol,
+      slug: market.slug,
+      windowStartMs: market.windowStartMs,
+      openingPrice: tick.value,
+      openingTickTimestampMs: tick.timestampMs,
+      capturedAtMs: Date.now(),
+    };
+  }
+
   private async getStateSummary(nowMs = Date.now()): Promise<UiStateSummary> {
     const state = this.stateFactory();
     await state.load();
@@ -792,6 +840,8 @@ export class BotController {
       tradesSorted: [...trades].sort((left, right) => right.createdAtMs - left.createdAtMs),
       pnl: calculateResetAwarePnlSummary(trades, pnlResetAtMs),
       pnlByMode: calculatePnlSummaryByMode(trades, pnlResetAtMs),
+      pnlHistoricalByMode: calculatePnlSummaryByMode(trades),
+      pnlResetAtMs,
     };
     if (signature) {
       this.stateSummaryCache = summary;
@@ -949,6 +999,8 @@ export class BotController {
       maxAskPrice: config.maxAskPrice,
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
+      maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
+      maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       tickStaleMs: config.tickStaleMs,
       pollIntervalMs: config.pollIntervalMs,
       openingCaptureGraceMs: config.openingCaptureGraceMs,

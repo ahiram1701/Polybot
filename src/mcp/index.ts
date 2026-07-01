@@ -43,8 +43,10 @@ server.registerTool(
   "polybot_get_status",
   {
     description:
-      "Estado COMPACTO de Polybot para agentes (read-only): running/modo, senal por mercado, P&L por modo, gasto diario " +
-      "y un resumen de razones de skip recientes (por que no opera). Pasa verbose:true para el status crudo completo (~150KB).",
+      "Estado COMPACTO de Polybot para agentes (read-only): running/modo, senal por mercado, gasto diario y un resumen de " +
+      "razones de skip recientes (por que no opera). P&L en dos vistas por modo (sim/live): pnlByMode = desde el ultimo " +
+      "reset (post-reset) y pnlHistoricalByMode = de por vida (todos los trades); pnlResetAtMs indica cuando se reseteo " +
+      "cada modo (epoch ms; ausente = nunca). Pasa verbose:true para el status crudo completo (~150KB).",
     inputSchema: {
       verbose: z.boolean().optional().describe("true = status crudo completo (grande). Por defecto compacto."),
     },

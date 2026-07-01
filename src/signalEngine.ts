@@ -39,11 +39,11 @@ export function shouldCaptureOpeningTick(args: {
   nowMs: number;
   openingCaptureGraceMs: number;
 }): boolean {
-  const captureDeadlineMs = args.market.windowStartMs + args.openingCaptureGraceMs;
-  return (
-    args.tick.timestampMs >= args.market.windowStartMs &&
-    args.tick.timestampMs <= captureDeadlineMs
-  );
+  // Symmetric grace around the window start. Chainlink prices are step functions, so the last tick
+  // just before the open is the price in effect at the open (needed for sparsely-updated ETH/DOGE).
+  const lo = args.market.windowStartMs - args.openingCaptureGraceMs;
+  const hi = args.market.windowStartMs + args.openingCaptureGraceMs;
+  return args.tick.timestampMs >= lo && args.tick.timestampMs <= hi;
 }
 
 export function isWithinEntryWindow(endMs: number, nowMs: number, entryWindowSeconds: number): boolean {

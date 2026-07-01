@@ -31,6 +31,7 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
+import { summarizeLogs } from "../../agent/statusSummary.js";
 import { calculateTradePnl, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import type {
@@ -175,6 +176,8 @@ const emptySettings: UiSettings = {
     DOGE: { UP: 0.98, DOWN: 0.98 },
   },
   dailySpendLimitUsd: 50,
+  maxDailyLossUsd: 0,
+  maxConsecutiveLosses: 0,
   tickStaleMs: 10_000,
   pollIntervalMs: 1_000,
   openingCaptureGraceMs: 15_000,
@@ -626,19 +629,38 @@ export function Dashboard({
   const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>("sim");
   const selectedPnl = status?.pnlByMode?.[selectedPnlMode];
   const selectedPnlLabel = selectedPnlMode === "sim" ? "Sim" : "Live";
+  const riskHalt = status?.riskHalt;
+  const health = computeHealth(status);
+  const skipReasonCounts = status?.logs ? summarizeLogs(status.logs, 80).skipReasonCounts : {};
   return (
-    <div className="dashboard-grid">
-      <section className="panel hero-panel markets-panel">
-        <div className="status-line">
-          <span className={`status-dot ${status?.running ? "on" : "off"}`} />
-          {status?.running ? `Corriendo ${status.mode?.toUpperCase()}` : "Detenido"}
+    <>
+      <HealthChips status={status} health={health} />
+      {riskHalt?.tripped && (
+        <div className="risk-banner" role="alert">
+          <ShieldAlert size={20} aria-hidden="true" />
+          <div className="risk-banner-body">
+            <strong>Trading detenido — circuit breaker de riesgo</strong>
+            <span>
+              {riskHalt.reason === "daily_loss_limit"
+                ? `Pérdida diaria ${formatUsd(riskHalt.dailyLossUsd)} alcanzó el límite.`
+                : `${riskHalt.consecutiveLosses} pérdidas seguidas alcanzaron el límite.`}{" "}
+              El bot sigue observando; reanuda el próximo día UTC.
+            </span>
+          </div>
         </div>
-        <div className="market-card-grid">
-          {marketSnapshots.map((market) => (
-            <MarketCard snapshot={market} key={market.marketSymbol} />
-          ))}
-        </div>
-      </section>
+      )}
+      <div className="dashboard-grid">
+        <section className="panel hero-panel markets-panel">
+          <div className="status-line">
+            <span className={`status-dot ${status?.running ? "on" : "off"}`} />
+            {status?.running ? `Corriendo ${status.mode?.toUpperCase()}` : "Detenido"}
+          </div>
+          <div className="market-card-grid">
+            {marketSnapshots.map((market) => (
+              <MarketCard snapshot={market} key={market.marketSymbol} />
+            ))}
+          </div>
+        </section>
 
       <section className="panel pnl-panel">
         <div className="section-heading pnl-heading">
@@ -678,10 +700,150 @@ export function Dashboard({
         </div>
         <div className="hero-metrics compact">
           <Metric label="Gasto diario" value={formatUsd(status?.dailySpendUsd)} />
-          <Metric label="Limite" value={formatUsd(status?.settings.dailySpendLimitUsd)} />
+          <Metric label="Limite gasto" value={formatUsd(status?.settings.dailySpendLimitUsd)} />
           <Metric label="Ask cap" value={formatOutcomeSettingRange(status?.settings.maxAskPriceByMarketOutcome, formatPrice)} />
+          <Metric
+            label="Perdida hoy"
+            value={formatUsd(riskHalt?.dailyLossUsd ?? 0)}
+            tone={riskHalt?.reason === "daily_loss_limit" ? "negative" : "neutral"}
+          />
+          <Metric
+            label="Limite perdida"
+            value={status?.settings.maxDailyLossUsd ? formatUsd(status.settings.maxDailyLossUsd) : "Off"}
+          />
+          <Metric
+            label="Perdidas seguidas"
+            value={
+              status?.settings.maxConsecutiveLosses
+                ? `${riskHalt?.consecutiveLosses ?? 0} / ${status.settings.maxConsecutiveLosses}`
+                : `${riskHalt?.consecutiveLosses ?? 0}`
+            }
+            tone={riskHalt?.reason === "consecutive_losses" ? "negative" : "neutral"}
+          />
         </div>
       </section>
+
+      <WhyNotTradingPanel skipReasonCounts={skipReasonCounts} running={Boolean(status?.running)} />
+      </div>
+    </>
+  );
+}
+
+const SKIP_REASON_LABELS: Record<string, string> = {
+  btc_distance_below_threshold: "Distancia insuficiente",
+  no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",
+  best_ask_above_cap: "Ask por encima del cap",
+  expected_value_gate_failed: "EV no supera el umbral",
+  expected_value_history_not_found: "Historia insuficiente (EV)",
+  missing_opening_chainlink_tick: "Sin apertura (feed)",
+  missing_current_chainlink_tick: "Sin tick actual (feed)",
+  stale_chainlink_tick: "Tick viejo (feed)",
+  market_already_traded: "Ya operado",
+  market_not_accepting_orders: "Mercado cerrado",
+  daily_spend_limit_reached: "Limite de gasto",
+  risk_circuit_breaker: "Circuit breaker de riesgo",
+  outcome_disabled: "Lado desactivado",
+  orderbook_quote_failed: "Fallo al pedir orderbook",
+};
+
+function humanSkipReason(reason: string): string {
+  return SKIP_REASON_LABELS[reason] ?? reason;
+}
+
+function WhyNotTradingPanel({
+  skipReasonCounts,
+  running,
+}: {
+  skipReasonCounts: Record<string, number>;
+  running: boolean;
+}) {
+  const rows = Object.entries(skipReasonCounts).sort((left, right) => right[1] - left[1]);
+  return (
+    <section className="panel why-panel">
+      <div className="section-heading">
+        <AlertTriangle size={18} />
+        <h2>Por que no opera</h2>
+      </div>
+      {rows.length === 0 ? (
+        <p className="settings-hint">{running ? "Sin skips recientes." : "El bot esta detenido."}</p>
+      ) : (
+        <ul className="why-list">
+          {rows.map(([reason, count]) => (
+            <li key={reason} className="why-row" title={reason}>
+              <span className="why-reason">{humanSkipReason(reason)}</span>
+              <span className="why-count">{count}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+interface BotHealth {
+  feedOk: boolean;
+  lastTickAgoSec?: number;
+  uptimeSec?: number;
+}
+
+function computeHealth(status: UiStatus | null): BotHealth {
+  const markets = status?.markets ?? [];
+  const tickTimestamps = markets
+    .map((market) => market.tick?.timestampMs)
+    .filter((value): value is number => typeof value === "number");
+  const lastTickMs = tickTimestamps.length > 0 ? Math.max(...tickTimestamps) : undefined;
+  const lastTickAgoSec = lastTickMs !== undefined ? Math.max(0, Math.round((Date.now() - lastTickMs) / 1000)) : undefined;
+  const feedDegraded =
+    markets.some((market) =>
+      ["missing_opening_chainlink_tick", "missing_current_chainlink_tick", "stale_chainlink_tick"].includes(
+        market.signal.reason,
+      ),
+    ) || (lastTickAgoSec !== undefined && lastTickAgoSec > 30);
+  return {
+    feedOk: !feedDegraded && lastTickMs !== undefined,
+    lastTickAgoSec,
+    uptimeSec: status?.startedAtMs !== undefined ? Math.max(0, Math.round((Date.now() - status.startedAtMs) / 1000)) : undefined,
+  };
+}
+
+function formatDuration(seconds?: number): string {
+  if (seconds === undefined) {
+    return "--";
+  }
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)}m`;
+  }
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function HealthChips({ status, health }: { status: UiStatus | null; health: BotHealth }) {
+  const running = Boolean(status?.running);
+  return (
+    <div className="health-chips" role="group" aria-label="Salud del bot">
+      <span className={`chip ${running ? "chip-on" : "chip-off"}`} title="Estado del bot">
+        {running ? <Play size={14} /> : <Square size={14} />}
+        {running ? `Corriendo ${status?.mode?.toUpperCase()}` : "Detenido"}
+      </span>
+      <span className={`chip ${health.feedOk ? "chip-on" : "chip-warn"}`} title="Estado del feed de precios">
+        <Radio size={14} />
+        {health.feedOk ? "Feed OK" : "Feed degradado"}
+      </span>
+      <span className="chip chip-neutral" title="Antiguedad del ultimo tick de precio">
+        Tick {health.lastTickAgoSec !== undefined ? `hace ${health.lastTickAgoSec}s` : "--"}
+      </span>
+      <span className="chip chip-neutral" title="Tiempo corriendo">
+        Uptime {formatDuration(health.uptimeSec)}
+      </span>
+      <span
+        className={`chip ${status?.settings.aiAutoApplyLive ? "chip-on" : "chip-neutral"}`}
+        title="Autoajuste predictivo en tiempo real"
+      >
+        <Brain size={14} />
+        Autoajuste {status?.settings.aiAutoApplyLive ? "on" : "off"}
+      </span>
     </div>
   );
 }
@@ -1747,6 +1909,34 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           Un modelo estadistico local (backtesting walk-forward + estimacion k-NN, sin LLM ni internet) evalua las muestras de
           Analisis mientras el bot corre y aplica automaticamente la mejor ventana y distancia por mercado cuando hay alta
           confianza y dentro de las guardas. Actívalo antes de iniciar el bot.
+        </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <ShieldAlert size={18} />
+          <h2>Límites de riesgo</h2>
+        </div>
+        <div className="settings-grid">
+          <NumberField
+            label="Pérdida diaria máx (USD)"
+            value={draft.maxDailyLossUsd}
+            min={0}
+            step={5}
+            onChange={(value) => update("maxDailyLossUsd", value)}
+          />
+          <NumberField
+            label="Pérdidas seguidas máx"
+            value={draft.maxConsecutiveLosses}
+            min={0}
+            step={1}
+            onChange={(value) => update("maxConsecutiveLosses", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (UTC) o la racha de pérdidas cruza el
+          límite, el bot deja de operar hasta el día siguiente — sigue observando para analítica. Aplica al modo en
+          ejecución. Editable con el bot detenido.
         </p>
       </section>
 

@@ -99,6 +99,26 @@ describe("signal engine", () => {
         openingCaptureGraceMs: 15_000,
       }),
     ).toBe(false);
+
+    // Step-function semantics: the last tick just BEFORE the window start (within grace) is the
+    // opening price in effect at the open (matters for sparsely-updated ETH/DOGE feeds).
+    expect(
+      shouldCaptureOpeningTick({
+        market,
+        tick: { ...freshUpTick, timestampMs: windowStartMs - 5_000 },
+        nowMs: windowStartMs + 2_000,
+        openingCaptureGraceMs: 15_000,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldCaptureOpeningTick({
+        market,
+        tick: { ...freshUpTick, timestampMs: windowStartMs - 20_000 },
+        nowMs: windowStartMs + 2_000,
+        openingCaptureGraceMs: 15_000,
+      }),
+    ).toBe(false);
   });
 
   it("accepts a historical opening tick even if it is processed after the grace window", () => {

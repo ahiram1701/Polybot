@@ -183,6 +183,27 @@ describe("UI frontend components", () => {
     expect(onResetPnl).toHaveBeenCalledWith("live");
   });
 
+  it("shows the risk circuit breaker banner when tripped", () => {
+    render(
+      <Dashboard
+        busy={false}
+        onResetPnl={vi.fn()}
+        status={{
+          ...status({ liveReady: true }),
+          riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 50, consecutiveLosses: 0 },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/circuit breaker/i);
+    expect(screen.getByRole("heading", { name: /Por que no opera/i })).toBeInTheDocument();
+  });
+
+  it("hides the risk banner when the circuit breaker is not tripped", () => {
+    render(<Dashboard busy={false} onResetPnl={vi.fn()} status={status({ liveReady: true })} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("renders trade outcomes", () => {
     render(<TradesTable trades={[trade({ resolvedWon: true })]} />);
 
@@ -634,6 +655,8 @@ function settings(): UiSettings {
       DOGE: { UP: 0.98, DOWN: 0.98 },
     },
     dailySpendLimitUsd: 50,
+    maxDailyLossUsd: 0,
+    maxConsecutiveLosses: 0,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,
     openingCaptureGraceMs: 15_000,
@@ -688,6 +711,11 @@ function status(args: { liveReady: boolean }): UiStatus {
       sim: pnlSummary({}),
       live: pnlSummary({}),
     },
+    pnlHistoricalByMode: {
+      sim: pnlSummary({}),
+      live: pnlSummary({}),
+    },
+    pnlResetAtMs: {},
     logs: [],
   };
 }

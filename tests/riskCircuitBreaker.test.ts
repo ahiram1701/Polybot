@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+
+import { evaluateRiskCircuitBreaker } from "../src/riskCircuitBreaker.js";
+import type { Mode, Outcome, TradeAttempt } from "../src/types.js";
+
+const NOW = Date.UTC(2026, 6, 1, 15, 0, 0); // 2026-07-01
+const YESTERDAY = Date.UTC(2026, 5, 30, 15, 0, 0);
+
+function trade(args: {
+  id: string;
+  mode?: Mode;
+  won?: boolean;
+  resolvedAtMs?: number;
+  amountUsd?: number;
+  ask?: number;
+  resolved?: boolean;
+}): TradeAttempt {
+  const ask = args.ask ?? 0.5;
+  const base: TradeAttempt = {
+    id: args.id,
+    slug: args.id,
+    mode: args.mode ?? "sim",
+    outcome: "UP" as Outcome,
+    tokenId: "token",
+    amountUsd: args.amountUsd ?? 10,
+    maxAskPrice: 0.98,
+    bestAsk: ask,
+    estimatedShares: (args.amountUsd ?? 10) / ask,
+    filledShares: (args.amountUsd ?? 10) / ask,
+    filledAmountUsd: args.amountUsd ?? 10,
+    openingPrice: 100,
+    entryPrice: 110,
+    distanceUsd: 10,
+    entryWindowSeconds: 30,
+    windowStartMs: 1,
+    endMs: 2,
+    createdAtMs: (args.resolvedAtMs ?? NOW) - 60_000,
+  };
+  if (args.resolved === false) {
+    return base;
+  }
+  return {
+    ...base,
+    resolved: {
+      resolvedAtMs: args.resolvedAtMs ?? NOW,
+      finalPrice: args.won ? 130 : 90,
+      finalTickTimestampMs: args.resolvedAtMs ?? NOW,
+      winningOutcome: (args.won ? "UP" : "DOWN") as Outcome,
+      won: args.won ?? false,
+    },
+  };
+}
+
+describe("evaluateRiskCircuitBreaker", () => {
+  it("does not trip when both limits are disabled (0)", () => {
+    const trades = [trade({ id: "a", won: false }), trade({ id: "b", won: false })];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 0, maxConsecutiveLosses: 0 }, NOW);
+    expect(status.tripped).toBe(false);
+    expect(status.dailyLossUsd).toBeGreaterThan(0);
+  });
+
+  it("trips on the daily loss limit from losses realized today", () => {
+    // 3 losses of $10 stake each today => ~$30 daily loss.
+    const trades = [
+      trade({ id: "a", won: false }),
+      trade({ id: "b", won: false }),
+      trade({ id: "c", won: false }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25 }, NOW);
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.dailyLossUsd).toBeGreaterThanOrEqual(25);
+  });
+
+  it("trips on consecutive losses (most recent trades)", () => {
+    const trades = [
+      trade({ id: "win", won: true, resolvedAtMs: NOW - 4000 }),
+      trade({ id: "l1", won: false, resolvedAtMs: NOW - 3000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: NOW - 2000 }),
+      trade({ id: "l3", won: false, resolvedAtMs: NOW - 1000 }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW);
+    expect(status.consecutiveLosses).toBe(3);
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("consecutive_losses");
+  });
+
+  it("resets the next UTC day: yesterday's losses do not count today", () => {
+    const trades = [
+      trade({ id: "y1", won: false, resolvedAtMs: YESTERDAY }),
+      trade({ id: "y2", won: false, resolvedAtMs: YESTERDAY }),
+      trade({ id: "y3", won: false, resolvedAtMs: YESTERDAY }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, maxConsecutiveLosses: 2 }, NOW);
+    expect(status.tripped).toBe(false);
+    expect(status.dailyLossUsd).toBe(0);
+    expect(status.consecutiveLosses).toBe(0);
+  });
+
+  it("ignores trades from the other mode and pending trades", () => {
+    const trades = [
+      trade({ id: "live-loss", mode: "live", won: false }),
+      trade({ id: "pending", resolved: false }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 5, maxConsecutiveLosses: 1 }, NOW);
+    expect(status.tripped).toBe(false);
+    expect(status.dailyLossUsd).toBe(0);
+  });
+});

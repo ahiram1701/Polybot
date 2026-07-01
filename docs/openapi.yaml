@@ -276,8 +276,12 @@ components:
         markets: { type: array, items: { type: object } }
         signal: { type: object }
         dailySpendUsd: { type: number }
-        pnl: { type: object }
-        pnlByMode: { type: object }
+        pnl: { type: object, description: P&L post-reset (desde el ultimo reset) agregado. }
+        pnlByMode: { type: object, description: P&L post-reset por modo (sim/live). }
+        pnlHistoricalByMode: { type: object, description: P&L de por vida por modo (todos los trades, ignora el reset). }
+        pnlResetAtMs:
+          type: object
+          description: Epoch ms del ultimo reset de P&L por modo (clave sim/live; ausente = nunca reseteado).
         logs: { type: array, items: { type: object } }
     Settings:
       type: object
