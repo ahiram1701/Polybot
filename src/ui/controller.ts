@@ -501,6 +501,7 @@ export class BotController {
           minDistanceUsd: recommendation.recommended.minDistanceUsd,
           confidence: recommendation.confidence,
           improvementAdjustedRoi: recommendation.improvementAdjustedRoi,
+          improvementYield: recommendation.improvementYield,
         })),
       });
       void this.notifier.notify({

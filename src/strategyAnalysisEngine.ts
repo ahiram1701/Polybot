@@ -27,7 +27,13 @@ import type {
 } from "./types.js";
 
 const QUOTE_MATCH_WINDOW_MS = 6_000;
-const CANDIDATE_WINDOWS = Array.from({ length: 56 }, (_value, index) => 5 + index);
+// Floored at 25s to match the recommendation engine: below ~25s quote coverage collapses to <=3%,
+// so those windows are not realistically executable and only distort the strategy grid.
+const MIN_CANDIDATE_WINDOW_SECONDS = 25;
+const CANDIDATE_WINDOWS = Array.from(
+  { length: 61 - MIN_CANDIDATE_WINDOW_SECONDS },
+  (_value, index) => MIN_CANDIDATE_WINDOW_SECONDS + index,
+);
 const ASK_CAP_CANDIDATES = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98];
 const TOP_STRATEGY_LIMIT = 100;
 // Bound the per-market history fed into the strategy grid so a single analyze() pass stays fast

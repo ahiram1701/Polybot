@@ -1,5 +1,7 @@
-import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+
+import { writeFileAtomic } from "./atomicWrite.js";
 
 import type { BotState, Mode, TradeAttempt, TradeEvent, WindowOpening } from "./types.js";
 import { dailySpendKey } from "./time.js";
@@ -282,10 +284,7 @@ export class StateStore {
   }
 
   private async save(): Promise<void> {
-    await mkdir(dirname(this.statePath), { recursive: true });
-    const tempPath = `${this.statePath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
-    await rename(tempPath, this.statePath);
+    await writeFileAtomic(this.statePath, `${JSON.stringify(this.state, null, 2)}\n`);
     await this.refreshStateFileCache();
   }
 

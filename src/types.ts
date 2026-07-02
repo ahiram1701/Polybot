@@ -162,6 +162,10 @@ export interface RecommendationMetrics {
   quoteCoverage: number;
   averageRoi?: number;
   adjustedRoi?: number;
+  // Realized yield per observed window = adjustedRoi × executionRate (tradeCount/sampleCount). This
+  // is the selection objective: it rewards configs that trade often with real edge, not rare
+  // high-edge-per-trade configs that barely execute. Undefined when adjustedRoi is undefined.
+  yieldPerWindow?: number;
   expectedRoi?: number;
   walkForwardRoi?: number;
   lowerBoundRoi?: number;
@@ -185,6 +189,9 @@ export interface AiRecommendation {
   current: RecommendationCandidate;
   recommended?: RecommendationCandidate;
   improvementAdjustedRoi?: number;
+  // Improvement in realized yield-per-window of the recommended config vs the current one. This is
+  // the criterion that actually drives auto-apply (see RecommendationMetrics.yieldPerWindow).
+  improvementYield?: number;
   sampleCount: number;
   reason: string;
   canApply: boolean;

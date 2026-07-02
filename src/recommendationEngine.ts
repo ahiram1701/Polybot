@@ -24,7 +24,8 @@ export interface AutoApplyThresholds {
   minAutoSamples: number;
   minAutoTrades: number;
   minQuoteCoverage: number;
-  minAdjustedRoiImprovement: number;
+  // Minimum improvement in realized yield-per-window (edge × execution rate) required to auto-apply.
+  minYieldImprovement: number;
   maxOverfitRisk: number;
   // How far a single auto-apply may move from the current settings. In live this is a tight rail
   // (only fine-tune in small steps); in sim it is loose enough to converge to the optimum.
@@ -38,7 +39,7 @@ export const LIVE_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
   minAutoSamples: 40,
   minAutoTrades: 20,
   minQuoteCoverage: 0.8,
-  minAdjustedRoiImprovement: 0.03,
+  minYieldImprovement: 0.002,
   maxOverfitRisk: 0.45,
   maxWindowChangeSeconds: 5,
   maxDistanceChangeRatio: 0.15,
@@ -50,9 +51,9 @@ export const LIVE_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
 // <= max, ROI improvement) still guard against bad strategies.
 export const SIM_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
   minAutoSamples: 40,
-  minAutoTrades: 5,
+  minAutoTrades: 15,
   minQuoteCoverage: 0.02,
-  minAdjustedRoiImprovement: 0.03,
+  minYieldImprovement: 0.0008,
   maxOverfitRisk: 0.45,
   maxWindowChangeSeconds: 60,
   maxDistanceChangeRatio: 10,
@@ -72,7 +73,11 @@ const WALK_FORWARD_TRAINING_WINDOW = 300;
 // Per-market history fed into the grid search. With the bounded k-NN above the cost scales
 // ~linearly, so we keep enough executable trades to reach statistical significance.
 const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 300;
-const CANDIDATE_WINDOWS = Array.from({ length: 56 }, (_value, index) => 5 + index);
+// Entry-window candidates floored at 25s: below ~25s the quote coverage collapses to <=3% (measured
+// on real samples), so those configs almost never execute. Flooring here stops the autoajuste from
+// converging on degenerate 5-7s windows that barely trade.
+const MIN_CANDIDATE_WINDOW_SECONDS = 25;
+const CANDIDATE_WINDOWS = Array.from({ length: 61 - MIN_CANDIDATE_WINDOW_SECONDS }, (_value, index) => MIN_CANDIDATE_WINDOW_SECONDS + index);
 const DISTANCE_STEPS: Record<MarketSymbol, number> = {
   BTC: 1,
   ETH: 0.25,
@@ -174,8 +179,13 @@ function buildMarketRecommendation(
     best.metrics.adjustedRoi !== undefined && current.metrics.adjustedRoi !== undefined
       ? best.metrics.adjustedRoi - current.metrics.adjustedRoi
       : best.metrics.adjustedRoi;
+  // Auto-apply is driven by the gain in realized yield-per-window (edge × frequency), not per-trade ROI.
+  const improvementYield =
+    best.metrics.yieldPerWindow !== undefined && current.metrics.yieldPerWindow !== undefined
+      ? best.metrics.yieldPerWindow - current.metrics.yieldPerWindow
+      : best.metrics.yieldPerWindow;
   const status = samples.length >= MIN_READY_SAMPLES ? "ready" : "insufficient_data";
-  const confidence = getConfidence(samples.length, best.metrics, improvementAdjustedRoi, thresholds);
+  const confidence = getConfidence(samples.length, best.metrics, improvementYield, thresholds);
   const changed =
     best.entryWindowSeconds !== current.entryWindowSeconds ||
     best.minDistanceUsd !== current.minDistanceUsd;
@@ -183,8 +193,8 @@ function buildMarketRecommendation(
     status === "ready" &&
     changed &&
     best.metrics.tradeCount > 0 &&
-    improvementAdjustedRoi !== undefined &&
-    improvementAdjustedRoi > 0;
+    improvementYield !== undefined &&
+    improvementYield > 0;
   const cooldownActive = isAutoApplyCooldownActive(settings.aiLastAppliedAtMs, nowMs);
   const canAutoApply =
     canApply &&
@@ -196,8 +206,8 @@ function buildMarketRecommendation(
     best.metrics.expectedRoi > 0 &&
     best.metrics.walkForwardRoi !== undefined &&
     best.metrics.walkForwardRoi > 0 &&
-    improvementAdjustedRoi !== undefined &&
-    improvementAdjustedRoi >= thresholds.minAdjustedRoiImprovement &&
+    improvementYield !== undefined &&
+    improvementYield >= thresholds.minYieldImprovement &&
     isWithinAutoApplyChange(current, best, thresholds);
 
   return {
@@ -208,13 +218,14 @@ function buildMarketRecommendation(
     current,
     recommended: canApply ? best : undefined,
     improvementAdjustedRoi,
+    improvementYield,
     sampleCount: samples.length,
     reason: recommendationReason({
       status,
       confidence,
       sampleCount: samples.length,
       metrics: best.metrics,
-      improvementAdjustedRoi,
+      improvementYield,
       canAutoApply,
       cooldownActive,
     }),
@@ -317,6 +328,11 @@ function simulateCandidate(
         drawdownPenalty(maxDrawdown(returns)) -
         overfitRisk * 0.05
       : undefined;
+  // Selection objective: expected realized yield per OBSERVED window = per-trade edge × how often the
+  // config actually executes. A rare high-edge config and a frequent moderate-edge config are compared
+  // on total expected yield, so the optimizer stops preferring 5-7s windows that barely trade.
+  const executionRate = samples.length > 0 ? returns.length / samples.length : 0;
+  const yieldPerWindow = adjustedRoi !== undefined ? adjustedRoi * executionRate : undefined;
 
   return {
     sampleCount: samples.length,
@@ -327,6 +343,7 @@ function simulateCandidate(
     quoteCoverage: simulation.signalCount > 0 ? returns.length / simulation.signalCount : 0,
     averageRoi,
     adjustedRoi,
+    yieldPerWindow,
     expectedRoi,
     walkForwardRoi,
     lowerBoundRoi,
@@ -486,6 +503,11 @@ function selectBestCandidate(
   return candidates
     .filter((candidate) => candidate.metrics.adjustedRoi !== undefined)
     .sort((left, right) => {
+      // Primary objective: realized yield per window (edge × execution rate).
+      const yieldDelta = (right.metrics.yieldPerWindow ?? -Infinity) - (left.metrics.yieldPerWindow ?? -Infinity);
+      if (Math.abs(yieldDelta) > 0.00001) {
+        return yieldDelta;
+      }
       const adjustedDelta = (right.metrics.adjustedRoi ?? -Infinity) - (left.metrics.adjustedRoi ?? -Infinity);
       if (Math.abs(adjustedDelta) > 0.0001) {
         return adjustedDelta;
@@ -514,7 +536,7 @@ function candidateChangeMagnitude(candidate: RecommendationCandidate, current: R
 function getConfidence(
   sampleCount: number,
   metrics: RecommendationMetrics,
-  improvementAdjustedRoi: number | undefined,
+  improvementYield: number | undefined,
   thresholds: AutoApplyThresholds,
 ): "low" | "medium" | "high" {
   if (
@@ -526,8 +548,8 @@ function getConfidence(
     metrics.walkForwardRoi !== undefined &&
     metrics.walkForwardRoi > 0 &&
     metrics.overfitRisk <= thresholds.maxOverfitRisk &&
-    improvementAdjustedRoi !== undefined &&
-    improvementAdjustedRoi >= thresholds.minAdjustedRoiImprovement
+    improvementYield !== undefined &&
+    improvementYield >= thresholds.minYieldImprovement
   ) {
     return "high";
   }
@@ -542,7 +564,7 @@ function recommendationReason(args: {
   confidence: "low" | "medium" | "high";
   sampleCount: number;
   metrics: RecommendationMetrics;
-  improvementAdjustedRoi: number | undefined;
+  improvementYield: number | undefined;
   canAutoApply: boolean;
   cooldownActive: boolean;
 }): string {
@@ -561,7 +583,7 @@ function recommendationReason(args: {
   if (args.metrics.overfitRisk > 0.55) {
     return "Mejora exploratoria con riesgo de sobreajuste; requiere mas datos.";
   }
-  if (args.improvementAdjustedRoi !== undefined && args.improvementAdjustedRoi > 0) {
+  if (args.improvementYield !== undefined && args.improvementYield > 0) {
     return "Mejora predictiva exploratoria validada con walk-forward.";
   }
   return "La combinacion actual sigue siendo competitiva con los datos disponibles.";

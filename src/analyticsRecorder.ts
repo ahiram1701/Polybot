@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { writeFileAtomic } from "./atomicWrite.js";
 import { marketSymbolFromSlug } from "./markets.js";
 import { secondsToEnd } from "./time.js";
 import type {
@@ -296,10 +297,7 @@ export class AnalyticsRecorder {
   }
 
   private async persistActiveSamples(): Promise<void> {
-    await mkdir(dirname(this.activeSamplesPath), { recursive: true });
-    const tempPath = `${this.activeSamplesPath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify([...this.activeSamples.values()], null, 2)}\n`, "utf8");
-    await rename(tempPath, this.activeSamplesPath);
+    await writeFileAtomic(this.activeSamplesPath, `${JSON.stringify([...this.activeSamples.values()], null, 2)}\n`);
   }
 }
 
@@ -430,10 +428,7 @@ export async function trimAnalyticsFileToMostRecent(path: string, maxSamples: nu
     return samples.length;
   }
   const kept = samples.slice(-maxSamples);
-  const tempPath = `${path}.tmp`;
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(tempPath, serializeAnalyticsSamples(kept), "utf8");
-  await rename(tempPath, path);
+  await writeFileAtomic(path, serializeAnalyticsSamples(kept));
   return kept.length;
 }
 

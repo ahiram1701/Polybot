@@ -1,7 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 
+import { writeFileAtomic } from "./atomicWrite.js";
 import { logger } from "./logger.js";
 import type { BotConfig } from "./types.js";
 
@@ -206,10 +207,7 @@ export class TelegramNotificationStore {
       chatId: next.chatId,
       publicUrl: next.publicUrl,
     };
-    await mkdir(dirname(this.settingsPath), { recursive: true });
-    const tempPath = `${this.settingsPath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-    await rename(tempPath, this.settingsPath);
+    await writeFileAtomic(this.settingsPath, `${JSON.stringify(file, null, 2)}\n`);
     return sanitizeEffectiveConfig(next);
   }
 

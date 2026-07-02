@@ -1,5 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { writeFileAtomic } from "../atomicWrite.js";
 import { z } from "zod";
 
 import {
@@ -131,10 +133,7 @@ export class UiSettingsStore {
 
   async save(settings: UiSettings): Promise<UiSettings> {
     const parsed = settingsSchema.parse(normalizeSettings(settings as unknown as Record<string, unknown>));
-    await mkdir(dirname(this.settingsPath), { recursive: true });
-    const tempPath = `${this.settingsPath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    await rename(tempPath, this.settingsPath);
+    await writeFileAtomic(this.settingsPath, `${JSON.stringify(parsed, null, 2)}\n`);
     return parsed;
   }
 }
