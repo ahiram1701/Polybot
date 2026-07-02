@@ -1,7 +1,13 @@
 import express, { type Express, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+
+import { PolybotClient } from "../agent/client.js";
+import { createPolybotMcpServer } from "../mcp/server.js";
 import { ControllerError, type BotController } from "./controller.js";
 import { patchSettingsSchema } from "./settings.js";
 import type { StartBotRequest, UiEvent } from "./shared.js";
@@ -163,6 +169,64 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
       unsubscribe();
     });
   });
+
+  // Streamable HTTP MCP endpoint (stateful, per-session): lets MCP clients that register a URL
+  // connector (e.g. Claude Cowork/Desktop) control Polybot via the same tools as the stdio server.
+  // Reachable wherever the UI is served (localhost by default; also over Tailscale if POLYBOT_UI_HOST
+  // is opened up). Clients call POST /mcp with `initialize`, get an Mcp-Session-Id, then reuse it.
+  const mcpAllowWrite = (process.env.POLYBOT_MCP_ALLOW_WRITE ?? "true").toLowerCase() !== "false";
+  const mcpAllowLive = (process.env.POLYBOT_MCP_ALLOW_LIVE ?? "true").toLowerCase() !== "false";
+  const mcpTransports = new Map<string, StreamableHTTPServerTransport>();
+
+  app.post("/mcp", asyncHandler(async (req, res) => {
+    const sessionId = req.header("mcp-session-id");
+    const existing = sessionId ? mcpTransports.get(sessionId) : undefined;
+    if (existing) {
+      await existing.handleRequest(req, res, req.body);
+      return;
+    }
+    if (!isInitializeRequest(req.body)) {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "No session. Send an 'initialize' request first (Streamable HTTP)." },
+        id: null,
+      });
+      return;
+    }
+    // New session: loopback client into this same server so the MCP tools reuse the HTTP control plane.
+    const selfUrl = `http://${req.headers.host ?? "127.0.0.1:8787"}`;
+    const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      enableJsonResponse: true,
+      onsessioninitialized: (id) => {
+        mcpTransports.set(id, transport);
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        mcpTransports.delete(transport.sessionId);
+      }
+    };
+    const mcpServer = createPolybotMcpServer(new PolybotClient({ baseUrl: selfUrl }), {
+      allowWrite: mcpAllowWrite,
+      allowLive: mcpAllowLive,
+    });
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  }));
+
+  // GET (server->client SSE stream) and DELETE (end session) reuse the session's transport.
+  const mcpSessionRequest = asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = req.header("mcp-session-id");
+    const transport = sessionId ? mcpTransports.get(sessionId) : undefined;
+    if (!transport) {
+      res.status(400).json({ error: "Unknown or missing Mcp-Session-Id." });
+      return;
+    }
+    await transport.handleRequest(req, res);
+  });
+  app.get("/mcp", mcpSessionRequest);
+  app.delete("/mcp", mcpSessionRequest);
 
   if (options.staticClient) {
     const clientDir = resolve(process.cwd(), "dist/client");

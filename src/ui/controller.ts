@@ -538,7 +538,12 @@ export class BotController {
     if (this.runnerPromise || this.runner) {
       throw new ControllerError("Stop the bot before importing analysis data.", 409);
     }
-    const result = await importAnalyticsSamples(this.analyticsPath(), contents);
+    const result = await importAnalyticsSamples(
+      this.analyticsPath(),
+      contents,
+      undefined,
+      this.baseConfig.maxAnalyticsSamples,
+    );
     if (result.validSampleCount === 0) {
       throw new ControllerError("Analysis import did not include valid resolved samples.", 400);
     }

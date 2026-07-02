@@ -146,7 +146,9 @@ export function buildStrategyAnalysis(
   nowMs = Date.now(),
 ): StrategyAnalysisResponse {
   const analysisSamples = recentSamplesPerMarket(samples);
-  const sampleRange = getSampleRange(analysisSamples);
+  // Report the range over ALL retained samples (not just the analyzed subset) so "última/primera
+  // muestra" reflects the true history.
+  const sampleRange = getSampleRange(samples);
   const currentBaseStrategies = buildCurrentStrategies(analysisSamples, settings);
   const currentEvByOutcome = new Map(
     currentBaseStrategies.map((strategy) => [strategyOutcomeKey(strategy), strategy.metrics.evRoi]),
@@ -173,7 +175,8 @@ export function buildStrategyAnalysis(
     strategies: ranked,
     currentStrategies,
     summary: {
-      sampleCount: analysisSamples.length,
+      sampleCount: samples.length,
+      analyzedSampleCount: analysisSamples.length,
       ...sampleRange,
       strategyCount: candidates.length,
       currentStrategyCount: currentStrategies.length,

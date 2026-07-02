@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { summarizeStatus } from "../src/agent/statusSummary.js";
+import { summarizeStatus, summarizeStrategyAnalysis, summarizeTrade } from "../src/agent/statusSummary.js";
+import type { StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 import type { UiStatus } from "../src/ui/shared.js";
 
 function buildStatus(overrides: Partial<UiStatus> = {}): UiStatus {
@@ -116,5 +117,112 @@ describe("summarizeStatus", () => {
     expect(serialized).not.toContain("openingPrice");
     expect("logs" in (compact as unknown as Record<string, unknown>)).toBe(false);
     expect(serialized.length).toBeLessThan(2000);
+  });
+});
+
+describe("summarizeTrade", () => {
+  const trade = {
+    id: "btc-x-sim-DOWN-1",
+    asset: "BTC",
+    slug: "btc-updown-5m-1",
+    mode: "sim",
+    conditionId: "0xVERYLONGCONDITIONID",
+    outcome: "DOWN",
+    tokenId: "1234567890123456789012345678901234567890",
+    amountUsd: 10,
+    bestAsk: 0.7,
+    estimatedShares: 14.28,
+    openingPrice: 60785,
+    entryPrice: 60750,
+    distanceUsd: 35.375,
+    entryWindowSeconds: 52,
+    windowStartMs: 1,
+    endMs: 2,
+    createdAtMs: 3,
+    expectedValue: {
+      capitalUsd: 10,
+      askPrice: 0.7,
+      winCount: 123,
+      tradeCount: 136,
+      realWinProbability: 0.904,
+      adjustedWinProbability: 0.8985,
+      breakEvenProbability: 0.7,
+      edge: 0.1985,
+      expectedRoi: 0.2836,
+      expectedValueUsd: 2.83,
+      winProfitUsd: 4.28,
+      lossUsd: -10,
+      safetyMargin: 0.03,
+      minExpectedRoi: 0.031,
+      minExpectedValueUsd: 0.31,
+      askGuidance: "cheap",
+      passesBasicEntry: true,
+      passesSafetyMargin: true,
+      passesExpectedValue: true,
+      passesRecommendedEntry: true,
+      decisionReason: "passes",
+    },
+    resolved: { resolvedAtMs: 4, finalPrice: 60789, finalTickTimestampMs: 2, winningOutcome: "UP", won: false },
+  } as unknown as TradeAttempt;
+
+  it("keeps decision-relevant fields and drops token/condition ids and the full EV snapshot", () => {
+    const compact = summarizeTrade(trade);
+    const serialized = JSON.stringify(compact);
+    expect(compact.market).toBe("BTC");
+    expect(compact.outcome).toBe("DOWN");
+    expect(compact.resolved).toEqual({ won: false, winningOutcome: "UP" });
+    expect(compact.ev).toEqual({ edge: 0.2, expectedRoi: 0.28, adjustedWinProbability: 0.9, tradeCount: 136 });
+    expect(typeof compact.netUsd).toBe("number");
+    // Heavy/irrelevant fields are gone.
+    expect(serialized).not.toContain("conditionId");
+    expect(serialized).not.toContain(trade.tokenId);
+    expect(serialized).not.toContain("breakEvenProbability");
+  });
+});
+
+describe("summarizeStrategyAnalysis", () => {
+  function candidate(overrides: Partial<StrategyCandidate> = {}): StrategyCandidate {
+    return {
+      market: "BTC",
+      outcome: "UP",
+      entryWindowSeconds: 60,
+      minDistanceUsd: 31,
+      maxAskPrice: 0.9,
+      isCurrent: false,
+      confidence: "high",
+      riskFlags: [],
+      qualityScore: 0.82,
+      metrics: {
+        sampleCount: 5000,
+        signalCount: 600,
+        tradeCount: 62,
+        winCount: 55,
+        lossCount: 7,
+        quoteCoverage: 0.1,
+        winRate: 0.887,
+        evRoi: 0.15,
+        edge: 0.12,
+        passesRecommendedEntry: true,
+        maxDrawdown: 3,
+      },
+      ...overrides,
+    } as unknown as StrategyCandidate;
+  }
+
+  it("limits the ranked list and projects strategies to key fields", () => {
+    const response = {
+      generatedAtMs: 1000,
+      summary: { sampleCount: 15208, analyzedSampleCount: 900, strategyCount: 200, currentStrategyCount: 6, reliableStrategyCount: 4 },
+      strategies: Array.from({ length: 40 }, () => candidate()),
+      currentStrategies: [candidate({ isCurrent: true })],
+    } as unknown as StrategyAnalysisResponse;
+
+    const compact = summarizeStrategyAnalysis(response, 12);
+    expect(compact.topStrategies).toHaveLength(12);
+    expect(compact.currentStrategies).toHaveLength(1);
+    expect(compact.summary.sampleCount).toBe(15208);
+    expect(compact.topStrategies[0]).toMatchObject({ market: "BTC", outcome: "UP", evRoi: 0.15, tradeCount: 62 });
+    // The heavy per-strategy metrics blob is not carried through verbatim.
+    expect(JSON.stringify(compact.topStrategies[0])).not.toContain("maxDrawdown");
   });
 });

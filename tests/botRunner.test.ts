@@ -1815,6 +1815,7 @@ function strategyAnalysisResponse(strategy: StrategyCandidate): StrategyAnalysis
     currentStrategies: [],
     summary: {
       sampleCount: 10,
+      analyzedSampleCount: 10,
       strategyCount: 1,
       currentStrategyCount: 0,
       reliableStrategyCount: 1,

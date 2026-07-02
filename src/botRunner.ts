@@ -123,7 +123,7 @@ export class BotRunner {
       state: new StateStore(config.dataDir),
       executor: config.mode === "live" ? new LiveExecutionEngine(config) : new SimulationExecutionEngine(config),
       reconciler: config.mode === "live" ? new LiveTradeReconciler(config) : new NoopTradeReconciler(),
-      analyticsRecorder: new AnalyticsRecorder(config.dataDir),
+      analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
       strategyAnalysisEngine: new StrategyAnalysisEngine(config.dataDir),
       notifier: createDynamicNotifier(config),
     });

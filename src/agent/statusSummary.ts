@@ -1,8 +1,17 @@
 import type { LogEntry } from "../logger.js";
-import type { PnlResetAtMsByMode, PnlSummary } from "../pnl.js";
+import { calculateTradePnl, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
-import type { MarketSymbol, Mode, Outcome } from "../types.js";
+import type {
+  MarketSymbol,
+  Mode,
+  Outcome,
+  StrategyAnalysisResponse,
+  StrategyCandidate,
+  TradeAttempt,
+} from "../types.js";
 import type { UiStatus } from "../ui/shared.js";
+
+const DEFAULT_STRATEGY_LIMIT = 12;
 
 const DEFAULT_LOG_SAMPLE = 60;
 
@@ -148,4 +157,109 @@ function compactPnl(pnl: PnlSummary): CompactPnl {
 
 function round(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined;
+}
+
+export interface CompactTrade {
+  id: string;
+  market?: MarketSymbol;
+  mode: Mode;
+  outcome: Outcome;
+  amountUsd: number;
+  bestAsk?: number;
+  distanceUsd?: number;
+  entryWindowSeconds?: number;
+  createdAtMs: number;
+  resolved?: { won: boolean; winningOutcome: Outcome };
+  netUsd?: number;
+  // Slim view of the EV that gated the entry (full snapshot omitted).
+  ev?: { edge?: number; expectedRoi?: number; adjustedWinProbability?: number; tradeCount: number };
+}
+
+/** Project a full TradeAttempt (with its ~20-field EV snapshot and long token/condition ids) into a
+ * small agent-friendly record. */
+export function summarizeTrade(trade: TradeAttempt): CompactTrade {
+  const pnl = calculateTradePnl(trade);
+  const ev = trade.expectedValue;
+  return {
+    id: trade.id,
+    market: trade.asset,
+    mode: trade.mode,
+    outcome: trade.outcome,
+    amountUsd: trade.amountUsd,
+    bestAsk: trade.bestAsk,
+    distanceUsd: round(trade.distanceUsd),
+    entryWindowSeconds: trade.entryWindowSeconds,
+    createdAtMs: trade.createdAtMs,
+    resolved: trade.resolved
+      ? { won: trade.resolved.won, winningOutcome: trade.resolved.winningOutcome }
+      : undefined,
+    netUsd: round(pnl.netUsd),
+    ev: ev
+      ? {
+          edge: round(ev.edge),
+          expectedRoi: round(ev.expectedRoi),
+          adjustedWinProbability: round(ev.adjustedWinProbability),
+          tradeCount: ev.tradeCount,
+        }
+      : undefined,
+  };
+}
+
+export interface CompactStrategy {
+  market: MarketSymbol;
+  outcome: Outcome;
+  entryWindowSeconds: number;
+  minDistanceUsd: number;
+  maxAskPrice: number;
+  isCurrent: boolean;
+  confidence: string;
+  qualityScore: number;
+  evRoi?: number;
+  winRate?: number;
+  tradeCount: number;
+  quoteCoverage?: number;
+  edge?: number;
+  passesRecommendedEntry?: boolean;
+  riskFlags: string[];
+}
+
+function summarizeStrategy(candidate: StrategyCandidate): CompactStrategy {
+  const m = candidate.metrics;
+  return {
+    market: candidate.market,
+    outcome: candidate.outcome,
+    entryWindowSeconds: candidate.entryWindowSeconds,
+    minDistanceUsd: candidate.minDistanceUsd,
+    maxAskPrice: candidate.maxAskPrice,
+    isCurrent: candidate.isCurrent,
+    confidence: candidate.confidence,
+    qualityScore: round(candidate.qualityScore) ?? 0,
+    evRoi: round(m.evRoi),
+    winRate: round(m.winRate),
+    tradeCount: m.tradeCount,
+    quoteCoverage: round(m.quoteCoverage),
+    edge: round(m.edge),
+    passesRecommendedEntry: m.passesRecommendedEntry,
+    riskFlags: candidate.riskFlags,
+  };
+}
+
+/** Compact the ~200 KB strategy analysis into the summary plus the top-N ranked strategies and the
+ * current per-market strategies, projected to decision-relevant fields. */
+export function summarizeStrategyAnalysis(
+  response: StrategyAnalysisResponse,
+  limit = DEFAULT_STRATEGY_LIMIT,
+): {
+  generatedAtMs: number;
+  summary: StrategyAnalysisResponse["summary"];
+  topStrategies: CompactStrategy[];
+  currentStrategies: CompactStrategy[];
+} {
+  const top = Math.max(1, limit);
+  return {
+    generatedAtMs: response.generatedAtMs,
+    summary: response.summary,
+    topStrategies: response.strategies.slice(0, top).map(summarizeStrategy),
+    currentStrategies: response.currentStrategies.map(summarizeStrategy),
+  };
 }

@@ -826,6 +826,7 @@ function analysisResponse(): StrategyAnalysisResponse {
     currentStrategies: [strategy],
     summary: {
       sampleCount: 5,
+      analyzedSampleCount: 5,
       strategyCount: 1,
       currentStrategyCount: 1,
       reliableStrategyCount: 1,

@@ -46,6 +46,9 @@ export interface BotConfig {
   // realized loss or consecutive-loss streak crosses these. Optional so config/test literals may omit.
   maxDailyLossUsd?: number;
   maxConsecutiveLosses?: number;
+  // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
+  // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
+  maxAnalyticsSamples?: number;
   tickStaleMs: number;
   pollIntervalMs: number;
   openingCaptureGraceMs: number;
@@ -251,7 +254,10 @@ export interface StrategyCandidate {
 }
 
 export interface StrategyAnalysisSummary {
+  // Total resolved samples retained on disk (what the operator has). The EV gate uses all of them.
   sampleCount: number;
+  // Subset actually fed into the (expensive) strategy grid: the most recent per market. May be < sampleCount.
+  analyzedSampleCount: number;
   firstSampleAtMs?: number;
   lastSampleAtMs?: number;
   strategyCount: number;

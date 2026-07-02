@@ -17,7 +17,14 @@ Comprobación: `curl http://127.0.0.1:8787/api/status` → `200`.
 
 ## Vía 1 — MCP (recomendado para Claude y agentes nativos)
 
-Arranca el servidor MCP (stdio): `npm run mcp` (o `node dist/src/mcp/index.js` tras `npm run build`).
+Hay **dos transportes** que exponen exactamente las mismas tools `polybot_`:
+
+- **stdio** (comando local): `npm run mcp` (o `node dist/src/mcp/index.js` tras `npm run build`). Para clientes que registran un MCP por *comando* (Claude Desktop/Code con `.mcp.json`).
+- **HTTP (Streamable) en `/mcp`**: ya montado dentro del servidor de Polybot. Cuando Polybot corre, el endpoint MCP vive en `http://127.0.0.1:8787/mcp` (misma URL que la UI/API). Para clientes que registran un MCP por *URL* (ej. **Claude Cowork** como connector). No arranca un proceso aparte; usa el servidor ya en marcha.
+
+### Claude Cowork (connector por URL)
+
+Con Polybot corriendo en la misma PC, registra un connector MCP apuntando a `http://127.0.0.1:8787/mcp` (Streamable HTTP, con sesión `Mcp-Session-Id`). Si abres Polybot a la red (`POLYBOT_UI_HOST=0.0.0.0`, p. ej. vía Tailscale), el endpoint queda accesible desde otro dispositivo en esa misma URL/host — **ojo: sin autenticación**, expón solo en redes de confianza.
 
 **Automático:** al iniciar Polybot con `INICIAR-POLYBOT.cmd` / `ABRIR-POLYBOT.cmd`, se crea `.mcp.json` solo (desde `.mcp.json.example`) si no existe. Tu cliente MCP (Claude Code/Desktop) lo carga desde la raíz del proyecto. (Manual: copiar `.mcp.json.example` → `.mcp.json`.)
 
@@ -92,6 +99,7 @@ curl -X POST http://127.0.0.1:8787/api/bot/start -H 'Content-Type: application/j
 | POST | `/api/bot/reset` | Limpia estado/trades | conserva settings |
 | POST | `/api/pnl/reset` | Resetea P&L `{mode}` | — |
 | GET | `/api/events` | Stream SSE (status + logs) | text/event-stream |
+| POST/GET/DELETE | `/mcp` | Endpoint MCP (Streamable HTTP) para connectors por URL | sesión `Mcp-Session-Id`; mismas tools `polybot_` |
 
 ## Flujo recomendado para un agente
 

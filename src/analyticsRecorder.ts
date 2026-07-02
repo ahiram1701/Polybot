@@ -21,7 +21,7 @@ const ANALYTICS_RECORD_TYPE = "analytics_sample";
 // Retention: keep at most this many (most recent) resolved samples on disk so analytics.jsonl
 // cannot grow without bound. The slack is a high-water margin so we rewrite the file rarely
 // (~every ANALYTICS_PRUNE_SLACK new samples) instead of on every append.
-const MAX_ANALYTICS_SAMPLES = 6000;
+const MAX_ANALYTICS_SAMPLES = 20_000;
 const ANALYTICS_PRUNE_SLACK = 600;
 
 export interface AnalyticsObservation {
@@ -365,6 +365,7 @@ export async function importAnalyticsSamples(
   path: string,
   contents: string,
   importedAt = new Date(),
+  maxSamples = MAX_ANALYTICS_SAMPLES,
 ): Promise<AnalyticsImportResult> {
   const parsed = parseAnalyticsSamplesText(contents);
   const existingSamples = await readAnalyticsSamples(path);
@@ -382,7 +383,7 @@ export async function importAnalyticsSamples(
 
   if (samplesToImport.length > 0) {
     await appendAnalyticsSamples(path, samplesToImport, importedAt);
-    await trimAnalyticsFileToMostRecent(path, MAX_ANALYTICS_SAMPLES);
+    await trimAnalyticsFileToMostRecent(path, maxSamples);
   }
 
   const knownSamples = samplesToImport.length > 0 ? await readAnalyticsSamples(path) : existingSamples;

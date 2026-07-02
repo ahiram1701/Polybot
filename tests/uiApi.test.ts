@@ -605,6 +605,122 @@ describe("UI API", () => {
   });
 });
 
+describe("MCP over HTTP (/mcp)", () => {
+  const MCP_ACCEPT = "application/json, text/event-stream";
+
+  it("completes the initialize handshake and lists the polybot tools", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    const init = await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test-cowork", version: "1.0.0" },
+        },
+      })
+      .expect(200);
+
+    expect(init.body.result.serverInfo.name).toBe("polybot");
+    const sessionId = init.headers["mcp-session-id"];
+    expect(sessionId).toBeTruthy();
+
+    await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .set("mcp-session-id", sessionId)
+      .send({ jsonrpc: "2.0", method: "notifications/initialized" })
+      .expect(202);
+
+    const tools = await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .set("mcp-session-id", sessionId)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
+      .expect(200);
+
+    const names = (tools.body.result.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(names).toContain("polybot_get_status");
+    expect(names).toContain("polybot_start_bot");
+    expect(names).toContain("polybot_update_settings");
+    controller.dispose();
+  });
+
+  it("rejects a non-initialize request without a session", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+      .expect(400);
+    controller.dispose();
+  });
+
+  it("hides write/control tools when POLYBOT_MCP_ALLOW_WRITE=false", async () => {
+    const prev = process.env.POLYBOT_MCP_ALLOW_WRITE;
+    process.env.POLYBOT_MCP_ALLOW_WRITE = "false";
+    try {
+      const controller = new BotController(await baseConfig(false), {
+        startPriceFeed: false,
+        snapshotProvider: fixedSnapshot,
+        runnerFactory: () => new FakeRunner(),
+      });
+      const app = createUiApp(controller);
+
+      const init = await request(app)
+        .post("/mcp")
+        .set("Accept", MCP_ACCEPT)
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } },
+        })
+        .expect(200);
+      const sessionId = init.headers["mcp-session-id"];
+      await request(app)
+        .post("/mcp")
+        .set("Accept", MCP_ACCEPT)
+        .set("mcp-session-id", sessionId)
+        .send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const tools = await request(app)
+        .post("/mcp")
+        .set("Accept", MCP_ACCEPT)
+        .set("mcp-session-id", sessionId)
+        .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
+        .expect(200);
+      const names = (tools.body.result.tools as Array<{ name: string }>).map((t) => t.name);
+      expect(names).toContain("polybot_get_status");
+      expect(names).not.toContain("polybot_start_bot");
+      expect(names).not.toContain("polybot_update_settings");
+      controller.dispose();
+    } finally {
+      if (prev === undefined) {
+        delete process.env.POLYBOT_MCP_ALLOW_WRITE;
+      } else {
+        process.env.POLYBOT_MCP_ALLOW_WRITE = prev;
+      }
+    }
+  });
+});
+
 async function baseConfig(withSecrets: boolean, overrides: Partial<BotConfig> = {}): Promise<BotConfig> {
   const dataDir = await mkdtemp(join(tmpdir(), "polybot-api-"));
   temps.push(dataDir);
@@ -761,6 +877,7 @@ function analysisResponse(): StrategyAnalysisResponse {
     currentStrategies: [strategy],
     summary: {
       sampleCount: 5,
+      analyzedSampleCount: 5,
       strategyCount: 1,
       currentStrategyCount: 1,
       reliableStrategyCount: 1,

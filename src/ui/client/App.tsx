@@ -1108,6 +1108,7 @@ export function AnalysisPanel({
 
       <div className="hero-metrics compact analysis-metrics">
         <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />
+        <Metric label="Analizadas (grid)" value={String(analysis?.summary.analyzedSampleCount ?? 0)} />
         <Metric label="Ultima muestra" value={formatDateTime(analysis?.summary.lastSampleAtMs)} />
         <Metric label="Confiables" value={String(analysis?.summary.reliableStrategyCount ?? 0)} />
         <Metric label="Mejor ROI EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
