@@ -35,6 +35,9 @@ export interface BotConfig {
   autoAdjustAfterLossByMarketOutcome?: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  // Hard ceiling applied on top of the per-market/outcome ask caps: no trade (and no auto-adjust)
+  // may use an ask above this, to keep reward/risk sane. Optional; config.ts always sets it.
+  maxAskPriceCeiling?: number;
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.
   // Optional so test/config literals may omit them; config.ts always sets them and botRunner defaults them.
   requirePositiveEv?: boolean;

@@ -202,8 +202,10 @@ function buildMarketRecommendation(
     confidence === "high" &&
     best.metrics.tradeCount >= thresholds.minAutoTrades &&
     best.metrics.quoteCoverage >= thresholds.minQuoteCoverage &&
-    best.metrics.expectedRoi !== undefined &&
-    best.metrics.expectedRoi > 0 &&
+    // Gate on the honest out-of-sample lower bound, not the k-NN's self-predicted expectedRoi (which
+    // is often miscalibrated — it can be negative while realized OOS returns are strongly positive).
+    best.metrics.lowerBoundRoi !== undefined &&
+    best.metrics.lowerBoundRoi > 0 &&
     best.metrics.walkForwardRoi !== undefined &&
     best.metrics.walkForwardRoi > 0 &&
     improvementYield !== undefined &&
@@ -543,8 +545,8 @@ function getConfidence(
     sampleCount >= thresholds.minAutoSamples &&
     metrics.tradeCount >= thresholds.minAutoTrades &&
     metrics.quoteCoverage >= thresholds.minQuoteCoverage &&
-    metrics.expectedRoi !== undefined &&
-    metrics.expectedRoi > 0 &&
+    metrics.lowerBoundRoi !== undefined &&
+    metrics.lowerBoundRoi > 0 &&
     metrics.walkForwardRoi !== undefined &&
     metrics.walkForwardRoi > 0 &&
     metrics.overfitRisk <= thresholds.maxOverfitRisk &&

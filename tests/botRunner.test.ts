@@ -567,6 +567,71 @@ describe("BotRunner", () => {
     );
   });
 
+  it("clamps the ask cap to maxAskPriceCeiling for both quoting and trading", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 270_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const watcher = { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({ market: "BTC", symbol: "btc/usd", value: 85, timestampMs: nowMs, receivedAtMs: nowMs })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    // Quote sits above the 0.80 ceiling but below the configured 0.95 cap.
+    const orderbook = {
+      getQuote: vi.fn(async () => ({
+        tokenId: "token",
+        bestAsk: 0.85,
+        bestBid: 0.84,
+        availableUsdUnderCap: 100,
+        estimatedSharesForAmount: 10,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const executor = { execute: vi.fn() } as unknown as TradeExecutor;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        maxAskPriceCeiling: 0.8,
+        minDistanceUsdByMarketOutcome: { BTC: { UP: 10, DOWN: 12 }, ETH: { UP: 5, DOWN: 5 }, DOGE: { UP: 0.0005, DOWN: 0.0005 } },
+        entryWindowSecondsByMarketOutcome: { BTC: { UP: 35, DOWN: 35 }, ETH: { UP: 20, DOWN: 20 }, DOGE: { UP: 20, DOWN: 20 } },
+        maxAskPriceByMarketOutcome: { BTC: { UP: 0.95, DOWN: 0.95 }, ETH: { UP: 0.95, DOWN: 0.95 }, DOGE: { UP: 0.95, DOWN: 0.95 } },
+      },
+      { watcher, orderbook, priceFeed, state, executor, reconciler: fakeReconciler() },
+    );
+
+    await runner.runOnce(nowMs);
+
+    // The quote is requested at the clamped ceiling (0.80), not the configured 0.95...
+    expect(orderbook.getQuote).toHaveBeenCalledWith(expect.any(String), expect.any(Number), 0.8);
+    // ...and since bestAsk (0.85) exceeds the effective cap, no trade is executed.
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
   it("skips a signal when that market side is disabled", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -1687,6 +1752,7 @@ function baseConfig(): BotConfig {
     liveTradeAmountUsd: 1,
     autoMinLive: true,
     maxAskPrice: 0.98,
+    maxAskPriceCeiling: 0.98,
     requirePositiveEv: false,
     dailySpendLimitUsd: 50,
     tickStaleMs: 10_000,

@@ -91,6 +91,10 @@ const envSchema = z.object({
     .transform((value) => value === "true")
     .default(true),
   MAX_ASK_PRICE: z.coerce.number().gt(0).lte(1).default(0.98),
+  // Hard ceiling on the ask price for ANY trade and for what the auto-adjust may pick. High asks have
+  // terrible reward/risk (at 0.90 one loss erases ~9 wins), so cap it: the reward per win (1/ask-1)
+  // must be large enough to recover losses. Applies on top of per-market/outcome caps.
+  MAX_ASK_PRICE_CEILING: z.coerce.number().gt(0).lte(1).default(0.8),
   MAX_ASK_PRICE_BTC_UP: optionalAskPrice,
   MAX_ASK_PRICE_BTC_DOWN: optionalAskPrice,
   MAX_ASK_PRICE_ETH_UP: optionalAskPrice,
@@ -258,6 +262,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     autoMinLive: env.AUTO_MIN_LIVE,
     maxAskPrice: env.MAX_ASK_PRICE,
     maxAskPriceByMarketOutcome,
+    maxAskPriceCeiling: env.MAX_ASK_PRICE_CEILING,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evSafetyMargin: env.EV_SAFETY_MARGIN,
     minDistanceFloorUsdByMarket: {

@@ -51,6 +51,7 @@ import type {
 const AUTO_ADJUST_LIVE_COOLDOWN_MS = 60_000;
 // Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
+const DEFAULT_MAX_ASK_PRICE_CEILING = 0.8;
 const DEFAULT_EV_SAFETY_MARGIN = 0.03;
 const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
 const DEFAULT_EV_MIN_HISTORY_TRADES = 10;
@@ -702,7 +703,11 @@ export class BotRunner {
   }
 
   private resolveConfiguredMaxAskPrice(market: MarketSymbol, outcome: Outcome): number {
-    return getMarketOutcomeNumber(this.config.maxAskPriceByMarketOutcome, market, outcome, this.config.maxAskPrice);
+    const configured = getMarketOutcomeNumber(this.config.maxAskPriceByMarketOutcome, market, outcome, this.config.maxAskPrice);
+    // Hard ceiling: never pay more than this per share regardless of the configured/auto-adjusted cap,
+    // so the reward per win stays large enough to recover from losses.
+    const ceiling = this.config.maxAskPriceCeiling ?? DEFAULT_MAX_ASK_PRICE_CEILING;
+    return Math.min(configured, ceiling);
   }
 
   private resolveConfiguredMinDistance(market: MarketSymbol, outcome: Outcome): number {
@@ -909,7 +914,12 @@ export class BotRunner {
     }
     try {
       const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, nowMs);
-      const candidate = selectAutoAdjustStrategy(analysis.strategies, market, outcome);
+      const candidate = selectAutoAdjustStrategy(
+        analysis.strategies,
+        market,
+        outcome,
+        this.config.maxAskPriceCeiling ?? DEFAULT_MAX_ASK_PRICE_CEILING,
+      );
       if (!candidate || !strategyChangesConfig(candidate, this.config)) {
         return false;
       }
@@ -1016,10 +1026,13 @@ function selectAutoAdjustStrategy(
   strategies: StrategyCandidate[],
   market: MarketSymbol,
   outcome: Outcome,
+  maxAskPriceCeiling: number,
 ): StrategyCandidate | undefined {
   return strategies.find((strategy) =>
     strategy.market === market &&
     strategy.outcome === outcome &&
+    // Never auto-adjust to a strategy whose ask cap exceeds the ceiling (bad reward/risk).
+    strategy.maxAskPrice <= maxAskPriceCeiling &&
     strategy.confidence !== "low" &&
     strategy.metrics.evRoi !== undefined &&
     strategy.metrics.evRoi > 0 &&
