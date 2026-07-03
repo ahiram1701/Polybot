@@ -658,6 +658,7 @@ function settings(): UiSettings {
       DOGE: { UP: false, DOWN: false },
     },
     maxAskPrice: 0.98,
+    maxAskPriceCeiling: 0.85,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },
       ETH: { UP: 0.98, DOWN: 0.98 },

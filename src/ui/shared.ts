@@ -34,6 +34,8 @@ export interface UiSettings {
   autoAdjustAfterLossByMarketOutcome: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
+  // Hard ceiling on the ask price for any trade and for what the auto-adjust may pick (reward/risk).
+  maxAskPriceCeiling: number;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   maxConsecutiveLosses: number;

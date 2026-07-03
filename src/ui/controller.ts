@@ -1004,6 +1004,7 @@ export class BotController {
       autoAdjustAfterLossByMarketOutcome: config.autoAdjustAfterLossByMarketOutcome ?? settings.autoAdjustAfterLossByMarketOutcome,
       maxAskPrice: config.maxAskPrice,
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
+      maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,

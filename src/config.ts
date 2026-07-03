@@ -94,7 +94,7 @@ const envSchema = z.object({
   // Hard ceiling on the ask price for ANY trade and for what the auto-adjust may pick. High asks have
   // terrible reward/risk (at 0.90 one loss erases ~9 wins), so cap it: the reward per win (1/ask-1)
   // must be large enough to recover losses. Applies on top of per-market/outcome caps.
-  MAX_ASK_PRICE_CEILING: z.coerce.number().gt(0).lte(1).default(0.8),
+  MAX_ASK_PRICE_CEILING: z.coerce.number().gt(0).lte(1).default(0.85),
   MAX_ASK_PRICE_BTC_UP: optionalAskPrice,
   MAX_ASK_PRICE_BTC_DOWN: optionalAskPrice,
   MAX_ASK_PRICE_ETH_UP: optionalAskPrice,

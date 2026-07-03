@@ -103,16 +103,21 @@ describe("UI API", () => {
 
     await request(app)
       .patch("/api/settings")
-      .send({ maxDailyLossUsd: 40, maxConsecutiveLosses: 3 })
+      .send({ maxDailyLossUsd: 40, maxConsecutiveLosses: 3, maxAskPriceCeiling: 0.8 })
       .expect(200)
       .expect((response) => {
         expect(response.body.maxDailyLossUsd).toBe(40);
         expect(response.body.maxConsecutiveLosses).toBe(3);
+        expect(response.body.maxAskPriceCeiling).toBe(0.8);
       });
 
     const settings = await controller.getSettings();
     expect(settings.maxDailyLossUsd).toBe(40);
     expect(settings.maxConsecutiveLosses).toBe(3);
+    expect(settings.maxAskPriceCeiling).toBe(0.8);
+
+    const status = await controller.getStatus();
+    expect(status.config.maxAskPriceCeiling).toBe(0.8);
     controller.dispose();
   });
 

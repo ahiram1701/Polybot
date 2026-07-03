@@ -175,6 +175,7 @@ const emptySettings: UiSettings = {
     ETH: { UP: 0.98, DOWN: 0.98 },
     DOGE: { UP: 0.98, DOWN: 0.98 },
   },
+  maxAskPriceCeiling: 0.85,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   maxConsecutiveLosses: 0,
@@ -1937,11 +1938,24 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
             step={1}
             onChange={(value) => update("maxConsecutiveLosses", value)}
           />
+          <NumberField
+            label="Techo de ask cap"
+            value={draft.maxAskPriceCeiling}
+            min={0.5}
+            max={0.98}
+            step={0.01}
+            onChange={(value) => update("maxAskPriceCeiling", value)}
+          />
         </div>
         <p className="settings-hint">
           Circuit breaker (0 = desactivado). Si la pérdida realizada del día (UTC) o la racha de pérdidas cruza el
           límite, el bot deja de operar hasta el día siguiente — sigue observando para analítica. Aplica al modo en
           ejecución. Editable con el bot detenido.
+        </p>
+        <p className="settings-hint">
+          <strong>Techo de ask cap</strong>: precio máximo por acción para cualquier trade y para el auto-ajuste. Más
+          bajo = mejor relación premio/riesgo (una pérdida se recupera con menos aciertos) pero menos trades. Recomendado
+          0.85; la ganancia histórica se concentra por debajo de 0.70 y arriba de 0.85 el edge desaparece.
         </p>
       </section>
 
