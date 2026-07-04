@@ -121,6 +121,32 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("does not clobber unspecified settings when patching a single field", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    // Establish non-default values on fields that carry a Zod `.default()`.
+    await request(app)
+      .patch("/api/settings")
+      .send({ maxConsecutiveLosses: 7, maxAskPriceCeiling: 0.7, evSafetyMargin: 0.05 })
+      .expect(200);
+
+    // Patch a DIFFERENT, unrelated field. The defaulted fields must survive untouched
+    // (Zod's `.partial()` still injects `.default()` values — the route must ignore them).
+    await request(app).patch("/api/settings").send({ minBtcDistanceUsd: 25 }).expect(200);
+
+    const settings = await controller.getSettings();
+    expect(settings.minBtcDistanceUsd).toBe(25);
+    expect(settings.maxConsecutiveLosses).toBe(7);
+    expect(settings.maxAskPriceCeiling).toBe(0.7);
+    expect(settings.evSafetyMargin).toBe(0.05);
+    controller.dispose();
+  });
+
   it("patches the EV gate from the UI and applies it to the runtime config", async () => {
     const controller = new BotController(await baseConfig(false), {
       startPriceFeed: false,

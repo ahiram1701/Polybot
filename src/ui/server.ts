@@ -10,7 +10,7 @@ import { PolybotClient } from "../agent/client.js";
 import { createPolybotMcpServer } from "../mcp/server.js";
 import { ControllerError, type BotController } from "./controller.js";
 import { patchSettingsSchema } from "./settings.js";
-import type { StartBotRequest, UiEvent } from "./shared.js";
+import type { StartBotRequest, UiEvent, UiSettings } from "./shared.js";
 
 const ANALYSIS_IMPORT_LIMIT = "512mb";
 
@@ -107,7 +107,14 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
   }));
 
   app.patch("/api/settings", asyncHandler(async (req, res) => {
-    const patch = patchSettingsSchema.parse(req.body);
+    const parsed = patchSettingsSchema.parse(req.body);
+    // Zod applies `.default()` even under `.partial()`, so `parsed` contains every defaulted field
+    // (maxConsecutiveLosses, evSafetyMargin, ...) even when the client didn't send it — which would
+    // silently clobber those settings back to their defaults. Keep only the keys actually sent.
+    const sentKeys = new Set(Object.keys(req.body && typeof req.body === "object" ? req.body : {}));
+    const patch = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => sentKeys.has(key)),
+    ) as Partial<UiSettings>;
     res.json(await controller.patchSettings(patch));
   }));
 
