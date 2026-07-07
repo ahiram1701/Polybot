@@ -19,6 +19,9 @@ import type {
 import type { ExpectedValueSnapshot } from "./expectedValue.js";
 import { extractTradeIds, summarizeLiveOrderFill } from "./tradeResolution.js";
 
+// Max amount (in price) a live order may pay above the observed best-ask before it stops filling.
+const DEFAULT_LIVE_MAX_SLIPPAGE = 0.02;
+
 export interface ExecutionInput {
   market: MarketInfo;
   outcome: Outcome;
@@ -51,6 +54,32 @@ export function resolveTradeAmountUsd(args: {
   return args.requestedUsd;
 }
 
+/**
+ * Limit price for a live BUY: cap how far above the observed best-ask the FAK order may walk the
+ * book. Priced at maxAskPrice (the cap), the order overpays by filling all the way up to the cap
+ * when the cheap top-of-book has little size — the sim→live slippage. Capping at bestAsk + a small
+ * tolerance means the order fills near the price we evaluated (or fills partially / not at all)
+ * instead of overpaying. Falls back to maxAskPrice when the best-ask is unknown.
+ */
+export function resolveLiveOrderPrice(args: {
+  bestAsk: number | undefined;
+  maxAskPrice: number;
+  maxSlippage: number;
+  tickSize?: number;
+}): number {
+  const base =
+    typeof args.bestAsk === "number" && Number.isFinite(args.bestAsk) && args.bestAsk > 0
+      ? args.bestAsk
+      : args.maxAskPrice;
+  const slippage = Number.isFinite(args.maxSlippage) && args.maxSlippage > 0 ? args.maxSlippage : 0;
+  let price = Math.min(args.maxAskPrice, base + slippage);
+  if (typeof args.tickSize === "number" && Number.isFinite(args.tickSize) && args.tickSize > 0) {
+    // Round to the nearest tick, then never let rounding push the price above the cap.
+    price = Math.min(args.maxAskPrice, Math.round(price / args.tickSize) * args.tickSize);
+  }
+  return Number(price.toFixed(6));
+}
+
 export class SimulationExecutionEngine implements TradeExecutor {
   constructor(private readonly config: BotConfig) {}
 
@@ -69,12 +98,20 @@ export class LiveExecutionEngine implements TradeExecutor {
   async execute(input: ExecutionInput): Promise<TradeAttempt> {
     const client = await this.getClient();
     const tokenId = input.market.outcomes[input.outcome].tokenId;
+    // Price the order near the best-ask we evaluated, not at the max cap, so it can't walk the book
+    // up to the ceiling and overpay (the sim->live slippage).
+    const orderPrice = resolveLiveOrderPrice({
+      bestAsk: input.quote.bestAsk,
+      maxAskPrice: input.maxAskPrice,
+      maxSlippage: this.config.liveMaxSlippage ?? DEFAULT_LIVE_MAX_SLIPPAGE,
+      tickSize: Number(input.market.tickSize),
+    });
     const response = (await client.createAndPostMarketOrder(
       {
         tokenID: tokenId,
         side: Side.BUY,
         amount: input.amountUsd,
-        price: input.maxAskPrice,
+        price: orderPrice,
         orderType: OrderType.FAK,
       },
       {

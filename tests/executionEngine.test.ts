@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveTradeAmountUsd } from "../src/executionEngine.js";
+import { resolveLiveOrderPrice, resolveTradeAmountUsd } from "../src/executionEngine.js";
 
 describe("execution sizing", () => {
   it("keeps simulation at the requested $1 size", () => {
@@ -57,5 +57,24 @@ describe("execution sizing", () => {
         autoMinLive: false,
       }),
     ).toBe(1);
+  });
+});
+
+describe("live order pricing (anti-slippage)", () => {
+  it("prices near the best-ask instead of walking up to the cap", () => {
+    // The real bug: best-ask 0.65 but the order was priced at the 0.80 cap and filled ~0.76.
+    expect(resolveLiveOrderPrice({ bestAsk: 0.65, maxAskPrice: 0.8, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.67);
+  });
+
+  it("never exceeds the max cap even with a big slippage tolerance", () => {
+    expect(resolveLiveOrderPrice({ bestAsk: 0.79, maxAskPrice: 0.8, maxSlippage: 0.1, tickSize: 0.01 })).toBe(0.8);
+  });
+
+  it("falls back to the cap when the best-ask is unknown", () => {
+    expect(resolveLiveOrderPrice({ bestAsk: undefined, maxAskPrice: 0.8, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.8);
+  });
+
+  it("rounds to the tick and does not overshoot the cap on rounding", () => {
+    expect(resolveLiveOrderPrice({ bestAsk: 0.795, maxAskPrice: 0.8, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.8);
   });
 });

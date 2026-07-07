@@ -90,7 +90,8 @@ describe("LiveExecutionEngine", () => {
       expect.objectContaining({
         tokenID: "up-token",
         amount: 5,
-        price: 0.98,
+        // Priced near the best-ask (0.91 + 0.02 tolerance), NOT at the 0.98 cap — anti-slippage.
+        price: 0.93,
       }),
       expect.objectContaining({
         tickSize: "0.01",

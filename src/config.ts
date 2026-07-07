@@ -95,6 +95,8 @@ const envSchema = z.object({
   // terrible reward/risk (at 0.90 one loss erases ~9 wins), so cap it: the reward per win (1/ask-1)
   // must be large enough to recover losses. Applies on top of per-market/outcome caps.
   MAX_ASK_PRICE_CEILING: z.coerce.number().gt(0).lte(1).default(0.85),
+  // How far above the observed best-ask a live order may fill before stopping (anti-slippage).
+  LIVE_MAX_SLIPPAGE: z.coerce.number().nonnegative().lt(1).default(0.02),
   MAX_ASK_PRICE_BTC_UP: optionalAskPrice,
   MAX_ASK_PRICE_BTC_DOWN: optionalAskPrice,
   MAX_ASK_PRICE_ETH_UP: optionalAskPrice,
@@ -263,6 +265,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     maxAskPrice: env.MAX_ASK_PRICE,
     maxAskPriceByMarketOutcome,
     maxAskPriceCeiling: env.MAX_ASK_PRICE_CEILING,
+    liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evSafetyMargin: env.EV_SAFETY_MARGIN,
     minDistanceFloorUsdByMarket: {
