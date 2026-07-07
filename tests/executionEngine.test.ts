@@ -14,7 +14,7 @@ describe("execution sizing", () => {
     ).toBe(1);
   });
 
-  it("raises live orders to the market minimum when auto-min is enabled", () => {
+  it("uses the market minimum for live orders when auto-min is enabled (below the min)", () => {
     expect(
       resolveTradeAmountUsd({
         mode: "live",
@@ -23,6 +23,29 @@ describe("execution sizing", () => {
         autoMinLive: true,
       }),
     ).toBe(5);
+  });
+
+  it("uses the market minimum even when the configured live amount is higher", () => {
+    // The whole point of "auto minimum": $7 configured must still trade the $5 exchange minimum.
+    expect(
+      resolveTradeAmountUsd({
+        mode: "live",
+        requestedUsd: 7,
+        orderMinSize: 5,
+        autoMinLive: true,
+      }),
+    ).toBe(5);
+  });
+
+  it("falls back to the requested size when the market minimum is unknown", () => {
+    expect(
+      resolveTradeAmountUsd({
+        mode: "live",
+        requestedUsd: 7,
+        orderMinSize: 0,
+        autoMinLive: true,
+      }),
+    ).toBe(7);
   });
 
   it("keeps strict live sizing when auto-min is disabled", () => {
