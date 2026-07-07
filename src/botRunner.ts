@@ -160,6 +160,12 @@ export class BotRunner {
     await this.deps.state.resetPnl(mode);
   }
 
+  // Re-arm the risk circuit breaker through the running bot's own state instance so the in-memory
+  // state carries the reset and trading resumes immediately (same threshold, not disabled).
+  async resetRiskHalt(mode: Mode): Promise<void> {
+    await this.deps.state.resetRiskHalt(mode);
+  }
+
   async start(options: { once?: boolean } = {}): Promise<void> {
     await this.deps.state.load();
     this.deps.priceFeed.start();
@@ -233,6 +239,7 @@ export class BotRunner {
       this.config.mode,
       { maxDailyLossUsd: this.config.maxDailyLossUsd, maxConsecutiveLosses: this.config.maxConsecutiveLosses },
       nowMs,
+      this.deps.state.getRiskHaltResetAtMs?.()?.[this.config.mode] ?? 0,
     );
     if (riskHalt.tripped) {
       this.notifyRiskHalt(riskHalt, nowMs);

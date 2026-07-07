@@ -634,6 +634,27 @@ describe("UI API", () => {
     expect(state.listTrades()).toHaveLength(1);
     controller.dispose();
   });
+
+  it("re-arms the risk circuit breaker via /api/risk/reset without clearing trades", async () => {
+    const config = await baseConfig(false);
+    const seedState = new StateStore(config.dataDir);
+    await seedState.load();
+    await seedState.recordTradeAttempt(apiTrade());
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app).post("/api/risk/reset").send({ mode: "sim" }).expect(200);
+
+    const state = new StateStore(config.dataDir);
+    await state.load();
+    expect(state.getRiskHaltResetAtMs().sim).toEqual(expect.any(Number));
+    expect(state.listTrades()).toHaveLength(1);
+    controller.dispose();
+  });
 });
 
 describe("MCP over HTTP (/mcp)", () => {

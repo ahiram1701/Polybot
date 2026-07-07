@@ -12,6 +12,7 @@ const EMPTY_STATE: BotState = {
   tradedMarkets: {},
   dailySpendUsd: {},
   pnlResetAtMs: {},
+  riskHaltResetAtMs: {},
 };
 
 // Openings are only needed for the current 5-minute window (at trade time) and for recent display.
@@ -63,6 +64,7 @@ export class StateStore {
           tradedMarkets: normalizeTradedMarkets(parsed.tradedMarkets ?? {}),
           dailySpendUsd: parsed.dailySpendUsd ?? {},
           pnlResetAtMs: normalizePnlResetAtMs(parsed.pnlResetAtMs),
+          riskHaltResetAtMs: normalizePnlResetAtMs(parsed.riskHaltResetAtMs),
         };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -162,6 +164,11 @@ export class StateStore {
     return { ...(this.state.pnlResetAtMs ?? {}) };
   }
 
+  getRiskHaltResetAtMs(): Partial<Record<Mode, number>> {
+    this.assertLoaded();
+    return { ...(this.state.riskHaltResetAtMs ?? {}) };
+  }
+
   getSnapshot(): BotState {
     this.assertLoaded();
     return structuredClone(this.state);
@@ -255,6 +262,15 @@ export class StateStore {
     };
     await this.save();
     await this.appendTradeEvent({ type: "pnl_reset", mode, resetAtMs });
+  }
+
+  async resetRiskHalt(mode: Mode, resetAtMs = Date.now()): Promise<void> {
+    this.assertLoaded();
+    this.state.riskHaltResetAtMs = {
+      ...(this.state.riskHaltResetAtMs ?? {}),
+      [mode]: resetAtMs,
+    };
+    await this.save();
   }
 
   private findTradeKey(slug: string, mode?: Mode): string | undefined {

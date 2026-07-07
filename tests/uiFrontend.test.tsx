@@ -156,6 +156,7 @@ describe("UI frontend components", () => {
       <Dashboard
         busy={false}
         onResetPnl={onResetPnl}
+        onResetRiskHalt={vi.fn()}
         status={{
           ...status({ liveReady: true }),
           pnl: pnlSummary({ realizedUsd: 0.5, payoutUsd: 3, realizedStakeUsd: 2.5 }),
@@ -188,6 +189,7 @@ describe("UI frontend components", () => {
       <Dashboard
         busy={false}
         onResetPnl={vi.fn()}
+        onResetRiskHalt={vi.fn()}
         status={{
           ...status({ liveReady: true }),
           riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 50, consecutiveLosses: 0 },
@@ -200,7 +202,7 @@ describe("UI frontend components", () => {
   });
 
   it("hides the risk banner when the circuit breaker is not tripped", () => {
-    render(<Dashboard busy={false} onResetPnl={vi.fn()} status={status({ liveReady: true })} />);
+    render(<Dashboard busy={false} onResetPnl={vi.fn()} onResetRiskHalt={vi.fn()} status={status({ liveReady: true })} />);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

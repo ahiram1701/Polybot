@@ -106,4 +106,22 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(status.tripped).toBe(false);
     expect(status.dailyLossUsd).toBe(0);
   });
+
+  it("re-arms when the breaker is reset: losses before the reset are ignored", () => {
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: NOW - 3000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: NOW - 2000 }),
+      trade({ id: "l3", won: false, resolvedAtMs: NOW - 1000 }),
+    ];
+    // Without a reset: 3 consecutive losses trip the breaker.
+    expect(evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW).tripped).toBe(true);
+    // Reset at NOW-1500 ignores l1/l2 (and l3 is at NOW-1000 > reset, so 1 loss remains): not tripped.
+    const afterReset = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW, NOW - 1500);
+    expect(afterReset.consecutiveLosses).toBe(1);
+    expect(afterReset.tripped).toBe(false);
+    // Reset at NOW ignores all past losses: clean slate.
+    const fullReset = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW, NOW);
+    expect(fullReset.consecutiveLosses).toBe(0);
+    expect(fullReset.tripped).toBe(false);
+  });
 });

@@ -26,6 +26,7 @@ export function evaluateRiskCircuitBreaker(
   mode: Mode,
   limits: RiskLimits,
   nowMs = Date.now(),
+  haltResetAtMs = 0,
 ): RiskHaltStatus {
   const todayKey = dailySpendKey(nowMs);
   const resolvedToday = trades
@@ -33,7 +34,9 @@ export function evaluateRiskCircuitBreaker(
       (trade) =>
         trade.mode === mode &&
         trade.resolved !== undefined &&
-        dailySpendKey(trade.resolved.resolvedAtMs) === todayKey,
+        dailySpendKey(trade.resolved.resolvedAtMs) === todayKey &&
+        // Ignore losses from before a manual breaker reset so it re-arms with a clean streak.
+        trade.resolved.resolvedAtMs > haltResetAtMs,
     )
     .sort((left, right) => (left.resolved?.resolvedAtMs ?? 0) - (right.resolved?.resolvedAtMs ?? 0));
 

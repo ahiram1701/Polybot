@@ -283,6 +283,17 @@ export function createPolybotMcpServer(client: PolybotClient, options: PolybotMc
       },
       async ({ mode }) => guard(async () => summarizeStatus(await client.resetPnl(mode))),
     );
+
+    server.registerTool(
+      "polybot_reset_risk_halt",
+      {
+        description:
+          "Re-arma el circuit breaker de riesgo de un modo (ignora las pérdidas previas para el conteo), " +
+          "sin cambiar el umbral ni desactivarlo. Usalo cuando el breaker freno el trading y quieres reanudar.",
+        inputSchema: { mode: z.enum(["sim", "live"]) },
+      },
+      async ({ mode }) => guard(async () => summarizeStatus(await client.resetRiskHalt(mode))),
+    );
   }
 
   return server;

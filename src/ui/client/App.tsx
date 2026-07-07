@@ -480,6 +480,18 @@ export function App() {
     }
   }
 
+  async function resetRiskHalt(mode: Mode) {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await api<UiStatus>("/api/risk/reset", { method: "POST", body: JSON.stringify({ mode }) }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -525,7 +537,9 @@ export function App() {
 
         {error && <div className="notice error"><AlertTriangle size={18} />{error}</div>}
 
-        {tab === "dashboard" && <Dashboard status={status} busy={busy} onResetPnl={resetPnl} />}
+        {tab === "dashboard" && (
+          <Dashboard status={status} busy={busy} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
+        )}
         {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
         {tab === "analysis" && (
           <AnalysisPanel
@@ -625,10 +639,12 @@ export function Dashboard({
   status,
   busy,
   onResetPnl,
+  onResetRiskHalt,
 }: {
   status: UiStatus | null;
   busy: boolean;
   onResetPnl: (mode: Mode) => void;
+  onResetRiskHalt: (mode: Mode) => void;
 }) {
   const marketSnapshots = getMarketSnapshots(status);
   const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>("sim");
@@ -649,9 +665,17 @@ export function Dashboard({
               {riskHalt.reason === "daily_loss_limit"
                 ? `Pérdida diaria ${formatUsd(riskHalt.dailyLossUsd)} alcanzó el límite.`
                 : `${riskHalt.consecutiveLosses} pérdidas seguidas alcanzaron el límite.`}{" "}
-              El bot sigue observando; reanuda el próximo día UTC.
+              Reanuda solo el próximo día UTC, o reinícialo ahora sin cambiar el límite.
             </span>
           </div>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => onResetRiskHalt(status?.mode ?? "sim")}
+          >
+            Reiniciar breaker
+          </button>
         </div>
       )}
       <div className="dashboard-grid">

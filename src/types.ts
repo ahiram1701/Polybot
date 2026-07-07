@@ -343,6 +343,9 @@ export interface BotState {
   tradedMarkets: Record<string, TradeAttempt>;
   dailySpendUsd: Record<string, number>;
   pnlResetAtMs?: Partial<Record<Mode, number>>;
+  // When the risk circuit breaker was last manually reset per mode: losses resolved at/before this
+  // are ignored by the breaker, so it re-arms with a fresh streak without changing the threshold.
+  riskHaltResetAtMs?: Partial<Record<Mode, number>>;
 }
 
 export type TradeEvent =

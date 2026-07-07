@@ -157,6 +157,10 @@ export class PolybotClient {
     return this.requestJson("POST", "/api/pnl/reset", { mode });
   }
 
+  resetRiskHalt(mode: Mode): Promise<UiStatus> {
+    return this.requestJson("POST", "/api/risk/reset", { mode });
+  }
+
   private async requestJson<T>(
     method: HttpMethod,
     path: string,

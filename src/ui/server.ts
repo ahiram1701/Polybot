@@ -136,6 +136,11 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.resetPnl(body.mode));
   }));
 
+  app.post("/api/risk/reset", asyncHandler(async (req, res) => {
+    const body = pnlResetRequestSchema.parse(req.body ?? {});
+    res.json(await controller.resetRiskHalt(body.mode));
+  }));
+
   app.get("/api/events", (req, res) => {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",

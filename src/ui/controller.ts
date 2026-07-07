@@ -100,6 +100,7 @@ export interface RunnerLike {
     >,
   ): void;
   resetPnl?(mode: Mode): Promise<void>;
+  resetRiskHalt?(mode: Mode): Promise<void>;
 }
 
 export interface BotControllerDeps {
@@ -292,6 +293,19 @@ export class BotController {
     }
     this.stateSummaryCache = undefined;
     logger.info("P&L reset completed.", { mode });
+    return this.getStatus();
+  }
+
+  async resetRiskHalt(mode: Mode): Promise<UiStatus> {
+    if (this.runner?.resetRiskHalt) {
+      await this.runner.resetRiskHalt(mode);
+    } else {
+      const state = this.stateFactory();
+      await state.load();
+      await state.resetRiskHalt(mode);
+    }
+    this.stateSummaryCache = undefined;
+    logger.info("Risk circuit breaker reset.", { mode });
     return this.getStatus();
   }
 
@@ -691,6 +705,7 @@ export class BotController {
       config.mode,
       { maxDailyLossUsd: config.maxDailyLossUsd, maxConsecutiveLosses: config.maxConsecutiveLosses },
       nowMs,
+      state.getRiskHaltResetAtMs()[config.mode] ?? 0,
     );
 
     if (enabledMarkets.length === 0) {
