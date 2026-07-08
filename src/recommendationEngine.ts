@@ -205,6 +205,11 @@ async function buildMarketRecommendation(
     status === "ready" &&
     changed &&
     best.metrics.tradeCount > 0 &&
+    // Never adjust into a losing config: the recommended must have POSITIVE out-of-sample ROI in
+    // absolute terms, not merely be "less negative" than the current one. (Auto-apply additionally
+    // requires a positive conservative lower bound — see canAutoApply.)
+    best.metrics.walkForwardRoi !== undefined &&
+    best.metrics.walkForwardRoi > 0 &&
     improvementYield !== undefined &&
     improvementYield > 0;
   const cooldownActive = isAutoApplyCooldownActive(settings.aiLastAppliedAtMs, nowMs, thresholds.autoApplyCooldownMs);

@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // Seed the candidate grid near the productive region (the engine explores around the current
   // distance), so the walk-forward metrics are computed on configs that actually execute.
   const settings: RecommendationSettings = {
-    minDistanceUsdByMarket: { BTC: 21, ETH: 0.25, DOGE: 0.00005 },
+    minDistanceUsdByMarket: { BTC: 21, ETH: 0.25, DOGE: 0.0001 },
     entryWindowSecondsByMarket: { BTC: 50, ETH: 55, DOGE: 55 },
     entryWindowSeconds: 50,
     maxAskPrice: 0.98,
