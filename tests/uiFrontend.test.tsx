@@ -454,8 +454,9 @@ describe("UI frontend components", () => {
     expect(screen.getByText("Se auto-aplica")).toBeInTheDocument();
     expect(screen.getByText("Sugerencia (no auto)")).toBeInTheDocument();
     expect(screen.getByText("Datos insuficientes")).toBeInTheDocument();
-    // Header summary counts the decisions.
+    // Header summary counts the decisions and shows the total stored samples.
     expect(screen.getByText(/se auto-aplican/)).toBeInTheDocument();
+    expect(screen.getByText(/muestras/)).toBeInTheDocument();
     // Plain-language line + requirement chips with value/threshold context.
     expect(screen.getAllByText(/aciertos/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Trades/).length).toBeGreaterThan(0);
@@ -739,6 +740,7 @@ function recommendationsResponse(): AiRecommendationsResponse {
   const at = Date.UTC(2026, 4, 8, 12);
   return {
     generatedAtMs: at,
+    totalSamples: 20146,
     thresholds: {
       minAutoSamples: 40,
       minAutoTrades: 15,

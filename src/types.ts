@@ -221,6 +221,8 @@ export interface AiRecommendationsResponse {
   recommendations: AiRecommendation[];
   // Active auto-apply thresholds, so the UI can render a pass/fail checklist for each recommendation.
   thresholds?: AutoApplyThresholds;
+  // Total analytics samples Polybot has stored (whole history, before the per-market learning cap).
+  totalSamples?: number;
 }
 
 export interface StrategyMetrics {

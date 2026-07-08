@@ -1018,6 +1018,11 @@ export function AnalysisPanel({
               <strong>{items.filter((r) => !r.canApply).length}</strong> sin datos
             </span>
           )}
+          {recommendations?.totalSamples !== undefined && (
+            <span className="recommendation-samples" title="Muestras de análisis almacenadas en total">
+              {recommendations.totalSamples.toLocaleString("es-MX")} muestras
+            </span>
+          )}
           {recommendations && (
             <span className="recommendation-fresh">Actualizado {formatDateTime(recommendations.generatedAtMs)}</span>
           )}

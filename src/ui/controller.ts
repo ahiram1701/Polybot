@@ -75,7 +75,10 @@ import { applySettings, UiSettingsStore } from "./settings.js";
 
 const DEFAULT_OLLAMA_HOST = "https://ollama.com";
 const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
-const AI_AUTO_APPLY_POLL_MS = 60_000;
+// The predictive autoajuste re-evaluates every 2 minutes: configs don't need per-minute changes, and
+// the wider learning window (MAX_RECOMMENDATION_SAMPLES_PER_MARKET) makes each pass heavier, so this
+// keeps the CPU duty-cycle low. The compute yields to the event loop, so the bot stays responsive.
+const AI_AUTO_APPLY_POLL_MS = 120_000;
 
 export class ControllerError extends Error {
   constructor(

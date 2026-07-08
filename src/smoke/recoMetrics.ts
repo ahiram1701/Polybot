@@ -23,7 +23,7 @@ async function main(): Promise<void> {
     maxAskPrice: 0.98,
     minDistanceFloorUsdByMarket: config.minDistanceFloorUsdByMarket,
   };
-  const response = buildRecommendations(samples, settings);
+  const response = await buildRecommendations(samples, settings);
   console.log(`Muestras: ${samples.length}`);
   for (const rec of response.recommendations) {
     const best = rec.recommended ?? rec.current;

@@ -8,9 +8,9 @@ import {
 import type { AnalyticsSample, MarketSymbol, Outcome } from "../src/types.js";
 
 describe("RecommendationEngine", () => {
-  it("chooses a predictive window and distance using walk-forward validation", () => {
+  it("chooses a predictive window and distance using walk-forward validation", async () => {
     const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true));
-    const response = buildRecommendations(samples, settings());
+    const response = (await buildRecommendations(samples, settings()));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect(btc?.recommended?.entryWindowSeconds).toBeGreaterThanOrEqual(22);
@@ -24,7 +24,7 @@ describe("RecommendationEngine", () => {
     expect(btc?.recommended?.metrics.overfitRisk).toBeLessThanOrEqual(0.45);
   });
 
-  it("uses one unified threshold set so sim and live decide identically", () => {
+  it("uses one unified threshold set so sim and live decide identically", async () => {
     // Sim must predict live: both modes share ONE threshold set. A change (current 10s -> predictive
     // ~22s optimum) must resolve to the SAME auto-apply decision in both modes, not a stricter one
     // for live — otherwise a sim dry run wouldn't tell you what live will do.
@@ -38,10 +38,10 @@ describe("RecommendationEngine", () => {
       entryWindowSecondsByMarket: { BTC: 10, ETH: 10, DOGE: 10 },
     };
 
-    const sim = buildRecommendations(samples, farSettings, undefined, undefined, SIM_AUTO_APPLY_THRESHOLDS).recommendations.find(
+    const sim = (await buildRecommendations(samples, farSettings, undefined, undefined, SIM_AUTO_APPLY_THRESHOLDS)).recommendations.find(
       (recommendation) => recommendation.market === "BTC",
     );
-    const live = buildRecommendations(samples, farSettings, undefined, undefined, LIVE_AUTO_APPLY_THRESHOLDS).recommendations.find(
+    const live = (await buildRecommendations(samples, farSettings, undefined, undefined, LIVE_AUTO_APPLY_THRESHOLDS)).recommendations.find(
       (recommendation) => recommendation.market === "BTC",
     );
 
@@ -50,11 +50,11 @@ describe("RecommendationEngine", () => {
     expect(live?.canApply).toBe(sim?.canApply);
   });
 
-  it("keeps low-sample markets exploratory", () => {
-    const response = buildRecommendations(
+  it("keeps low-sample markets exploratory", async () => {
+    const response = (await buildRecommendations(
       Array.from({ length: 9 }, (_value, index) => predictiveSample("ETH", index, "UP", true)),
       settings(),
-    );
+    ));
     const eth = response.recommendations.find((recommendation) => recommendation.market === "ETH");
 
     expect(eth?.status).toBe("insufficient_data");
@@ -63,30 +63,30 @@ describe("RecommendationEngine", () => {
     expect(eth?.canAutoApply).toBe(false);
   });
 
-  it("rejects auto-apply when quote coverage is below the configured minimum", () => {
+  it("rejects auto-apply when quote coverage is below the configured minimum", async () => {
     const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", index < 20));
     // Production ships a relaxed 0.02 coverage gate (thin real liquidity); pass a strict one here to
     // exercise the coverage gate mechanism.
     const strictCoverage = { ...SIM_AUTO_APPLY_THRESHOLDS, minQuoteCoverage: 0.8 };
-    const response = buildRecommendations(samples, settings(), undefined, undefined, strictCoverage);
+    const response = (await buildRecommendations(samples, settings(), undefined, undefined, strictCoverage));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect((btc?.recommended ?? btc?.current)?.metrics.quoteCoverage).toBeLessThan(0.8);
     expect(btc?.canAutoApply).toBe(false);
   });
 
-  it("blocks auto-apply while a configured recommendation cooldown is active", () => {
+  it("blocks auto-apply while a configured recommendation cooldown is active", async () => {
     // Production ships with a 0 cooldown (see unified-thresholds test), but the cooldown mechanism
     // itself must still gate when a non-zero cooldown is configured.
     const nowMs = Date.UTC(2026, 4, 8, 18);
     const withCooldown = { ...SIM_AUTO_APPLY_THRESHOLDS, autoApplyCooldownMs: 30 * 60_000 };
-    const response = buildRecommendations(
+    const response = (await buildRecommendations(
       Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true)),
       { ...settings(), aiLastAppliedAtMs: nowMs - 10 * 60_000 },
       nowMs,
       undefined,
       withCooldown,
-    );
+    ));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect(btc?.canApply).toBe(true);
@@ -94,44 +94,44 @@ describe("RecommendationEngine", () => {
     expect(btc?.reason).toContain("cooldown");
   });
 
-  it("has no time cooldown in production: re-applies the best config right after a previous apply", () => {
+  it("has no time cooldown in production: re-applies the best config right after a previous apply", async () => {
     const nowMs = Date.UTC(2026, 4, 8, 18);
     // Just applied 1 minute ago. With the unified (cooldown 0) thresholds, neither mode is time-locked
     // — the minYieldImprovement margin is the only anti-thrash guard.
-    const btc = buildRecommendations(
+    const btc = (await buildRecommendations(
       Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true)),
       { ...settings(), entryWindowSecondsByMarket: { BTC: 10, ETH: 10, DOGE: 10 }, aiLastAppliedAtMs: nowMs - 60_000 },
       nowMs,
       undefined,
       LIVE_AUTO_APPLY_THRESHOLDS,
-    ).recommendations.find((recommendation) => recommendation.market === "BTC");
+    )).recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect(btc?.canAutoApply).toBe(true);
     expect(btc?.reason).not.toContain("cooldown");
   });
 
-  it("does not trust an in-sample pattern that fails later out of sample", () => {
+  it("does not trust an in-sample pattern that fails later out of sample", async () => {
     const samples = Array.from({ length: 45 }, (_value, index) =>
       overfitSample("BTC", index, index < 20 ? "UP" : "DOWN"),
     );
-    const response = buildRecommendations(samples, settings());
+    const response = (await buildRecommendations(samples, settings()));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect(btc?.canAutoApply).toBe(false);
     expect(btc?.confidence).not.toBe("high");
   });
 
-  it("never recommends an entry window below the 25s floor", () => {
+  it("never recommends an entry window below the 25s floor", async () => {
     // Signals that would ideally fire in a 10s window: the floor must push the pick to >= 25s.
     const samples = Array.from({ length: 45 }, (_value, index) => lateSignalSample("BTC", index));
-    const response = buildRecommendations(samples, settings());
+    const response = (await buildRecommendations(samples, settings()));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     expect((btc?.recommended ?? btc?.current)?.entryWindowSeconds).toBeGreaterThanOrEqual(25);
     expect(btc?.recommended?.entryWindowSeconds ?? 60).toBeLessThanOrEqual(60);
   });
 
-  it("prefers a frequent moderate-edge config over a rare high-edge one (yield objective)", () => {
+  it("prefers a frequent moderate-edge config over a rare high-edge one (yield objective)", async () => {
     // Two disjoint setups on BTC:
     //  - a FREQUENT one at ~$18 distance (fires most windows) with a solid but not huge edge,
     //  - a RARE one at ~$60 distance (fires seldom) with a near-certain edge.
@@ -140,7 +140,7 @@ describe("RecommendationEngine", () => {
     const samples = Array.from({ length: 80 }, (_value, index) => frequencySample("BTC", index));
     // Current config sits on the RARE $60 setup; a greedy per-trade objective would keep it there.
     const rareCurrent = { ...settings(), minDistanceUsdByMarket: { ...settings().minDistanceUsdByMarket, BTC: 60 } };
-    const response = buildRecommendations(samples, rareCurrent);
+    const response = (await buildRecommendations(samples, rareCurrent));
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
     const chosen = btc?.recommended ?? btc?.current;
@@ -148,12 +148,12 @@ describe("RecommendationEngine", () => {
     expect((chosen?.metrics.yieldPerWindow ?? 0)).toBeGreaterThan(0);
   });
 
-  it("does not auto-apply in sim on too few executable trades", () => {
+  it("does not auto-apply in sim on too few executable trades", async () => {
     // 14 windows produce an executable trade — below SIM minAutoTrades (15).
     const samples = Array.from({ length: 45 }, (_value, index) =>
       predictiveSample("BTC", index, "UP", index < 14),
     );
-    const btc = buildRecommendations(samples, settings(), undefined, undefined, SIM_AUTO_APPLY_THRESHOLDS).recommendations.find(
+    const btc = (await buildRecommendations(samples, settings(), undefined, undefined, SIM_AUTO_APPLY_THRESHOLDS)).recommendations.find(
       (recommendation) => recommendation.market === "BTC",
     );
 
@@ -161,23 +161,23 @@ describe("RecommendationEngine", () => {
     expect(btc?.canAutoApply).toBe(false);
   });
 
-  it("never recommends a distance below the per-market floor", () => {
+  it("never recommends a distance below the per-market floor", async () => {
     // Regression for the phantom auto-apply: the applier clamps recommended distances up to the
     // floor, so the engine must not propose anything below it (or it would "apply" a no-op forever).
     const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true));
 
     // Unfloored: the engine is free to pick the data optimum (near the ~$18-20 signal band).
-    const unfloored = buildRecommendations(samples, settings()).recommendations.find(
+    const unfloored = (await buildRecommendations(samples, settings())).recommendations.find(
       (recommendation) => recommendation.market === "BTC",
     );
     const unflooredPick = unfloored?.recommended?.minDistanceUsd ?? unfloored?.current?.minDistanceUsd ?? 0;
 
     // Set the floor above that pick: whatever it now proposes must sit at or above the floor.
     const floor = unflooredPick + 2;
-    const floored = buildRecommendations(samples, {
+    const floored = (await buildRecommendations(samples, {
       ...settings(),
       minDistanceFloorUsdByMarket: { BTC: floor },
-    }).recommendations.find((recommendation) => recommendation.market === "BTC");
+    })).recommendations.find((recommendation) => recommendation.market === "BTC");
 
     if (floored?.recommended) {
       expect(floored.recommended.minDistanceUsd).toBeGreaterThanOrEqual(floor);

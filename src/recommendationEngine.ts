@@ -55,12 +55,18 @@ const WALK_FORWARD_MIN_TRAINING_TRADES = 5;
 const WALK_FORWARD_TRAINING_WINDOW = 300;
 // Per-market history fed into the grid search. With the bounded k-NN above the cost scales
 // ~linearly, so we keep enough executable trades to reach statistical significance.
-const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 300;
+const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 900;
 // Entry-window candidates floored at 25s: below ~25s the quote coverage collapses to <=3% (measured
 // on real samples), so those configs almost never execute. Flooring here stops the autoajuste from
 // converging on degenerate 5-7s windows that barely trade.
 const MIN_CANDIDATE_WINDOW_SECONDS = 25;
-const CANDIDATE_WINDOWS = Array.from({ length: 61 - MIN_CANDIDATE_WINDOW_SECONDS }, (_value, index) => MIN_CANDIDATE_WINDOW_SECONDS + index);
+// Dense 25..60s (1s steps) plus coarse 65..120s (5s steps): lets the engine explore EARLIER entries
+// (where the favourite is cheaper → more executable coverage) once 120s samples exist, without
+// exploding the grid cost. The >60s candidates simply produce no trades until 120s data accumulates.
+const CANDIDATE_WINDOWS = [
+  ...Array.from({ length: 61 - MIN_CANDIDATE_WINDOW_SECONDS }, (_value, index) => MIN_CANDIDATE_WINDOW_SECONDS + index),
+  ...Array.from({ length: 12 }, (_value, index) => 65 + index * 5),
+];
 const DISTANCE_STEPS: Record<MarketSymbol, number> = {
   BTC: 1,
   ETH: 0.25,
@@ -116,23 +122,34 @@ export class RecommendationEngine {
     thresholds: AutoApplyThresholds = LIVE_AUTO_APPLY_THRESHOLDS,
   ): Promise<AiRecommendationsResponse> {
     const samples = await readAnalyticsSamples(join(this.dataDir, "analytics.jsonl"));
-    return buildRecommendations(samples, settings, nowMs, MAX_RECOMMENDATION_SAMPLES_PER_MARKET, thresholds);
+    return await buildRecommendations(samples, settings, nowMs, MAX_RECOMMENDATION_SAMPLES_PER_MARKET, thresholds);
   }
 }
 
-export function buildRecommendations(
+// The grid search is CPU-heavy; yield to the event loop every few candidates so the recommendation
+// tick never freezes the bot's trading/polling loop (see buildMarketRecommendation).
+const CANDIDATE_YIELD_INTERVAL = 40;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+export async function buildRecommendations(
   samples: AnalyticsSample[],
   settings: RecommendationSettings,
   nowMs = Date.now(),
   maxSamplesPerMarket = MAX_RECOMMENDATION_SAMPLES_PER_MARKET,
   thresholds: AutoApplyThresholds = LIVE_AUTO_APPLY_THRESHOLDS,
-): AiRecommendationsResponse {
-  return {
-    generatedAtMs: nowMs,
-    recommendations: SUPPORTED_MARKETS.map((market) =>
-      buildMarketRecommendation(market, recentMarketSamples(samples, market, maxSamplesPerMarket), settings, nowMs, thresholds),
-    ),
-  };
+): Promise<AiRecommendationsResponse> {
+  const recommendations: AiRecommendation[] = [];
+  for (const market of SUPPORTED_MARKETS) {
+    recommendations.push(
+      await buildMarketRecommendation(market, recentMarketSamples(samples, market, maxSamplesPerMarket), settings, nowMs, thresholds),
+    );
+  }
+  return { generatedAtMs: nowMs, recommendations, totalSamples: samples.length };
 }
 
 function recentMarketSamples(samples: AnalyticsSample[], market: MarketSymbol, limit: number): AnalyticsSample[] {
@@ -146,22 +163,29 @@ function recentMarketSamples(samples: AnalyticsSample[], market: MarketSymbol, l
     .slice(-limit);
 }
 
-function buildMarketRecommendation(
+async function buildMarketRecommendation(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   settings: RecommendationSettings,
   nowMs: number,
   thresholds: AutoApplyThresholds,
-): AiRecommendation {
+): Promise<AiRecommendation> {
   const currentWindow = settings.entryWindowSecondsByMarket[market] ?? settings.entryWindowSeconds;
   const currentDistance = getMinDistanceUsd(settings.minDistanceUsdByMarket, market);
   const distanceFloor = Math.max(settings.minDistanceFloorUsdByMarket?.[market] ?? 0, 0);
   const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice);
-  const candidates = buildCandidateGrid(market, samples, currentDistance, distanceFloor)
-    .map((candidate) =>
-      buildCandidate(market, samples, candidate.entryWindowSeconds, candidate.minDistanceUsd, settings.maxAskPrice),
-    )
-    .filter((candidate) => candidate.metrics.adjustedRoi !== undefined);
+  const grid = buildCandidateGrid(market, samples, currentDistance, distanceFloor);
+  const candidates: RecommendationCandidate[] = [];
+  for (let index = 0; index < grid.length; index += 1) {
+    const built = buildCandidate(market, samples, grid[index].entryWindowSeconds, grid[index].minDistanceUsd, settings.maxAskPrice);
+    if (built.metrics.adjustedRoi !== undefined) {
+      candidates.push(built);
+    }
+    // Yield periodically so a large grid never blocks the event loop (keeps trading responsive).
+    if ((index + 1) % CANDIDATE_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+    }
+  }
   const best = selectBestCandidate(candidates, current) ?? current;
   const improvementAdjustedRoi =
     best.metrics.adjustedRoi !== undefined && current.metrics.adjustedRoi !== undefined

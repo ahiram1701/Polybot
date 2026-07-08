@@ -16,7 +16,10 @@ import type {
   WindowOpening,
 } from "./types.js";
 
-export const ANALYTICS_WINDOW_SECONDS = 60;
+// Capture the last 120s of each window (was 60s) so the engine can learn/execute EARLIER entries,
+// where the favourite is still cheap — the main lever for more executable coverage on BTC/ETH. Only
+// affects newly captured samples; historical 60s samples are used as-is.
+export const ANALYTICS_WINDOW_SECONDS = 120;
 // Max time gap allowed when matching a captured quote to a signal tick. Widened from 6s to 12s to
 // recover signals whose nearest quote landed slightly outside the old window (more executable
 // coverage). Single source of truth: recommendationEngine, strategyAnalysisEngine and the EV-gate
