@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { readAnalyticsSamples } from "./analyticsRecorder.js";
+import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
 import { getMinDistanceUsd, SUPPORTED_MARKETS } from "./markets.js";
 import type {
   AiRecommendation,
@@ -8,6 +8,7 @@ import type {
   AnalyticsQuotePoint,
   AnalyticsSample,
   AnalyticsTickPoint,
+  AutoApplyThresholds,
   MarketDistanceSettings,
   MarketEntryWindowSettings,
   MarketSymbol,
@@ -17,39 +18,18 @@ import type {
   RecommendationMetrics,
 } from "./types.js";
 
+export type { AutoApplyThresholds } from "./types.js";
+
 const MIN_READY_SAMPLES = 10;
 const MIN_AUTO_TRADES = 20;
 
-export interface AutoApplyThresholds {
-  minAutoSamples: number;
-  minAutoTrades: number;
-  minQuoteCoverage: number;
-  // Minimum improvement in realized yield-per-window (edge × execution rate) required to auto-apply.
-  minYieldImprovement: number;
-  maxOverfitRisk: number;
-  // How far a single auto-apply may move from the current settings. In live this is a tight rail
-  // (only fine-tune in small steps); in sim it is loose enough to converge to the optimum.
-  maxWindowChangeSeconds: number;
-  maxDistanceChangeRatio: number;
-}
-
-// Live moves real money: keep strict gates (many executable trades + high quote coverage required)
-// and only allow small fine-tuning steps per apply.
-export const LIVE_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
-  minAutoSamples: 40,
-  minAutoTrades: 20,
-  minQuoteCoverage: 0.8,
-  minYieldImprovement: 0.002,
-  maxOverfitRisk: 0.45,
-  maxWindowChangeSeconds: 5,
-  maxDistanceChangeRatio: 0.15,
-};
-
-// Sim is paper money: relax the volume/coverage gates to match the thin real liquidity of these
-// 5-minute markets (~1-3% of windows executable), so the autoajuste can actually act, and allow
-// it to converge to the recommended optimum. The quality gates (out-of-sample ROI > 0, overfit
-// <= max, ROI improvement) still guard against bad strategies.
-export const SIM_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
+// ONE set of thresholds for BOTH sim and live, so a sim run faithfully predicts live — if the
+// autoajuste behaved differently per mode, sim would be worthless as a dry run. No time lock: apply
+// the best data-supported config every evaluation (~60s) so the bot runs the best strategy per
+// window; the minYieldImprovement margin (not a timer) is the anti-thrash guard. Coverage/trade
+// gates are relaxed to the thin real liquidity of these 5-min markets so the autoajuste can act,
+// and the quality gates (out-of-sample ROI > 0, overfit <= max, yield improvement) still protect.
+export const AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
   minAutoSamples: 40,
   minAutoTrades: 15,
   minQuoteCoverage: 0.02,
@@ -57,13 +37,16 @@ export const SIM_AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
   maxOverfitRisk: 0.45,
   maxWindowChangeSeconds: 60,
   maxDistanceChangeRatio: 10,
+  autoApplyCooldownMs: 0,
 };
 
-export function autoApplyThresholdsForMode(mode: Mode): AutoApplyThresholds {
-  return mode === "live" ? LIVE_AUTO_APPLY_THRESHOLDS : SIM_AUTO_APPLY_THRESHOLDS;
+// Kept as aliases for compatibility: both modes now use the same thresholds.
+export const LIVE_AUTO_APPLY_THRESHOLDS = AUTO_APPLY_THRESHOLDS;
+export const SIM_AUTO_APPLY_THRESHOLDS = AUTO_APPLY_THRESHOLDS;
+
+export function autoApplyThresholdsForMode(_mode: Mode): AutoApplyThresholds {
+  return AUTO_APPLY_THRESHOLDS;
 }
-const AUTO_APPLY_COOLDOWN_MS = 30 * 60_000;
-const QUOTE_MATCH_WINDOW_MS = 6_000;
 const WALK_FORWARD_MIN_TRAINING_TRADES = 5;
 // k-NN walk-forward only considers the most recent observations as neighbours. This keeps the
 // per-candidate cost linear (O(obs * window)) instead of O(obs^2), so we can feed in much more
@@ -89,6 +72,10 @@ export interface RecommendationSettings {
   entryWindowSecondsByMarket: MarketEntryWindowSettings;
   entryWindowSeconds: number;
   maxAskPrice: number;
+  // Per-market distance floor: the engine must never recommend a distance below this, because the
+  // applier clamps to it. Without this the engine "recommends" sub-floor configs that get clamped
+  // away, producing phantom auto-applies that never change anything.
+  minDistanceFloorUsdByMarket?: Partial<Record<MarketSymbol, number>>;
   aiLastAppliedAtMs?: number;
 }
 
@@ -168,8 +155,9 @@ function buildMarketRecommendation(
 ): AiRecommendation {
   const currentWindow = settings.entryWindowSecondsByMarket[market] ?? settings.entryWindowSeconds;
   const currentDistance = getMinDistanceUsd(settings.minDistanceUsdByMarket, market);
+  const distanceFloor = Math.max(settings.minDistanceFloorUsdByMarket?.[market] ?? 0, 0);
   const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice);
-  const candidates = buildCandidateGrid(market, samples, currentDistance)
+  const candidates = buildCandidateGrid(market, samples, currentDistance, distanceFloor)
     .map((candidate) =>
       buildCandidate(market, samples, candidate.entryWindowSeconds, candidate.minDistanceUsd, settings.maxAskPrice),
     )
@@ -195,7 +183,7 @@ function buildMarketRecommendation(
     best.metrics.tradeCount > 0 &&
     improvementYield !== undefined &&
     improvementYield > 0;
-  const cooldownActive = isAutoApplyCooldownActive(settings.aiLastAppliedAtMs, nowMs);
+  const cooldownActive = isAutoApplyCooldownActive(settings.aiLastAppliedAtMs, nowMs, thresholds.autoApplyCooldownMs);
   const canAutoApply =
     canApply &&
     !cooldownActive &&
@@ -240,8 +228,9 @@ function buildCandidateGrid(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   currentDistance: number,
+  distanceFloor = 0,
 ): Array<Pick<RecommendationCandidate, "entryWindowSeconds" | "minDistanceUsd">> {
-  const distances = buildDistanceCandidates(market, samples, currentDistance);
+  const distances = buildDistanceCandidates(market, samples, currentDistance, distanceFloor);
   return CANDIDATE_WINDOWS.flatMap((entryWindowSeconds) =>
     distances.map((minDistanceUsd) => ({ entryWindowSeconds, minDistanceUsd })),
   );
@@ -251,15 +240,23 @@ function buildDistanceCandidates(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   currentDistance: number,
+  distanceFloor = 0,
 ): number[] {
   const step = DISTANCE_STEPS[market];
   const distances = new Set<number>();
   const add = (value: number) => {
     const rounded = roundToStep(market, value, step);
-    if (rounded > 0) {
+    // Never propose a distance below the market's edge floor: the applier clamps to it, so anything
+    // below would be a phantom change that never takes effect.
+    if (rounded > 0 && rounded >= distanceFloor) {
       distances.add(rounded);
     }
   };
+
+  // Always keep the floor itself available so the engine can evaluate moving up to it.
+  if (distanceFloor > 0) {
+    distances.add(roundToStep(market, Math.ceil(distanceFloor / step) * step, step));
+  }
 
   for (let offset = -10; offset <= 10; offset += 1) {
     add(currentDistance + offset * step);
@@ -591,8 +588,8 @@ function recommendationReason(args: {
   return "La combinacion actual sigue siendo competitiva con los datos disponibles.";
 }
 
-function isAutoApplyCooldownActive(lastAppliedAtMs: number | undefined, nowMs: number): boolean {
-  return lastAppliedAtMs !== undefined && nowMs - lastAppliedAtMs < AUTO_APPLY_COOLDOWN_MS;
+function isAutoApplyCooldownActive(lastAppliedAtMs: number | undefined, nowMs: number, cooldownMs: number): boolean {
+  return cooldownMs > 0 && lastAppliedAtMs !== undefined && nowMs - lastAppliedAtMs < cooldownMs;
 }
 
 function isWithinAutoApplyChange(

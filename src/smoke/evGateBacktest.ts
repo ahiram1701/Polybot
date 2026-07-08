@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { readAnalyticsSamples } from "../analyticsRecorder.js";
+import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "../analyticsRecorder.js";
 import { loadConfig } from "../config.js";
 import { calculateExpectedValue } from "../expectedValue.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
@@ -15,7 +15,6 @@ import type { MarketSymbol } from "../types.js";
  *
  * Run: npx tsx src/smoke/evGateBacktest.ts
  */
-const QUOTE_MATCH_WINDOW_MS = 6_000;
 const STAKE_USD = 1;
 
 async function main(): Promise<void> {
@@ -39,8 +38,8 @@ async function main(): Promise<void> {
       UP: { wins: 0, trades: 0 },
       DOWN: { wins: 0, trades: 0 },
     };
-    const noGate = { trades: 0, net: 0 };
-    const gate = { trades: 0, net: 0 };
+    const noGate = { trades: 0, wins: 0, net: 0 };
+    const gate = { trades: 0, wins: 0, net: 0 };
 
     for (const sample of samples) {
       const signalTick = sample.ticks
@@ -67,6 +66,9 @@ async function main(): Promise<void> {
 
       noGate.trades += 1;
       noGate.net += result;
+      if (won) {
+        noGate.wins += 1;
+      }
 
       const h = history[outcome];
       if (h.trades >= minHistoryTrades) {
@@ -82,6 +84,9 @@ async function main(): Promise<void> {
         if (ev.passesRecommendedEntry) {
           gate.trades += 1;
           gate.net += result;
+          if (won) {
+            gate.wins += 1;
+          }
         }
       }
       h.trades += 1;
@@ -91,8 +96,8 @@ async function main(): Promise<void> {
     }
 
     console.log(
-      `${market}: SIN gate -> trades=${noGate.trades} neto=$${noGate.net.toFixed(2)} ROI=${roi(noGate)} | ` +
-        `CON gate -> trades=${gate.trades} neto=$${gate.net.toFixed(2)} ROI=${roi(gate)}`,
+      `${market}: SIN gate -> trades=${noGate.trades} win=${winRate(noGate)} neto=$${noGate.net.toFixed(2)} ROI=${roi(noGate)} | ` +
+        `CON gate -> trades=${gate.trades} win=${winRate(gate)} neto=$${gate.net.toFixed(2)} ROI=${roi(gate)}`,
     );
   }
 }
@@ -106,6 +111,10 @@ function tradeResult(ask: number, won: boolean, market: MarketSymbol): number {
 
 function roi(bucket: { trades: number; net: number }): string {
   return bucket.trades > 0 ? `${((100 * bucket.net) / (bucket.trades * STAKE_USD)).toFixed(1)}%` : "-";
+}
+
+function winRate(bucket: { trades: number; wins: number }): string {
+  return bucket.trades > 0 ? `${((100 * bucket.wins) / bucket.trades).toFixed(0)}%` : "-";
 }
 
 main().catch((error) => {

@@ -448,11 +448,14 @@ export class BotController {
 
   async getAiRecommendations(nowMs = Date.now()): Promise<AiRecommendationsResponse> {
     const settings = await this.settingsStore.load(this.baseConfig);
-    return this.recommendationEngine.recommend(
-      toRecommendationSettings(settings),
+    const thresholds = autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode);
+    const response = await this.recommendationEngine.recommend(
+      toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
       nowMs,
-      autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
+      thresholds,
     );
+    // Expose the active thresholds so the Análisis tab can render a pass/fail checklist per market.
+    return { ...response, thresholds };
   }
 
   private startAiAutoApplyLoop(): void {
@@ -485,7 +488,7 @@ export class BotController {
         return [];
       }
       const response = await this.recommendationEngine.recommend(
-        toRecommendationSettings(settings),
+        toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
         nowMs,
         autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
       );
@@ -1015,8 +1018,6 @@ export class BotController {
       liveTradeAmountUsd: config.liveTradeAmountUsd,
       liveTradeAmountUsdByMarketOutcome: config.liveTradeAmountUsdByMarketOutcome ?? settings.liveTradeAmountUsdByMarketOutcome,
       autoMinLive: config.autoMinLive,
-      autoAdjustLiveByMarketOutcome: config.autoAdjustLiveByMarketOutcome ?? settings.autoAdjustLiveByMarketOutcome,
-      autoAdjustAfterLossByMarketOutcome: config.autoAdjustAfterLossByMarketOutcome ?? settings.autoAdjustAfterLossByMarketOutcome,
       maxAskPrice: config.maxAskPrice,
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
       maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
@@ -1124,12 +1125,16 @@ function isApplicableRecommendation(recommendation: AiRecommendation): recommend
   return recommendation.canAutoApply && recommendation.recommended !== undefined;
 }
 
-function toRecommendationSettings(settings: UiSettings): RecommendationSettings {
+function toRecommendationSettings(
+  settings: UiSettings,
+  distanceFloors?: Partial<Record<MarketSymbol, number>>,
+): RecommendationSettings {
   return {
     minDistanceUsdByMarket: settings.minDistanceUsdByMarket,
     entryWindowSecondsByMarket: settings.entryWindowSecondsByMarket,
     entryWindowSeconds: settings.entryWindowSeconds,
     maxAskPrice: settings.maxAskPrice,
+    minDistanceFloorUsdByMarket: distanceFloors,
     aiLastAppliedAtMs: settings.aiLastAppliedAtMs,
   };
 }

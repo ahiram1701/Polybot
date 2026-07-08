@@ -1740,3 +1740,262 @@ tr.selected-row {
   font-weight: 700;
   color: var(--muted-strong);
 }
+
+/* Autoajuste recommendation view (Análisis tab) */
+.recommendation-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.4rem 0 0.2rem;
+}
+
+.recommendation-summary-note {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+}
+
+.recommendation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.9rem;
+}
+
+.recommendation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.recommendation-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.recommendation-card-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.recommendation-configs {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.recommendation-config {
+  display: flex;
+  flex-direction: column;
+}
+
+.recommendation-config-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.recommendation-config.recommended strong {
+  color: var(--accent, #22c55e);
+}
+
+.recommendation-arrow {
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+
+.recommendation-reason {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted-strong);
+}
+
+.recommendation-guards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+}
+
+.recommendation-guards .guard-ok {
+  color: var(--positive, #16a34a);
+}
+
+.recommendation-guards .guard-fail {
+  color: var(--negative, #dc2626);
+}
+
+.recommendation-guards .guard-detail {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.recommendation-fresh {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.recommendation-card .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.changed-value {
+  color: var(--positive, #16a34a);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--positive, #16a34a) 14%, transparent);
+  border-radius: 5px;
+  padding: 0 0.28rem;
+}
+
+.recommendation-requirements {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.requirements-ok,
+.requirements-missing {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.requirements-ok {
+  color: var(--positive, #16a34a);
+}
+
+.requirements-missing {
+  color: var(--warning, #d97706);
+}
+
+.recommendation-requirements details summary {
+  cursor: pointer;
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  list-style: none;
+}
+
+.recommendation-requirements details summary::-webkit-details-marker {
+  display: none;
+}
+
+.recommendation-requirements details summary::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+
+.recommendation-requirements details[open] summary::before {
+  content: "▾ ";
+}
+
+.recommendation-requirements details .recommendation-guards {
+  margin-top: 0.4rem;
+}
+
+/* --- Compact, plain-language recommendation cards --- */
+.recommendation-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.recommendation-counts {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+}
+
+.recommendation-counts strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.recommendation-grid {
+  gap: 0.75rem;
+}
+
+.recommendation-card {
+  gap: 0.55rem;
+  padding: 0.85rem 0.95rem;
+}
+
+.recommendation-plain {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted-strong);
+  line-height: 1.45;
+}
+
+.recommendation-plain .positive {
+  color: var(--positive, #16a34a);
+  font-weight: 700;
+}
+
+.recommendation-plain .negative {
+  color: var(--negative, #dc2626);
+  font-weight: 700;
+}
+
+.requirement-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.req-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-soft, rgba(127, 127, 127, 0.12));
+  font-size: 0.76rem;
+  color: var(--muted-strong);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.req-chip .req-chip-icon {
+  font-weight: 700;
+}
+
+.req-chip.ok .req-chip-icon {
+  color: var(--positive, #16a34a);
+}
+
+.req-chip.fail {
+  background: color-mix(in srgb, var(--negative, #dc2626) 12%, transparent);
+}
+
+.req-chip.fail .req-chip-icon {
+  color: var(--negative, #dc2626);
+}
+
+.req-chip .req-chip-thr {
+  color: var(--muted);
+}
+
+.recommendation-card .command.primary {
+  align-self: flex-start;
+}
+
+@media (max-width: 560px) {
+  .recommendation-grid {
+    grid-template-columns: 1fr;
+  }
+}

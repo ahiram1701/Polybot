@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { readAnalyticsSamples } from "./analyticsRecorder.js";
+import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
 import { calculateExpectedValue } from "./expectedValue.js";
 import {
   getEntryWindowSeconds,
@@ -26,7 +26,6 @@ import type {
   StrategyRiskFlag,
 } from "./types.js";
 
-const QUOTE_MATCH_WINDOW_MS = 6_000;
 // Floored at 25s to match the recommendation engine: below ~25s quote coverage collapses to <=3%,
 // so those windows are not realistically executable and only distort the strategy grid.
 const MIN_CANDIDATE_WINDOW_SECONDS = 25;

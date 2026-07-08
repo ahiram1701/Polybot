@@ -30,8 +30,6 @@ export interface UiSettings {
   liveTradeAmountUsd: number;
   liveTradeAmountUsdByMarketOutcome: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
-  autoAdjustLiveByMarketOutcome: MarketOutcomeBooleanSettings;
-  autoAdjustAfterLossByMarketOutcome: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   // Hard ceiling on the ask price for any trade and for what the auto-adjust may pick (reward/risk).

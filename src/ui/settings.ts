@@ -75,8 +75,6 @@ const settingsSchema = z.object({
   liveTradeAmountUsd: z.coerce.number().positive(),
   liveTradeAmountUsdByMarketOutcome: marketOutcomePositiveNumberSchema,
   autoMinLive: z.boolean(),
-  autoAdjustLiveByMarketOutcome: marketOutcomeBooleanSchema,
-  autoAdjustAfterLossByMarketOutcome: marketOutcomeBooleanSchema,
   maxAskPrice: z.coerce.number().gt(0).lte(1),
   maxAskPriceByMarketOutcome: marketOutcomeAskPriceSchema,
   // Ceiling default 0.85 keeps existing ui-config.json (without this key) at the recommended value.
@@ -176,8 +174,6 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
       config.liveTradeAmountUsd,
     ),
     autoMinLive: config.autoMinLive,
-    autoAdjustLiveByMarketOutcome: defaultMarketOutcomeBooleans(config.autoAdjustLiveByMarketOutcome),
-    autoAdjustAfterLossByMarketOutcome: defaultMarketOutcomeBooleans(config.autoAdjustAfterLossByMarketOutcome),
     maxAskPrice: config.maxAskPrice,
     maxAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
       config.maxAskPriceByMarketOutcome,
@@ -237,8 +233,6 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
       settings.liveTradeAmountUsd,
     ),
     autoMinLive: settings.autoMinLive,
-    autoAdjustLiveByMarketOutcome: defaultMarketOutcomeBooleans(settings.autoAdjustLiveByMarketOutcome),
-    autoAdjustAfterLossByMarketOutcome: defaultMarketOutcomeBooleans(settings.autoAdjustAfterLossByMarketOutcome),
     maxAskPrice: settings.maxAskPrice,
     maxAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
       settings.maxAskPriceByMarketOutcome,
@@ -306,13 +300,6 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     marketOutcomeBooleanOverrides(settings.enabledMarketOutcomes),
     normalizeEnabledMarkets(settings.enabledMarkets),
   );
-  const autoAdjustLiveByMarketOutcome = defaultMarketOutcomeBooleans(
-    marketOutcomeBooleanOverrides(settings.autoAdjustLiveByMarketOutcome),
-  );
-  const autoAdjustAfterLossByMarketOutcome = defaultMarketOutcomeBooleans(
-    marketOutcomeBooleanOverrides(settings.autoAdjustAfterLossByMarketOutcome),
-  );
-
   return {
     ...settings,
     minBtcDistanceUsd: distances.BTC,
@@ -331,8 +318,6 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     simTradeAmountUsdByMarketOutcome,
     liveTradeAmountUsd: settings.liveTradeAmountUsd,
     liveTradeAmountUsdByMarketOutcome,
-    autoAdjustLiveByMarketOutcome,
-    autoAdjustAfterLossByMarketOutcome,
     maxAskPrice: settings.maxAskPrice,
     maxAskPriceByMarketOutcome,
     aiAutoApplyLive: Boolean(settings.aiAutoApplyLive),

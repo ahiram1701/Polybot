@@ -1,5 +1,10 @@
 export const DEFAULT_SAFETY_MARGIN = 0.02;
 export const DEFAULT_MIN_EXPECTED_ROI = 0.01;
+// Strength (in pseudo-trades) of the Bayesian prior used to shrink the raw win frequency. Kept at 2
+// so that with the default 0.5 prior the estimate equals the classic Laplace (w+1)/(t+2) — no change
+// for existing callers. When a market-implied prior (the ask) is supplied, thin setups anchor to the
+// market price (edge ~0) instead of to 0.5, which is better calibrated for expensive favorites.
+export const PRIOR_STRENGTH = 2;
 
 export type AskGuidance = "preferred" | "cheap" | "expensive" | "avoid_098" | "avoid_099";
 
@@ -59,7 +64,9 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
   assertNonNegativeFinite(minExpectedRoi, "minExpectedRoi");
 
   const realWinProbability = calculateRealWinProbability(input.winCount, input.tradeCount);
-  const adjustedWinProbability = calculateAdjustedWinProbability(input.winCount, input.tradeCount);
+  // Anchor the shrinkage prior to the market-implied probability (the ask): in an efficient market the
+  // ask ≈ P(win), so a thin setup should start at the market price (edge ~0) rather than at 0.5.
+  const adjustedWinProbability = calculateAdjustedWinProbability(input.winCount, input.tradeCount, input.askPrice);
   const edge = adjustedWinProbability - input.askPrice;
   const expectedRoi = adjustedWinProbability / input.askPrice - 1;
   const expectedValueUsd = input.capitalUsd * expectedRoi;
@@ -110,13 +117,20 @@ export function calculateRealWinProbability(winCount: number, tradeCount: number
   return tradeCount > 0 ? winCount / tradeCount : undefined;
 }
 
-export function calculateAdjustedWinProbability(winCount: number, tradeCount: number): number {
+export function calculateAdjustedWinProbability(
+  winCount: number,
+  tradeCount: number,
+  priorProbability = 0.5,
+): number {
   assertNonNegativeInteger(winCount, "winCount");
   assertNonNegativeInteger(tradeCount, "tradeCount");
   if (winCount > tradeCount) {
     throw new Error("winCount cannot be greater than tradeCount.");
   }
-  return (winCount + 1) / (tradeCount + 2);
+  // Bayesian shrinkage toward `priorProbability` with strength PRIOR_STRENGTH pseudo-trades. With the
+  // default 0.5 prior this is exactly the classic Laplace estimate (w+1)/(t+2).
+  const prior = Number.isFinite(priorProbability) ? Math.min(Math.max(priorProbability, 0.05), 0.95) : 0.5;
+  return (winCount + PRIOR_STRENGTH * prior) / (tradeCount + PRIOR_STRENGTH);
 }
 
 export function getAskGuidance(askPrice: number): AskGuidance {

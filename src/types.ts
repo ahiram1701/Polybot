@@ -31,8 +31,6 @@ export interface BotConfig {
   liveTradeAmountUsd: number;
   liveTradeAmountUsdByMarketOutcome?: MarketOutcomeNumberSettings;
   autoMinLive: boolean;
-  autoAdjustLiveByMarketOutcome?: MarketOutcomeBooleanSettings;
-  autoAdjustAfterLossByMarketOutcome?: MarketOutcomeBooleanSettings;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
   // Hard ceiling applied on top of the per-market/outcome ask caps: no trade (and no auto-adjust)
@@ -203,9 +201,26 @@ export interface AiRecommendation {
   canAutoApply: boolean;
 }
 
+export interface AutoApplyThresholds {
+  minAutoSamples: number;
+  minAutoTrades: number;
+  minQuoteCoverage: number;
+  // Minimum improvement in realized yield-per-window (edge × execution rate) required to auto-apply.
+  minYieldImprovement: number;
+  maxOverfitRisk: number;
+  // How far a single auto-apply may move from the current settings.
+  maxWindowChangeSeconds: number;
+  maxDistanceChangeRatio: number;
+  // Minimum time between auto-applies. 0 = no time lock; the significance margin (minYieldImprovement)
+  // is the anti-thrash guard.
+  autoApplyCooldownMs: number;
+}
+
 export interface AiRecommendationsResponse {
   generatedAtMs: number;
   recommendations: AiRecommendation[];
+  // Active auto-apply thresholds, so the UI can render a pass/fail checklist for each recommendation.
+  thresholds?: AutoApplyThresholds;
 }
 
 export interface StrategyMetrics {

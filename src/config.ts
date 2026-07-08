@@ -109,7 +109,7 @@ const envSchema = z.object({
     .default(true),
   EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.03),
   MIN_DISTANCE_FLOOR_BTC: z.coerce.number().nonnegative().default(20),
-  MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(1),
+  MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(0.1),
   MIN_DISTANCE_FLOOR_DOGE: z.coerce.number().nonnegative().default(0.0005),
   EV_MIN_EXPECTED_ROI: z.coerce.number().gte(0).lt(1).default(0.01),
   EV_MIN_HISTORY_TRADES: z.coerce.number().int().nonnegative().default(10),

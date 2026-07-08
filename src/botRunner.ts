@@ -38,17 +38,14 @@ import type {
   BotConfig,
   BtcPriceTick,
   MarketInfo,
-  MarketOutcomeNumberSettings,
   MarketSymbol,
   Mode,
   OrderbookQuote,
   Outcome,
-  StrategyCandidate,
   TradeAttempt,
   WindowOpening,
 } from "./types.js";
 
-const AUTO_ADJUST_LIVE_COOLDOWN_MS = 60_000;
 // Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
 const DEFAULT_MAX_ASK_PRICE_CEILING = 0.85;
@@ -108,7 +105,6 @@ export class BotRunner {
   private stopped = false;
   private readonly currentSlugs = new Map<MarketSymbol, string>();
   private readonly skipLogKeys = new Set<string>();
-  private readonly lastLiveAutoAdjustAtMs = new Map<string, number>();
 
   constructor(
     private readonly config: BotConfig,
@@ -222,7 +218,6 @@ export class BotRunner {
   async runOnce(nowMs = Date.now()): Promise<void> {
     await this.reconcileLiveTrades(nowMs);
     await this.resolveCompletedTrades(nowMs);
-    await this.applyLiveAutoAdjustments(nowMs);
 
     const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
     if (markets.length === 0) {
@@ -837,9 +832,6 @@ export class BotRunner {
         finalPrice: resolution.finalPrice,
       });
       await this.notifyTradeResolved(trade, resolution);
-      if (!resolution.won) {
-        await this.applyAfterLossAutoAdjustment(trade, nowMs);
-      }
     }
   }
 
@@ -878,120 +870,6 @@ export class BotRunner {
     });
   }
 
-  private async applyLiveAutoAdjustments(nowMs: number): Promise<void> {
-    if (this.config.mode !== "live" || !this.deps.strategyAnalysisEngine) {
-      return;
-    }
-
-    for (const market of SUPPORTED_MARKETS) {
-      for (const outcome of OUTCOMES) {
-        if (!getMarketOutcomeBoolean(this.config.autoAdjustLiveByMarketOutcome, market, outcome)) {
-          continue;
-        }
-        const key = strategyKey(market, outcome);
-        const lastAppliedAtMs = this.lastLiveAutoAdjustAtMs.get(key) ?? 0;
-        if (nowMs - lastAppliedAtMs < AUTO_ADJUST_LIVE_COOLDOWN_MS) {
-          continue;
-        }
-        this.lastLiveAutoAdjustAtMs.set(key, nowMs);
-        await this.applyBestStrategyAdjustment(market, outcome, "live", nowMs);
-      }
-    }
-  }
-
-  private async applyAfterLossAutoAdjustment(trade: TradeAttempt, nowMs: number): Promise<void> {
-    if (!this.deps.strategyAnalysisEngine) {
-      return;
-    }
-    const market = trade.asset ?? marketSymbolFromSlug(trade.slug);
-    if (!market || !getMarketOutcomeBoolean(this.config.autoAdjustAfterLossByMarketOutcome, market, trade.outcome)) {
-      return;
-    }
-    await this.applyBestStrategyAdjustment(market, trade.outcome, "after_loss", nowMs);
-  }
-
-  private async applyBestStrategyAdjustment(
-    market: MarketSymbol,
-    outcome: Outcome,
-    trigger: "live" | "after_loss",
-    nowMs: number,
-  ): Promise<boolean> {
-    if (!this.deps.strategyAnalysisEngine) {
-      return false;
-    }
-    try {
-      const analysis = await this.deps.strategyAnalysisEngine.analyze(this.config, nowMs);
-      const candidate = selectAutoAdjustStrategy(
-        analysis.strategies,
-        market,
-        outcome,
-        this.config.maxAskPriceCeiling ?? DEFAULT_MAX_ASK_PRICE_CEILING,
-      );
-      if (!candidate || !strategyChangesConfig(candidate, this.config)) {
-        return false;
-      }
-      this.applyStrategyCandidate(candidate);
-      logger.info("Auto-adjusted strategy settings.", {
-        trigger,
-        market,
-        outcome,
-        entryWindowSeconds: candidate.entryWindowSeconds,
-        minDistanceUsd: candidate.minDistanceUsd,
-        maxAskPrice: candidate.maxAskPrice,
-        confidence: candidate.confidence,
-        evRoi: candidate.metrics.evRoi,
-        evDeltaVsCurrent: candidate.evDeltaVsCurrent,
-      });
-      return true;
-    } catch (error) {
-      logger.warn("Strategy auto-adjust failed; continuing.", {
-        trigger,
-        market,
-        outcome,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
-  }
-
-  private applyStrategyCandidate(candidate: StrategyCandidate): void {
-    const minDistanceUsdByMarketOutcome = cloneOutcomeNumbers(this.config.minDistanceUsdByMarketOutcome, {
-      BTC: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "BTC"),
-      ETH: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "ETH"),
-      DOGE: getMinDistanceUsd(this.config.minDistanceUsdByMarket, "DOGE"),
-    });
-    const entryWindowSecondsByMarketOutcome = cloneOutcomeNumbers(this.config.entryWindowSecondsByMarketOutcome, {
-      BTC: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "BTC", this.config.entryWindowSeconds),
-      ETH: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "ETH", this.config.entryWindowSeconds),
-      DOGE: getEntryWindowSeconds(this.config.entryWindowSecondsByMarket, "DOGE", this.config.entryWindowSeconds),
-    });
-    const maxAskPriceByMarketOutcome = cloneOutcomeNumbers(this.config.maxAskPriceByMarketOutcome, {
-      BTC: this.config.maxAskPrice,
-      ETH: this.config.maxAskPrice,
-      DOGE: this.config.maxAskPrice,
-    });
-
-    minDistanceUsdByMarketOutcome[candidate.market][candidate.outcome] = candidate.minDistanceUsd;
-    entryWindowSecondsByMarketOutcome[candidate.market][candidate.outcome] = candidate.entryWindowSeconds;
-    maxAskPriceByMarketOutcome[candidate.market][candidate.outcome] = candidate.maxAskPrice;
-
-    this.config.minDistanceUsdByMarketOutcome = minDistanceUsdByMarketOutcome;
-    this.config.entryWindowSecondsByMarketOutcome = entryWindowSecondsByMarketOutcome;
-    this.config.maxAskPriceByMarketOutcome = maxAskPriceByMarketOutcome;
-
-    this.config.minDistanceUsdByMarket = {
-      ...this.config.minDistanceUsdByMarket,
-      [candidate.market]: minDistanceUsdByMarketOutcome[candidate.market].UP,
-    };
-    this.config.entryWindowSecondsByMarket = {
-      ...this.config.entryWindowSecondsByMarket,
-      [candidate.market]: entryWindowSecondsByMarketOutcome[candidate.market].UP,
-    };
-    this.config.minBtcDistanceUsd = this.config.minDistanceUsdByMarket.BTC;
-    this.config.entryWindowSeconds = this.config.entryWindowSecondsByMarket.BTC;
-    this.config.maxAskPrice = maxAskPriceByMarketOutcome.BTC.UP;
-  }
-
   private logMarketChange(market: MarketInfo): void {
     if (this.currentSlugs.get(market.asset) === market.slug) {
       return;
@@ -1027,67 +905,6 @@ export class BotRunner {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function selectAutoAdjustStrategy(
-  strategies: StrategyCandidate[],
-  market: MarketSymbol,
-  outcome: Outcome,
-  maxAskPriceCeiling: number,
-): StrategyCandidate | undefined {
-  return strategies.find((strategy) =>
-    strategy.market === market &&
-    strategy.outcome === outcome &&
-    // Never auto-adjust to a strategy whose ask cap exceeds the ceiling (bad reward/risk).
-    strategy.maxAskPrice <= maxAskPriceCeiling &&
-    strategy.confidence !== "low" &&
-    strategy.metrics.evRoi !== undefined &&
-    strategy.metrics.evRoi > 0 &&
-    strategy.metrics.passesRecommendedEntry === true &&
-    strategy.metrics.tradeCount >= 5 &&
-    (strategy.evDeltaVsCurrent === undefined || strategy.evDeltaVsCurrent > 0),
-  );
-}
-
-function strategyChangesConfig(candidate: StrategyCandidate, config: BotConfig): boolean {
-  const currentDistance = getMarketOutcomeNumber(
-    config.minDistanceUsdByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    getMinDistanceUsd(config.minDistanceUsdByMarket, candidate.market),
-  );
-  const currentWindow = getMarketOutcomeNumber(
-    config.entryWindowSecondsByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    getEntryWindowSeconds(config.entryWindowSecondsByMarket, candidate.market, config.entryWindowSeconds),
-  );
-  const currentAskCap = getMarketOutcomeNumber(
-    config.maxAskPriceByMarketOutcome,
-    candidate.market,
-    candidate.outcome,
-    config.maxAskPrice,
-  );
-  return (
-    currentDistance !== candidate.minDistanceUsd ||
-    currentWindow !== candidate.entryWindowSeconds ||
-    currentAskCap !== candidate.maxAskPrice
-  );
-}
-
-function cloneOutcomeNumbers(
-  settings: MarketOutcomeNumberSettings | undefined,
-  fallback: Record<MarketSymbol, number>,
-): MarketOutcomeNumberSettings {
-  return {
-    BTC: { UP: settings?.BTC?.UP ?? fallback.BTC, DOWN: settings?.BTC?.DOWN ?? fallback.BTC },
-    ETH: { UP: settings?.ETH?.UP ?? fallback.ETH, DOWN: settings?.ETH?.DOWN ?? fallback.ETH },
-    DOGE: { UP: settings?.DOGE?.UP ?? fallback.DOGE, DOWN: settings?.DOGE?.DOWN ?? fallback.DOGE },
-  };
-}
-
-function strategyKey(market: MarketSymbol, outcome: Outcome): string {
-  return `${market}:${outcome}`;
 }
 
 function formatUsd(value?: number): string {

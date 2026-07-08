@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AnalysisPanel, App, ControlBar, Dashboard, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
-import type { MarketSymbol, OllamaTradeAnalysisResponse, StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
+import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
 
 afterEach(() => {
   cleanup();
@@ -48,8 +48,8 @@ describe("UI frontend components", () => {
       if (path === "/api/settings") {
         return jsonResponse(settings());
       }
-      if (path === "/api/analysis/strategies") {
-        return jsonResponse(analysisResponse());
+      if (path === "/api/analysis/recommendations") {
+        return jsonResponse(recommendationsResponse());
       }
       if (path === "/api/trades?limit=100") {
         return jsonResponse({ trades: [] });
@@ -62,7 +62,7 @@ describe("UI frontend components", () => {
     expect(screen.getByRole("button", { name: "Telegram" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
     await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/trades?limit=100"));
-    expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain("/api/analysis/strategies");
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain("/api/analysis/recommendations");
 
     expect(screen.getByRole("button", { name: "Análisis" })).toBeInTheDocument();
   });
@@ -103,8 +103,8 @@ describe("UI frontend components", () => {
       if (path === "/api/trades?limit=100") {
         return jsonResponse({ trades: [] });
       }
-      if (path === "/api/analysis/strategies") {
-        return jsonResponse(analysisResponse());
+      if (path === "/api/analysis/recommendations") {
+        return jsonResponse(recommendationsResponse());
       }
       return jsonResponse({ error: "not found" }, 404);
     });
@@ -113,7 +113,7 @@ describe("UI frontend components", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /An/i }));
 
-    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/analysis/strategies"));
+    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/analysis/recommendations"));
   });
 
   it("disables live control when live is not ready", () => {
@@ -333,8 +333,6 @@ describe("UI frontend components", () => {
     expect(screen.getByLabelText("Ventana Bitcoin UP")).toHaveValue("20");
     expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
     expect(screen.getByLabelText("Activar Bitcoin UP")).toBeChecked();
-    expect(screen.getByLabelText("Auto live Bitcoin UP")).not.toBeChecked();
-    expect(screen.getByLabelText("Tras perder Bitcoin UP")).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Editar Ethereum" }));
     expect(screen.getByLabelText("Ventana Ethereum DOWN")).toHaveValue("20");
@@ -435,36 +433,74 @@ describe("UI frontend components", () => {
     expect(await screen.findByText("Mensaje de prueba enviado.")).toBeInTheDocument();
   });
 
-  it("renders strategy analysis and requests Ollama analysis", async () => {
-    const onAnalyze = vi.fn(async () => ollamaResponse());
+  it("renders the autoajuste recommendation view with decision badges and guard checklist", () => {
     render(
       <AnalysisPanel
-        analysis={analysisResponse()}
+        recommendations={recommendationsResponse()}
         settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={onAnalyze}
-        onApplyStrategy={vi.fn(async () => undefined)}
+        onApplyRecommendation={vi.fn(async () => undefined)}
       />,
     );
 
     expect(screen.getByText("Análisis")).toBeInTheDocument();
-    expect(screen.getAllByText("Confiables").length).toBeGreaterThan(0);
-    expect(screen.getByText("BTC actual")).toBeInTheDocument();
-    expect(screen.getByText("BTC actual").closest("td")).toHaveAttribute("data-label", "Mercado");
-    expect(screen.getAllByText("Media").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Resumen" })).toBeInTheDocument();
-    expect(screen.getAllByText(/EV/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("P ajustada").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Entrar\u00eda").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("+25.0%").length).toBeGreaterThan(0);
+    // One card per market.
+    expect(screen.getByRole("heading", { name: "BTC" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "ETH" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "DOGE" })).toBeInTheDocument();
+    // Decision badges reflect canAutoApply / canApply / none.
+    expect(screen.getByText("Se auto-aplica")).toBeInTheDocument();
+    expect(screen.getByText("Sugerencia (no auto)")).toBeInTheDocument();
+    expect(screen.getByText("Datos insuficientes")).toBeInTheDocument();
+    // Header summary counts the decisions.
+    expect(screen.getByText(/se auto-aplican/)).toBeInTheDocument();
+    // Plain-language line + requirement chips with value/threshold context.
+    expect(screen.getAllByText(/aciertos/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Trades/).length).toBeGreaterThan(0);
+    // Failing summary highlights what a market is missing (BTC needs trades).
+    expect(screen.getAllByText(/Falta:/).length).toBeGreaterThan(0);
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Riesgos" }));
-    fireEvent.click(screen.getByRole("button", { name: "Analizar con Ollama" }));
+  it("applies a market recommendation", async () => {
+    const onApplyRecommendation = vi.fn(async () => undefined);
+    render(
+      <AnalysisPanel
+        recommendations={recommendationsResponse()}
+        settings={settings()}
+        busy={false}
+        running={false}
+        onRefresh={vi.fn(async () => undefined)}
+        onApplyRecommendation={onApplyRecommendation}
+      />,
+    );
 
-    await waitFor(() => expect(onAnalyze).toHaveBeenCalledWith(expect.stringContaining("riesgos")));
-    expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar recomendada BTC" }));
+
+    await waitFor(() =>
+      expect(onApplyRecommendation).toHaveBeenCalledWith(
+        "BTC",
+        expect.objectContaining({ entryWindowSeconds: 33, minDistanceUsd: 25 }),
+      ),
+    );
+    expect(await screen.findByText(/Aplicada la recomendada de BTC/)).toBeInTheDocument();
+  });
+
+  it("blocks manual apply while the bot is running", () => {
+    render(
+      <AnalysisPanel
+        recommendations={recommendationsResponse()}
+        settings={settings()}
+        busy={false}
+        running={true}
+        onRefresh={vi.fn(async () => undefined)}
+        onApplyRecommendation={vi.fn(async () => undefined)}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Aplicar recomendada BTC" })).toBeDisabled();
+    expect(screen.getByText("Deten el bot para importar datos de Analisis.")).toBeInTheDocument();
   });
 
   it("exports and imports analysis data from the Analysis panel", async () => {
@@ -480,13 +516,12 @@ describe("UI frontend components", () => {
     const onRefresh = vi.fn(async () => undefined);
     render(
       <AnalysisPanel
-        analysis={analysisResponse()}
+        recommendations={recommendationsResponse()}
         settings={settings()}
         busy={false}
         running={false}
         onRefresh={onRefresh}
-        onAnalyze={vi.fn(async () => ollamaResponse())}
-        onApplyStrategy={vi.fn(async () => undefined)}
+        onApplyRecommendation={vi.fn(async () => undefined)}
         onExport={onExport}
         onImport={onImport}
       />,
@@ -504,114 +539,24 @@ describe("UI frontend components", () => {
     expect(await screen.findByText("Datos importados: 2 nuevos, 1 duplicados, 1 invalidos, 8 totales.")).toBeInTheDocument();
   });
 
-  it("previews and confirms a strategy from Analysis", async () => {
-    const onApplyStrategy = vi.fn(async () => undefined);
+  it("removes the old EV strategy table and Ollama controls", () => {
     render(
       <AnalysisPanel
-        analysis={analysisResponse()}
+        recommendations={recommendationsResponse()}
         settings={settings()}
         busy={false}
         running={false}
         onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={vi.fn(async () => ollamaResponse())}
-        onApplyStrategy={onApplyStrategy}
+        onApplyRecommendation={vi.fn(async () => undefined)}
       />,
     );
 
-    expect(screen.getByText("Selecciona una tarjeta para comparar valores actuales y nuevos antes de guardar.")).toBeInTheDocument();
-
-    fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
-    expect(onApplyStrategy).not.toHaveBeenCalled();
-
-    const preview = screen.getByText("Preview").closest(".strategy-preview-panel") as HTMLElement;
-    expect(within(preview).getByText("Distancia")).toBeInTheDocument();
-    expect(within(preview).getByText("+20.00")).toBeInTheDocument();
-    expect(within(preview).getByText("+10.00")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Confirmar aplicacion" }));
-
-    await waitFor(() => expect(onApplyStrategy).toHaveBeenCalledWith(expect.objectContaining({ market: "BTC", outcome: "UP" })));
-    expect(await screen.findByText(/Estrategia aplicada/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Analizar con Ollama" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Prompt Ollama")).not.toBeInTheDocument();
+    expect(screen.queryByText("Detalle completo")).not.toBeInTheDocument();
+    expect(screen.queryByText("Preview")).not.toBeInTheDocument();
   });
 
-  it("blocks strategy confirmation while the bot is running", () => {
-    const onApplyStrategy = vi.fn(async () => undefined);
-    render(
-      <AnalysisPanel
-        analysis={analysisResponse()}
-        settings={settings()}
-        busy={false}
-        running={true}
-        onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={vi.fn(async () => ollamaResponse())}
-        onApplyStrategy={onApplyStrategy}
-      />,
-    );
-
-    fireEvent.click(screen.getAllByRole("button", { name: /seleccionar estrategia BTC UP/i })[0]);
-
-    expect(screen.getByText("Deten el bot para aplicar cambios de estrategia.")).toBeInTheDocument();
-    expect(screen.getByText("Deten el bot para importar datos de Analisis.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Importar" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Confirmar aplicacion" })).toBeDisabled();
-    expect(onApplyStrategy).not.toHaveBeenCalled();
-  });
-
-  it("keeps Ollama responses until the user deletes them", async () => {
-    const onAnalyze = vi.fn(async () => ollamaResponse());
-    const firstRender = render(
-      <AnalysisPanel
-        analysis={analysisResponse()}
-        settings={settings()}
-        busy={false}
-        running={false}
-        onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={onAnalyze}
-        onApplyStrategy={vi.fn(async () => undefined)}
-      />,
-    );
-
-    fireEvent.change(screen.getByLabelText("Prompt Ollama"), { target: { value: "guarda esta respuesta" } });
-    fireEvent.click(screen.getByRole("button", { name: "Analizar con Ollama" }));
-    expect(await screen.findByText("Tesis: EV positivo.")).toBeInTheDocument();
-
-    firstRender.unmount();
-    render(
-      <AnalysisPanel
-        analysis={analysisResponse()}
-        settings={settings()}
-        busy={false}
-        running={false}
-        onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={onAnalyze}
-        onApplyStrategy={vi.fn(async () => undefined)}
-      />,
-    );
-
-    expect(screen.getByText("Tesis: EV positivo.")).toBeInTheDocument();
-    expect(screen.getByText("Prompt: guarda esta respuesta")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /Borrar respuesta Ollama/i }));
-    expect(screen.queryByText("Tesis: EV positivo.")).not.toBeInTheDocument();
-  });
-
-  it("keeps old AI recommendation controls removed while showing strategy preview", () => {
-    render(
-      <AnalysisPanel
-        analysis={analysisResponse()}
-        settings={settings()}
-        busy={false}
-        running={false}
-        onRefresh={vi.fn(async () => undefined)}
-        onAnalyze={vi.fn(async () => ollamaResponse())}
-        onApplyStrategy={vi.fn(async () => undefined)}
-      />,
-    );
-
-    expect(screen.queryByText("IA local")).not.toBeInTheDocument();
-    expect(screen.getByText("Preview")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Auto aplicar" })).not.toBeInTheDocument();
-  });
 });
 
 function settings(): UiSettings {
@@ -649,16 +594,6 @@ function settings(): UiSettings {
       DOGE: { UP: 1, DOWN: 1 },
     },
     autoMinLive: true,
-    autoAdjustLiveByMarketOutcome: {
-      BTC: { UP: false, DOWN: false },
-      ETH: { UP: false, DOWN: false },
-      DOGE: { UP: false, DOWN: false },
-    },
-    autoAdjustAfterLossByMarketOutcome: {
-      BTC: { UP: false, DOWN: false },
-      ETH: { UP: false, DOWN: false },
-      DOGE: { UP: false, DOWN: false },
-    },
     maxAskPrice: 0.98,
     maxAskPriceCeiling: 0.85,
     maxAskPriceByMarketOutcome: {
@@ -781,71 +716,87 @@ function trade(args: { resolvedWon: boolean; asset?: MarketSymbol; distanceUsd?:
   };
 }
 
-function analysisResponse(): StrategyAnalysisResponse {
-  const strategy: StrategyCandidate = {
-    market: "BTC" as const,
-    outcome: "UP" as const,
-    entryWindowSeconds: 20,
-    minDistanceUsd: 10,
-    maxAskPrice: 0.8,
-    isCurrent: true,
-    confidence: "medium",
-    riskFlags: [],
-    qualityScore: 0.43,
-    evDeltaVsCurrent: 0,
-    metrics: {
-      sampleCount: 5,
-      signalCount: 5,
-      tradeCount: 5,
-      winCount: 3,
-      lossCount: 2,
-      quoteCoverage: 1,
-      winRate: 0.5,
-      realWinProbability: 0.5,
-      adjustedWinProbability: 0.625,
-      averageAsk: 0.5,
-      historicalRoi: 0.25,
-      evRoi: 0.25,
-      expectedRoi: 0.25,
-      expectedValueUsd: 0.25,
-      minExpectedValueUsd: 0.01,
-      winProfitUsd: 1,
-      lossUsd: -1,
-      breakEvenProbability: 0.5,
-      edge: 0.125,
-      liveTradeAmountUsd: 1,
-      askGuidance: "cheap",
-      passesBasicEntry: true,
-      passesSafetyMargin: true,
-      passesExpectedValue: true,
-      passesRecommendedEntry: true,
-      evDecisionReason: "passes",
-      maxDrawdown: 1,
-    },
-  };
+function recommendationsResponse(): AiRecommendationsResponse {
+  const metrics = (over: Partial<RecommendationMetrics> = {}): RecommendationMetrics => ({
+    sampleCount: 300,
+    signalCount: 250,
+    tradeCount: 9,
+    winCount: 6,
+    lossCount: 3,
+    quoteCoverage: 0.04,
+    averageRoi: 0.08,
+    adjustedRoi: 0.09,
+    yieldPerWindow: 0.003,
+    expectedRoi: -0.1,
+    walkForwardRoi: 0.38,
+    lowerBoundRoi: 0.33,
+    overfitRisk: 0.36,
+    predictedWinProbability: 0.6,
+    calibrationError: 0.4,
+    maxDrawdown: 1,
+    ...over,
+  });
+  const at = Date.UTC(2026, 4, 8, 12);
   return {
-    generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    strategies: [strategy],
-    currentStrategies: [strategy],
-    summary: {
-      sampleCount: 5,
-      analyzedSampleCount: 5,
-      strategyCount: 1,
-      currentStrategyCount: 1,
-      reliableStrategyCount: 1,
-      bestEvRoi: 0.25,
-      bestTradeCount: 5,
-      bestReliableEvRoi: 0.25,
-      bestReliableTradeCount: 5,
+    generatedAtMs: at,
+    thresholds: {
+      minAutoSamples: 40,
+      minAutoTrades: 15,
+      minQuoteCoverage: 0.02,
+      minYieldImprovement: 0.0008,
+      maxOverfitRisk: 0.45,
+      maxWindowChangeSeconds: 60,
+      maxDistanceChangeRatio: 10,
+      autoApplyCooldownMs: 0,
     },
-  };
-}
-
-function ollamaResponse(): OllamaTradeAnalysisResponse {
-  return {
-    generatedAtMs: Date.UTC(2026, 4, 8, 12),
-    model: "gpt-oss:120b",
-    content: "Tesis: EV positivo.",
-    contextSummary: "2 muestras, 1 estrategias rankeadas, 0 trades recientes.",
+    recommendations: [
+      {
+        market: "BTC",
+        status: "ready",
+        confidence: "medium",
+        generatedAtMs: at,
+        current: { entryWindowSeconds: 52, minDistanceUsd: 21, metrics: metrics({ tradeCount: 22 }) },
+        recommended: { entryWindowSeconds: 33, minDistanceUsd: 25, metrics: metrics() },
+        improvementAdjustedRoi: 0.5,
+        improvementYield: 0.03,
+        sampleCount: 300,
+        reason: "Mejora predictiva exploratoria validada con walk-forward.",
+        canApply: true,
+        canAutoApply: false,
+      },
+      {
+        market: "ETH",
+        status: "ready",
+        confidence: "high",
+        generatedAtMs: at,
+        current: { entryWindowSeconds: 55, minDistanceUsd: 1, metrics: metrics({ tradeCount: 7 }) },
+        recommended: {
+          entryWindowSeconds: 55,
+          minDistanceUsd: 0.25,
+          metrics: metrics({ tradeCount: 50, quoteCoverage: 0.17, overfitRisk: 0.09 }),
+        },
+        improvementAdjustedRoi: -0.1,
+        improvementYield: 0.009,
+        sampleCount: 300,
+        reason: "Alta confianza: mejora validada fuera de muestra y dentro de guardas.",
+        canApply: true,
+        canAutoApply: true,
+      },
+      {
+        market: "DOGE",
+        status: "insufficient_data",
+        confidence: "low",
+        generatedAtMs: at,
+        current: {
+          entryWindowSeconds: 45,
+          minDistanceUsd: 0.0001,
+          metrics: metrics({ tradeCount: 0, quoteCoverage: 0, overfitRisk: 1, walkForwardRoi: undefined, lowerBoundRoi: undefined, yieldPerWindow: undefined }),
+        },
+        sampleCount: 8,
+        reason: "Sin oportunidades ejecutables con quotes dentro del cap actual.",
+        canApply: false,
+        canAutoApply: false,
+      },
+    ],
   };
 }

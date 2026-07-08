@@ -20,11 +20,12 @@ describe("StrategyAnalysisEngine", () => {
     expect(current?.metrics.winCount).toBe(1);
     expect(current?.metrics.lossCount).toBe(1);
     expect(current?.metrics.realWinProbability).toBeCloseTo(0.5);
-    expect(current?.metrics.adjustedWinProbability).toBeCloseTo(0.5);
-    expect(current?.metrics.edge).toBeCloseTo(0.1);
-    expect(current?.metrics.evRoi).toBeCloseTo(0.25);
+    // Prior anchored to the market (avg ask 0.4): adjusted = (1 + 2*0.4) / (2 + 2) = 0.45.
+    expect(current?.metrics.adjustedWinProbability).toBeCloseTo(0.45);
+    expect(current?.metrics.edge).toBeCloseTo(0.05);
+    expect(current?.metrics.evRoi).toBeCloseTo(0.125);
     expect(current?.metrics.historicalRoi).toBeCloseTo(0.25);
-    expect(current?.metrics.expectedValueUsd).toBeCloseTo(0.25);
+    expect(current?.metrics.expectedValueUsd).toBeCloseTo(0.125);
     expect(current?.metrics.winProfitUsd).toBeCloseTo(1.5);
     expect(current?.metrics.lossUsd).toBe(-1);
     expect(current?.metrics.breakEvenProbability).toBeCloseTo(0.4);

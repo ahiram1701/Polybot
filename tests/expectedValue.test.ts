@@ -25,11 +25,13 @@ describe("expected value formulas", () => {
       tradeCount: 10,
     });
 
+    // Prior anchored to the market (ask 0.8): adjusted = (8 + 2*0.8) / (10 + 2) = 0.8, so a setup that
+    // exactly matches the market price shows zero edge.
     expect(result.realWinProbability).toBeCloseTo(0.8);
-    expect(result.adjustedWinProbability).toBeCloseTo(9 / 12);
-    expect(result.edge).toBeCloseTo(9 / 12 - 0.8);
-    expect(result.expectedRoi).toBeCloseTo(9 / 12 / 0.8 - 1);
-    expect(result.expectedValueUsd).toBeCloseTo(10 * (9 / 12 / 0.8 - 1));
+    expect(result.adjustedWinProbability).toBeCloseTo(0.8);
+    expect(result.edge).toBeCloseTo(0);
+    expect(result.expectedRoi).toBeCloseTo(0);
+    expect(result.expectedValueUsd).toBeCloseTo(0);
     expect(result.winProfitUsd).toBeCloseTo(10 * (1 / 0.8 - 1));
     expect(result.lossUsd).toBe(-10);
     expect(result.breakEvenProbability).toBe(0.8);

@@ -257,12 +257,15 @@ La pestana `Analisis` calcula EV historico de estrategias usando las muestras co
 
 La tabla muestra ranking por EV, trades simulables, win rate, cobertura de quotes y drawdown. Tambien conserva las estrategias actuales por mercado/lado como referencia.
 
-En `Settings`, cada mercado/lado (`BTC UP`, `BTC DOWN`, etc.) puede activar dos autoajustes independientes:
+Polybot tiene **un único autoajuste**: el **predictivo en tiempo real** (motor de recomendaciones), que se
+enciende/apaga con el switch **"Autoajuste predictivo"** en `Settings`. Con él activo, un modelo estadistico local
+(backtesting walk-forward + estimacion k-NN, sin LLM ni internet) evalua las muestras de Analisis cada ~60s mientras
+el bot corre y **aplica automaticamente la mejor ventana y distancia** por mercado/lado cuando hay alta confianza y
+dentro de las guardas.
 
-- `Auto live`: en modo live, el runner puede adoptar la mejor estrategia EV confiable para ese mercado/lado con cooldown.
-- `Tras perder`: cuando se resuelve una perdida de ese mercado/lado, el runner puede ajustar distancia, ventana y ask cap hacia la mejor estrategia EV confiable disponible.
-
-El autoajuste usa solo estrategias con EV positivo y confianza suficiente; si no hay datos confiables, no cambia la configuracion.
+Usa **un solo juego de umbrales para sim y live** y **sin cooldown**, de modo que **corre identico en ambos modos**:
+una corrida en sim predice fielmente lo que hara en live. El autoajuste usa solo estrategias con EV positivo (ROI
+fuera de muestra > 0) y confianza suficiente; si no hay datos confiables, no cambia la configuracion.
 
 En `Settings > Avanzado` tambien existe `Autoajuste predictivo en tiempo real` (`aiAutoApplyLive`). Es un modelo estadistico local (backtesting walk-forward + estimacion de probabilidad por k-NN; no usa LLM ni internet), no un modelo de lenguaje. Cuando esta activo y el bot corre, Polybot evalua periodicamente las muestras de `Analisis` con ese motor predictivo y, solo cuando hay alta confianza dentro de las guardas, aplica automaticamente la mejor ventana y distancia por mercado al bot en ejecucion (sim o live) sin reiniciar. Respeta un cooldown interno de 30 min entre cambios y registra cada ajuste en los logs. Actívalo antes de iniciar el bot. La pestana expone tambien `GET /api/analysis/recommendations` para inspeccionar las recomendaciones sin aplicarlas. No confundir con el analisis de Ollama Cloud (abajo), que si es un LLM y solo da texto sin tocar la configuracion.
 

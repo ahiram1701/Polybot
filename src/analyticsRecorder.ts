@@ -17,6 +17,11 @@ import type {
 } from "./types.js";
 
 export const ANALYTICS_WINDOW_SECONDS = 60;
+// Max time gap allowed when matching a captured quote to a signal tick. Widened from 6s to 12s to
+// recover signals whose nearest quote landed slightly outside the old window (more executable
+// coverage). Single source of truth: recommendationEngine, strategyAnalysisEngine and the EV-gate
+// backtest all import this so they never drift apart.
+export const QUOTE_MATCH_WINDOW_MS = 12_000;
 const MAX_SAMPLE_RESOLUTION_DELAY_MS = 10 * 60 * 1000;
 const ANALYTICS_RECORD_TYPE = "analytics_sample";
 // Retention: keep at most this many (most recent) resolved samples on disk so analytics.jsonl

@@ -247,7 +247,7 @@ describe("UI API", () => {
     controller.dispose();
   });
 
-  it("patches auto-adjust toggles per market side", async () => {
+  it("patches the predictive auto-adjust toggle", async () => {
     const controller = new BotController(await baseConfig(false), {
       startPriceFeed: false,
       snapshotProvider: fixedSnapshot,
@@ -257,23 +257,10 @@ describe("UI API", () => {
 
     await request(app)
       .patch("/api/settings")
-      .send({
-        autoAdjustLiveByMarketOutcome: {
-          BTC: { UP: true, DOWN: false },
-          ETH: { UP: false, DOWN: false },
-          DOGE: { UP: false, DOWN: false },
-        },
-        autoAdjustAfterLossByMarketOutcome: {
-          BTC: { UP: false, DOWN: true },
-          ETH: { UP: false, DOWN: false },
-          DOGE: { UP: false, DOWN: false },
-        },
-      })
+      .send({ aiAutoApplyLive: true })
       .expect(200)
       .expect((response) => {
-        expect(response.body.autoAdjustLiveByMarketOutcome.BTC.UP).toBe(true);
-        expect(response.body.autoAdjustLiveByMarketOutcome.BTC.DOWN).toBe(false);
-        expect(response.body.autoAdjustAfterLossByMarketOutcome.BTC.DOWN).toBe(true);
+        expect(response.body.aiAutoApplyLive).toBe(true);
       });
     controller.dispose();
   });

@@ -23,7 +23,6 @@ import {
   Sun,
   Table2,
   Terminal,
-  Trash2,
   TrendingDown,
   TrendingUp,
   Upload,
@@ -35,14 +34,14 @@ import { summarizeLogs } from "../../agent/statusSummary.js";
 import { calculateTradePnl, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import type {
+  AiRecommendation,
+  AiRecommendationsResponse,
+  AutoApplyThresholds,
   MarketSymbol,
   Mode,
-  OllamaTradeAnalysisResponse,
   Outcome,
-  StrategyAnalysisResponse,
-  StrategyCandidate,
-  StrategyConfidence,
-  StrategyRiskFlag,
+  RecommendationCandidate,
+  RecommendationMetrics,
   TradeAttempt,
 } from "../../types.js";
 import type {
@@ -61,25 +60,7 @@ type TradeMarketFilter = "ALL" | MarketSymbol;
 type TradePnlFilter = "ALL" | "POSITIVE" | "NEGATIVE";
 type TradeSortKey = "createdAtMs" | "entryWindowSeconds" | "stakeUsd" | "bestAsk" | "distanceUsd" | "payoutUsd" | "netUsd";
 type TradeSortDirection = "asc" | "desc";
-type StrategySortKey =
-  | "evRoi"
-  | "expectedRoi"
-  | "expectedValueUsd"
-  | "edge"
-  | "averageAsk"
-  | "realWinProbability"
-  | "adjustedWinProbability"
-  | "tradeCount"
-  | "winRate"
-  | "quoteCoverage"
-  | "entryWindowSeconds"
-  | "minDistanceUsd"
-  | "maxAskPrice"
-  | "maxDrawdown";
-type StrategySortDirection = "asc" | "desc";
-type StrategyQualityFilter = "RELIABLE" | "ALL" | "POSITIVE" | "CURRENT";
 type OutcomeFilter = "ALL" | Outcome;
-type AutoAdjustSettingKey = "autoAdjustLiveByMarketOutcome" | "autoAdjustAfterLossByMarketOutcome";
 
 interface TradeSortState {
   key: TradeSortKey;
@@ -95,26 +76,10 @@ interface TradeAverages {
   netUsd?: number;
 }
 
-interface StrategySortState {
-  key: StrategySortKey;
-  direction: StrategySortDirection;
-}
 
-interface OllamaHistoryEntry {
-  id: string;
-  prompt: string;
-  result: OllamaTradeAnalysisResponse;
-}
 
-interface StrategySettingsPreviewItem {
-  label: string;
-  current: string;
-  next: string;
-  changed: boolean;
-}
 
 const themeStorageKey = "polybot-theme";
-const ollamaHistoryStorageKey = "polybot-ollama-history";
 const analysisAutoRefreshMs = 60_000;
 
 const emptySettings: UiSettings = {
@@ -159,16 +124,6 @@ const emptySettings: UiSettings = {
     DOGE: { UP: 1, DOWN: 1 },
   },
   autoMinLive: true,
-  autoAdjustLiveByMarketOutcome: {
-    BTC: { UP: false, DOWN: false },
-    ETH: { UP: false, DOWN: false },
-    DOGE: { UP: false, DOWN: false },
-  },
-  autoAdjustAfterLossByMarketOutcome: {
-    BTC: { UP: false, DOWN: false },
-    ETH: { UP: false, DOWN: false },
-    DOGE: { UP: false, DOWN: false },
-  },
   maxAskPrice: 0.98,
   maxAskPriceByMarketOutcome: {
     BTC: { UP: 0.98, DOWN: 0.98 },
@@ -197,30 +152,12 @@ const marketOptions: Array<{ symbol: MarketSymbol; label: string; step: number; 
 
 const outcomeOptions: Outcome[] = ["UP", "DOWN"];
 
-const ollamaPromptOptions = [
-  {
-    label: "Resumen",
-    prompt: "Resume las mejores estrategias confiables usando ROI EV, EV live, edge y probabilidad ajustada. Indica que mercados/lados parecen mas prometedores.",
-  },
-  {
-    label: "Riesgos",
-    prompt: "Detecta riesgos de sobreajuste, baja cobertura, pocos trades, drawdown, asks 0.98/0.99 y edge insuficiente. Indica que no deberia usarse todavia.",
-  },
-  {
-    label: "Actual vs mejor",
-    prompt: "Compara las estrategias actuales contra las mejores confiables por mercado/lado usando P real, P ajustada, edge, ROI EV y EV live.",
-  },
-  {
-    label: "Plan de prueba",
-    prompt: "Prop\u00f3n un plan de prueba conservador para validar estas estrategias sin aumentar riesgo live, priorizando EV positivo y margen de seguridad.",
-  },
-];
 
 export function App() {
   const [status, setStatus] = useState<UiStatus | null>(null);
   const [trades, setTrades] = useState<TradeAttempt[]>([]);
   const [settings, setSettings] = useState<UiSettings>(emptySettings);
-  const [analysis, setAnalysis] = useState<StrategyAnalysisResponse | null>(null);
+  const [recommendations, setRecommendations] = useState<AiRecommendationsResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisStale, setAnalysisStale] = useState(true);
@@ -327,9 +264,9 @@ export function App() {
     setAnalysisLoading(true);
     setAnalysisError(null);
     try {
-      const nextAnalysis = await api<StrategyAnalysisResponse>("/api/analysis/strategies");
+      const nextRecommendations = await api<AiRecommendationsResponse>("/api/analysis/recommendations");
       if (analysisRequestId.current === requestId) {
-        setAnalysis(nextAnalysis);
+        setRecommendations(nextRecommendations);
         setAnalysisStale(false);
       }
     } catch (caught) {
@@ -374,8 +311,8 @@ export function App() {
     await persistSettings(next, false);
   }
 
-  async function applyStrategyFromAnalysis(strategy: StrategyCandidate) {
-    await persistSettings(applyStrategyToSettings(settings, strategy), true);
+  async function applyRecommendation(market: MarketSymbol, recommended: RecommendationCandidate) {
+    await persistSettings(applyRecommendationToSettings(settings, market, recommended), true);
   }
 
   async function persistSettings(next: UiSettings, rethrow: boolean) {
@@ -391,22 +328,6 @@ export function App() {
       if (rethrow) {
         throw caught;
       }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function requestOllamaAnalysis(prompt: string): Promise<OllamaTradeAnalysisResponse> {
-    setBusy(true);
-    setError(null);
-    try {
-      return await api<OllamaTradeAnalysisResponse>("/api/analysis/ollama", {
-        method: "POST",
-        body: JSON.stringify({ prompt }),
-      });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      throw caught;
     } finally {
       setBusy(false);
     }
@@ -457,7 +378,7 @@ export function App() {
     try {
       setStatus(await api<UiStatus>("/api/bot/reset", { method: "POST" }));
       setTrades([]);
-      setAnalysis(null);
+      setRecommendations(null);
       setAnalysisStale(true);
       setResetModal(false);
       await refreshCore();
@@ -543,7 +464,7 @@ export function App() {
         {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
         {tab === "analysis" && (
           <AnalysisPanel
-            analysis={analysis}
+            recommendations={recommendations}
             loading={analysisLoading}
             loadError={analysisError}
             stale={analysisStale}
@@ -551,8 +472,7 @@ export function App() {
             busy={busy}
             running={Boolean(status?.running)}
             onRefresh={loadAnalysis}
-            onAnalyze={requestOllamaAnalysis}
-            onApplyStrategy={applyStrategyFromAnalysis}
+            onApplyRecommendation={applyRecommendation}
             onExport={downloadAnalysisSamples}
             onImport={importAnalysisSamples}
           />
@@ -910,7 +830,7 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
 }
 
 export function AnalysisPanel({
-  analysis,
+  recommendations,
   loading = false,
   loadError = null,
   stale = false,
@@ -918,12 +838,11 @@ export function AnalysisPanel({
   busy,
   running,
   onRefresh,
-  onAnalyze,
-  onApplyStrategy,
+  onApplyRecommendation,
   onExport,
   onImport,
 }: {
-  analysis: StrategyAnalysisResponse | null;
+  recommendations: AiRecommendationsResponse | null;
   loading?: boolean;
   loadError?: string | null;
   stale?: boolean;
@@ -931,91 +850,35 @@ export function AnalysisPanel({
   busy: boolean;
   running: boolean;
   onRefresh: () => Promise<void>;
-  onAnalyze: (prompt: string) => Promise<OllamaTradeAnalysisResponse>;
-  onApplyStrategy: (strategy: StrategyCandidate) => Promise<void>;
+  onApplyRecommendation: (market: MarketSymbol, recommended: RecommendationCandidate) => Promise<void>;
   onExport?: () => Promise<void>;
   onImport?: (file: File) => Promise<AnalysisImportResponse>;
 }) {
-  const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
-  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("ALL");
-  const [qualityFilter, setQualityFilter] = useState<StrategyQualityFilter>("RELIABLE");
-  const [sortState, setSortState] = useState<StrategySortState>({ key: "evRoi", direction: "desc" });
-  const [prompt, setPrompt] = useState("");
-  const [ollamaHistory, setOllamaHistory] = useState<OllamaHistoryEntry[]>(() => loadOllamaHistory());
-  const [ollamaError, setOllamaError] = useState<string | null>(null);
-  const [selectedStrategy, setSelectedStrategy] = useState<StrategyCandidate | null>(null);
   const [applyMessage, setApplyMessage] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [applyingMarket, setApplyingMarket] = useState<MarketSymbol | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferMessage, setTransferMessage] = useState<string | null>(null);
   const [transferError, setTransferError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
-  const strategies = qualityFilter === "CURRENT" ? analysis?.currentStrategies ?? [] : analysis?.strategies ?? [];
-  const bestReliableByOutcome = bestReliableStrategyByOutcome(analysis?.strategies ?? []);
-  const filteredStrategies = strategies.filter((strategy) =>
-    matchesStrategyFilters(strategy, marketFilter, outcomeFilter, qualityFilter),
-  );
-  const visibleStrategies = sortStrategies(filteredStrategies, sortState);
-  const strategyCardLimit = 9;
-  const primaryStrategies = visibleStrategies.slice(0, strategyCardLimit);
-  const selectedStrategyKey = selectedStrategy ? strategyKey(selectedStrategy) : undefined;
-  const selectedStrategyPreview = selectedStrategy ? strategySettingsPreview(settings, selectedStrategy) : [];
+  const items = recommendations?.recommendations ?? [];
+  const thresholds = recommendations?.thresholds;
+  const autoApplyOn = Boolean(settings.aiAutoApplyLive);
 
-  useEffect(() => {
-    saveOllamaHistory(ollamaHistory);
-  }, [ollamaHistory]);
-
-  function toggleSort(key: StrategySortKey) {
-    setSortState((current) => ({
-      key,
-      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
-    }));
-  }
-
-  async function submitOllama() {
-    const trimmed = prompt.trim();
-    if (!trimmed) {
-      setOllamaError("Prompt requerido.");
-      return;
-    }
-    setOllamaError(null);
-    try {
-      const result = await onAnalyze(trimmed);
-      setOllamaHistory((current) => [
-        {
-          id: createOllamaHistoryId(result),
-          prompt: trimmed,
-          result,
-        },
-        ...current,
-      ]);
-    } catch (caught) {
-      setOllamaError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
-  function selectStrategy(strategy: StrategyCandidate) {
-    setSelectedStrategy(strategy);
+  async function applyRecommendation(market: MarketSymbol, recommended: RecommendationCandidate) {
     setApplyMessage(null);
     setApplyError(null);
-  }
-
-  async function applySelectedStrategy() {
-    if (!selectedStrategy) {
-      return;
-    }
-    setApplyMessage(null);
-    setApplyError(null);
+    setApplyingMarket(market);
     try {
-      await onApplyStrategy(selectedStrategy);
-      setApplyMessage(`Estrategia aplicada: ${strategyApplySummary(selectedStrategy)}.`);
+      await onApplyRecommendation(market, recommended);
+      setApplyMessage(
+        `Aplicada la recomendada de ${market}: ventana ${formatEntryWindow(recommended.entryWindowSeconds)}, distancia ${formatMarketDistance(recommended.minDistanceUsd, market)}.`,
+      );
     } catch (caught) {
       setApplyError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setApplyingMarket(null);
     }
-  }
-
-  function deleteOllamaEntry(id: string) {
-    setOllamaHistory((current) => current.filter((entry) => entry.id !== id));
   }
 
   async function exportAnalysisData() {
@@ -1115,7 +978,7 @@ export function AnalysisPanel({
       {loading && (
         <div className="notice compact-notice">
           <RefreshCw size={18} />
-          Calculando estrategias...
+          Calculando recomendaciones del autoajuste...
         </div>
       )}
       {loadError && (
@@ -1124,347 +987,181 @@ export function AnalysisPanel({
           {loadError}
         </div>
       )}
-      {stale && analysis && !loading && !loadError && (
+      {stale && recommendations && !loading && !loadError && (
         <div className="notice compact-notice">
           <AlertTriangle size={18} />
-          Analisis pendiente de actualizar.
+          Recomendaciones pendientes de actualizar.
+        </div>
+      )}
+      {applyMessage && (
+        <div className="notice success compact-notice">
+          <CheckCircle2 size={18} />
+          {applyMessage}
+        </div>
+      )}
+      {applyError && (
+        <div className="notice error compact-notice">
+          <AlertTriangle size={18} />
+          {applyError}
         </div>
       )}
 
-      <div className="hero-metrics compact analysis-metrics">
-        <Metric label="Muestras" value={String(analysis?.summary.sampleCount ?? 0)} />
-        <Metric label="Analizadas (grid)" value={String(analysis?.summary.analyzedSampleCount ?? 0)} />
-        <Metric label="Ultima muestra" value={formatDateTime(analysis?.summary.lastSampleAtMs)} />
-        <Metric label="Confiables" value={String(analysis?.summary.reliableStrategyCount ?? 0)} />
-        <Metric label="Mejor ROI EV fiable" value={formatPercent(analysis?.summary.bestReliableEvRoi)} tone={pnlTone(analysis?.summary.bestReliableEvRoi)} />
-        <Metric label="Trades fiables" value={String(analysis?.summary.bestReliableTradeCount ?? 0)} />
-      </div>
-
-      <div className="analysis-controls">
-        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por mercado">
-          <button
-            className={`segment-button ${marketFilter === "ALL" ? "active" : ""}`}
-            type="button"
-            onClick={() => setMarketFilter("ALL")}
-          >
-            Todos
-          </button>
-          {marketOptions.map((market) => (
-            <button
-              className={`segment-button ${marketFilter === market.symbol ? "active" : ""}`}
-              type="button"
-              key={market.symbol}
-              onClick={() => setMarketFilter(market.symbol)}
-            >
-              {market.symbol}
-            </button>
-          ))}
-        </div>
-        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por lado">
-          <button
-            className={`segment-button ${outcomeFilter === "ALL" ? "active" : ""}`}
-            type="button"
-            onClick={() => setOutcomeFilter("ALL")}
-          >
-            Ambos
-          </button>
-          {outcomeOptions.map((outcome) => (
-            <button
-              className={`segment-button ${outcomeFilter === outcome ? "active" : ""}`}
-              type="button"
-              key={outcome}
-              onClick={() => setOutcomeFilter(outcome)}
-            >
-              {outcome}
-            </button>
-          ))}
-        </div>
-        <div className="segmented-control" role="group" aria-label="Filtrar estrategias por calidad">
-          {[
-            ["RELIABLE", "Confiables"],
-            ["POSITIVE", "EV positivo"],
-            ["CURRENT", "Actuales"],
-            ["ALL", "Todas"],
-          ].map(([value, label]) => (
-            <button
-              className={`segment-button ${qualityFilter === value ? "active" : ""}`}
-              type="button"
-              key={value}
-              onClick={() => setQualityFilter(value as StrategyQualityFilter)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="strategy-workspace">
-        <div className="strategy-candidate-pane">
-          <div className="workspace-heading">
-            <div>
-              <span>Candidatas</span>
-              <strong>{strategyCardCountLabel(primaryStrategies.length, visibleStrategies.length)}</strong>
-            </div>
-          </div>
-          {visibleStrategies.length === 0 ? (
-            <div className="empty-state strategy-empty">{emptyStrategyMessage(qualityFilter)}</div>
-          ) : (
-            <div className="strategy-card-grid">
-              {primaryStrategies.map((strategy) => (
-                <StrategyMiniCard
-                  key={strategyKey(strategy)}
-                  strategy={strategy}
-                  bestReliable={bestReliableByOutcome.get(strategyOutcomeKey(strategy))}
-                  selected={selectedStrategyKey === strategyKey(strategy)}
-                  onSelect={selectStrategy}
-                />
-              ))}
-            </div>
+      <div className="recommendation-summary">
+        <div className="recommendation-summary-main">
+          <span className={`chip ${autoApplyOn ? "chip-on" : "chip-neutral"}`}>
+            {autoApplyOn ? "Autoajuste ON" : "Autoajuste OFF"}
+          </span>
+          {items.length > 0 && (
+            <span className="recommendation-counts">
+              <strong>{items.filter((r) => r.canAutoApply).length}</strong> se auto-aplican ·{" "}
+              <strong>{items.filter((r) => r.canApply && !r.canAutoApply).length}</strong> sugerencias ·{" "}
+              <strong>{items.filter((r) => !r.canApply).length}</strong> sin datos
+            </span>
+          )}
+          {recommendations && (
+            <span className="recommendation-fresh">Actualizado {formatDateTime(recommendations.generatedAtMs)}</span>
           )}
         </div>
-
-        <aside className="strategy-preview-panel" aria-live="polite">
-          <div className="workspace-heading">
-            <div>
-              <span>Preview</span>
-              <strong>{selectedStrategy ? strategyApplySummary(selectedStrategy) : "Sin estrategia seleccionada"}</strong>
-            </div>
-          </div>
-          {applyMessage && <div className="notice success compact-notice"><CheckCircle2 size={18} />{applyMessage}</div>}
-          {applyError && <div className="notice error compact-notice"><AlertTriangle size={18} />{applyError}</div>}
-          {selectedStrategy ? (
-            <>
-              <div className="hero-metrics compact preview-metrics">
-                <Metric label="ROI EV" value={formatPercent(selectedStrategy.metrics.evRoi)} tone={pnlTone(selectedStrategy.metrics.evRoi)} />
-                <Metric label="EV live" value={formatSignedUsd(selectedStrategy.metrics.expectedValueUsd)} tone={pnlTone(selectedStrategy.metrics.expectedValueUsd)} />
-                <Metric label="Edge" value={formatPercent(selectedStrategy.metrics.edge)} tone={pnlTone(selectedStrategy.metrics.edge)} />
-              </div>
-              <div className="strategy-preview-list">
-                {selectedStrategyPreview.map((item) => (
-                  <div className={`strategy-preview-row ${item.changed ? "changed" : ""}`} key={item.label}>
-                    <span>{item.label}</span>
-                    <strong>{item.current}</strong>
-                    <span aria-hidden="true">-&gt;</span>
-                    <strong>{item.next}</strong>
-                  </div>
-                ))}
-              </div>
-              {running && (
-                <div className="notice error compact-notice">
-                  <AlertTriangle size={18} />
-                  Deten el bot para aplicar cambios de estrategia.
-                </div>
-              )}
-              <button
-                className="command primary"
-                type="button"
-                onClick={applySelectedStrategy}
-                disabled={busy || running}
-                title={running ? "Deten el bot para aplicar cambios de estrategia" : "Confirmar aplicacion de estrategia"}
-              >
-                <Save size={18} /> Confirmar aplicacion
-              </button>
-            </>
-          ) : (
-            <div className="empty-state strategy-preview-empty">Selecciona una tarjeta para comparar valores actuales y nuevos antes de guardar.</div>
-          )}
-        </aside>
+        <p className="recommendation-summary-note">
+          La mejor configuración por mercado según el motor del autoajuste (se valida fuera de muestra).{" "}
+          {autoApplyOn
+            ? "Las marcadas “Se auto-aplica” se aplican solas cada ~60s."
+            : "Actívalo en Settings → Autoajuste para que se apliquen solas."}
+        </p>
       </div>
 
-      {visibleStrategies.length > 0 && (
-        <details className="strategy-detail-table">
-          <summary>Detalle completo</summary>
-          <div className="table-scroll strategy-table-scroll">
-            <table className="responsive-table strategy-table">
-              <thead>
-                <tr>
-                  <th>Elegir</th>
-                  <th>Mercado</th>
-                  <th>Lado</th>
-                  <th aria-sort={strategySortAria("entryWindowSeconds", sortState)}>
-                    <StrategySortHeader label="Ventana" sortKey="entryWindowSeconds" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("minDistanceUsd", sortState)}>
-                    <StrategySortHeader label="Distancia" sortKey="minDistanceUsd" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("maxAskPrice", sortState)}>
-                    <StrategySortHeader label="Ask cap" sortKey="maxAskPrice" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("averageAsk", sortState)}>
-                    <StrategySortHeader label="Ask prom" sortKey="averageAsk" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("realWinProbability", sortState)}>
-                    <StrategySortHeader label="P real" sortKey="realWinProbability" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("adjustedWinProbability", sortState)}>
-                    <StrategySortHeader label="P ajustada" sortKey="adjustedWinProbability" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("edge", sortState)}>
-                    <StrategySortHeader label="Edge" sortKey="edge" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("evRoi", sortState)}>
-                    <StrategySortHeader label="ROI EV" sortKey="evRoi" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("expectedValueUsd", sortState)}>
-                    <StrategySortHeader label="EV live" sortKey="expectedValueUsd" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th>Conf.</th>
-                  <th>Delta</th>
-                  <th aria-sort={strategySortAria("tradeCount", sortState)}>
-                    <StrategySortHeader label="Trades" sortKey="tradeCount" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("winRate", sortState)}>
-                    <StrategySortHeader label="Win" sortKey="winRate" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("quoteCoverage", sortState)}>
-                    <StrategySortHeader label="Cobertura" sortKey="quoteCoverage" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th aria-sort={strategySortAria("maxDrawdown", sortState)}>
-                    <StrategySortHeader label="DD" sortKey="maxDrawdown" sortState={sortState} onSort={toggleSort} />
-                  </th>
-                  <th>Alertas</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleStrategies.map((strategy) => (
-                  <tr className={selectedStrategyKey === strategyKey(strategy) ? "selected-row" : undefined} key={strategyKey(strategy)}>
-                    <td data-label="Elegir" className="strategy-action-cell">
-                      <button
-                        className="command compact-command"
-                        type="button"
-                        onClick={() => selectStrategy(strategy)}
-                        aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
-                      >
-                        {selectedStrategyKey === strategyKey(strategy) ? "Elegida" : "Seleccionar"}
-                      </button>
-                    </td>
-                    <td data-label="Mercado">{strategy.market}{strategy.isCurrent ? " actual" : ""}</td>
-                    <td data-label="Lado"><span className={`side ${strategy.outcome.toLowerCase()}`}>{strategy.outcome}</span></td>
-                    <td data-label="Ventana">{formatEntryWindow(strategy.entryWindowSeconds)}</td>
-                    <td data-label="Distancia">{formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</td>
-                    <td data-label="Ask cap">{formatPrice(strategy.maxAskPrice)}</td>
-                    <td data-label="Ask prom" className="strategy-secondary-cell">{formatPrice(strategy.metrics.averageAsk)}</td>
-                    <td data-label="P real" className="strategy-secondary-cell">{formatRatio(strategy.metrics.realWinProbability)}</td>
-                    <td data-label="P ajustada" className="strategy-secondary-cell">{formatRatio(strategy.metrics.adjustedWinProbability)}</td>
-                    <td data-label="Edge"><span className={`pnl-value ${pnlTone(strategy.metrics.edge)}`}>{formatPercent(strategy.metrics.edge)}</span></td>
-                    <td data-label="ROI EV"><span className={`pnl-value ${pnlTone(strategy.metrics.evRoi)}`}>{formatPercent(strategy.metrics.evRoi)}</span></td>
-                    <td data-label="EV live"><span className={`pnl-value ${pnlTone(strategy.metrics.expectedValueUsd)}`}>{formatSignedUsd(strategy.metrics.expectedValueUsd)}</span></td>
-                    <td data-label="Conf."><ConfidenceBadge confidence={strategy.confidence} /></td>
-                    <td data-label="Delta" className="strategy-secondary-cell">{formatDelta(strategy.evDeltaVsCurrent)}</td>
-                    <td data-label="Trades">{strategy.metrics.tradeCount}</td>
-                    <td data-label="Win" className="strategy-secondary-cell">{formatRatio(strategy.metrics.winRate)}</td>
-                    <td data-label="Cobertura" className="strategy-secondary-cell">{formatRatio(strategy.metrics.quoteCoverage)}</td>
-                    <td data-label="DD" className="strategy-secondary-cell">{strategy.metrics.maxDrawdown.toFixed(2)}</td>
-                    <td data-label="Alertas" className="strategy-alerts-cell">{formatRiskFlags(strategy.riskFlags)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="recommendation-grid">
+        {items.length === 0 ? (
+          <div className="empty-state">
+            {loading ? "Calculando recomendaciones…" : "Aún no hay recomendaciones. Actualiza o espera más muestras."}
           </div>
-        </details>
-      )}
-
-      <div className="ollama-panel">
-        <div className="quick-prompts" aria-label={"Prompts r\u00e1pidos Ollama"}>
-          {ollamaPromptOptions.map((option) => (
-            <button className="segment-button" type="button" key={option.label} onClick={() => setPrompt(option.prompt)}>
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <label className="field">
-          <span>Prompt Ollama</span>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={4}
-            placeholder={"Elige un prompt r\u00e1pido o escribe qu\u00e9 quieres revisar de estas estrategias."}
-          />
-        </label>
-        <div className="form-actions">
-          <button className="command primary" type="button" onClick={submitOllama} disabled={busy}>
-            <CheckCircle2 size={18} /> Analizar con Ollama
-          </button>
-        </div>
-        {ollamaError && <div className="notice error"><AlertTriangle size={18} />{ollamaError}</div>}
-        {ollamaHistory.length > 0 && (
-          <div className="ollama-history" aria-label="Respuestas guardadas de Ollama">
-            {ollamaHistory.map((entry) => (
-              <article className="ollama-result" key={entry.id}>
-                <div className="ollama-result-header">
-                  <div>
-                    <strong>{entry.result.model}</strong>
-                    <span>{new Date(entry.result.generatedAtMs).toLocaleString()}</span>
-                    <span>{entry.result.contextSummary}</span>
-                    <span>Prompt: {entry.prompt}</span>
+        ) : (
+          [...items]
+            .sort((a, b) => RECOMMENDATION_MARKET_ORDER.indexOf(a.market) - RECOMMENDATION_MARKET_ORDER.indexOf(b.market))
+            .map((rec) => {
+              const best = rec.recommended ?? rec.current;
+              const m = best.metrics;
+              const badgeLabel = rec.canAutoApply
+                ? "Se auto-aplica"
+                : rec.canApply
+                  ? "Sugerencia (no auto)"
+                  : rec.status === "insufficient_data"
+                    ? "Datos insuficientes"
+                    : "Sin cambio";
+              const badgeClass = rec.canAutoApply ? "chip-on" : rec.canApply ? "chip-warn" : "chip-neutral";
+              const badgeIcon = rec.canAutoApply ? <CheckCircle2 size={14} /> : rec.canApply ? <AlertTriangle size={14} /> : null;
+              const windowChanged = rec.recommended !== undefined && rec.recommended.entryWindowSeconds !== rec.current.entryWindowSeconds;
+              const distanceChanged = rec.recommended !== undefined && rec.recommended.minDistanceUsd !== rec.current.minDistanceUsd;
+              const reqs = thresholds
+                ? [
+                    { key: "conf", short: "confianza", label: "Confianza", value: confidenceEs(rec.confidence), threshold: "alta", ok: rec.confidence === "high" },
+                    { key: "trades", short: "trades", label: "Trades", value: String(m.tradeCount), threshold: String(thresholds.minAutoTrades), ok: m.tradeCount >= thresholds.minAutoTrades },
+                    { key: "cov", short: "cobertura", label: "Cobertura", value: formatRatio(m.quoteCoverage), threshold: formatRatio(thresholds.minQuoteCoverage), ok: m.quoteCoverage >= thresholds.minQuoteCoverage },
+                    { key: "over", short: "sobreajuste", label: "Sobreajuste", value: m.overfitRisk.toFixed(2), threshold: `${thresholds.maxOverfitRisk.toFixed(2)} máx`, ok: m.overfitRisk <= thresholds.maxOverfitRisk },
+                    { key: "roi", short: "retorno", label: "Retorno", value: formatPercent(m.walkForwardRoi), threshold: ">0", ok: (m.lowerBoundRoi ?? -1) > 0 && (m.walkForwardRoi ?? -1) > 0 },
+                    { key: "yield", short: "mejora", label: "Mejora", value: (rec.improvementYield ?? 0).toFixed(4), threshold: thresholds.minYieldImprovement.toString(), ok: (rec.improvementYield ?? -1) >= thresholds.minYieldImprovement },
+                  ]
+                : [];
+              const failing = reqs.filter((req) => !req.ok);
+              return (
+                <article className="recommendation-card" key={rec.market}>
+                  <div className="recommendation-card-head">
+                    <h3>{rec.market}</h3>
+                    <span className={`chip ${badgeClass}`}>{badgeIcon}{badgeLabel}</span>
                   </div>
-                  <button
-                    className="command danger compact-command"
-                    type="button"
-                    onClick={() => deleteOllamaEntry(entry.id)}
-                    aria-label={`Borrar respuesta Ollama ${new Date(entry.result.generatedAtMs).toLocaleString()}`}
-                  >
-                    <Trash2 size={16} /> Borrar
-                  </button>
-                </div>
-                <p>{entry.result.content}</p>
-              </article>
-            ))}
-          </div>
+                  <div className="recommendation-configs">
+                    <div className="recommendation-config">
+                      <span className="recommendation-config-label">Actual</span>
+                      <strong>{formatEntryWindow(rec.current.entryWindowSeconds)} / {formatMarketDistance(rec.current.minDistanceUsd, rec.market)}</strong>
+                    </div>
+                    <span className="recommendation-arrow" aria-hidden="true">{"→"}</span>
+                    <div className={`recommendation-config ${rec.recommended ? "recommended" : ""}`}>
+                      <span className="recommendation-config-label">Recomendada</span>
+                      <strong>
+                        {rec.recommended ? (
+                          <>
+                            <span className={windowChanged ? "changed-value" : ""}>{formatEntryWindow(rec.recommended.entryWindowSeconds)}</span>
+                            {" / "}
+                            <span className={distanceChanged ? "changed-value" : ""}>{formatMarketDistance(rec.recommended.minDistanceUsd, rec.market)}</span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </strong>
+                    </div>
+                  </div>
+                  <p className="recommendation-plain">
+                    Opera ~{formatRatio(executionRate(m))} de las ventanas · aciertos {winRateText(m)} · retorno validado{" "}
+                    <span className={pnlTone(m.walkForwardRoi)}>{formatPercent(m.walkForwardRoi)}</span> · riesgo {riskLevel(m.overfitRisk, thresholds)}
+                  </p>
+                  {reqs.length > 0 && (
+                    failing.length === 0 ? (
+                      <p className="requirements-ok"><CheckCircle2 size={15} /> Cumple los requisitos para auto-aplicar.</p>
+                    ) : (
+                      <p className="requirements-missing"><AlertTriangle size={15} /> Falta: {failing.map((req) => req.short).join(", ")}.</p>
+                    )
+                  )}
+                  {reqs.length > 0 && (
+                    <div className="requirement-chips">
+                      {reqs.map((req) => (
+                        <span className={`req-chip ${req.ok ? "ok" : "fail"}`} key={req.key} title={`${req.label}: ${req.value} (mín/máx ${req.threshold})`}>
+                          <span className="req-chip-icon" aria-hidden="true">{req.ok ? "✓" : "✗"}</span>
+                          {req.label} {req.value}<span className="req-chip-thr">/{req.threshold}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {rec.recommended && (
+                    <button
+                      className="command primary"
+                      type="button"
+                      onClick={() => rec.recommended && applyRecommendation(rec.market, rec.recommended)}
+                      disabled={busy || running || applyingMarket !== null}
+                      title={running ? "Detén el bot para aplicar manualmente" : "Aplicar la config recomendada"}
+                      aria-label={`Aplicar recomendada ${rec.market}`}
+                    >
+                      <Save size={18} /> {applyingMarket === rec.market ? "Aplicando…" : "Aplicar recomendada"}
+                    </button>
+                  )}
+                </article>
+              );
+            })
         )}
       </div>
     </section>
   );
 }
 
-function StrategyMiniCard({
-  strategy,
-  bestReliable,
-  selected,
-  onSelect,
-}: {
-  strategy: StrategyCandidate;
-  bestReliable?: StrategyCandidate;
-  selected: boolean;
-  onSelect: (strategy: StrategyCandidate) => void;
-}) {
-  const reliableDelta =
-    bestReliable?.metrics.evRoi !== undefined && strategy.metrics.evRoi !== undefined
-      ? bestReliable.metrics.evRoi - strategy.metrics.evRoi
-      : undefined;
-  return (
-    <article className={`strategy-mini-card ${selected ? "selected" : ""}`}>
-      <div className="strategy-mini-heading">
-        <strong>{strategy.market} {strategy.outcome}</strong>
-        <span>{formatEntryWindow(strategy.entryWindowSeconds)} / {formatMarketDistance(strategy.minDistanceUsd, strategy.market)}</span>
-      </div>
-      <button
-        className="command compact-command"
-        type="button"
-        onClick={() => onSelect(strategy)}
-        aria-label={`Seleccionar estrategia ${strategy.market} ${strategy.outcome}`}
-      >
-        {selected ? "Elegida" : "Seleccionar"}
-      </button>
-      <Metric label="Estado" value={entryDecisionLabel(strategy)} tone={strategy.metrics.passesRecommendedEntry ? "positive" : "negative"} />
-      <Metric label="P real" value={formatRatio(strategy.metrics.realWinProbability)} />
-      <Metric label="P ajustada" value={formatRatio(strategy.metrics.adjustedWinProbability)} />
-      <Metric label="Edge" value={formatPercent(strategy.metrics.edge)} tone={pnlTone(strategy.metrics.edge)} />
-      <Metric label="EV live" value={formatSignedUsd(strategy.metrics.expectedValueUsd)} tone={pnlTone(strategy.metrics.expectedValueUsd)} />
-      <Metric label="Ask prom" value={formatPrice(strategy.metrics.averageAsk)} />
-      <Metric label="ROI EV" value={formatPercent(strategy.metrics.evRoi)} tone={pnlTone(strategy.metrics.evRoi)} />
-      <Metric label="Trades" value={String(strategy.metrics.tradeCount)} />
-      <ConfidenceBadge confidence={strategy.confidence} />
-      <small>
-        {[
-          `Hist. ${formatPercent(strategy.metrics.historicalRoi)}`,
-          evDecisionReasonLabel(strategy.metrics.evDecisionReason),
-          bestReliable ? `Mejor fiable ${formatPercent(bestReliable.metrics.evRoi)} (${formatDelta(reliableDelta)})` : "Sin fiable",
-        ].join(" / ")}
-      </small>
-    </article>
-  );
+function executionRate(m: RecommendationMetrics): number {
+  return m.sampleCount > 0 ? m.tradeCount / m.sampleCount : 0;
 }
+
+function winRateText(m: RecommendationMetrics): string {
+  const decided = m.winCount + m.lossCount;
+  if (decided > 0) {
+    return `${Math.round((m.winCount / decided) * 100)}% (${m.winCount}/${decided})`;
+  }
+  if (m.predictedWinProbability !== undefined) {
+    return `~${Math.round(m.predictedWinProbability * 100)}%`;
+  }
+  return "--";
+}
+
+function riskLevel(overfit: number, thresholds?: AutoApplyThresholds): string {
+  const max = thresholds?.maxOverfitRisk ?? 0.45;
+  if (overfit <= 0.2) {
+    return "bajo";
+  }
+  return overfit <= max ? "medio" : "alto";
+}
+
+function confidenceEs(confidence: string): string {
+  return confidence === "high" ? "alta" : confidence === "medium" ? "media" : "baja";
+}
+
+// Fixed card order for the Análisis tab.
+const RECOMMENDATION_MARKET_ORDER: MarketSymbol[] = ["BTC", "ETH", "DOGE"];
+
 
 function PnlModeSummary({
   label,
@@ -1506,9 +1203,6 @@ function PnlModeSummary({
   );
 }
 
-function ConfidenceBadge({ confidence }: { confidence: StrategyConfidence }) {
-  return <span className={`confidence-badge ${confidence}`}>{confidenceLabel(confidence)}</span>;
-}
 
 export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; settings?: UiSettings }) {
   const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
@@ -1781,19 +1475,6 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
     });
   }
 
-  function updateAutoAdjust(key: AutoAdjustSettingKey, symbol: MarketSymbol, outcome: Outcome, enabled: boolean) {
-    setDraft((current) => ({
-      ...current,
-      [key]: {
-        ...current[key],
-        [symbol]: {
-          ...current[key][symbol],
-          [outcome]: enabled,
-        },
-      },
-    }));
-  }
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     await onSave(draft);
@@ -1884,33 +1565,33 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
                   step={0.01}
                   onChange={(value) => updateMarketAskCap(selectedMarketOption.symbol, outcome, value)}
                 />
-                <label className="switch-row compact-switch">
-                  <input
-                    type="checkbox"
-                    aria-label={`Auto live ${selectedMarketOption.label} ${outcome}`}
-                    checked={draft.autoAdjustLiveByMarketOutcome[selectedMarketOption.symbol][outcome]}
-                    onChange={(event) =>
-                      updateAutoAdjust("autoAdjustLiveByMarketOutcome", selectedMarketOption.symbol, outcome, event.target.checked)}
-                    disabled={running}
-                  />
-                  <span>Auto live</span>
-                </label>
-                <label className="switch-row compact-switch">
-                  <input
-                    type="checkbox"
-                    aria-label={`Tras perder ${selectedMarketOption.label} ${outcome}`}
-                    checked={draft.autoAdjustAfterLossByMarketOutcome[selectedMarketOption.symbol][outcome]}
-                    onChange={(event) =>
-                      updateAutoAdjust("autoAdjustAfterLossByMarketOutcome", selectedMarketOption.symbol, outcome, event.target.checked)}
-                    disabled={running}
-                  />
-                  <span>Tras perder</span>
-                </label>
               </div>
             ))}
           </div>
         </section>
       </div>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <Brain size={18} />
+          <h2>Autoajuste</h2>
+        </div>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.aiAutoApplyLive}
+            onChange={(event) => update("aiAutoApplyLive", event.target.checked)}
+            disabled={running}
+          />
+          <span>Autoajuste predictivo — mejor estrategia por ventana (sim y live)</span>
+        </label>
+        <p className="settings-hint">
+          Único autoajuste del bot. Un modelo estadístico local (backtesting walk-forward + estimación k-NN, sin LLM ni
+          internet) evalúa las muestras de Análisis cada ~60s mientras el bot corre y aplica automáticamente la mejor
+          ventana y distancia por mercado/lado cuando hay alta confianza y dentro de las guardas. Corre idéntico en sim y
+          en live (sin cooldown), así que una prueba en sim predice lo que hará en live. Actívalo antes de iniciar el bot.
+        </p>
+      </section>
 
       <section className="settings-advanced">
         <div className="section-heading">
@@ -1926,20 +1607,6 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
           <span>Auto minimo live</span>
         </label>
-        <label className="switch-row">
-          <input
-            type="checkbox"
-            checked={draft.aiAutoApplyLive}
-            onChange={(event) => update("aiAutoApplyLive", event.target.checked)}
-            disabled={running}
-          />
-          <span>Autoajuste predictivo en tiempo real</span>
-        </label>
-        <p className="settings-hint">
-          Un modelo estadistico local (backtesting walk-forward + estimacion k-NN, sin LLM ni internet) evalua las muestras de
-          Analisis mientras el bot corre y aplica automaticamente la mejor ventana y distancia por mercado cuando hay alta
-          confianza y dentro de las guardas. Actívalo antes de iniciar el bot.
-        </p>
       </section>
 
       <section className="settings-advanced">
@@ -2307,31 +1974,6 @@ function SortHeader({ label, sortKey, sortState, onSort }: {
   );
 }
 
-function StrategySortHeader({ label, sortKey, sortState, onSort }: {
-  label: string;
-  sortKey: StrategySortKey;
-  sortState: StrategySortState;
-  onSort: (key: StrategySortKey) => void;
-}) {
-  const active = sortState.key === sortKey;
-  const Icon = active
-    ? sortState.direction === "desc"
-      ? ArrowDownNarrowWide
-      : ArrowUpNarrowWide
-    : ArrowUpDown;
-  const nextDirection = active && sortState.direction === "desc" ? "menor a mayor" : "mayor a menor";
-  return (
-    <button
-      className={`sort-header ${active ? "active" : ""}`}
-      type="button"
-      onClick={() => onSort(sortKey)}
-      title={`Ordenar ${label} de ${nextDirection}`}
-    >
-      <span>{label}</span>
-      <Icon size={14} aria-hidden="true" />
-    </button>
-  );
-}
 
 function QuoteRow({ side, ask, bid }: { side: "UP" | "DOWN"; ask?: number; bid?: number }) {
   return (
@@ -2459,51 +2101,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function loadOllamaHistory(): OllamaHistoryEntry[] {
-  try {
-    const raw = window.localStorage.getItem(ollamaHistoryStorageKey);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isOllamaHistoryEntry) : [];
-  } catch {
-    return [];
-  }
-}
 
-function saveOllamaHistory(entries: OllamaHistoryEntry[]): void {
-  try {
-    if (entries.length === 0) {
-      window.localStorage.removeItem(ollamaHistoryStorageKey);
-      return;
-    }
-    window.localStorage.setItem(ollamaHistoryStorageKey, JSON.stringify(entries));
-  } catch {
-    // Keeping the in-memory response is still better than interrupting analysis rendering.
-  }
-}
 
-function createOllamaHistoryId(result: OllamaTradeAnalysisResponse): string {
-  return `${result.generatedAtMs}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
-function isOllamaHistoryEntry(value: unknown): value is OllamaHistoryEntry {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const entry = value as Partial<OllamaHistoryEntry>;
-  const result = entry.result as Partial<OllamaTradeAnalysisResponse> | undefined;
-  return (
-    typeof entry.id === "string" &&
-    typeof entry.prompt === "string" &&
-    Boolean(result) &&
-    typeof result?.generatedAtMs === "number" &&
-    typeof result?.model === "string" &&
-    typeof result?.content === "string" &&
-    typeof result?.contextSummary === "string"
-  );
-}
 
 function getMarketSnapshots(status: UiStatus | null): MarketStatusSnapshot[] {
   if (status?.markets?.length) {
@@ -2545,23 +2145,24 @@ function enabledMarketsFromOutcomeSettings(settings: UiSettings["enabledMarketOu
     .filter((market) => settings[market].UP || settings[market].DOWN);
 }
 
-function applyStrategyToSettings(settings: UiSettings, strategy: StrategyCandidate): UiSettings {
+// Mirror of the backend applyRecommendationsToSettings: apply the autoajuste's recommended window +
+// distance to a market (both sides), so the manual "Aplicar recomendada" matches what the bot does.
+function applyRecommendationToSettings(
+  settings: UiSettings,
+  market: MarketSymbol,
+  recommended: RecommendationCandidate,
+): UiSettings {
   const minDistanceUsdByMarketOutcome = cloneOutcomeNumberSettings(settings.minDistanceUsdByMarketOutcome);
   const entryWindowSecondsByMarketOutcome = cloneOutcomeNumberSettings(settings.entryWindowSecondsByMarketOutcome);
-  const maxAskPriceByMarketOutcome = cloneOutcomeNumberSettings(settings.maxAskPriceByMarketOutcome);
 
-  minDistanceUsdByMarketOutcome[strategy.market][strategy.outcome] = strategy.minDistanceUsd;
-  entryWindowSecondsByMarketOutcome[strategy.market][strategy.outcome] = strategy.entryWindowSeconds;
-  maxAskPriceByMarketOutcome[strategy.market][strategy.outcome] = strategy.maxAskPrice;
+  minDistanceUsdByMarketOutcome[market] = { UP: recommended.minDistanceUsd, DOWN: recommended.minDistanceUsd };
+  entryWindowSecondsByMarketOutcome[market] = {
+    UP: recommended.entryWindowSeconds,
+    DOWN: recommended.entryWindowSeconds,
+  };
 
-  const minDistanceUsdByMarket = {
-    ...settings.minDistanceUsdByMarket,
-    [strategy.market]: minDistanceUsdByMarketOutcome[strategy.market].UP,
-  };
-  const entryWindowSecondsByMarket = {
-    ...settings.entryWindowSecondsByMarket,
-    [strategy.market]: entryWindowSecondsByMarketOutcome[strategy.market].UP,
-  };
+  const minDistanceUsdByMarket = { ...settings.minDistanceUsdByMarket, [market]: recommended.minDistanceUsd };
+  const entryWindowSecondsByMarket = { ...settings.entryWindowSecondsByMarket, [market]: recommended.entryWindowSeconds };
 
   return {
     ...settings,
@@ -2571,36 +2172,9 @@ function applyStrategyToSettings(settings: UiSettings, strategy: StrategyCandida
     entryWindowSeconds: entryWindowSecondsByMarket.BTC,
     entryWindowSecondsByMarket,
     entryWindowSecondsByMarketOutcome,
-    maxAskPrice: maxAskPriceByMarketOutcome.BTC.UP,
-    maxAskPriceByMarketOutcome,
   };
 }
 
-function strategySettingsPreview(settings: UiSettings, strategy: StrategyCandidate): StrategySettingsPreviewItem[] {
-  const currentDistance = settings.minDistanceUsdByMarketOutcome[strategy.market][strategy.outcome];
-  const currentWindow = settings.entryWindowSecondsByMarketOutcome[strategy.market][strategy.outcome];
-  const currentAskCap = settings.maxAskPriceByMarketOutcome[strategy.market][strategy.outcome];
-  return [
-    {
-      label: "Distancia",
-      current: formatMarketDistance(currentDistance, strategy.market),
-      next: formatMarketDistance(strategy.minDistanceUsd, strategy.market),
-      changed: currentDistance !== strategy.minDistanceUsd,
-    },
-    {
-      label: "Ventana",
-      current: formatEntryWindow(currentWindow),
-      next: formatEntryWindow(strategy.entryWindowSeconds),
-      changed: currentWindow !== strategy.entryWindowSeconds,
-    },
-    {
-      label: "Ask cap",
-      current: formatPrice(currentAskCap),
-      next: formatPrice(strategy.maxAskPrice),
-      changed: currentAskCap !== strategy.maxAskPrice,
-    },
-  ];
-}
 
 function cloneOutcomeNumberSettings<T extends UiSettings["minDistanceUsdByMarketOutcome"]>(settings: T): T {
   return {
@@ -2610,18 +2184,7 @@ function cloneOutcomeNumberSettings<T extends UiSettings["minDistanceUsdByMarket
   } as T;
 }
 
-function strategyApplySummary(strategy: StrategyCandidate): string {
-  return [
-    `${strategy.market} ${strategy.outcome}`,
-    formatEntryWindow(strategy.entryWindowSeconds),
-    formatMarketDistance(strategy.minDistanceUsd, strategy.market),
-    `Ask ${formatPrice(strategy.maxAskPrice)}`,
-  ].join(" / ");
-}
 
-function strategyCardCountLabel(shown: number, total: number): string {
-  return total > shown ? `Mostrando ${shown} de ${total}` : `${total} estrategias visibles`;
-}
 
 function enabledOutcomeLabels(settings: UiSettings["enabledMarketOutcomes"] | undefined): string[] {
   if (!settings) {
@@ -2707,72 +2270,10 @@ function sortTrades(trades: TradeAttempt[], sortState: TradeSortState | undefine
   });
 }
 
-function sortStrategies(strategies: StrategyCandidate[], sortState: StrategySortState): StrategyCandidate[] {
-  return [...strategies].sort((left, right) => {
-    const leftValue = getStrategySortValue(left, sortState.key);
-    const rightValue = getStrategySortValue(right, sortState.key);
-    if (leftValue === undefined && rightValue === undefined) {
-      return 0;
-    }
-    if (leftValue === undefined) {
-      return 1;
-    }
-    if (rightValue === undefined) {
-      return -1;
-    }
-    const difference = leftValue - rightValue;
-    return sortState.direction === "desc" ? -difference : difference;
-  });
-}
 
-function matchesStrategyFilters(
-  strategy: StrategyCandidate,
-  marketFilter: TradeMarketFilter,
-  outcomeFilter: OutcomeFilter,
-  qualityFilter: StrategyQualityFilter,
-): boolean {
-  const marketMatches = marketFilter === "ALL" || strategy.market === marketFilter;
-  const outcomeMatches = outcomeFilter === "ALL" || strategy.outcome === outcomeFilter;
-  if (!marketMatches || !outcomeMatches) {
-    return false;
-  }
-  if (qualityFilter === "RELIABLE") {
-    return isReliableStrategy(strategy);
-  }
-  if (qualityFilter === "POSITIVE") {
-    return (strategy.metrics.evRoi ?? -Infinity) > 0;
-  }
-  if (qualityFilter === "CURRENT") {
-    return strategy.isCurrent;
-  }
-  return true;
-}
 
-function bestReliableStrategyByOutcome(strategies: StrategyCandidate[]): Map<string, StrategyCandidate> {
-  const best = new Map<string, StrategyCandidate>();
-  for (const strategy of strategies) {
-    if (!isReliableStrategy(strategy)) {
-      continue;
-    }
-    const key = strategyOutcomeKey(strategy);
-    const current = best.get(key);
-    if (!current || (strategy.metrics.evRoi ?? -Infinity) > (current.metrics.evRoi ?? -Infinity)) {
-      best.set(key, strategy);
-    }
-  }
-  return best;
-}
 
-function isReliableStrategy(strategy: StrategyCandidate): boolean {
-  return strategy.confidence === "medium" || strategy.confidence === "high";
-}
 
-function getStrategySortValue(strategy: StrategyCandidate, key: StrategySortKey): number | undefined {
-  if (key === "entryWindowSeconds" || key === "minDistanceUsd" || key === "maxAskPrice") {
-    return strategy[key];
-  }
-  return strategy.metrics[key];
-}
 
 function getTradeSortValue(trade: TradeAttempt, key: TradeSortKey, settings?: UiSettings): number | undefined {
   if (key === "createdAtMs") {
@@ -2802,27 +2303,8 @@ function sortAria(key: TradeSortKey, sortState?: TradeSortState): "ascending" | 
   return sortState.direction === "asc" ? "ascending" : "descending";
 }
 
-function strategySortAria(key: StrategySortKey, sortState: StrategySortState): "ascending" | "descending" | "none" {
-  if (sortState.key !== key) {
-    return "none";
-  }
-  return sortState.direction === "asc" ? "ascending" : "descending";
-}
 
-function strategyKey(strategy: StrategyCandidate): string {
-  return [
-    strategy.market,
-    strategy.outcome,
-    strategy.entryWindowSeconds,
-    strategy.minDistanceUsd,
-    strategy.maxAskPrice,
-    strategy.isCurrent ? "current" : "candidate",
-  ].join(":");
-}
 
-function strategyOutcomeKey(strategy: Pick<StrategyCandidate, "market" | "outcome">): string {
-  return `${strategy.market}:${strategy.outcome}`;
-}
 
 function matchesTradePnlFilter(trade: TradeAttempt, filter: TradePnlFilter): boolean {
   if (filter === "ALL") {
@@ -2949,83 +2431,12 @@ function formatRatio(value?: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function formatDelta(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return formatPercent(value);
-}
 
-function formatRiskFlags(flags: StrategyRiskFlag[]): string {
-  if (flags.length === 0) {
-    return "OK";
-  }
-  return flags.map(riskFlagLabel).join(", ");
-}
 
-function riskFlagLabel(flag: StrategyRiskFlag): string {
-  const labels: Record<StrategyRiskFlag, string> = {
-    no_trades: "Sin trades",
-    few_trades: "Pocos trades",
-    low_quote_coverage: "Baja cobertura",
-    negative_ev: "EV negativo",
-    insufficient_history: "Historial insuf.",
-    unsafe_edge: "Edge < 2%",
-    below_min_ev: "EV < 1%",
-    avoid_ask: "Ask evitable",
-    high_drawdown: "Drawdown alto",
-  };
-  return labels[flag];
-}
 
-function entryDecisionLabel(strategy: StrategyCandidate): string {
-  return strategy.metrics.passesRecommendedEntry ? "Entrar\u00eda" : "No entra";
-}
 
-function evDecisionReasonLabel(reason: StrategyCandidate["metrics"]["evDecisionReason"]): string {
-  if (reason === "passes") {
-    return "Regla EV OK";
-  }
-  if (reason === "insufficient_history") {
-    return "Historial insuf.";
-  }
-  if (reason === "avoid_099") {
-    return "Evitar ask 0.99";
-  }
-  if (reason === "avoid_098") {
-    return "Evitar ask 0.98";
-  }
-  if (reason === "safety_margin") {
-    return "Edge < 2%";
-  }
-  if (reason === "minimum_expected_value") {
-    return "EV < 1%";
-  }
-  return "Sin EV";
-}
 
-function confidenceLabel(confidence: StrategyConfidence): string {
-  if (confidence === "high") {
-    return "Alta";
-  }
-  if (confidence === "medium") {
-    return "Media";
-  }
-  return "Baja";
-}
 
-function emptyStrategyMessage(filter: StrategyQualityFilter): string {
-  if (filter === "RELIABLE") {
-    return "Sin estrategias confiables todavia. Revisa Todas o acumula mas muestras con EV conservador.";
-  }
-  if (filter === "POSITIVE") {
-    return "Sin estrategias con EV positivo para estos filtros.";
-  }
-  if (filter === "CURRENT") {
-    return "Sin estrategias actuales para estos filtros.";
-  }
-  return "Sin estrategias con EV calculable.";
-}
 
 function formatTradePnl(pnl: TradePnl): string {
   return pnl.status === "resolved" ? formatSignedUsd(pnl.netUsd) : "--";
