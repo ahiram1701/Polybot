@@ -23,7 +23,7 @@ import {
 import { MarketWatcher } from "./marketWatcher.js";
 import { createDynamicNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
-import { calculateTradePnl } from "./pnl.js";
+import { calculatePnlSummaryByMode, calculateTradePnl } from "./pnl.js";
 import {
   getWinningOutcome,
   isTickStale,
@@ -878,6 +878,11 @@ export class BotRunner {
 
   private async notifyTradeResolved(trade: TradeAttempt, resolution: NonNullable<TradeAttempt["resolved"]>): Promise<void> {
     const pnl = calculateTradePnl({ ...trade, resolved: resolution });
+    // Running P&L of the CURRENT mode since its last reset (the just-resolved trade is already
+    // persisted at this point), so every Telegram alert shows how the run is going.
+    const resetAtMs = this.deps.state.getPnlResetAtMs?.() ?? {};
+    const runPnl = calculatePnlSummaryByMode(this.deps.state.listTrades(), resetAtMs)[trade.mode];
+    const runRoi = runPnl.roiPct !== undefined ? ` (${(runPnl.roiPct * 100).toFixed(1)}%)` : "";
     await this.deps.notifier?.notify({
       key: `trade-resolved:${trade.id ?? trade.slug}`,
       level: resolution.won ? "info" : "warn",
@@ -886,6 +891,7 @@ export class BotRunner {
         `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
         `Comprado: ${trade.outcome}. Ganador: ${resolution.winningOutcome}.`,
         `Stake: ${formatUsd(trade.amountUsd)}. P&L: ${formatSignedUsd(pnl.netUsd)}.`,
+        `P&L corrida ${trade.mode}: ${formatSignedUsd(runPnl.realizedUsd)}${runRoi} · ${runPnl.wonCount}-${runPnl.lostCount}.`,
         `Precio final: ${formatMarketValue(resolution.finalPrice)}. Distancia: ${formatSignedValue(trade.distanceUsd)}.`,
         `Slug: ${trade.slug}.`,
       ].join("\n"),
