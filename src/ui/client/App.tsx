@@ -137,7 +137,7 @@ const emptySettings: UiSettings = {
   requirePositiveEv: true,
   evUseSimilarity: false,
   evSafetyMargin: 0.03,
-  evMinHistoryTrades: 10,
+  evMinHistoryTrades: 15,
   minFillRatio: 0.5,
   evMinExpectedRoi: 0.01,
   tickStaleMs: 10_000,

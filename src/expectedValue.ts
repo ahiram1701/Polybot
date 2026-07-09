@@ -23,6 +23,9 @@ export interface ExpectedValueInput {
   tradeCount: number;
   safetyMargin?: number;
   minExpectedRoi?: number;
+  // Bayesian prior strength (pseudo-trades) for the win-rate shrinkage. Higher = more skeptical of thin
+  // history, anchoring harder to the market-implied prior (the ask). Defaults to PRIOR_STRENGTH.
+  priorStrength?: number;
 }
 
 export interface ExpectedValueSnapshot {
@@ -66,7 +69,12 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
   const realWinProbability = calculateRealWinProbability(input.winCount, input.tradeCount);
   // Anchor the shrinkage prior to the market-implied probability (the ask): in an efficient market the
   // ask ≈ P(win), so a thin setup should start at the market price (edge ~0) rather than at 0.5.
-  const adjustedWinProbability = calculateAdjustedWinProbability(input.winCount, input.tradeCount, input.askPrice);
+  const adjustedWinProbability = calculateAdjustedWinProbability(
+    input.winCount,
+    input.tradeCount,
+    input.askPrice,
+    input.priorStrength,
+  );
   const edge = adjustedWinProbability - input.askPrice;
   const expectedRoi = adjustedWinProbability / input.askPrice - 1;
   const expectedValueUsd = input.capitalUsd * expectedRoi;
@@ -121,16 +129,19 @@ export function calculateAdjustedWinProbability(
   winCount: number,
   tradeCount: number,
   priorProbability = 0.5,
+  priorStrength: number = PRIOR_STRENGTH,
 ): number {
   assertNonNegativeInteger(winCount, "winCount");
   assertNonNegativeInteger(tradeCount, "tradeCount");
   if (winCount > tradeCount) {
     throw new Error("winCount cannot be greater than tradeCount.");
   }
-  // Bayesian shrinkage toward `priorProbability` with strength PRIOR_STRENGTH pseudo-trades. With the
-  // default 0.5 prior this is exactly the classic Laplace estimate (w+1)/(t+2).
+  // Bayesian shrinkage toward `priorProbability` with strength `priorStrength` pseudo-trades. With the
+  // default 0.5 prior and strength 2 this is exactly the classic Laplace estimate (w+1)/(t+2). A larger
+  // strength anchors thin setups harder to the prior (the ask), i.e. is more skeptical of small samples.
+  const strength = Number.isFinite(priorStrength) && priorStrength > 0 ? priorStrength : PRIOR_STRENGTH;
   const prior = Number.isFinite(priorProbability) ? Math.min(Math.max(priorProbability, 0.05), 0.95) : 0.5;
-  return (winCount + PRIOR_STRENGTH * prior) / (tradeCount + PRIOR_STRENGTH);
+  return (winCount + strength * prior) / (tradeCount + strength);
 }
 
 export function getAskGuidance(askPrice: number): AskGuidance {

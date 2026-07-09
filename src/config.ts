@@ -116,7 +116,7 @@ const envSchema = z.object({
   MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(0.1),
   MIN_DISTANCE_FLOOR_DOGE: z.coerce.number().nonnegative().default(0.00003),
   EV_MIN_EXPECTED_ROI: z.coerce.number().gte(0).lt(1).default(0.01),
-  EV_MIN_HISTORY_TRADES: z.coerce.number().int().nonnegative().default(10),
+  EV_MIN_HISTORY_TRADES: z.coerce.number().int().nonnegative().default(15),
   MIN_FILL_RATIO: z.coerce.number().min(0).max(1).default(0.5),
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
   MAX_DAILY_LOSS_USD: z.coerce.number().nonnegative().default(0),

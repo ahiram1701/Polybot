@@ -17,6 +17,18 @@ describe("expected value formulas", () => {
     expect(calculateAdjustedWinProbability(0, 0)).toBeCloseTo(0.5);
   });
 
+  it("shrinks harder toward the prior as priorStrength grows", () => {
+    // 7/10 wins with the ask (0.6) as prior. Strength 2 (default) barely moves it; strength 8 pulls the
+    // estimate much closer to the market-implied 0.6, i.e. is more skeptical of the thin sample.
+    const weak = calculateAdjustedWinProbability(7, 10, 0.6, 2);
+    const strong = calculateAdjustedWinProbability(7, 10, 0.6, 8);
+    expect(weak).toBeCloseTo((7 + 2 * 0.6) / (10 + 2));
+    expect(strong).toBeCloseTo((7 + 8 * 0.6) / (10 + 8));
+    expect(strong).toBeLessThan(weak);
+    // A non-positive strength falls back to the default (2), matching the 3-arg call.
+    expect(calculateAdjustedWinProbability(7, 10, 0.6, 0)).toBeCloseTo(calculateAdjustedWinProbability(7, 10, 0.6));
+  });
+
   it("calculates EV, ROI, edge, payout, loss, and break-even", () => {
     const result = calculateExpectedValue({
       capitalUsd: 10,

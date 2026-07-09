@@ -51,7 +51,9 @@ const DEFAULT_REQUIRE_POSITIVE_EV = true;
 const DEFAULT_MAX_ASK_PRICE_CEILING = 0.85;
 const DEFAULT_EV_SAFETY_MARGIN = 0.03;
 const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
-const DEFAULT_EV_MIN_HISTORY_TRADES = 10;
+// Backtest (evGateBacktest sweep) over all recorded analytics: min history 15 maximized net P&L across
+// BTC/ETH/DOGE (+$12/~4% vs 10) with a slightly higher win rate — trusts fewer, better-supported setups.
+const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
