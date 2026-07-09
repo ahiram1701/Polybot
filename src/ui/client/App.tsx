@@ -138,6 +138,7 @@ const emptySettings: UiSettings = {
   evUseSimilarity: false,
   evSafetyMargin: 0.03,
   evMinHistoryTrades: 10,
+  minFillRatio: 0.5,
   evMinExpectedRoi: 0.01,
   tickStaleMs: 10_000,
   pollIntervalMs: 1_000,
@@ -1703,12 +1704,21 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
             step={0.01}
             onChange={(value) => update("evMinExpectedRoi", value)}
           />
+          <NumberField
+            label="Llenado mínimo (fracción)"
+            value={draft.minFillRatio}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(value) => update("minFillRatio", value)}
+          />
         </div>
         <p className="settings-hint">
           Solo opera setups con ventaja real y EV positivo tras comisiones. <strong>Menor margen = opera más seguido</strong>
           {" "}(recomendado 0.03; 0.08 era demasiado estricto y casi nunca operaba). "Historia mínima" es cuántas muestras
-          resueltas necesita el setup antes de confiar en su tasa de acierto. Apagar el gate opera cualquier señal (más
-          riesgo). Editable con el bot detenido.
+          resueltas necesita el setup antes de confiar en su tasa de acierto. "Llenado mínimo" descarta la operación si el
+          libro solo puede llenar menos de esa fracción del monto pedido (evita micro-posiciones inútiles por poca
+          liquidez; 0.5 = al menos la mitad). Apagar el gate opera cualquier señal (más riesgo). Editable con el bot detenido.
         </p>
       </section>
 

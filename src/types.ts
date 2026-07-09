@@ -45,6 +45,10 @@ export interface BotConfig {
   evSafetyMargin?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
+  // Minimum fraction of the requested amount that must be fillable under the ask cap for a trade to
+  // proceed. Thin books can only partially fill (e.g. $0.69 of a requested $10), leaving a useless
+  // micro-position; below this ratio the setup is skipped. Optional; defaults in botRunner/config.
+  minFillRatio?: number;
   dailySpendLimitUsd: number;
   // Risk circuit breaker (0 = disabled): halt trading for the rest of the UTC day when today's
   // realized loss or consecutive-loss streak crosses these. Optional so config/test literals may omit.

@@ -609,6 +609,7 @@ function settings(): UiSettings {
     evUseSimilarity: false,
     evSafetyMargin: 0.03,
     evMinHistoryTrades: 10,
+    minFillRatio: 0.5,
     evMinExpectedRoi: 0.01,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,

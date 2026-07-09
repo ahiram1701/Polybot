@@ -42,6 +42,7 @@ export interface UiSettings {
   evUseSimilarity: boolean;
   evSafetyMargin: number;
   evMinHistoryTrades: number;
+  minFillRatio: number;
   evMinExpectedRoi: number;
   tickStaleMs: number;
   pollIntervalMs: number;

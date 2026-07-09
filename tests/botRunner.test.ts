@@ -1157,6 +1157,74 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
 
+  it("skips a trade when the book can only fill a fraction below minFillRatio", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute a thin partial fill");
+      }),
+    } satisfies TradeExecutor;
+    // Requested $1 but the book can only fill $0.30 under the cap => ratio 0.30 < the 0.5 default.
+    const thinOrderbook = {
+      getQuote: vi.fn(async () => ({
+        tokenId: "token",
+        bestAsk: 0.7,
+        bestBid: 0.69,
+        availableUsdUnderCap: 0.3,
+        estimatedSharesForAmount: 0.3 / 0.7,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "sim",
+        requirePositiveEv: false,
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: thinOrderbook,
+        // Price 130 vs opening 100 => distance 30, above the configured 20: a valid signal.
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(thinOrderbook.getQuote).toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
   it("blocks live trades with no exact strategy history at normal asks", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

@@ -52,6 +52,9 @@ const DEFAULT_MAX_ASK_PRICE_CEILING = 0.85;
 const DEFAULT_EV_SAFETY_MARGIN = 0.03;
 const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
 const DEFAULT_EV_MIN_HISTORY_TRADES = 10;
+// Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
+// Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
+const DEFAULT_MIN_FILL_RATIO = 0.5;
 
 interface MarketWatcherLike {
   getCurrentMarket(nowMs?: number, market?: MarketSymbol): Promise<MarketInfo | null>;
@@ -544,6 +547,21 @@ export class BotRunner {
         outcome: signal.outcome,
         bestAsk: quote.bestAsk,
         maxAskPrice: signal.maxAskPrice,
+      });
+      return undefined;
+    }
+
+    // Guard against thin-liquidity micro-positions: if the book can only fill a small fraction of the
+    // requested amount under the cap, the fill is a useless dust position (and skews per-trade P&L).
+    const minFillRatio = this.config.minFillRatio ?? DEFAULT_MIN_FILL_RATIO;
+    const fillableRatio = signal.amountUsd > 0 ? quote.availableUsdUnderCap / signal.amountUsd : 0;
+    if (minFillRatio > 0 && fillableRatio < minFillRatio) {
+      this.logSkipOnce(signal.market.slug, "fillable_below_min_ratio", {
+        outcome: signal.outcome,
+        amountUsd: signal.amountUsd,
+        availableUsdUnderCap: quote.availableUsdUnderCap,
+        fillableRatio: Number(fillableRatio.toFixed(3)),
+        minFillRatio,
       });
       return undefined;
     }

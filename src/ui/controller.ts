@@ -1031,6 +1031,7 @@ export class BotController {
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
       evSafetyMargin: config.evSafetyMargin ?? settings.evSafetyMargin,
       evMinHistoryTrades: config.evMinHistoryTrades ?? settings.evMinHistoryTrades,
+      minFillRatio: config.minFillRatio ?? settings.minFillRatio,
       evMinExpectedRoi: config.evMinExpectedRoi ?? settings.evMinExpectedRoi,
       tickStaleMs: config.tickStaleMs,
       pollIntervalMs: config.pollIntervalMs,

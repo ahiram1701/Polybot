@@ -51,6 +51,19 @@ describe("P&L calculations", () => {
     expect(summary.live.lostCount).toBe(1);
   });
 
+  it("scores a partially-filled sim win by its real cost, not the requested amount", () => {
+    // Only ~$0.69 of liquidity was fillable under the cap: 0.93 shares at ask 0.74. A WIN must not
+    // show as a loss because the requested $10 was never actually staked.
+    const pnl = calculateTradePnl({
+      ...trade({ won: true, amountUsd: 10, estimatedShares: 0.93 }),
+      bestAsk: 0.74,
+    });
+    expect(pnl.stakeUsd).toBeCloseTo(0.93 * 0.74);
+    expect(pnl.payoutUsd).toBeCloseTo(0.93);
+    expect(pnl.netUsd).toBeCloseTo(0.93 - 0.93 * 0.74);
+    expect(pnl.netUsd).toBeGreaterThan(0);
+  });
+
   it("ignores trades before the P&L reset timestamp for that mode", () => {
     const oldSim = trade({ won: true, amountUsd: 1, estimatedShares: 1.25 });
     oldSim.createdAtMs = 3;
@@ -146,7 +159,8 @@ function trade(args: { won?: boolean; amountUsd: number; estimatedShares: number
     tokenId: "token",
     amountUsd: args.amountUsd,
     maxAskPrice: 0.98,
-    bestAsk: 0.5,
+    // Ask implied by a full fill of the requested amount into the estimated shares.
+    bestAsk: args.amountUsd / args.estimatedShares,
     estimatedShares: args.estimatedShares,
     openingPrice: 100,
     entryPrice: 125,

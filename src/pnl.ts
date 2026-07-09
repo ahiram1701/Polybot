@@ -69,7 +69,18 @@ function getStakeUsd(trade: TradeAttempt): number {
   if (trade.mode === "live" && !hasResolvablePosition(trade)) {
     return 0;
   }
-  return sanitizeUsd(getFilledAmountUsd(trade) ?? trade.amountUsd) + getFeeUsd(trade);
+  const filledAmountUsd = getFilledAmountUsd(trade);
+  if (isPositiveFinite(filledAmountUsd)) {
+    return sanitizeUsd(filledAmountUsd) + getFeeUsd(trade);
+  }
+  // No explicit fill amount (sim): the real stake is the COST of the shares actually held, which can
+  // be less than the requested amount when liquidity under the cap was thin (a partial fill). The
+  // payout uses those same shares, so using the requested amountUsd here would score a partially
+  // filled WIN as a loss (e.g. 0.93 shares bought for ~$0.69 but staked as $10 -> shows -$9.07).
+  const shares = getFilledShares(trade) ?? trade.estimatedShares;
+  const cost =
+    isPositiveFinite(shares) && isPositiveFinite(trade.bestAsk) ? shares * trade.bestAsk : trade.amountUsd;
+  return sanitizeUsd(cost) + getFeeUsd(trade);
 }
 
 function getPayoutUsd(trade: TradeAttempt): number {
