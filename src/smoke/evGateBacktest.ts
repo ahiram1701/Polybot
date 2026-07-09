@@ -5,6 +5,7 @@ import { loadConfig } from "../config.js";
 import { calculateExpectedValue } from "../expectedValue.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
 import { getEntryWindowSeconds, getMinDistanceUsd, SUPPORTED_MARKETS } from "../markets.js";
+import { estimateWinProbabilityBySimilarity, type SimilarityObservation } from "../similarityGate.js";
 import type { MarketSymbol } from "../types.js";
 
 /**
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
     };
     const noGate = { trades: 0, wins: 0, net: 0 };
     const gate = { trades: 0, wins: 0, net: 0 };
+    const sim = { trades: 0, wins: 0, net: 0 };
+    const simPool: SimilarityObservation[] = [];
 
     for (const sample of samples) {
       const signalTick = sample.ticks
@@ -93,11 +96,37 @@ async function main(): Promise<void> {
       if (won) {
         h.wins += 1;
       }
+
+      // Similarity gate: estimate the win rate from the nearest PRIOR setups (no look-ahead), not the
+      // exact (window, distance) config, then apply the same fee-aware EV check.
+      const query = { secondsToEnd: signalTick.secondsToEnd, favorableDistanceUsd: Math.abs(signalTick.distanceUsd), ask };
+      const estimate = estimateWinProbabilityBySimilarity(simPool, query);
+      if (estimate.effectiveSampleSize >= minHistoryTrades) {
+        const feeFraction = (defaultTakerFeeRateBps(market) / 10_000) * (1 - ask);
+        const effectiveTrades = Math.max(1, Math.round(estimate.effectiveSampleSize));
+        const ev = calculateExpectedValue({
+          capitalUsd: STAKE_USD,
+          askPrice: ask,
+          winCount: Math.round(estimate.winProbability * effectiveTrades),
+          tradeCount: effectiveTrades,
+          safetyMargin,
+          minExpectedRoi: minExpectedRoi + feeFraction,
+        });
+        if (ev.passesRecommendedEntry) {
+          sim.trades += 1;
+          sim.net += result;
+          if (won) {
+            sim.wins += 1;
+          }
+        }
+      }
+      simPool.push({ secondsToEnd: signalTick.secondsToEnd, favorableDistanceUsd: Math.abs(signalTick.distanceUsd), ask, won });
     }
 
     console.log(
-      `${market}: SIN gate -> trades=${noGate.trades} win=${winRate(noGate)} neto=$${noGate.net.toFixed(2)} ROI=${roi(noGate)} | ` +
-        `CON gate -> trades=${gate.trades} win=${winRate(gate)} neto=$${gate.net.toFixed(2)} ROI=${roi(gate)}`,
+      `${market}: SIN gate -> trades=${noGate.trades} win=${winRate(noGate)} ROI=${roi(noGate)} | ` +
+        `EXACTO -> trades=${gate.trades} win=${winRate(gate)} neto=$${gate.net.toFixed(2)} ROI=${roi(gate)} | ` +
+        `SIMILITUD -> trades=${sim.trades} win=${winRate(sim)} neto=$${sim.net.toFixed(2)} ROI=${roi(sim)}`,
     );
   }
 }

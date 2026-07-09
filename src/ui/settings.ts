@@ -84,6 +84,7 @@ const settingsSchema = z.object({
   maxConsecutiveLosses: z.coerce.number().int().nonnegative().default(0),
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
+  evUseSimilarity: z.boolean().default(false),
   evSafetyMargin: z.coerce.number().nonnegative().lt(1).default(0.03),
   evMinHistoryTrades: z.coerce.number().int().nonnegative().default(10),
   evMinExpectedRoi: z.coerce.number().nonnegative().lt(1).default(0.01),
@@ -184,6 +185,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     maxDailyLossUsd: config.maxDailyLossUsd ?? 0,
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
+    evUseSimilarity: config.evUseSimilarity ?? false,
     evSafetyMargin: config.evSafetyMargin ?? 0.03,
     evMinHistoryTrades: config.evMinHistoryTrades ?? 10,
     evMinExpectedRoi: config.evMinExpectedRoi ?? 0.01,
@@ -243,6 +245,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     maxDailyLossUsd: settings.maxDailyLossUsd,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     requirePositiveEv: settings.requirePositiveEv,
+    evUseSimilarity: settings.evUseSimilarity,
     evSafetyMargin: settings.evSafetyMargin,
     evMinHistoryTrades: settings.evMinHistoryTrades,
     evMinExpectedRoi: settings.evMinExpectedRoi,

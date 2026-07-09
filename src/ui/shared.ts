@@ -39,6 +39,7 @@ export interface UiSettings {
   maxConsecutiveLosses: number;
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
+  evUseSimilarity: boolean;
   evSafetyMargin: number;
   evMinHistoryTrades: number;
   evMinExpectedRoi: number;

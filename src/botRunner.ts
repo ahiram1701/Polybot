@@ -76,7 +76,8 @@ interface BotDependencies {
   executor: TradeExecutor;
   reconciler: TradeReconciler;
   analyticsRecorder?: AnalyticsRecorder;
-  strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze" | "estimateSetupWinRate">;
+  strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze" | "estimateSetupWinRate"> &
+    Partial<Pick<StrategyAnalysisEngine, "estimateSetupWinRateBySimilarity">>;
   notifier?: Notifier;
 }
 
@@ -602,28 +603,50 @@ export class BotRunner {
     }
 
     try {
-      // Aggregate win/trade history for THIS exact setup (market/outcome/window/distance/cap),
-      // computed directly from recent samples — robust to param churn (no brittle exact-bucket match).
-      const metrics = await this.deps.strategyAnalysisEngine.estimateSetupWinRate(
-        signal.market.asset,
-        signal.outcome,
-        {
-          entryWindowSeconds: signal.entryWindowSeconds,
-          minDistanceUsd: signal.minDistanceUsd,
-          maxAskPrice: signal.maxAskPrice,
-        },
-        signal.amountUsd,
-      );
+      const params = {
+        entryWindowSeconds: signal.entryWindowSeconds,
+        minDistanceUsd: signal.minDistanceUsd,
+        maxAskPrice: signal.maxAskPrice,
+      };
       const minHistoryTrades = this.config.evMinHistoryTrades ?? DEFAULT_EV_MIN_HISTORY_TRADES;
-      if (metrics.tradeCount < minHistoryTrades) {
+
+      let winCount: number;
+      let tradeCount: number;
+      if (this.config.evUseSimilarity && this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity) {
+        // Similarity gate: match the live setup against the NEAREST historical setups (not the exact
+        // config), so a setup with real edge but few exact analogues can still trade.
+        const secondsRemaining = (signal.market.endMs - signal.tick.timestampMs) / 1000;
+        const estimate = await this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity(
+          signal.market.asset,
+          signal.outcome,
+          params,
+          { secondsToEnd: secondsRemaining, favorableDistanceUsd: Math.abs(signal.distanceUsd), ask: askPrice },
+        );
+        tradeCount = Math.round(estimate.effectiveSampleSize);
+        winCount = Math.round(estimate.winProbability * tradeCount);
+      } else {
+        // Aggregate win/trade history for THIS exact setup (market/outcome/window/distance/cap),
+        // computed directly from recent samples — robust to param churn (no brittle exact-bucket match).
+        const metrics = await this.deps.strategyAnalysisEngine.estimateSetupWinRate(
+          signal.market.asset,
+          signal.outcome,
+          params,
+          signal.amountUsd,
+        );
+        tradeCount = metrics.tradeCount;
+        winCount = metrics.winCount;
+      }
+
+      if (tradeCount < minHistoryTrades) {
         this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
           market: signal.market.asset,
           outcome: signal.outcome,
           entryWindowSeconds: signal.entryWindowSeconds,
           minDistanceUsd: signal.minDistanceUsd,
           maxAskPrice: signal.maxAskPrice,
-          tradeCount: metrics.tradeCount,
+          tradeCount,
           minHistoryTrades,
+          mode: this.config.evUseSimilarity ? "similarity" : "exact",
         });
         return undefined;
       }
@@ -634,8 +657,8 @@ export class BotRunner {
       const expectedValue = calculateExpectedValue({
         capitalUsd: signal.amountUsd,
         askPrice,
-        winCount: metrics.winCount,
-        tradeCount: metrics.tradeCount,
+        winCount,
+        tradeCount,
         safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
         minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
       });

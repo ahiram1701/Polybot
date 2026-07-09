@@ -41,6 +41,7 @@ export interface BotConfig {
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.
   // Optional so test/config literals may omit them; config.ts always sets them and botRunner defaults them.
   requirePositiveEv?: boolean;
+  evUseSimilarity?: boolean;
   evSafetyMargin?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;

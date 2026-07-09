@@ -135,6 +135,7 @@ const emptySettings: UiSettings = {
   maxDailyLossUsd: 0,
   maxConsecutiveLosses: 0,
   requirePositiveEv: true,
+  evUseSimilarity: false,
   evSafetyMargin: 0.03,
   evMinHistoryTrades: 10,
   evMinExpectedRoi: 0.01,
@@ -1668,6 +1669,15 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
             disabled={running}
           />
           <span>Exigir valor esperado positivo</span>
+        </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.evUseSimilarity}
+            onChange={(event) => update("evUseSimilarity", event.target.checked)}
+            disabled={running}
+          />
+          <span>Gate por similitud (comparar en vivo con setups parecidos del histórico)</span>
         </label>
         <div className="settings-grid">
           <NumberField

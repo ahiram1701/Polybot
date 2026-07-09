@@ -4,6 +4,12 @@ import { join } from "node:path";
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
 import { calculateExpectedValue } from "./expectedValue.js";
 import {
+  estimateWinProbabilityBySimilarity,
+  type SimilarityEstimate,
+  type SimilarityObservation,
+  type SimilarityQuery,
+} from "./similarityGate.js";
+import {
   getEntryWindowSeconds,
   getMarketOutcomeNumber,
   getMinDistanceUsd,
@@ -108,6 +114,40 @@ export class StrategyAnalysisEngine {
       params.maxAskPrice,
       capitalUsd,
     );
+  }
+
+  // Similarity gate: estimate the live win probability from the NEAREST historical setups (by seconds
+  // to end, favourable distance and ask), instead of requiring N trades at the exact config. Lets a
+  // setup with real edge but few exact analogues still be recognised.
+  async estimateSetupWinRateBySimilarity(
+    market: MarketSymbol,
+    outcome: Outcome,
+    params: { entryWindowSeconds: number; minDistanceUsd: number; maxAskPrice: number },
+    live: SimilarityQuery,
+  ): Promise<SimilarityEstimate> {
+    const samples = await this.loadSamples();
+    const pool: SimilarityObservation[] = [];
+    for (const sample of samples) {
+      if (sample.market !== market || !sample.winningOutcome) {
+        continue;
+      }
+      const signalTick = findSignalTick(sample, outcome, params.entryWindowSeconds, params.minDistanceUsd);
+      if (!signalTick) {
+        continue;
+      }
+      const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
+      const ask = quote ? getAsk(quote, outcome) : undefined;
+      if (!isPositiveFinite(ask) || ask > params.maxAskPrice) {
+        continue;
+      }
+      pool.push({
+        secondsToEnd: signalTick.secondsToEnd,
+        favorableDistanceUsd: Math.abs(signalTick.distanceUsd),
+        ask,
+        won: sample.winningOutcome === outcome,
+      });
+    }
+    return estimateWinProbabilityBySimilarity(pool, live);
   }
 
   private async loadSamples(): Promise<AnalyticsSample[]> {

@@ -107,6 +107,10 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(true),
+  EV_USE_SIMILARITY: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
   EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.03),
   MIN_DISTANCE_FLOOR_BTC: z.coerce.number().nonnegative().default(20),
   MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(0.1),
@@ -267,6 +271,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     maxAskPriceCeiling: env.MAX_ASK_PRICE_CEILING,
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
+    evUseSimilarity: env.EV_USE_SIMILARITY,
     evSafetyMargin: env.EV_SAFETY_MARGIN,
     minDistanceFloorUsdByMarket: {
       BTC: env.MIN_DISTANCE_FLOOR_BTC,

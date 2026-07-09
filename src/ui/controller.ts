@@ -1028,6 +1028,7 @@ export class BotController {
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
+      evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
       evSafetyMargin: config.evSafetyMargin ?? settings.evSafetyMargin,
       evMinHistoryTrades: config.evMinHistoryTrades ?? settings.evMinHistoryTrades,
       evMinExpectedRoi: config.evMinExpectedRoi ?? settings.evMinExpectedRoi,

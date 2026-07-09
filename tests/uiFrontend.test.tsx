@@ -606,6 +606,7 @@ function settings(): UiSettings {
     maxDailyLossUsd: 0,
     maxConsecutiveLosses: 0,
     requirePositiveEv: true,
+    evUseSimilarity: false,
     evSafetyMargin: 0.03,
     evMinHistoryTrades: 10,
     evMinExpectedRoi: 0.01,
