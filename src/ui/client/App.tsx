@@ -1925,8 +1925,8 @@ export function FiscalPanel() {
           cambio: {coverage}. Los montos salen del mismo cálculo de P&L del dashboard.
         </p>
         {summary && summary.months.length > 0 ? (
-          <div className="table-wrap">
-            <table>
+          <div className="table-scroll">
+            <table className="responsive-table">
               <thead>
                 <tr>
                   <th>Mes</th>
@@ -2020,8 +2020,8 @@ export function FiscalPanel() {
           </button>
         </div>
         {manualRateEntries.length > 0 && (
-          <div className="table-wrap">
-            <table>
+          <div className="table-scroll">
+            <table className="responsive-table">
               <thead>
                 <tr><th>Periodo</th><th>Tasa</th><th></th></tr>
               </thead>
@@ -2030,7 +2030,7 @@ export function FiscalPanel() {
                   <tr key={key}>
                     <td data-label="Periodo">{key}</td>
                     <td data-label="Tasa">{value.toFixed(4)}</td>
-                    <td>
+                    <td data-label="Quitar">
                       <button className="icon-button" type="button" aria-label={`Eliminar tasa ${key}`} disabled={busy} onClick={() => void saveFx({ manualRates: { [key]: null } })}>
                         ✕
                       </button>
@@ -2274,10 +2274,18 @@ function ResetConfirmModal({ running, busy, onCancel, onConfirm }: {
 }
 
 function TabButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
+  // title + aria-label keep the tab usable on small screens, where CSS hides the text label.
   return (
-    <button className={`tab-button ${active ? "active" : ""}`} type="button" aria-current={active ? "page" : undefined} onClick={onClick}>
+    <button
+      className={`tab-button ${active ? "active" : ""}`}
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      onClick={onClick}
+    >
       {icon}
-      <span>{label}</span>
+      <span className="tab-label">{label}</span>
     </button>
   );
 }

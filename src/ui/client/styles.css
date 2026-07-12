@@ -463,9 +463,26 @@ h2 {
 }
 
 .pnl-reset-button {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   flex: 0 0 auto;
+}
+
+/* Inline actions on a panel heading (year selector + export on the Fiscal tab). */
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.section-actions select {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .pnl-mode-summary .pnl-metrics {
@@ -1405,7 +1422,8 @@ tr.selected-row {
 
   .hero-metrics,
   .hero-metrics.compact {
-    grid-template-columns: 1fr;
+    /* Two-up metrics: values are short ($, %, counts) and one long column forced a lot of scrolling. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .outcome-setting-row {
@@ -1545,17 +1563,48 @@ tr.selected-row {
   }
 
   .sidebar {
-    padding: 10px;
-    gap: 12px;
+    padding: 8px 10px;
+    gap: 8px;
   }
 
   .brand span {
     display: none;
   }
 
+  /* Icon-only tabs distributed across the full width: all 7 sections reachable without scrolling. */
+  .tabs {
+    flex: 1 1 auto;
+    width: 100%;
+    justify-content: space-between;
+    gap: 4px;
+  }
+
   .tab-button {
+    flex: 1 1 0;
+    min-width: 40px;
     min-height: 44px;
-    padding: 9px 10px;
+    padding: 9px 6px;
+    justify-content: center;
+  }
+
+  .tab-button .tab-label {
+    display: none;
+  }
+
+  /* Compact header: one-line market strip, smaller title. */
+  .eyebrow {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .topbar {
+    gap: 10px;
+  }
+
+  .topbar h1 {
+    font-size: 19px;
   }
 
   .topbar-actions,
@@ -1567,15 +1616,40 @@ tr.selected-row {
     width: 100%;
   }
 
+  /* Two icon toggles (privacy + theme) side by side, control bar taking the rest. */
   .topbar-actions {
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-columns: 44px 44px minmax(0, 1fr);
     align-items: start;
   }
 
+  .privacy-toggle,
   .theme-toggle,
   .controlbar .icon-button {
     width: 100%;
+  }
+
+  /* Touch targets: icon buttons never collapse below 44px on touch screens. */
+  .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .pnl-reset-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .section-actions {
+    width: 100%;
+  }
+
+  .section-actions select {
+    flex: 1 1 96px;
+  }
+
+  .section-actions .command {
+    flex: 1 1 60%;
   }
 
   .controlbar {
