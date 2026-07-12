@@ -1,4 +1,8 @@
+import { appendFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
+import { detectCompleteSetArb } from "./arbMonitor.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
@@ -279,6 +283,7 @@ export class BotRunner {
         quotes: analyticsQuotes,
         nowMs,
       });
+      await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
       // Risk circuit breaker halts trading (never analytics) for the rest of the UTC day.
       if (riskHalt.tripped) {
         this.logSkipOnce(market.slug, "risk_circuit_breaker", {
@@ -863,6 +868,43 @@ export class BotRunner {
       quotes.DOWN = down.value;
     }
     return quotes;
+  }
+
+  /**
+   * OBSERVATION ONLY (no orders): append every live complete-set arbitrage moment, with the real
+   * depth of both books, to data/arb-opportunities.jsonl. A few days of this answers whether the
+   * ~6-7 daily moments the historical scan found are worth an execution phase.
+   */
+  private async observeArbOpportunity(
+    market: MarketInfo,
+    quotes: Partial<Record<Outcome, OrderbookQuote>>,
+    nowMs: number,
+  ): Promise<void> {
+    try {
+      const opportunity = detectCompleteSetArb({
+        market: market.asset,
+        slug: market.slug,
+        endMs: market.endMs,
+        nowMs,
+        quotes,
+      });
+      if (!opportunity) {
+        return;
+      }
+      await appendFile(join(this.config.dataDir, "arb-opportunities.jsonl"), `${JSON.stringify(opportunity)}\n`, "utf8");
+      // Once per window in the visible log; the JSONL captures every tick of the same opportunity.
+      this.logSkipOnce(market.slug, "arb_opportunity_observed", {
+        market: market.asset,
+        netPerSet: opportunity.netPerSet,
+        capturableUsd: opportunity.capturableUsd,
+        secondsToEnd: opportunity.secondsToEnd,
+      });
+    } catch (error) {
+      logger.warn("No se pudo registrar la oportunidad de arbitraje; continuando.", {
+        slug: market.slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async recordAnalyticsObservation(args: {
