@@ -143,6 +143,7 @@ const emptySettings: UiSettings = {
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   maxConsecutiveLosses: 0,
+  riskHaltCooldownHours: 2,
   requirePositiveEv: true,
   evUseSimilarity: false,
   evSafetyMargin: 0.03,
@@ -646,7 +647,9 @@ export function Dashboard({
               {riskHalt.reason === "daily_loss_limit"
                 ? `Pérdida diaria ${formatUsd(riskHalt.dailyLossUsd)} alcanzó el límite.`
                 : `${riskHalt.consecutiveLosses} pérdidas seguidas alcanzaron el límite.`}{" "}
-              Reanuda solo el próximo día UTC, o reinícialo ahora sin cambiar el límite.
+              {riskHalt.resumeAtMs
+                ? `Se re-arma solo a las ${new Date(riskHalt.resumeAtMs).toLocaleTimeString()}, o reinícialo ahora sin cambiar el límite.`
+                : "Reanuda solo el próximo día UTC, o reinícialo ahora sin cambiar el límite."}
             </span>
           </div>
           <button
@@ -1733,6 +1736,13 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
             min={0}
             step={1}
             onChange={(value) => update("maxConsecutiveLosses", value)}
+          />
+          <NumberField
+            label="Cooldown del freno (horas)"
+            value={draft.riskHaltCooldownHours}
+            min={0}
+            step={0.5}
+            onChange={(value) => update("riskHaltCooldownHours", value)}
           />
           <NumberField
             label="Techo de ask cap"

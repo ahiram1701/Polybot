@@ -110,6 +110,24 @@ describe("RecommendationEngine", () => {
     expect(btc?.reason).not.toContain("cooldown");
   });
 
+  it("escape valve: a DEAD config (0 trades) may auto-apply a jump beyond the max-change guard", async () => {
+    const samples = Array.from({ length: 45 }, (_value, index) => predictiveSample("BTC", index, "UP", true));
+    // Current distance is absurdly high: zero signals ever fire, so the config is dead. The good
+    // config (~17-18 distance) is a ~29x distance change — far beyond maxDistanceChangeRatio (10).
+    const deadSettings = {
+      ...settings(),
+      minDistanceUsdByMarket: { BTC: 500, ETH: 5, DOGE: 0.0005 },
+    };
+    const btc = (await buildRecommendations(samples, deadSettings)).recommendations.find(
+      (recommendation) => recommendation.market === "BTC",
+    );
+
+    expect(btc?.current.metrics.tradeCount).toBe(0);
+    expect(btc?.recommended?.minDistanceUsd).toBeLessThan(30);
+    // Nothing to protect: the validated jump is allowed even though it exceeds the change guard.
+    expect(btc?.canAutoApply).toBe(true);
+  });
+
   it("does not trust an in-sample pattern that fails later out of sample", async () => {
     const samples = Array.from({ length: 45 }, (_value, index) =>
       overfitSample("BTC", index, index < 20 ? "UP" : "DOWN"),

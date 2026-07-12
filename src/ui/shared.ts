@@ -38,6 +38,7 @@ export interface UiSettings {
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   maxConsecutiveLosses: number;
+  riskHaltCooldownHours: number;
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
   evUseSimilarity: boolean;

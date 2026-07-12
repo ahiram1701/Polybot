@@ -81,6 +81,7 @@ const settingsSchema = z.object({
   maxAskPriceCeiling: z.coerce.number().gt(0).lte(1).default(0.85),
   dailySpendLimitUsd: z.coerce.number().positive(),
   maxDailyLossUsd: z.coerce.number().nonnegative().default(0),
+  riskHaltCooldownHours: z.coerce.number().nonnegative().default(2),
   maxConsecutiveLosses: z.coerce.number().int().nonnegative().default(0),
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
@@ -184,6 +185,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     maxAskPriceCeiling: config.maxAskPriceCeiling ?? 0.85,
     dailySpendLimitUsd: config.dailySpendLimitUsd,
     maxDailyLossUsd: config.maxDailyLossUsd ?? 0,
+    riskHaltCooldownHours: config.riskHaltCooldownHours ?? 2,
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
     evUseSimilarity: config.evUseSimilarity ?? false,
@@ -245,6 +247,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     maxAskPriceCeiling: settings.maxAskPriceCeiling,
     dailySpendLimitUsd: settings.dailySpendLimitUsd,
     maxDailyLossUsd: settings.maxDailyLossUsd,
+    riskHaltCooldownHours: settings.riskHaltCooldownHours,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     requirePositiveEv: settings.requirePositiveEv,
     evUseSimilarity: settings.evUseSimilarity,

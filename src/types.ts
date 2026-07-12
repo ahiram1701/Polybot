@@ -50,10 +50,13 @@ export interface BotConfig {
   // micro-position; below this ratio the setup is skipped. Optional; defaults in botRunner/config.
   minFillRatio?: number;
   dailySpendLimitUsd: number;
-  // Risk circuit breaker (0 = disabled): halt trading for the rest of the UTC day when today's
-  // realized loss or consecutive-loss streak crosses these. Optional so config/test literals may omit.
+  // Risk circuit breaker (0 = disabled): halt trading when today's realized loss or consecutive-loss
+  // streak crosses these. Optional so config/test literals may omit.
   maxDailyLossUsd?: number;
   maxConsecutiveLosses?: number;
+  // Hours a tripped breaker stays halted before auto re-arming with a clean slate. 0 = legacy: halted
+  // for the rest of the UTC day.
+  riskHaltCooldownHours?: number;
   // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
   // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
   maxAnalyticsSamples?: number;

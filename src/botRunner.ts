@@ -238,7 +238,11 @@ export class BotRunner {
     const riskHalt = evaluateRiskCircuitBreaker(
       this.deps.state.listTrades(),
       this.config.mode,
-      { maxDailyLossUsd: this.config.maxDailyLossUsd, maxConsecutiveLosses: this.config.maxConsecutiveLosses },
+      {
+        maxDailyLossUsd: this.config.maxDailyLossUsd,
+        maxConsecutiveLosses: this.config.maxConsecutiveLosses,
+        cooldownHours: this.config.riskHaltCooldownHours,
+      },
       nowMs,
       this.deps.state.getRiskHaltResetAtMs?.()?.[this.config.mode] ?? 0,
     );

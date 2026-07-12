@@ -107,6 +107,48 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(status.dailyLossUsd).toBe(0);
   });
 
+  it("with a cooldown, stays tripped until the cooldown elapses and reports when it resumes", () => {
+    const tripAt = NOW - 30 * 60_000; // tripped 30 minutes ago
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: tripAt - 2000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: tripAt - 1000 }),
+      trade({ id: "l3", won: false, resolvedAtMs: tripAt }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    expect(status.tripped).toBe(true);
+    expect(status.resumeAtMs).toBe(tripAt + 2 * 3_600_000);
+  });
+
+  it("with a cooldown, auto re-arms after it elapses with a clean slate", () => {
+    const tripAt = NOW - 3 * 3_600_000; // tripped 3h ago, cooldown 2h -> re-armed 1h ago
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: tripAt - 2000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: tripAt - 1000 }),
+      trade({ id: "l3", won: false, resolvedAtMs: tripAt }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    expect(status.tripped).toBe(false);
+    // Pre-trip losses no longer count against the re-armed window.
+    expect(status.dailyLossUsd).toBe(0);
+  });
+
+  it("with a cooldown, re-trips on NEW losses after the auto re-arm", () => {
+    const tripAt = NOW - 3 * 3_600_000;
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: tripAt - 2000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: tripAt - 1000 }),
+      trade({ id: "l3", won: false, resolvedAtMs: tripAt }),
+      // After the 2h cooldown re-arm, three fresh losses cross the limit again.
+      trade({ id: "n1", won: false, resolvedAtMs: NOW - 3000 }),
+      trade({ id: "n2", won: false, resolvedAtMs: NOW - 2000 }),
+      trade({ id: "n3", won: false, resolvedAtMs: NOW - 1000 }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.resumeAtMs).toBe(NOW - 1000 + 2 * 3_600_000);
+  });
+
   it("re-arms when the breaker is reset: losses before the reset are ignored", () => {
     const trades = [
       trade({ id: "l1", won: false, resolvedAtMs: NOW - 3000 }),

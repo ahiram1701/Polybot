@@ -776,7 +776,11 @@ export class BotController {
     const riskHalt = evaluateRiskCircuitBreaker(
       tradesSorted,
       config.mode,
-      { maxDailyLossUsd: config.maxDailyLossUsd, maxConsecutiveLosses: config.maxConsecutiveLosses },
+      {
+        maxDailyLossUsd: config.maxDailyLossUsd,
+        maxConsecutiveLosses: config.maxConsecutiveLosses,
+        cooldownHours: config.riskHaltCooldownHours,
+      },
       nowMs,
       state.getRiskHaltResetAtMs()[config.mode] ?? 0,
     );
@@ -1093,6 +1097,7 @@ export class BotController {
       maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
+      riskHaltCooldownHours: config.riskHaltCooldownHours ?? settings.riskHaltCooldownHours,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,

@@ -227,7 +227,11 @@ async function buildMarketRecommendation(
     best.metrics.walkForwardRoi > 0 &&
     improvementYield !== undefined &&
     improvementYield >= thresholds.minYieldImprovement &&
-    isWithinAutoApplyChange(current, best, thresholds);
+    // Escape valve: the max-change guard protects a WORKING config from destabilizing jumps, but a
+    // config with zero trades has nothing to protect — and gradual steps can never bootstrap it,
+    // because intermediate configs lack the data to validate each step (DOGE sat dead for weeks at a
+    // 45s window while the engine knew 120s was 23-1). Dead config = any validated jump is allowed.
+    (current.metrics.tradeCount === 0 || isWithinAutoApplyChange(current, best, thresholds));
 
   return {
     market,
