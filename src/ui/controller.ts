@@ -8,6 +8,14 @@ import {
 } from "../analyticsRecorder.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
+import {
+  buildFiscalRows,
+  fiscalCsvFilename,
+  serializeFiscalCsv,
+  summarizeFiscalYear,
+  type FiscalRow,
+} from "../fiscal.js";
+import { ensureBanxicoRates, loadFxStore, resolveRate, saveFxStore } from "../fxRates.js";
 import { type LogEntry, logger } from "../logger.js";
 import {
   defaultEnabledMarketOutcomes,
@@ -62,6 +70,8 @@ import { BotRunner } from "../botRunner.js";
 import { evaluateRiskCircuitBreaker } from "../riskCircuitBreaker.js";
 import type {
   AnalysisImportResponse,
+  FiscalFxPatch,
+  FiscalSummaryResponse,
   MarketStatusSnapshot,
   SanitizedConfig,
   TelegramNotificationPatch,
@@ -570,6 +580,63 @@ export class BotController {
     }
     const { validSampleCount: _validSampleCount, ...response } = result;
     return response;
+  }
+
+  async getFiscalSummary(year?: number): Promise<FiscalSummaryResponse> {
+    const rows = await this.buildFiscalRowsWithRates();
+    const targetYear = year ?? new Date().getFullYear();
+    const summary = summarizeFiscalYear(rows, targetYear);
+    const store = await loadFxStore(this.baseConfig.dataDir);
+    return {
+      summary,
+      fx: { banxicoTokenConfigured: Boolean(store.banxicoToken), manualRates: store.manualRates },
+    };
+  }
+
+  async exportFiscalCsv(year?: number, now = new Date()): Promise<{ filename: string; contents: string }> {
+    const rows = await this.buildFiscalRowsWithRates();
+    const targetYear = year ?? now.getFullYear();
+    const yearRows = rows.filter((row) => row.fechaIso.startsWith(`${targetYear}-`));
+    return {
+      filename: fiscalCsvFilename(targetYear, now.getTime()),
+      contents: serializeFiscalCsv(yearRows),
+    };
+  }
+
+  async updateFiscalFxConfig(patch: FiscalFxPatch): Promise<FiscalSummaryResponse> {
+    const store = await loadFxStore(this.baseConfig.dataDir);
+    if (patch.banxicoToken !== undefined) {
+      store.banxicoToken = patch.banxicoToken.trim() || undefined;
+    }
+    for (const [key, value] of Object.entries(patch.manualRates ?? {})) {
+      if (value === null) {
+        delete store.manualRates[key];
+      } else if (/^\d{4}-\d{2}(-\d{2})?$/.test(key) && Number.isFinite(value) && value > 0) {
+        store.manualRates[key] = value;
+      }
+    }
+    await saveFxStore(this.baseConfig.dataDir, store);
+    return this.getFiscalSummary(patch.year);
+  }
+
+  // Live resolved trades -> fiscal rows, fetching any missing Banxico rates first (best-effort: a
+  // Banxico outage or bad token must never break the report — MXN simply stays blank).
+  private async buildFiscalRowsWithRates(): Promise<FiscalRow[]> {
+    const stateSummary = await this.getStateSummary();
+    const liveResolved = stateSummary.tradesSorted.filter((trade) => trade.mode === "live" && trade.resolved);
+    const store = await loadFxStore(this.baseConfig.dataDir);
+    const dates = buildFiscalRows(liveResolved).map((row) => row.fechaIso);
+    try {
+      const added = await ensureBanxicoRates(store, dates, this.fetchImpl);
+      if (added > 0) {
+        await saveFxStore(this.baseConfig.dataDir, store);
+      }
+    } catch (error) {
+      logger.warn("No se pudieron obtener tipos de cambio de Banxico; el reporte sigue sin MXN.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return buildFiscalRows(liveResolved, (fechaIso) => resolveRate(store, fechaIso));
   }
 
   async analyzeTradesWithOllama(prompt: string): Promise<OllamaTradeAnalysisResponse> {

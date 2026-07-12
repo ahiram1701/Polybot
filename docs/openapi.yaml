@@ -135,6 +135,46 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
+  /api/fiscal/summary:
+    get:
+      tags: [fiscal]
+      summary: Resumen fiscal anual/mensual de trades LIVE resueltos (USD y MXN si hay tipo de cambio)
+      parameters:
+        - { name: year, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: Resumen + config de tipo de cambio (el token Banxico nunca se expone, solo si esta configurado)
+          content: { application/json: { schema: { type: object } } }
+  /api/fiscal/export:
+    get:
+      tags: [fiscal]
+      summary: Exporta CSV fiscal del anio (BOM UTF-8, compatible Excel)
+      parameters:
+        - { name: year, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: Archivo .csv (fecha, mercado, lado, invertido, comision, recibido, ganancia USD/MXN)
+          content:
+            text/csv:
+              schema: { type: string }
+  /api/fiscal/fx:
+    post:
+      tags: [fiscal]
+      summary: Configura tipo de cambio USD/MXN (token Banxico y/o tasas manuales por fecha o mes)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                banxicoToken: { type: string, description: "Token SIE de Banxico; cadena vacia lo borra" }
+                manualRates: { type: object, description: "'YYYY-MM-DD' o 'YYYY-MM' -> tasa; null elimina" }
+                year: { type: integer }
+      responses:
+        "200":
+          description: Resumen fiscal actualizado
+          content: { application/json: { schema: { type: object } } }
   /api/notifications/telegram:
     get:
       tags: [notificaciones]

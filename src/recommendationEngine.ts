@@ -253,7 +253,7 @@ async function buildMarketRecommendation(
   };
 }
 
-function buildCandidateGrid(
+export function buildCandidateGrid(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   currentDistance: number,
@@ -313,17 +313,18 @@ function buildDistanceCandidates(
   return [...distances].sort((left, right) => left - right);
 }
 
-function buildCandidate(
+export function buildCandidate(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
+  outcome?: Outcome,
 ): RecommendationCandidate {
   return {
     entryWindowSeconds,
     minDistanceUsd,
-    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice),
+    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome),
   };
 }
 
@@ -332,8 +333,9 @@ function simulateCandidate(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
+  outcome?: Outcome,
 ): RecommendationMetrics {
-  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice);
+  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome);
   const returns = simulation.observations.map((observation) => observation.returnRoi);
   const walkForward = buildWalkForwardPredictions(simulation.observations);
   const walkForwardReturns = walkForward.map((prediction) => prediction.actualReturnRoi);
@@ -391,6 +393,7 @@ function buildCandidateObservations(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
+  outcomeFilter?: Outcome,
 ): CandidateSimulation {
   const observations: CandidateObservation[] = [];
   let signalCount = 0;
@@ -400,9 +403,14 @@ function buildCandidateObservations(
     if (!signalTick) {
       continue;
     }
+    const outcome: Outcome = signalTick.distanceUsd >= 0 ? "UP" : "DOWN";
+    // Per-side simulation: only signals in the filtered direction exist for this candidate, so they
+    // alone feed signalCount/coverage — each side's funnel is measured independently.
+    if (outcomeFilter !== undefined && outcome !== outcomeFilter) {
+      continue;
+    }
     signalCount += 1;
 
-    const outcome: Outcome = signalTick.distanceUsd >= 0 ? "UP" : "DOWN";
     const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
     const ask = quote ? getAsk(quote, outcome) : undefined;
     if (!isPositiveFinite(ask) || ask > maxAskPrice || !sample.winningOutcome) {
@@ -524,7 +532,7 @@ function getRecentVelocity(ticks: AnalyticsTickPoint[], tick: AnalyticsTickPoint
   return elapsedSeconds > 0 ? (tick.distanceUsd - previous.distanceUsd) / elapsedSeconds : 0;
 }
 
-function selectBestCandidate(
+export function selectBestCandidate(
   candidates: RecommendationCandidate[],
   current: RecommendationCandidate,
 ): RecommendationCandidate | undefined {

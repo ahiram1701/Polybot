@@ -38,6 +38,14 @@ const telegramNotificationsPatchSchema = z.object({
   chatId: z.string().optional(),
   publicUrl: z.union([z.string().url(), z.literal("")]).optional(),
 });
+const fiscalYearQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100).optional(),
+});
+const fiscalFxPatchSchema = z.object({
+  banxicoToken: z.string().optional(),
+  manualRates: z.record(z.string(), z.union([z.number().positive(), z.null()])).optional(),
+  year: z.coerce.number().int().min(2020).max(2100).optional(),
+});
 
 export interface UiAppOptions {
   staticClient?: boolean;
@@ -87,6 +95,23 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
       res.json(await controller.importAnalysisSamples(typeof req.body === "string" ? req.body : ""));
     }),
   );
+
+  app.get("/api/fiscal/summary", asyncHandler(async (req, res) => {
+    const { year } = fiscalYearQuerySchema.parse(req.query);
+    res.json(await controller.getFiscalSummary(year));
+  }));
+
+  app.get("/api/fiscal/export", asyncHandler(async (req, res) => {
+    const { year } = fiscalYearQuerySchema.parse(req.query);
+    const exported = await controller.exportFiscalCsv(year);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${exported.filename}"`);
+    res.send(exported.contents);
+  }));
+
+  app.post("/api/fiscal/fx", asyncHandler(async (req, res) => {
+    res.json(await controller.updateFiscalFxConfig(fiscalFxPatchSchema.parse(req.body ?? {})));
+  }));
 
   app.get("/api/notifications/telegram", asyncHandler(async (_req, res) => {
     res.json(await controller.getTelegramNotifications());

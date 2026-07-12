@@ -101,6 +101,12 @@ function getFilledShares(trade: TradeAttempt): number | undefined {
   return chooseReliableFillValue(trade.filledShares, summarizeLiveOrderFill(trade.response).filledShares);
 }
 
+// Exported for the fiscal report: the same fee (recorded or estimated) that calculateTradePnl bakes
+// into the stake, so the CSV's fee column reconciles exactly with the dashboard P&L.
+export function estimateTradeFeeUsd(trade: TradeAttempt): number {
+  return getFeeUsd(trade);
+}
+
 function getFeeUsd(trade: TradeAttempt): number {
   if (isPositiveFinite(trade.feeUsd)) {
     return trade.feeUsd;

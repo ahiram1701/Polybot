@@ -1,3 +1,4 @@
+import type { FiscalYearSummary } from "../fiscal.js";
 import type { LogEntry } from "../logger.js";
 import type { PnlResetAtMsByMode, PnlSummary, PnlSummaryByMode } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
@@ -149,4 +150,23 @@ export interface TelegramNotificationPatch {
 export interface TelegramNotificationTestResponse {
   ok: true;
   sentAtMs: number;
+}
+
+export interface FiscalFxConfigView {
+  banxicoTokenConfigured: boolean;
+  manualRates: Record<string, number>;
+}
+
+export interface FiscalSummaryResponse {
+  summary: FiscalYearSummary;
+  fx: FiscalFxConfigView;
+}
+
+export interface FiscalFxPatch {
+  // Empty string clears the stored token.
+  banxicoToken?: string;
+  // "YYYY-MM-DD" or "YYYY-MM" -> rate; null deletes the entry.
+  manualRates?: Record<string, number | null>;
+  // Year whose refreshed summary should be returned after saving.
+  year?: number;
 }

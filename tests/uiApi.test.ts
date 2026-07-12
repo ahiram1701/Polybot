@@ -642,6 +642,68 @@ describe("UI API", () => {
     expect(state.listTrades()).toHaveLength(1);
     controller.dispose();
   });
+
+  it("serves the fiscal summary, applies manual FX rates, and exports the CSV", async () => {
+    const config = await baseConfig(false);
+    const resolvedAtMs = Date.UTC(2026, 6, 10, 18, 0, 0);
+    const seedState = new StateStore(config.dataDir);
+    await seedState.load();
+    await seedState.recordTradeAttempt(
+      apiTrade({
+        id: "live-fiscal",
+        mode: "live",
+        amountUsd: 7,
+        bestAsk: 0.7,
+        estimatedShares: 10,
+        fillDetected: true,
+        filledAmountUsd: 7,
+        filledShares: 10,
+        feeUsd: 0.1,
+        createdAtMs: resolvedAtMs - 60_000,
+        resolved: {
+          resolvedAtMs,
+          finalPrice: 130,
+          finalTickTimestampMs: resolvedAtMs,
+          winningOutcome: "UP",
+          won: true,
+        },
+      }),
+    );
+    // A sim trade in the same year must never leak into the fiscal report.
+    await seedState.recordTradeAttempt(
+      apiTrade({
+        id: "sim-fiscal",
+        createdAtMs: resolvedAtMs,
+        resolved: { resolvedAtMs, finalPrice: 130, finalTickTimestampMs: resolvedAtMs, winningOutcome: "UP", won: true },
+      }),
+    );
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    const summary = await request(app).get("/api/fiscal/summary?year=2026").expect(200);
+    expect(summary.body.summary.operaciones).toBe(1);
+    expect(summary.body.summary.gananciaUsd).toBeCloseTo(2.9); // 10 shares - ($7 + $0.10 fee)
+    expect(summary.body.summary.gananciaMxn).toBeUndefined();
+    expect(summary.body.fx.banxicoTokenConfigured).toBe(false);
+
+    const withRate = await request(app)
+      .post("/api/fiscal/fx")
+      .send({ manualRates: { "2026-07": 17 }, year: 2026 })
+      .expect(200);
+    expect(withRate.body.summary.gananciaMxn).toBeCloseTo(49.3); // 2.9 USD * 17
+
+    const csv = await request(app).get("/api/fiscal/export?year=2026").expect(200);
+    expect(csv.headers["content-type"]).toContain("text/csv");
+    expect(csv.headers["content-disposition"]).toContain("attachment");
+    expect(csv.text).toContain("live-fiscal");
+    expect(csv.text).not.toContain("sim-fiscal");
+    expect(csv.text).toContain("17.0000,49.30");
+    controller.dispose();
+  });
 });
 
 describe("MCP over HTTP (/mcp)", () => {

@@ -13,6 +13,7 @@ import {
   Pause,
   Play,
   Radio,
+  Receipt,
   RefreshCw,
   RotateCcw,
   Save,
@@ -44,8 +45,10 @@ import type {
   RecommendationMetrics,
   TradeAttempt,
 } from "../../types.js";
+import type { FiscalMonthSummary } from "../../fiscal.js";
 import type {
   AnalysisImportResponse,
+  FiscalSummaryResponse,
   MarketStatusSnapshot,
   StartBotRequest,
   TelegramNotificationPatch,
@@ -54,7 +57,7 @@ import type {
   UiStatus,
 } from "../shared.js";
 
-type Tab = "dashboard" | "trades" | "analysis" | "settings" | "telegram" | "logs";
+type Tab = "dashboard" | "trades" | "fiscal" | "analysis" | "settings" | "telegram" | "logs";
 type Theme = "light" | "dark";
 type TradeMarketFilter = "ALL" | MarketSymbol;
 type TradePnlFilter = "ALL" | "POSITIVE" | "NEGATIVE";
@@ -428,6 +431,7 @@ export function App() {
         <nav className="tabs" aria-label="Secciones">
           <TabButton active={tab === "dashboard"} icon={<Gauge size={18} />} label="Dashboard" onClick={() => setTab("dashboard")} />
           <TabButton active={tab === "trades"} icon={<Table2 size={18} />} label="Trades" onClick={() => setTab("trades")} />
+          <TabButton active={tab === "fiscal"} icon={<Receipt size={18} />} label="Fiscal" onClick={() => setTab("fiscal")} />
           <TabButton active={tab === "analysis"} icon={<Brain size={18} />} label="Análisis" onClick={() => setTab("analysis")} />
           <TabButton active={tab === "settings"} icon={<Settings size={18} />} label="Settings" onClick={() => setTab("settings")} />
           <TabButton active={tab === "telegram"} icon={<Bell size={18} />} label="Telegram" onClick={() => setTab("telegram")} />
@@ -464,6 +468,7 @@ export function App() {
           <Dashboard status={status} busy={busy} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
         )}
         {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
+        {tab === "fiscal" && <FiscalPanel />}
         {tab === "analysis" && (
           <AnalysisPanel
             recommendations={recommendations}
@@ -1728,6 +1733,227 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
         </button>
       </div>
     </form>
+  );
+}
+
+const FISCAL_MONTH_NAMES = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+];
+
+export function FiscalPanel() {
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [data, setData] = useState<FiscalSummaryResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [rateKeyDraft, setRateKeyDraft] = useState("");
+  const [rateValueDraft, setRateValueDraft] = useState("");
+
+  useEffect(() => {
+    void loadSummary(year);
+  }, [year]);
+
+  async function loadSummary(targetYear: number) {
+    setError(null);
+    try {
+      setData(await api<FiscalSummaryResponse>(`/api/fiscal/summary?year=${targetYear}`));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function saveFx(patch: { banxicoToken?: string; manualRates?: Record<string, number | null> }) {
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      setData(await api<FiscalSummaryResponse>("/api/fiscal/fx", {
+        method: "POST",
+        body: JSON.stringify({ ...patch, year }),
+      }));
+      setMessage("Configuración de tipo de cambio guardada.");
+      setTokenDraft("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const summary = data?.summary;
+  const years = summary?.availableYears?.length ? summary.availableYears : [new Date().getFullYear()];
+  const selectableYears = years.includes(year) ? years : [...years, year].sort();
+  const coverage = summary && summary.operaciones > 0
+    ? `${summary.operacionesConTasa} de ${summary.operaciones} operaciones con tasa`
+    : "sin operaciones";
+  const manualRateEntries = Object.entries(data?.fx.manualRates ?? {}).sort();
+
+  return (
+    <div className="fiscal-panel">
+      <section className="panel">
+        <div className="section-heading">
+          <h2><Receipt size={18} /> Fiscal {year}</h2>
+          <div className="section-actions">
+            <select aria-label="Año fiscal" value={year} onChange={(event) => setYear(Number(event.target.value))}>
+              {selectableYears.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+            <button
+              className="command"
+              type="button"
+              disabled={!summary || summary.operaciones === 0}
+              onClick={() => window.open(`/api/fiscal/export?year=${year}`, "_blank")}
+            >
+              <Download size={18} /> Exportar CSV
+            </button>
+          </div>
+        </div>
+        {error && <div className="banner error">{error}</div>}
+        {message && <div className="banner">{message}</div>}
+        <div className="hero-metrics">
+          <Metric
+            label="Ganancia neta (USD)"
+            value={formatSignedUsd(summary?.gananciaUsd)}
+            tone={pnlTone(summary?.gananciaUsd)}
+          />
+          <Metric
+            label="Ganancia neta (MXN)"
+            value={summary?.gananciaMxn !== undefined ? `${summary.gananciaMxn >= 0 ? "+" : "−"}$${Math.abs(summary.gananciaMxn).toFixed(2)} MXN` : "— (faltan tasas)"}
+            tone={pnlTone(summary?.gananciaMxn)}
+          />
+          <Metric label="Comisiones" value={formatUsd(summary?.comisionesUsd)} />
+          <Metric label="Operaciones" value={summary ? `${summary.operaciones} (${summary.ganadas}-${summary.perdidas})` : "—"} />
+        </div>
+        <p className="settings-hint">
+          Solo operaciones LIVE resueltas (dinero real); la simulación se excluye siempre. Cobertura de tipo de
+          cambio: {coverage}. Los montos salen del mismo cálculo de P&L del dashboard.
+        </p>
+        {summary && summary.months.length > 0 ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mes</th>
+                  <th>Operaciones</th>
+                  <th>Ganadas</th>
+                  <th>Perdidas</th>
+                  <th>Invertido USD</th>
+                  <th>Comisiones USD</th>
+                  <th>Neto USD</th>
+                  <th>Neto MXN</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.months.map((month: FiscalMonthSummary) => (
+                  <tr key={month.month}>
+                    <td data-label="Mes">{FISCAL_MONTH_NAMES[month.month - 1]}</td>
+                    <td data-label="Operaciones">{month.operaciones}</td>
+                    <td data-label="Ganadas">{month.ganadas}</td>
+                    <td data-label="Perdidas">{month.perdidas}</td>
+                    <td data-label="Invertido USD">{formatUsd(month.invertidoUsd)}</td>
+                    <td data-label="Comisiones USD">{formatUsd(month.comisionesUsd)}</td>
+                    <td data-label="Neto USD"><span className={pnlTone(month.gananciaUsd)}>{formatSignedUsd(month.gananciaUsd)}</span></td>
+                    <td data-label="Neto MXN">
+                      {month.gananciaMxn !== undefined
+                        ? `$${month.gananciaMxn.toFixed(2)}`
+                        : `— (${month.operacionesConTasa}/${month.operaciones} con tasa)`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">Sin operaciones live resueltas en {year}.</div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <h2><DollarSign size={18} /> Tipo de cambio USD/MXN</h2>
+        </div>
+        <p className="settings-hint">
+          Para convertir a MXN por fecha de operación: captura tu <strong>token gratuito de Banxico</strong>
+          {" "}(banxico.org.mx → SIE API, serie FIX) para obtención automática, o agrega tasas manuales por día
+          ("2026-07-11") o por mes ("2026-07"). Prioridad: manual exacta → manual del mes → Banxico del día →
+          día hábil anterior. Sin tasa, la columna MXN queda vacía.
+        </p>
+        <div className="settings-grid">
+          <label className="field">
+            <span>Token Banxico {data?.fx.banxicoTokenConfigured ? "(configurado)" : "(no configurado)"}</span>
+            <input
+              type="password"
+              placeholder={data?.fx.banxicoTokenConfigured ? "••••••••" : "Pega tu token"}
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="form-actions">
+          <button className="command" type="button" disabled={busy || !tokenDraft.trim()} onClick={() => void saveFx({ banxicoToken: tokenDraft })}>
+            <Save size={18} /> Guardar token
+          </button>
+          {data?.fx.banxicoTokenConfigured && (
+            <button className="command" type="button" disabled={busy} onClick={() => void saveFx({ banxicoToken: "" })}>
+              Quitar token
+            </button>
+          )}
+        </div>
+        <div className="settings-grid">
+          <label className="field">
+            <span>Fecha o mes (YYYY-MM-DD / YYYY-MM)</span>
+            <input value={rateKeyDraft} placeholder="2026-07" onChange={(event) => setRateKeyDraft(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Tasa (MXN por USD)</span>
+            <input value={rateValueDraft} placeholder="17.05" onChange={(event) => setRateValueDraft(event.target.value)} />
+          </label>
+        </div>
+        <div className="form-actions">
+          <button
+            className="command"
+            type="button"
+            disabled={busy || !/^\d{4}-\d{2}(-\d{2})?$/.test(rateKeyDraft.trim()) || !(Number(rateValueDraft) > 0)}
+            onClick={() => {
+              void saveFx({ manualRates: { [rateKeyDraft.trim()]: Number(rateValueDraft) } });
+              setRateKeyDraft("");
+              setRateValueDraft("");
+            }}
+          >
+            <Save size={18} /> Agregar tasa manual
+          </button>
+        </div>
+        {manualRateEntries.length > 0 && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Periodo</th><th>Tasa</th><th></th></tr>
+              </thead>
+              <tbody>
+                {manualRateEntries.map(([key, value]) => (
+                  <tr key={key}>
+                    <td data-label="Periodo">{key}</td>
+                    <td data-label="Tasa">{value.toFixed(4)}</td>
+                    <td>
+                      <button className="icon-button" type="button" aria-label={`Eliminar tasa ${key}`} disabled={busy} onClick={() => void saveFx({ manualRates: { [key]: null } })}>
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="settings-hint">
+          <AlertTriangle size={14} /> Este registro organiza tus operaciones para la declaración; no constituye
+          asesoría fiscal. Confirma criterios (tipo de cambio aplicable, régimen, deducciones) con tu contador.
+        </p>
+      </section>
+    </div>
   );
 }
 

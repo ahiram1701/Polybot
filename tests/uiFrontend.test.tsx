@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisPanel, App, ControlBar, Dashboard, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
 
@@ -114,6 +114,51 @@ describe("UI frontend components", () => {
     fireEvent.click(screen.getByRole("button", { name: /An/i }));
 
     await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/analysis/recommendations"));
+  });
+
+  it("renders the fiscal summary with export control and MXN coverage", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.startsWith("/api/fiscal/summary")) {
+        return jsonResponse({
+          summary: {
+            year: 2026,
+            operaciones: 2,
+            ganadas: 2,
+            perdidas: 0,
+            invertidoUsd: 14.2,
+            comisionesUsd: 0.2,
+            gananciaUsd: 5.8,
+            gananciaMxn: 98.6,
+            operacionesConTasa: 2,
+            months: [
+              {
+                month: 7,
+                operaciones: 2,
+                ganadas: 2,
+                perdidas: 0,
+                invertidoUsd: 14.2,
+                comisionesUsd: 0.2,
+                gananciaUsd: 5.8,
+                gananciaMxn: 98.6,
+                operacionesConTasa: 2,
+              },
+            ],
+            availableYears: [2026],
+          },
+          fx: { banxicoTokenConfigured: false, manualRates: { "2026-07": 17 } },
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<FiscalPanel />);
+
+    await waitFor(() => expect(screen.getByText(/Julio/)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Exportar CSV/ })).toBeEnabled();
+    expect(screen.getByText(/2 de 2 operaciones con tasa/)).toBeInTheDocument();
+    expect(screen.getByText(/no constituye\s+asesoría fiscal/)).toBeInTheDocument();
   });
 
   it("disables live control when live is not ready", () => {
