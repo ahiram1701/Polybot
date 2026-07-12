@@ -8,6 +8,8 @@ import {
   CheckCircle2,
   Download,
   DollarSign,
+  Eye,
+  EyeOff,
   Gauge,
   Moon,
   Pause,
@@ -83,6 +85,10 @@ interface TradeAverages {
 
 
 const themeStorageKey = "polybot-theme";
+const pnlModeStorageKey = "polybot-pnl-mode";
+const hideAmountsStorageKey = "polybot-hide-amounts";
+// What money looks like with the privacy toggle on: fixed-width so the layout never jumps.
+const MASKED_AMOUNT = "$ ••••";
 const analysisAutoRefreshMs = 60_000;
 
 const emptySettings: UiSettings = {
@@ -172,6 +178,13 @@ export function App() {
   const [liveModal, setLiveModal] = useState(false);
   const [resetModal, setResetModal] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
+  const [hideAmounts, setHideAmounts] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(hideAmountsStorageKey) === "true";
+    } catch {
+      return false;
+    }
+  });
   const analysisRequestId = useRef(0);
   const analysisLoadingRef = useRef(false);
 
@@ -446,6 +459,20 @@ export function App() {
             <h1>Polybot Crypto Up/Down 5m</h1>
           </div>
           <div className="topbar-actions">
+            <PrivacyToggle
+              hidden={hideAmounts}
+              onToggle={() =>
+                setHideAmounts((current) => {
+                  const next = !current;
+                  try {
+                    window.localStorage.setItem(hideAmountsStorageKey, String(next));
+                  } catch {
+                    // Storage unavailable (private mode): the toggle still works for the session.
+                  }
+                  return next;
+                })
+              }
+            />
             <ThemeToggle
               theme={theme}
               onToggle={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
@@ -465,9 +492,9 @@ export function App() {
         {error && <div className="notice error"><AlertTriangle size={18} />{error}</div>}
 
         {tab === "dashboard" && (
-          <Dashboard status={status} busy={busy} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
+          <Dashboard status={status} busy={busy} hideAmounts={hideAmounts} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
         )}
-        {tab === "trades" && <TradesTable trades={trades} settings={settings} />}
+        {tab === "trades" && <TradesTable trades={trades} settings={settings} hideAmounts={hideAmounts} />}
         {tab === "fiscal" && <FiscalPanel />}
         {tab === "analysis" && (
           <AnalysisPanel
@@ -508,6 +535,15 @@ export function App() {
         />
       )}
     </div>
+  );
+}
+
+function PrivacyToggle({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
+  const label = hidden ? "Mostrar montos" : "Ocultar montos";
+  return (
+    <button className="icon-button privacy-toggle" title={label} aria-label={label} aria-pressed={hidden} onClick={onToggle}>
+      {hidden ? <EyeOff size={18} /> : <Eye size={18} />}
+    </button>
   );
 }
 
@@ -565,16 +601,34 @@ export function ControlBar(props: {
 export function Dashboard({
   status,
   busy,
+  hideAmounts = false,
   onResetPnl,
   onResetRiskHalt,
 }: {
   status: UiStatus | null;
   busy: boolean;
+  hideAmounts?: boolean;
   onResetPnl: (mode: Mode) => void;
   onResetRiskHalt: (mode: Mode) => void;
 }) {
   const marketSnapshots = getMarketSnapshots(status);
-  const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>("sim");
+  const [selectedPnlMode, setSelectedPnlMode] = useState<Mode>(() => getStoredPnlMode() ?? "sim");
+  // Follow the bot's running mode only while the user has never picked one themselves; an explicit
+  // choice (persisted) always wins across reloads.
+  useEffect(() => {
+    if (getStoredPnlMode() === undefined && status?.mode) {
+      setSelectedPnlMode(status.mode);
+    }
+  }, [status?.mode]);
+  function choosePnlMode(mode: Mode) {
+    setSelectedPnlMode(mode);
+    try {
+      window.localStorage.setItem(pnlModeStorageKey, mode);
+    } catch {
+      // Storage unavailable: selection still applies for the session.
+    }
+  }
+  const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
   const selectedPnl = status?.pnlByMode?.[selectedPnlMode];
   const selectedPnlLabel = selectedPnlMode === "sim" ? "Sim" : "Live";
   const riskHalt = status?.riskHalt;
@@ -628,14 +682,14 @@ export function Dashboard({
             <button
               aria-label="Ver P&L sim"
               className={`segment-button ${selectedPnlMode === "sim" ? "active" : ""}`}
-              onClick={() => setSelectedPnlMode("sim")}
+              onClick={() => choosePnlMode("sim")}
             >
               Sim
             </button>
             <button
               aria-label="Ver P&L live"
               className={`segment-button ${selectedPnlMode === "live" ? "active" : ""}`}
-              onClick={() => setSelectedPnlMode("live")}
+              onClick={() => choosePnlMode("live")}
             >
               Live
             </button>
@@ -645,6 +699,7 @@ export function Dashboard({
           label={selectedPnlLabel}
           summary={selectedPnl}
           busy={busy}
+          hideAmounts={hideAmounts}
           onReset={() => onResetPnl(selectedPnlMode)}
         />
       </section>
@@ -655,12 +710,12 @@ export function Dashboard({
           <h2>Riesgo</h2>
         </div>
         <div className="hero-metrics compact">
-          <Metric label="Gasto diario" value={formatUsd(status?.dailySpendUsd)} />
+          <Metric label="Gasto diario" value={money(formatUsd(status?.dailySpendUsd))} />
           <Metric label="Limite gasto" value={formatUsd(status?.settings.dailySpendLimitUsd)} />
           <Metric label="Ask cap" value={formatOutcomeSettingRange(status?.settings.maxAskPriceByMarketOutcome, formatPrice)} />
           <Metric
             label="Perdida hoy"
-            value={formatUsd(riskHalt?.dailyLossUsd ?? 0)}
+            value={money(formatUsd(riskHalt?.dailyLossUsd ?? 0))}
             tone={riskHalt?.reason === "daily_loss_limit" ? "negative" : "neutral"}
           />
           <Metric
@@ -1179,20 +1234,23 @@ function PnlModeSummary({
   label,
   summary,
   busy,
+  hideAmounts = false,
   onReset,
 }: {
   label: string;
   summary?: PnlSummary;
   busy: boolean;
+  hideAmounts?: boolean;
   onReset: () => void;
 }) {
+  const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
   return (
     <div className="pnl-mode-summary">
       <div className="pnl-mode-header">
         <span>{label}</span>
         <div className="pnl-mode-actions">
           <strong className={`pnl-mode-net ${pnlTone(summary?.realizedUsd)}`}>
-            {formatSignedUsd(summary?.realizedUsd)}
+            {money(formatSignedUsd(summary?.realizedUsd))}
           </strong>
           <button
             className="icon-button pnl-reset-button"
@@ -1206,17 +1264,52 @@ function PnlModeSummary({
         </div>
       </div>
       <div className="hero-metrics pnl-metrics">
-        <Metric label="Reclamado" value={formatUsd(summary?.payoutUsd)} tone={pnlTone(summary?.payoutUsd)} />
-        <Metric label="Invertido" value={formatUsd(summary?.realizedStakeUsd)} />
-        <Metric label="Pendiente" value={formatUsd(summary?.pendingStakeUsd)} />
+        <Metric label="Win rate" value={formatWinRate(summary)} tone={winRateTone(summary)} />
+        <Metric label="Reclamado" value={money(formatUsd(summary?.payoutUsd))} tone={pnlTone(summary?.payoutUsd)} />
+        <Metric label="Invertido" value={money(formatUsd(summary?.realizedStakeUsd))} />
+        <Metric label="Pendiente" value={money(formatUsd(summary?.pendingStakeUsd))} />
         <Metric label="ROI" value={formatPercent(summary?.roiPct)} tone={pnlTone(summary?.realizedUsd)} />
       </div>
     </div>
   );
 }
 
+function getStoredPnlMode(): Mode | undefined {
+  try {
+    const stored = window.localStorage.getItem(pnlModeStorageKey);
+    return stored === "sim" || stored === "live" ? stored : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
-export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; settings?: UiSettings }) {
+function formatWinRate(summary?: PnlSummary): string {
+  const resolved = (summary?.wonCount ?? 0) + (summary?.lostCount ?? 0);
+  if (!summary || resolved === 0) {
+    return "—";
+  }
+  return `${summary.wonCount}-${summary.lostCount} · ${Math.round((100 * summary.wonCount) / resolved)}%`;
+}
+
+function winRateTone(summary?: PnlSummary): "positive" | "negative" | "neutral" {
+  const resolved = (summary?.wonCount ?? 0) + (summary?.lostCount ?? 0);
+  if (!summary || resolved === 0) {
+    return "neutral";
+  }
+  return summary.wonCount / resolved >= 0.5 ? "positive" : "negative";
+}
+
+
+export function TradesTable({
+  trades,
+  settings,
+  hideAmounts = false,
+}: {
+  trades: TradeAttempt[];
+  settings?: UiSettings;
+  hideAmounts?: boolean;
+}) {
+  const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
   const [marketFilter, setMarketFilter] = useState<TradeMarketFilter>("ALL");
   const [pnlFilter, setPnlFilter] = useState<TradePnlFilter>("ALL");
   const [sortState, setSortState] = useState<TradeSortState | undefined>();
@@ -1296,11 +1389,11 @@ export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; sett
                 <th>{averageCell(formatEntryWindow(averages.entryWindowSeconds))}</th>
                 <th />
                 <th />
-                <th>{averageCell(formatUsd(averages.stakeUsd))}</th>
+                <th>{averageCell(money(formatUsd(averages.stakeUsd)))}</th>
                 <th>{averageCell(formatPrice(averages.bestAsk))}</th>
                 <th>{averageCell(formatAverageDistance(averages.distanceUsd, filteredTrades))}</th>
-                <th>{averageCell(formatUsd(averages.payoutUsd))}</th>
-                <th>{averageCell(formatSignedUsd(averages.netUsd))}</th>
+                <th>{averageCell(money(formatUsd(averages.payoutUsd)))}</th>
+                <th>{averageCell(money(formatSignedUsd(averages.netUsd)))}</th>
                 <th />
               </tr>
               <tr>
@@ -1342,11 +1435,11 @@ export function TradesTable({ trades, settings }: { trades: TradeAttempt[]; sett
                     <td data-label="Ventana">{formatTradeEntryWindow(trade, settings)}</td>
                     <td data-label="Modo">{trade.mode.toUpperCase()}</td>
                     <td data-label="Lado"><span className={`side ${trade.outcome.toLowerCase()}`}>{trade.outcome}</span></td>
-                    <td data-label="Invertido">{formatUsd(pnl.stakeUsd)}</td>
+                    <td data-label="Invertido">{money(formatUsd(pnl.stakeUsd))}</td>
                     <td data-label="Ask">{formatPrice(trade.bestAsk)}</td>
                     <td data-label="Distancia">{formatMarketDistance(trade.distanceUsd, marketSymbol)}</td>
-                    <td data-label="Reclamado">{formatTradePayout(pnl)}</td>
-                    <td data-label="P&L"><span className={`pnl-value ${pnlTone(pnl.netUsd)}`}>{formatTradePnl(pnl)}</span></td>
+                    <td data-label="Reclamado">{money(formatTradePayout(pnl))}</td>
+                    <td data-label="P&L"><span className={`pnl-value ${pnlTone(pnl.netUsd)}`}>{money(formatTradePnl(pnl))}</span></td>
                     <td data-label="Estado">{tradeStatusLabel(trade)}</td>
                   </tr>
                 );

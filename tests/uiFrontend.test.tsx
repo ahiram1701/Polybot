@@ -229,6 +229,71 @@ describe("UI frontend components", () => {
     expect(onResetPnl).toHaveBeenCalledWith("live");
   });
 
+  it("remembers the last selected P&L mode across mounts", () => {
+    const props = { busy: false, onResetPnl: vi.fn(), onResetRiskHalt: vi.fn(), status: status({ liveReady: true }) };
+    render(<Dashboard {...props} />);
+    expect(screen.getByRole("button", { name: "Ver P&L sim" })).toHaveClass("active");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver P&L live" }));
+    cleanup();
+
+    render(<Dashboard {...props} />);
+    expect(screen.getByRole("button", { name: "Ver P&L live" })).toHaveClass("active");
+  });
+
+  it("masks money but keeps ratios visible when hideAmounts is on", () => {
+    render(
+      <Dashboard
+        busy={false}
+        hideAmounts
+        onResetPnl={vi.fn()}
+        onResetRiskHalt={vi.fn()}
+        status={{
+          ...status({ liveReady: true }),
+          pnlByMode: {
+            sim: pnlSummary({ realizedUsd: 172.46, payoutUsd: 500, wonCount: 36, lostCount: 20, resolvedCount: 56 }),
+            live: pnlSummary({}),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/172\.46/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("$ ••••").length).toBeGreaterThanOrEqual(4);
+    // Ratios stay useful while amounts are hidden.
+    expect(screen.getByText("36-20 · 64%")).toBeInTheDocument();
+  });
+
+  it("masks trade amounts in the trades table when hideAmounts is on", () => {
+    render(<TradesTable trades={[trade({ resolvedWon: true })]} hideAmounts />);
+    expect(screen.queryByText("$2.00")).not.toBeInTheDocument();
+    expect(screen.getAllByText("$ ••••").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("shows the win rate for the selected P&L mode", () => {
+    render(
+      <Dashboard
+        busy={false}
+        onResetPnl={vi.fn()}
+        onResetRiskHalt={vi.fn()}
+        status={{
+          ...status({ liveReady: true }),
+          pnlByMode: {
+            sim: pnlSummary({ realizedUsd: 172, wonCount: 36, lostCount: 20, resolvedCount: 56 }),
+            live: pnlSummary({}),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Win rate")).toBeInTheDocument();
+    expect(screen.getByText("36-20 · 64%")).toBeInTheDocument();
+
+    // Live has no resolved trades yet: the metric degrades to a dash, not a bogus 0%.
+    fireEvent.click(screen.getByRole("button", { name: "Ver P&L live" }));
+    expect(screen.queryByText(/· \d+%/)).not.toBeInTheDocument();
+  });
+
   it("shows the risk circuit breaker banner when tripped", () => {
     render(
       <Dashboard

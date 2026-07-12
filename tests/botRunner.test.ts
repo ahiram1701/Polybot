@@ -1368,6 +1368,9 @@ describe("BotRunner", () => {
         body: expect.stringContaining(`Slug: ${trade.slug}.`),
       }),
     );
+    const notifiedBody = (notifier.notify as ReturnType<typeof vi.fn>).mock.calls[0][0].body as string;
+    // The running P&L line carries the record AND its win percentage.
+    expect(notifiedBody).toContain(won ? "1-0 (100% win)" : "0-1 (0% win)");
   });
 
   it("keeps trying other markets when one execution fails", async () => {

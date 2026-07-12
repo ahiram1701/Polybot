@@ -903,6 +903,8 @@ export class BotRunner {
     const resetAtMs = this.deps.state.getPnlResetAtMs?.() ?? {};
     const runPnl = calculatePnlSummaryByMode(this.deps.state.listTrades(), resetAtMs)[trade.mode];
     const runRoi = runPnl.roiPct !== undefined ? ` (${(runPnl.roiPct * 100).toFixed(1)}%)` : "";
+    const runResolved = runPnl.wonCount + runPnl.lostCount;
+    const runWinRate = runResolved > 0 ? ` (${Math.round((100 * runPnl.wonCount) / runResolved)}% win)` : "";
     await this.deps.notifier?.notify({
       key: `trade-resolved:${trade.id ?? trade.slug}`,
       level: resolution.won ? "info" : "warn",
@@ -911,7 +913,7 @@ export class BotRunner {
         `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
         `Comprado: ${trade.outcome}. Ganador: ${resolution.winningOutcome}.`,
         `Stake: ${formatUsd(trade.amountUsd)}. P&L: ${formatSignedUsd(pnl.netUsd)}.`,
-        `P&L corrida ${trade.mode}: ${formatSignedUsd(runPnl.realizedUsd)}${runRoi} · ${runPnl.wonCount}-${runPnl.lostCount}.`,
+        `P&L corrida ${trade.mode}: ${formatSignedUsd(runPnl.realizedUsd)}${runRoi} · ${runPnl.wonCount}-${runPnl.lostCount}${runWinRate}.`,
         `Precio final: ${formatMarketValue(resolution.finalPrice)}. Distancia: ${formatSignedValue(trade.distanceUsd)}.`,
         `Slug: ${trade.slug}.`,
       ].join("\n"),
