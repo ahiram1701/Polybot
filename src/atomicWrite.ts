@@ -2,7 +2,9 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 
-const RETRY_DELAYS_MS = [10, 30, 80, 200];
+// Under load (AV scans, many overlapping writers) 200ms of total backoff proved flaky on Windows;
+// the tail retries make the worst case ~1.6s, which beats failing a state write.
+const RETRY_DELAYS_MS = [10, 30, 80, 200, 400, 900];
 // Windows-specific transient failures: AV/indexer holds a brief lock on the temp or target (EPERM/
 // EACCES/EBUSY), or a rename lands on a vanished path (ENOENT). All are safe to retry.
 const RETRYABLE_CODES = new Set(["EPERM", "EACCES", "EBUSY", "ENOENT"]);

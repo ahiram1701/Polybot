@@ -132,8 +132,15 @@ describe("signal engine", () => {
     ).toBe(true);
   });
 
-  it("rejects stale Chainlink ticks", () => {
-    expect(isTickStale({ ...freshUpTick, timestampMs: endMs - 30_000 }, endMs - 10_000, 10_000)).toBe(true);
+  it("judges staleness by feed delivery, tolerating the oracle's step-function update gaps", () => {
+    const nowMs = endMs - 10_000;
+    // Feed stopped delivering: stale regardless of the oracle timestamp.
+    expect(isTickStale({ ...freshUpTick, timestampMs: nowMs, receivedAtMs: nowMs - 30_000 }, nowMs, 10_000)).toBe(true);
+    // Oracle last PUBLISHED 20s ago but the connection is fresh: that IS the current Chainlink price
+    // (sparse assets update only on deviation), so it must NOT count as stale.
+    expect(isTickStale({ ...freshUpTick, timestampMs: nowMs - 20_000, receivedAtMs: nowMs }, nowMs, 10_000)).toBe(false);
+    // Oracle silent beyond heartbeat scale (60s): stale even with a live connection.
+    expect(isTickStale({ ...freshUpTick, timestampMs: nowMs - 90_000, receivedAtMs: nowMs }, nowMs, 10_000)).toBe(true);
   });
 
   it("returns BUY when all trade conditions are met", () => {

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { writeFileAtomic } from "./atomicWrite.js";
@@ -309,28 +309,85 @@ export class AnalyticsRecorder {
   }
 }
 
+interface AnalyticsReadCache {
+  // Bytes of COMPLETE lines already parsed (always ends right after a "\n", so a resumed read can
+  // never split a UTF-8 character or a JSON line).
+  byteOffset: number;
+  mtimeMs: number;
+  latestBySlug: Map<string, AnalyticsSample>;
+  sorted: AnalyticsSample[];
+}
+
+// The analytics ledger is append-only (compactions rewrite it smaller) and grows to >100MB; parsing it
+// from scratch on every recommendation tick and EV-gate query burns seconds of CPU every 2 minutes.
+// Cache the parsed samples per path and only read the appended tail on subsequent calls. A shrunken or
+// replaced file (retention compaction, import) is detected by size/offset and fully reparsed.
+const analyticsReadCache = new Map<string, AnalyticsReadCache>();
+
+/** Test hook: forget everything cached for a path (or all paths). */
+export function invalidateAnalyticsReadCache(path?: string): void {
+  if (path === undefined) {
+    analyticsReadCache.clear();
+  } else {
+    analyticsReadCache.delete(path);
+  }
+}
+
 export async function readAnalyticsSamples(path: string): Promise<AnalyticsSample[]> {
-  let contents = "";
+  let fileSize: number;
+  let fileMtimeMs: number;
   try {
-    contents = await readFile(path, "utf8");
+    const stats = await stat(path);
+    fileSize = stats.size;
+    fileMtimeMs = stats.mtimeMs;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      analyticsReadCache.delete(path);
       return [];
     }
     throw error;
   }
 
-  const latestBySlug = new Map<string, AnalyticsSample>();
-  for (const line of contents.split(/\r?\n/)) {
-    if (!line.trim()) {
-      continue;
-    }
-    const sample = parseAnalyticsLine(line);
-    if (sample && isResolvedAnalyticsSample(sample)) {
-      latestBySlug.set(sample.slug, sample);
-    }
+  const cached = analyticsReadCache.get(path);
+  if (cached && fileSize === cached.byteOffset && fileMtimeMs === cached.mtimeMs) {
+    return [...cached.sorted];
   }
-  return [...latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs);
+
+  // File shrank (compaction/import replaced it): the cached offsets no longer describe this file.
+  const cache: AnalyticsReadCache =
+    cached && fileSize > cached.byteOffset
+      ? cached
+      : { byteOffset: 0, mtimeMs: 0, latestBySlug: new Map(), sorted: [] };
+
+  const handle = await open(path, "r");
+  try {
+    const tailLength = fileSize - cache.byteOffset;
+    const buffer = Buffer.alloc(tailLength);
+    await handle.read(buffer, 0, tailLength, cache.byteOffset);
+    // Never consume a trailing partial line: a writer may be mid-append; it will be read next time.
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    if (lastNewline === -1) {
+      analyticsReadCache.set(path, cache);
+      return [...cache.sorted];
+    }
+    const contents = buffer.toString("utf8", 0, lastNewline + 1);
+    for (const line of contents.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      const sample = parseAnalyticsLine(line);
+      if (sample && isResolvedAnalyticsSample(sample)) {
+        cache.latestBySlug.set(sample.slug, sample);
+      }
+    }
+    cache.byteOffset += lastNewline + 1;
+    cache.mtimeMs = cache.byteOffset === fileSize ? fileMtimeMs : 0;
+    cache.sorted = [...cache.latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs);
+    analyticsReadCache.set(path, cache);
+    return [...cache.sorted];
+  } finally {
+    await handle.close();
+  }
 }
 
 export function serializeAnalyticsSamples(samples: AnalyticsSample[], at = new Date()): string {

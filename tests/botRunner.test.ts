@@ -1225,6 +1225,67 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
 
+  it("stops retrying a window once the CLOB rejects with post-only mode", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("post-only mode: only post-only orders and cancels are allowed");
+      }),
+    } satisfies TradeExecutor;
+    const orderbook = fakeOrderbook(0.5);
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        mode: "sim",
+        requirePositiveEv: false,
+      },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook,
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+
+    // Same window, next poll ticks: the slug is marked post-only, so no more quoting or executing.
+    await runner.runOnce(nowMs + 2_000);
+    await runner.runOnce(nowMs + 4_000);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
   it("blocks live trades with no exact strategy history at normal asks", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

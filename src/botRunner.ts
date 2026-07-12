@@ -111,6 +111,10 @@ export class BotRunner {
   private stopped = false;
   private readonly currentSlugs = new Map<MarketSymbol, string>();
   private readonly skipLogKeys = new Set<string>();
+  // Windows whose CLOB already rejected taker orders ("post-only mode": Polymarket blocks takers in
+  // the final seconds before close). Retrying is pointless until the next window — without this the
+  // bot hammered the API every poll tick (19 identical rejections in ~30s).
+  private readonly postOnlySlugs = new Set<string>();
 
   constructor(
     private readonly config: BotConfig,
@@ -529,6 +533,10 @@ export class BotRunner {
     signal: TradeSignal,
     quoteCache: Map<string, Partial<Record<Outcome, OrderbookQuote>>>,
   ): Promise<TradeCandidate | undefined> {
+    if (this.postOnlySlugs.has(signal.market.slug)) {
+      // The CLOB already rejected takers for this window; don't even quote.
+      return undefined;
+    }
     const token = signal.market.outcomes[signal.outcome];
     let quote: OrderbookQuote;
     try {
@@ -587,15 +595,31 @@ export class BotRunner {
     }
 
     for (const candidate of candidates) {
+      if (this.postOnlySlugs.has(candidate.market.slug)) {
+        // A sibling candidate in this same batch already hit the post-only rejection.
+        continue;
+      }
       const result = await this.executeTradeCandidate(candidate);
       if ("error" in result) {
+        const message = result.error instanceof Error ? result.error.message : String(result.error);
+        if (isPostOnlyRejection(message)) {
+          // Terminal for this window: the CLOB stopped accepting taker orders (final seconds before
+          // close). Mark the slug so no further attempts are made until the next window.
+          this.postOnlySlugs.add(result.candidate.market.slug);
+          this.logSkipOnce(result.candidate.market.slug, "post_only_mode", {
+            market: result.candidate.market.asset,
+            outcome: result.candidate.outcome,
+            secondsToEnd: Math.round((result.candidate.market.endMs - Date.now()) / 100) / 10,
+          });
+          continue;
+        }
         logger.warn("Trade execution failed; continuing with other markets.", {
           mode: this.config.mode,
           slug: result.candidate.market.slug,
           market: result.candidate.market.asset,
           outcome: result.candidate.outcome,
           amountUsd: result.candidate.amountUsd,
-          error: result.error instanceof Error ? result.error.message : String(result.error),
+          error: message,
         });
         continue;
       }
@@ -929,6 +953,10 @@ export class BotRunner {
     if (this.currentSlugs.get(market.asset) === market.slug) {
       return;
     }
+    const previousSlug = this.currentSlugs.get(market.asset);
+    if (previousSlug !== undefined) {
+      this.postOnlySlugs.delete(previousSlug);
+    }
     this.currentSlugs.set(market.asset, market.slug);
     for (const key of [...this.skipLogKeys]) {
       if (key.startsWith(`${market.asset}:`)) {
@@ -960,6 +988,12 @@ export class BotRunner {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// Polymarket switches 5-min markets to post-only in the final seconds before close; taker orders are
+// rejected with this message until the window ends.
+function isPostOnlyRejection(message: string): boolean {
+  return /post[- ]?only/i.test(message);
 }
 
 function formatUsd(value?: number): string {

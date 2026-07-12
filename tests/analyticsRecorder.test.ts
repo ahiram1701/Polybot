@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -185,6 +185,41 @@ describe("AnalyticsRecorder", () => {
     const samples = await readAnalyticsSamples(analyticsPath);
     expect(samples.map((sample) => sample.slug)).toEqual([earlier.slug, latestEth.slug]);
     expect(samples[1].finalPrice).toBe(220);
+  });
+
+  it("reads incrementally: appends appear, partial lines wait, and a compacted file reloads", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const first = analyticsSample(marketInfo("BTC", base));
+    const second = analyticsSample(marketInfo("ETH", base + 300_000));
+    const third = analyticsSample(marketInfo("DOGE", base + 600_000));
+
+    await writeFile(analyticsPath, serializeAnalyticsSamples([first]), "utf8");
+    expect((await readAnalyticsSamples(analyticsPath)).map((sample) => sample.slug)).toEqual([first.slug]);
+
+    // A complete appended line shows up on the next read (tail-only parse).
+    await appendFile(analyticsPath, serializeAnalyticsSamples([second]), "utf8");
+    expect((await readAnalyticsSamples(analyticsPath)).map((sample) => sample.slug)).toEqual([
+      first.slug,
+      second.slug,
+    ]);
+
+    // A PARTIAL line (writer mid-append) must not be consumed until its newline lands.
+    const thirdLine = serializeAnalyticsSamples([third]);
+    await appendFile(analyticsPath, thirdLine.slice(0, 25), "utf8");
+    expect(await readAnalyticsSamples(analyticsPath)).toHaveLength(2);
+    await appendFile(analyticsPath, thirdLine.slice(25), "utf8");
+    expect((await readAnalyticsSamples(analyticsPath)).map((sample) => sample.slug)).toEqual([
+      first.slug,
+      second.slug,
+      third.slug,
+    ]);
+
+    // Compaction rewrites the file smaller: the cache must detect it and fully reload.
+    await writeFile(analyticsPath, serializeAnalyticsSamples([third]), "utf8");
+    expect((await readAnalyticsSamples(analyticsPath)).map((sample) => sample.slug)).toEqual([third.slug]);
   });
 
   it("trims the analytics file to the most recent samples and collapses duplicate slugs", async () => {

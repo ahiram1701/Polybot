@@ -51,8 +51,21 @@ export function isWithinEntryWindow(endMs: number, nowMs: number, entryWindowSec
   return remainingSeconds > 0 && remainingSeconds <= entryWindowSeconds;
 }
 
-export function isTickStale(tick: BtcPriceTick, nowMs: number, staleMs: number): boolean {
-  return nowMs - tick.timestampMs > staleMs || nowMs - tick.receivedAtMs > staleMs;
+// Chainlink is a step function: it only publishes on deviation/heartbeat, so for sparse assets
+// (ETH/DOGE off-peak) the last published value IS the current oracle price even when it is >10s old —
+// and these markets RESOLVE on this same feed. Judging staleness by the oracle timestamp alone caused
+// false "stale tick" skips while the connection was perfectly healthy (snapshot-refreshed every 5s).
+const ORACLE_UPDATE_STALE_MS = 60_000;
+
+export function isTickStale(
+  tick: BtcPriceTick,
+  nowMs: number,
+  staleMs: number,
+  oracleStaleMs = ORACLE_UPDATE_STALE_MS,
+): boolean {
+  // Delivery freshness (are we still receiving from the feed?) stays strict; the oracle's own update
+  // age only matters when it exceeds the heartbeat-scale bound.
+  return nowMs - tick.receivedAtMs > staleMs || nowMs - tick.timestampMs > Math.max(oracleStaleMs, staleMs);
 }
 
 export function evaluateSignal(args: {
