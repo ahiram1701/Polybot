@@ -57,10 +57,18 @@ const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
+// Official-resolution verification cadence: one sweep every 30s, 2 gamma lookups per sweep. Enough to
+// backfill dozens of historical trades within minutes without hammering the API; failed/unresolved
+// lookups retry after 5 minutes.
+const OFFICIAL_SWEEP_INTERVAL_MS = 30_000;
+const OFFICIAL_CHECKS_PER_SWEEP = 2;
+const OFFICIAL_RESOLUTION_GRACE_MS = 90_000;
+const OFFICIAL_RETRY_INTERVAL_MS = 5 * 60_000;
 
 interface MarketWatcherLike {
   getCurrentMarket(nowMs?: number, market?: MarketSymbol): Promise<MarketInfo | null>;
   getCurrentMarkets?(markets: MarketSymbol[], nowMs?: number): Promise<MarketInfo[]>;
+  getMarketBySlug?(slug: string, nowMs?: number): Promise<MarketInfo | null>;
 }
 
 export interface RunnerPriceFeed {
@@ -69,6 +77,7 @@ export interface RunnerPriceFeed {
   getLatestTick(market?: MarketSymbol): BtcPriceTick | undefined;
   getTickInRange?(market: MarketSymbol, startMs: number, endMs: number): BtcPriceTick | undefined;
   getOpeningTick?(market: MarketSymbol, windowStartMs: number, graceMs: number): BtcPriceTick | undefined;
+  getTickAtOrBefore?(market: MarketSymbol, timestampMs: number): BtcPriceTick | undefined;
 }
 
 interface BotDependencies {
@@ -115,6 +124,8 @@ export class BotRunner {
   // the final seconds before close). Retrying is pointless until the next window — without this the
   // bot hammered the API every poll tick (19 identical rejections in ~30s).
   private readonly postOnlySlugs = new Set<string>();
+  private lastOfficialSweepMs = 0;
+  private readonly officialCheckAttemptsMs = new Map<string, number>();
 
   constructor(
     private readonly config: BotConfig,
@@ -228,6 +239,7 @@ export class BotRunner {
   async runOnce(nowMs = Date.now()): Promise<void> {
     await this.reconcileLiveTrades(nowMs);
     await this.resolveCompletedTrades(nowMs);
+    await this.verifyOfficialResolutions(nowMs);
 
     const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
     if (markets.length === 0) {
@@ -888,7 +900,10 @@ export class BotRunner {
       if (!latestTick) {
         continue;
       }
-      const resolution = resolveTradeFromTick(trade, latestTick, nowMs);
+      // Judge the winner by the price AT the window close (last tick <= endMs), not the first tick
+      // after it — photo-finish windows flipped otherwise.
+      const closeTick = this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
+      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick);
       if (!resolution) {
         continue;
       }
@@ -903,6 +918,76 @@ export class BotRunner {
         finalPrice: resolution.finalPrice,
       });
       await this.notifyTradeResolved(trade, resolution);
+    }
+  }
+
+  /**
+   * Verify LIVE resolutions against Polymarket's OFFICIAL market outcome (gamma reports 1/0 outcome
+   * prices once resolved) and correct any mismatch — the source of truth is whoever pays. Photo-finish
+   * windows resolved off our own feed can land on the wrong side of the boundary; a real trade was
+   * scored -$5 while Polymarket paid $20 for it. Runs throttled (one sweep every 30s, 2 lookups per
+   * sweep) so the historical backlog backfills gradually without hammering gamma.
+   */
+  private async verifyOfficialResolutions(nowMs: number): Promise<void> {
+    const getMarketBySlug = this.deps.watcher.getMarketBySlug?.bind(this.deps.watcher);
+    if (!getMarketBySlug || nowMs - this.lastOfficialSweepMs < OFFICIAL_SWEEP_INTERVAL_MS) {
+      return;
+    }
+    this.lastOfficialSweepMs = nowMs;
+
+    const candidates = this.deps.state
+      .listTrades()
+      .filter(
+        (trade) =>
+          trade.mode === "live" &&
+          trade.resolved !== undefined &&
+          trade.officialResolution === undefined &&
+          // Give the official resolution time to land before asking.
+          nowMs - trade.endMs > OFFICIAL_RESOLUTION_GRACE_MS &&
+          nowMs - (this.officialCheckAttemptsMs.get(trade.slug) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
+      )
+      .slice(0, OFFICIAL_CHECKS_PER_SWEEP);
+
+    for (const trade of candidates) {
+      this.officialCheckAttemptsMs.set(trade.slug, nowMs);
+      try {
+        const market = await getMarketBySlug(trade.slug, nowMs);
+        const official = officialWinningOutcome(market);
+        if (!official || !trade.resolved) {
+          continue;
+        }
+        const corrected = official !== trade.resolved.winningOutcome;
+        await this.deps.state.recordTradeOfficialResolution(trade.slug, trade.mode, {
+          winningOutcome: official,
+          verifiedAtMs: nowMs,
+          corrected,
+        });
+        if (corrected) {
+          logger.warn("Resolución corregida por resultado oficial de Polymarket.", {
+            slug: trade.slug,
+            outcome: trade.outcome,
+            feedWinner: trade.resolved.winningOutcome,
+            officialWinner: official,
+            wonNow: official === trade.outcome,
+          });
+          await this.deps.notifier?.notify({
+            key: `resolution-corrected:${trade.id ?? trade.slug}`,
+            level: "warn",
+            title: "Resolución corregida",
+            body: [
+              `Mercado: ${trade.asset ?? "--"} (${trade.slug}).`,
+              `El feed dijo ${trade.resolved.winningOutcome}, Polymarket resolvió ${official}.`,
+              `Tu ${trade.outcome} ${official === trade.outcome ? "GANÓ" : "perdió"} oficialmente; P&L ajustado.`,
+            ].join("\n"),
+            minIntervalMs: 24 * 60 * 60_000,
+          });
+        }
+      } catch (error) {
+        logger.warn("No se pudo verificar la resolución oficial; se reintenta.", {
+          slug: trade.slug,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -994,6 +1079,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // rejected with this message until the window ends.
 function isPostOnlyRejection(message: string): boolean {
   return /post[- ]?only/i.test(message);
+}
+
+// A resolved gamma market reports 1/0 outcome prices. Require a decisive >=0.99 so half-resolved or
+// still-trading snapshots (e.g. 0.97/0.03) never count as an official verdict.
+function officialWinningOutcome(market: MarketInfo | null): Outcome | undefined {
+  if (!market || !market.closed) {
+    return undefined;
+  }
+  const upPrice = market.outcomes.UP?.impliedPrice;
+  const downPrice = market.outcomes.DOWN?.impliedPrice;
+  if (typeof upPrice === "number" && upPrice >= 0.99 && (downPrice ?? 0) <= 0.01) {
+    return "UP";
+  }
+  if (typeof downPrice === "number" && downPrice >= 0.99 && (upPrice ?? 0) <= 0.01) {
+    return "DOWN";
+  }
+  return undefined;
 }
 
 function formatUsd(value?: number): string {

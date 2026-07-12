@@ -53,23 +53,31 @@ export function resolveTradeFromTick(
   trade: TradeAttempt,
   latestTick: BtcPriceTick,
   nowMs: number,
+  closeTick?: BtcPriceTick,
 ): SimResolution | undefined {
   const tradeAsset = trade.asset ?? marketSymbolFromSlug(trade.slug);
   if (
     (tradeAsset && latestTick.market !== tradeAsset) ||
     trade.resolved ||
     nowMs < trade.endMs ||
+    // Waiting for a tick at-or-after the boundary confirms the close value is final...
     latestTick.timestampMs < trade.endMs ||
     !hasResolvablePosition(trade)
   ) {
     return undefined;
   }
 
-  const winningOutcome: Outcome = latestTick.value >= trade.openingPrice ? "UP" : "DOWN";
+  // ...but the winner is judged by the price AT the close, i.e. the last tick at-or-before endMs — the
+  // official resolution uses the oracle value in effect when the window ended. Using the first tick
+  // AFTER the boundary flipped photo-finish windows (a real trade was scored as a $5 loss while
+  // Polymarket paid out $20 for it). Falls back to latestTick when close history is unavailable
+  // (e.g. right after a restart); the official-resolution verifier corrects live trades if needed.
+  const referenceTick = closeTick && closeTick.timestampMs <= trade.endMs ? closeTick : latestTick;
+  const winningOutcome: Outcome = referenceTick.value >= trade.openingPrice ? "UP" : "DOWN";
   return {
     resolvedAtMs: nowMs,
-    finalPrice: latestTick.value,
-    finalTickTimestampMs: latestTick.timestampMs,
+    finalPrice: referenceTick.value,
+    finalTickTimestampMs: referenceTick.timestampMs,
     winningOutcome,
     won: winningOutcome === trade.outcome,
   };

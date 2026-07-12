@@ -61,6 +61,25 @@ export class ChainlinkPriceFeed {
   }
 
   /**
+   * Last tick at-or-before `timestampMs`: the oracle value in effect at that moment (Chainlink is a
+   * step function). This is what official market resolution uses for a window close.
+   */
+  getTickAtOrBefore(market: MarketSymbol, timestampMs: number): PriceTick | undefined {
+    const ticks = this.recentTicks.get(market);
+    if (!ticks) {
+      return undefined;
+    }
+    let best: PriceTick | undefined;
+    for (const tick of ticks) {
+      // recentTicks is kept sorted ascending, so the last match is the most recent at-or-before.
+      if (tick.timestampMs <= timestampMs) {
+        best = tick;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Best tick to represent the window opening: the most recent tick within a symmetric grace around
    * the window start. Chainlink prices are step functions, so for sparsely-updated assets (ETH/DOGE)
    * the last tick just BEFORE the window start is the price in effect at the open — accepting it

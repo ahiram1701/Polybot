@@ -36,6 +36,35 @@ describe("trade resolution", () => {
     });
   });
 
+  it("judges photo-finishes by the tick AT the close, not the first tick after it", () => {
+    // Opening 100. Price closed at 99.995 (DOWN) but ticked to 100.005 one second AFTER the boundary.
+    // The official resolution pays DOWN; scoring by the post-close tick flipped it.
+    const trade = tradeAttempt({ mode: "sim", outcome: "DOWN", openingPrice: 100, endMs: 2_000 });
+    const latestAfterClose = tick({ value: 100.005, timestampMs: 2_001 });
+    const lastTickAtClose = tick({ value: 99.995, timestampMs: 1_999 });
+
+    const resolution = resolveTradeFromTick(trade, latestAfterClose, 2_001, lastTickAtClose);
+
+    expect(resolution).toMatchObject({
+      winningOutcome: "DOWN",
+      won: true,
+      finalPrice: 99.995,
+      finalTickTimestampMs: 1_999,
+    });
+  });
+
+  it("ignores a closeTick that is actually after the boundary and falls back to latest", () => {
+    const trade = tradeAttempt({ mode: "sim", outcome: "UP", openingPrice: 100, endMs: 2_000 });
+    const resolution = resolveTradeFromTick(
+      trade,
+      tick({ value: 101, timestampMs: 2_005 }),
+      2_005,
+      tick({ value: 99, timestampMs: 2_002 }), // not a valid close tick (after endMs)
+    );
+
+    expect(resolution).toMatchObject({ winningOutcome: "UP", won: true, finalPrice: 101 });
+  });
+
   it("does not resolve live orders that did not fill", () => {
     const trade = tradeAttempt({
       mode: "live",

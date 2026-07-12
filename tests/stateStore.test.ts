@@ -53,6 +53,36 @@ describe("StateStore trade mode separation", () => {
     expect(resetReloaded.listTrades()).toHaveLength(2);
   });
 
+  it("applies an official-resolution correction: flips the winner and persists the verification", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "eth-updown-5m-photo-finish";
+    await store.recordTradeAttempt(trade({ slug, mode: "live", id: "live-pf", outcome: "DOWN" }));
+    await store.recordTradeResolution(slug, {
+      resolvedAtMs: 4,
+      finalPrice: 1806.103,
+      finalTickTimestampMs: 4,
+      winningOutcome: "UP",
+      won: false,
+    }, "live");
+
+    await store.recordTradeOfficialResolution(slug, "live", {
+      winningOutcome: "DOWN",
+      verifiedAtMs: 9,
+      corrected: true,
+    });
+
+    const reloaded = new StateStore(dataDir);
+    await reloaded.load();
+    const corrected = reloaded.getTradedMarket(slug, "live");
+    expect(corrected?.resolved?.winningOutcome).toBe("DOWN");
+    expect(corrected?.resolved?.won).toBe(true); // the DOWN position officially won
+    expect(corrected?.officialResolution).toMatchObject({ winningOutcome: "DOWN", corrected: true });
+  });
+
   it("recovers a P&L reset from the durable trades log when state.json is clobbered", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
     temps.push(dataDir);
@@ -127,12 +157,12 @@ function opening(slug: string, windowStartMs: number) {
   };
 }
 
-function trade(args: { slug: string; mode: TradeAttempt["mode"]; id: string }): TradeAttempt {
+function trade(args: { slug: string; mode: TradeAttempt["mode"]; id: string; outcome?: TradeAttempt["outcome"] }): TradeAttempt {
   return {
     id: args.id,
     slug: args.slug,
     mode: args.mode,
-    outcome: "UP",
+    outcome: args.outcome ?? "UP",
     tokenId: "token",
     amountUsd: 1,
     maxAskPrice: 0.98,

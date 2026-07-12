@@ -352,6 +352,9 @@ export interface TradeAttempt {
   reconciledAtMs?: number;
   response?: unknown;
   resolved?: SimResolution;
+  // Verification of a LIVE resolution against Polymarket's OFFICIAL market outcome (the source of
+  // truth is whoever pays). `corrected` marks trades whose feed-based resolution had to be flipped.
+  officialResolution?: OfficialResolution;
 }
 
 export interface SimResolution {
@@ -360,6 +363,12 @@ export interface SimResolution {
   finalTickTimestampMs: number;
   winningOutcome: Outcome;
   won: boolean;
+}
+
+export interface OfficialResolution {
+  winningOutcome: Outcome;
+  verifiedAtMs: number;
+  corrected: boolean;
 }
 
 export interface BotState {
@@ -378,4 +387,5 @@ export type TradeEvent =
   | { type: "trade_reconciliation"; trade: TradeAttempt }
   | { type: "trade_resolution"; trade: TradeAttempt; resolution: SimResolution }
   | { type: "sim_resolution"; trade: TradeAttempt; resolution: SimResolution }
+  | { type: "trade_official_resolution"; trade: TradeAttempt; officialResolution: OfficialResolution }
   | { type: "pnl_reset"; mode: Mode; resetAtMs: number };

@@ -1225,6 +1225,92 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
 
+  it("corrects a live resolution when Polymarket's official outcome contradicts the feed", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const endMs = windowStartMs + 300_000;
+    const nowMs = endMs + 10 * 60_000; // well past the official-resolution grace
+    // Feed-based resolution said UP won (photo-finish); the official market paid DOWN.
+    const misResolved: TradeAttempt = {
+      id: "live-photo-finish",
+      asset: "ETH",
+      slug: `eth-updown-5m-${Math.floor(windowStartMs / 1000)}`,
+      mode: "live",
+      outcome: "DOWN",
+      tokenId: "token",
+      amountUsd: 5,
+      maxAskPrice: 0.85,
+      bestAsk: 0.25,
+      estimatedShares: 20,
+      fillDetected: true,
+      filledAmountUsd: 5,
+      filledShares: 20,
+      openingPrice: 1806.0976,
+      entryPrice: 1805.578,
+      distanceUsd: -0.52,
+      windowStartMs,
+      endMs,
+      createdAtMs: endMs - 60_000,
+      resolved: {
+        resolvedAtMs: endMs + 3_000,
+        finalPrice: 1806.103,
+        finalTickTimestampMs: endMs + 1_000,
+        winningOutcome: "UP",
+        won: false,
+      },
+    };
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => [misResolved]),
+      getOpening: vi.fn(() => undefined),
+      hasTraded: vi.fn(() => true),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+      recordTradeOfficialResolution: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const officialMarket = {
+      ...marketInfo("ETH", "eth", windowStartMs),
+      closed: true,
+      outcomes: {
+        UP: { outcome: "UP" as const, label: "Up", tokenId: "eth-up", impliedPrice: 0 },
+        DOWN: { outcome: "DOWN" as const, label: "Down", tokenId: "eth-down", impliedPrice: 1 },
+      },
+    };
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => null),
+      getMarketBySlug: vi.fn(async () => officialMarket),
+    } as unknown as MarketWatcher;
+    const notifier = { notify: vi.fn(async () => undefined) };
+
+    const runner = new BotRunner(baseConfig(), {
+      watcher,
+      orderbook: fakeOrderbook(),
+      priceFeed: fakePriceFeed(),
+      state,
+      executor: {} as TradeExecutor,
+      reconciler: fakeReconciler(),
+      notifier,
+    });
+
+    await runner.runOnce(nowMs);
+
+    expect(watcher.getMarketBySlug).toHaveBeenCalledWith(misResolved.slug, nowMs);
+    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(misResolved.slug, "live", {
+      winningOutcome: "DOWN",
+      verifiedAtMs: nowMs,
+      corrected: true,
+    });
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Resolución corregida" }),
+    );
+
+    // Throttled: an immediate second pass does not re-query gamma.
+    await runner.runOnce(nowMs + 1_000);
+    expect(watcher.getMarketBySlug).toHaveBeenCalledTimes(1);
+  });
+
   it("stops retrying a window once the CLOB rejects with post-only mode", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);

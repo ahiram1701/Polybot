@@ -254,6 +254,33 @@ export class StateStore {
     await this.recordTradeResolution(slug, resolution, "sim");
   }
 
+  /**
+   * Persist the OFFICIAL Polymarket outcome check for a live trade. When it contradicts the feed-based
+   * resolution, the resolution itself is overwritten too (the official result is who pays).
+   */
+  async recordTradeOfficialResolution(
+    slug: string,
+    mode: Mode,
+    officialResolution: NonNullable<TradeAttempt["officialResolution"]>,
+  ): Promise<void> {
+    this.assertLoaded();
+    const key = this.findTradeKey(slug, mode);
+    const trade = key ? this.state.tradedMarkets[key] : undefined;
+    if (!trade || !trade.resolved) {
+      return;
+    }
+    trade.officialResolution = officialResolution;
+    if (officialResolution.corrected) {
+      trade.resolved = {
+        ...trade.resolved,
+        winningOutcome: officialResolution.winningOutcome,
+        won: officialResolution.winningOutcome === trade.outcome,
+      };
+    }
+    await this.save();
+    await this.appendTradeEvent({ type: "trade_official_resolution", trade, officialResolution });
+  }
+
   async resetPnl(mode: Mode, resetAtMs = Date.now()): Promise<void> {
     this.assertLoaded();
     this.state.pnlResetAtMs = {
