@@ -90,6 +90,9 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background: var(--bg);
+  /* iOS: no gray flash on taps; smoother font rendering on retina. */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -195,6 +198,14 @@ input[type="checkbox"] {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+/* Flex/grid children default to min-width:auto, so a nowrap child (the one-line market strip) would
+   force the whole page wider than the phone and shove it off-center. Allow shrinking so text-overflow
+   can actually kick in. */
+.topbar > div {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .topbar-actions {
@@ -1422,8 +1433,9 @@ tr.selected-row {
 
   .hero-metrics,
   .hero-metrics.compact {
-    /* Two-up metrics: values are short ($, %, counts) and one long column forced a lot of scrolling. */
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Values are short ($, %, counts): fit as many readable columns as the width allows instead of
+       one tall single-column stack, without ever cramping below 150px per metric. */
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
 
   .outcome-setting-row {
@@ -1560,38 +1572,58 @@ tr.selected-row {
 @media (max-width: 520px) {
   .main {
     padding: 14px;
+    /* Room for the fixed bottom navigation + the iPhone home indicator. */
+    padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px));
   }
 
+  /* Native-app bottom navigation: icons WITH a small label, fixed within thumb reach. */
   .sidebar {
-    padding: 8px 10px;
-    gap: 8px;
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    gap: 0;
+    border-top: 1px solid var(--border-soft);
+    box-shadow: 0 -6px 18px rgba(16, 23, 25, 0.14);
+    overflow: visible;
   }
 
-  .brand span {
+  .brand {
     display: none;
   }
 
-  /* Icon-only tabs distributed across the full width: all 7 sections reachable without scrolling. */
   .tabs {
     flex: 1 1 auto;
     width: 100%;
     justify-content: space-between;
-    gap: 4px;
+    gap: 2px;
   }
 
   .tab-button {
     flex: 1 1 0;
-    min-width: 40px;
-    min-height: 44px;
-    padding: 9px 6px;
+    min-width: 0;
+    min-height: 52px;
+    padding: 6px 2px;
+    flex-direction: column;
     justify-content: center;
+    gap: 3px;
+    text-align: center;
   }
 
   .tab-button .tab-label {
-    display: none;
+    display: block;
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
-  /* Compact header: one-line market strip, smaller title. */
+  /* Compact header: one-line market strip, smaller title, all controls in ONE tidy row. */
   .eyebrow {
     white-space: nowrap;
     overflow: hidden;
@@ -1616,17 +1648,35 @@ tr.selected-row {
     width: 100%;
   }
 
-  /* Two icon toggles (privacy + theme) side by side, control bar taking the rest. */
   .topbar-actions {
-    display: grid;
-    grid-template-columns: 44px 44px minmax(0, 1fr);
-    align-items: start;
+    display: flex;
+    /* One row on regular phones; on very narrow screens (320px) the control bar wraps below the
+       toggles instead of pushing the page wider. */
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
   }
 
   .privacy-toggle,
-  .theme-toggle,
+  .theme-toggle {
+    flex: 0 0 44px;
+  }
+
+  .controlbar {
+    flex: 1 1 200px;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .controlbar .command {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 6px;
+  }
+
   .controlbar .icon-button {
-    width: 100%;
+    flex: 0 0 44px;
   }
 
   /* Touch targets: icon buttons never collapse below 44px on touch screens. */
@@ -1638,6 +1688,14 @@ tr.selected-row {
   .pnl-reset-button {
     width: 44px;
     height: 44px;
+  }
+
+  /* iOS Safari zooms the page when focusing inputs below 16px: keep form text at 16px. */
+  .field input,
+  .field textarea,
+  .field select,
+  .section-actions select {
+    font-size: 16px;
   }
 
   .section-actions {
@@ -1652,18 +1710,29 @@ tr.selected-row {
     flex: 1 1 60%;
   }
 
-  .controlbar {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Breathing room for stacked cards. */
+  .panel {
+    padding: 14px;
   }
 
-  .controlbar .stop {
-    grid-column: 1 / -1;
+  .market-card-grid {
+    gap: 12px;
   }
 
-  .command {
-    flex: 1 1 auto;
-    min-width: 44px;
+  /* Circuit-breaker banner: icon + text share the row, the action drops below at full width
+     (side-by-side it strangled the message into a skinny column). */
+  .risk-banner {
+    flex-wrap: wrap;
+  }
+
+  .risk-banner-body {
+    flex: 1 1 0;
+    min-width: 200px;
+  }
+
+  .risk-banner .secondary {
+    flex: 1 1 100%;
+    min-height: 44px;
   }
 
   .quote-row,
