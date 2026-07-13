@@ -81,6 +81,11 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.estimateSetupEv(setupEvQuerySchema.parse(req.query)));
   }));
 
+  app.get("/api/analysis/ask-bands", asyncHandler(async (req, res) => {
+    const mode = req.query.mode === "sim" ? "sim" : "live";
+    res.json(await controller.getAskBandSummary(mode));
+  }));
+
   app.get("/api/analysis/samples/export", asyncHandler(async (_req, res) => {
     const exported = await controller.exportAnalysisSamples();
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");

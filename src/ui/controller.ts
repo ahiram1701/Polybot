@@ -6,6 +6,7 @@ import {
   readAnalyticsSamples,
   serializeAnalyticsSamples,
 } from "../analyticsRecorder.js";
+import { summarizeAskBands, type AskBandSummary } from "../askBands.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import {
@@ -580,6 +581,12 @@ export class BotController {
     }
     const { validSampleCount: _validSampleCount, ...response } = result;
     return response;
+  }
+
+  /** Realized net by ask band (post-reset, official resolutions included) — the ask-cap decision table. */
+  async getAskBandSummary(mode: Mode = "live"): Promise<AskBandSummary> {
+    const stateSummary = await this.getStateSummary();
+    return summarizeAskBands(stateSummary.tradesSorted, mode, stateSummary.pnlResetAtMs);
   }
 
   async getFiscalSummary(year?: number): Promise<FiscalSummaryResponse> {

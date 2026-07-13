@@ -643,6 +643,42 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("serves the ask-band table for the requested mode", async () => {
+    const config = await baseConfig(false);
+    const resolvedAtMs = Date.UTC(2026, 6, 10, 18, 0, 0);
+    const seedState = new StateStore(config.dataDir);
+    await seedState.load();
+    await seedState.recordTradeAttempt(
+      apiTrade({
+        id: "band-live",
+        mode: "live",
+        amountUsd: 5,
+        bestAsk: 0.5,
+        estimatedShares: 10,
+        fillDetected: true,
+        filledAmountUsd: 5,
+        filledShares: 10,
+        feeUsd: 0.1,
+        createdAtMs: resolvedAtMs - 60_000,
+        resolved: { resolvedAtMs, finalPrice: 130, finalTickTimestampMs: resolvedAtMs, winningOutcome: "UP", won: true },
+      }),
+    );
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    const response = await request(app).get("/api/analysis/ask-bands?mode=live").expect(200);
+    expect(response.body.mode).toBe("live");
+    expect(response.body.totalTrades).toBe(1);
+    const band = response.body.bands.find((row: { lo: number }) => row.lo === 0.45);
+    expect(band).toMatchObject({ trades: 1, wins: 1 });
+    expect(band.netUsd).toBeCloseTo(10 - 5.1, 2);
+    controller.dispose();
+  });
+
   it("serves the fiscal summary, applies manual FX rates, and exports the CSV", async () => {
     const config = await baseConfig(false);
     const resolvedAtMs = Date.UTC(2026, 6, 10, 18, 0, 0);

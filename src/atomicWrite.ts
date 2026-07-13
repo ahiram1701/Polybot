@@ -13,13 +13,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// In-process serialization per target path: overlapping async writers (state saves, settings, fx
+// cache) queue behind each other instead of racing renames on Windows — the last write still wins,
+// but no writer can observe another's half-finished rename.
+const writeQueues = new Map<string, Promise<void>>();
+
 /**
- * Write a file atomically: write to a UNIQUE temp path, then rename over the target. The unique
- * per-call temp name means overlapping writers to the same file never share a temp file (the old
- * fixed `${path}.tmp` caused ENOENT when one writer's rename removed the temp another was about to
- * rename). Retries the transient Windows lock failures (EPERM/EACCES/EBUSY) with a short backoff.
+ * Write a file atomically: write to a UNIQUE temp path, then rename over the target. Writers to the
+ * SAME path are serialized in-process; the rename itself retries the transient Windows lock failures
+ * (EPERM/EACCES/EBUSY from AV/indexers) with a short backoff.
  */
-export async function writeFileAtomic(path: string, contents: string): Promise<void> {
+export function writeFileAtomic(path: string, contents: string): Promise<void> {
+  const previous = writeQueues.get(path) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(() => writeFileAtomicUnqueued(path, contents));
+  writeQueues.set(path, current);
+  void current.finally(() => {
+    if (writeQueues.get(path) === current) {
+      writeQueues.delete(path);
+    }
+  });
+  return current;
+}
+
+async function writeFileAtomicUnqueued(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   let lastError: unknown;

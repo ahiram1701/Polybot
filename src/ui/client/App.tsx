@@ -47,6 +47,7 @@ import type {
   RecommendationMetrics,
   TradeAttempt,
 } from "../../types.js";
+import type { AskBandSummary } from "../../askBands.js";
 import type { FiscalMonthSummary } from "../../fiscal.js";
 import type {
   AnalysisImportResponse,
@@ -498,19 +499,22 @@ export function App() {
         {tab === "trades" && <TradesTable trades={trades} settings={settings} hideAmounts={hideAmounts} />}
         {tab === "fiscal" && <FiscalPanel />}
         {tab === "analysis" && (
-          <AnalysisPanel
-            recommendations={recommendations}
-            loading={analysisLoading}
-            loadError={analysisError}
-            stale={analysisStale}
-            settings={settings}
-            busy={busy}
-            running={Boolean(status?.running)}
-            onRefresh={loadAnalysis}
-            onApplyRecommendation={applyRecommendation}
-            onExport={downloadAnalysisSamples}
-            onImport={importAnalysisSamples}
-          />
+          <>
+            <AskBandsSection />
+            <AnalysisPanel
+              recommendations={recommendations}
+              loading={analysisLoading}
+              loadError={analysisError}
+              stale={analysisStale}
+              settings={settings}
+              busy={busy}
+              running={Boolean(status?.running)}
+              onRefresh={loadAnalysis}
+              onApplyRecommendation={applyRecommendation}
+              onExport={downloadAnalysisSamples}
+              onImport={importAnalysisSamples}
+            />
+          </>
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
         {tab === "telegram" && <TelegramPanel />}
@@ -1836,6 +1840,102 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
         </button>
       </div>
     </form>
+  );
+}
+
+export function AskBandsSection() {
+  const [mode, setMode] = useState<Mode>("live");
+  const [summary, setSummary] = useState<AskBandSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    api<AskBandSummary>(`/api/analysis/ask-bands?mode=${mode}`)
+      .then((next) => {
+        if (!cancelled) {
+          setSummary(next);
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <div className="section-title">
+          <DollarSign size={18} />
+          <h2>Rendimiento por banda de ask ({mode})</h2>
+        </div>
+        <div className="segmented-control" role="group" aria-label="Modo de bandas de ask">
+          <button
+            className={`segment-button ${mode === "live" ? "active" : ""}`}
+            onClick={() => setMode("live")}
+          >
+            Live
+          </button>
+          <button
+            className={`segment-button ${mode === "sim" ? "active" : ""}`}
+            onClick={() => setMode("sim")}
+          >
+            Sim
+          </button>
+        </div>
+      </div>
+      {error && <div className="banner error">{error}</div>}
+      <p className="settings-hint">
+        La tabla que decide el <strong>ask cap</strong>: cada banda necesita ganar al menos su "BE%" (el ask
+        promedio pagado) para no perder. El edge vive donde <strong>Win% supera BE%</strong>; las bandas
+        donde no lo supera son candidatas a quedar fuera del cap. Datos realizados post-reset, con
+        resoluciones oficiales — no muestras de observación.
+      </p>
+      {summary && summary.bands.length > 0 ? (
+        <div className="table-scroll">
+          <table className="responsive-table">
+            <thead>
+              <tr>
+                <th>Banda</th>
+                <th>Trades</th>
+                <th>Win%</th>
+                <th>BE% (necesario)</th>
+                <th>Edge</th>
+                <th>Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.bands.map((band) => {
+                const edge = (band.winRate ?? 0) - (band.breakEvenRate ?? 0);
+                return (
+                  <tr key={`${band.lo}`}>
+                    <td data-label="Banda">{band.lo.toFixed(2)}–{band.hi.toFixed(2)}</td>
+                    <td data-label="Trades">{band.trades}</td>
+                    <td data-label="Win%">{formatPercent(band.winRate)}</td>
+                    <td data-label="BE% (necesario)">{formatPercent(band.breakEvenRate)}</td>
+                    <td data-label="Edge">
+                      <span className={edge >= 0 ? "positive" : "negative"}>
+                        {edge >= 0 ? "+" : ""}{(100 * edge).toFixed(0)} pp
+                      </span>
+                    </td>
+                    <td data-label="Net">
+                      <span className={`pnl-value ${pnlTone(band.netUsd)}`}>{formatSignedUsd(band.netUsd)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">Sin trades {mode} resueltos post-reset.</div>
+      )}
+    </section>
   );
 }
 
