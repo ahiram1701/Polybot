@@ -495,6 +495,45 @@ describe("UI frontend components", () => {
     }));
   });
 
+  it("sets the ask cap of all 6 market/outcomes at once (clamped to the ceiling)", async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    // Ceiling defaults to 0.85 in the fixture; a request for 0.72 stays; per-side editors are untouched.
+    fireEvent.change(screen.getByLabelText("Ask cap (todos los mercados/lados)"), { target: { value: "0.72" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      maxAskPrice: 0.72,
+      maxAskPriceByMarketOutcome: {
+        BTC: { UP: 0.72, DOWN: 0.72 },
+        ETH: { UP: 0.72, DOWN: 0.72 },
+        DOGE: { UP: 0.72, DOWN: 0.72 },
+      },
+    }));
+  });
+
+  it("shows 'mixto' in the global ask cap when sides differ", () => {
+    render(
+      <SettingsPanel
+        settings={{
+          ...settings(),
+          maxAskPriceByMarketOutcome: {
+            BTC: { UP: 0.7, DOWN: 0.7 },
+            ETH: { UP: 0.8, DOWN: 0.7 },
+            DOGE: { UP: 0.7, DOWN: 0.7 },
+          },
+        }}
+        running={false}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Ask cap (todos los mercados/lados)")).toHaveValue(null);
+    expect(screen.getByPlaceholderText("mixto")).toBeInTheDocument();
+  });
+
   it("saves Telegram settings and sends a test notification", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);

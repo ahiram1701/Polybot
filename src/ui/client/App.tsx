@@ -165,6 +165,22 @@ const marketOptions: Array<{ symbol: MarketSymbol; label: string; step: number; 
 
 const outcomeOptions: Outcome[] = ["UP", "DOWN"];
 
+type OutcomeNumberSettings = UiSettings["maxAskPriceByMarketOutcome"];
+
+function mapOutcomeSettings(settings: OutcomeNumberSettings, fn: (value: number) => number): OutcomeNumberSettings {
+  const next = {} as OutcomeNumberSettings;
+  for (const { symbol } of marketOptions) {
+    next[symbol] = { UP: fn(settings[symbol].UP), DOWN: fn(settings[symbol].DOWN) };
+  }
+  return next;
+}
+
+// The single value shared by every market/outcome, or undefined when they differ (per-side fine-tuning).
+function commonOutcomeValue(settings: OutcomeNumberSettings): number | undefined {
+  const values = marketOptions.flatMap(({ symbol }) => [settings[symbol].UP, settings[symbol].DOWN]);
+  return values.every((value) => value === values[0]) ? values[0] : undefined;
+}
+
 
 export function App() {
   const [status, setStatus] = useState<UiStatus | null>(null);
@@ -1471,6 +1487,8 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
   const activeLabels = enabledOutcomeLabels(draft.enabledMarketOutcomes);
   useEffect(() => setDraft(settings), [settings]);
 
+  const commonAskCap = commonOutcomeValue(draft.maxAskPriceByMarketOutcome);
+
   function update(key: keyof UiSettings, value: number | boolean) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
@@ -1582,6 +1600,20 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
       return {
         ...current,
         maxAskPrice: maxAskPriceByMarketOutcome.BTC.UP,
+        maxAskPriceByMarketOutcome,
+      };
+    });
+  }
+
+  // Set the same ask cap on all 6 market/outcomes at once (clamped to the ceiling so the global control
+  // can't exceed the hard ceiling). Per-side fine-tuning below still works.
+  function setAllAskCaps(value: number) {
+    setDraft((current) => {
+      const capped = Math.min(value, current.maxAskPriceCeiling);
+      const maxAskPriceByMarketOutcome = mapOutcomeSettings(current.maxAskPriceByMarketOutcome, () => capped);
+      return {
+        ...current,
+        maxAskPrice: capped,
         maxAskPriceByMarketOutcome,
       };
     });
@@ -1756,6 +1788,23 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
             step={0.01}
             onChange={(value) => update("maxAskPriceCeiling", value)}
           />
+          <label className="field">
+            <span>Ask cap (todos los mercados/lados)</span>
+            <input
+              type="number"
+              min={0.01}
+              max={1}
+              step={0.01}
+              placeholder={commonAskCap === undefined ? "mixto" : undefined}
+              value={commonAskCap === undefined ? "" : commonAskCap}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value) && value > 0) {
+                  setAllAskCaps(value);
+                }
+              }}
+            />
+          </label>
         </div>
         <p className="settings-hint">
           Circuit breaker (0 = desactivado). Si la pérdida realizada del día (UTC) o la racha de pérdidas cruza el
@@ -1766,6 +1815,9 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <strong>Techo de ask cap</strong>: precio máximo por acción para cualquier trade y para el auto-ajuste. Más
           bajo = mejor relación premio/riesgo (una pérdida se recupera con menos aciertos) pero menos trades. Recomendado
           0.85; la ganancia histórica se concentra por debajo de 0.70 y arriba de 0.85 el edge desaparece.
+          <br />
+          <strong>Ask cap (todos)</strong>: fija el ask cap de los 6 mercado/lado a la vez (se limita al Techo). Puedes
+          afinar cada lado abajo; si difieren, este campo muestra "mixto".
         </p>
       </section>
 
