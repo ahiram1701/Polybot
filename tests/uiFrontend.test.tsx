@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisChartsSection, AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
 
@@ -268,6 +268,73 @@ describe("UI frontend components", () => {
     render(<TradesTable trades={[trade({ resolvedWon: true })]} hideAmounts />);
     expect(screen.queryByText("$2.00")).not.toBeInTheDocument();
     expect(screen.getAllByText("$ ••••").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("renders the analysis charts from fetched live trades", async () => {
+    const resetAtMs = Date.UTC(2026, 6, 10, 12, 0, 0);
+    const liveTrade = (id: string, won: boolean, predicted: number, ask: number): TradeAttempt => ({
+      ...trade({ resolvedWon: won }),
+      id,
+      slug: `eth-${id}`,
+      mode: "live",
+      asset: "ETH",
+      bestAsk: ask,
+      estimatedShares: 5 / ask,
+      filledAmountUsd: 5,
+      filledShares: 5 / ask,
+      fillDetected: true,
+      feeUsd: 0,
+      amountUsd: 5,
+      createdAtMs: resetAtMs + Number(id) * 1000,
+      expectedValue: { adjustedWinProbability: predicted } as TradeAttempt["expectedValue"],
+      resolved: { resolvedAtMs: resetAtMs + Number(id) * 2000, finalPrice: won ? 130 : 90, finalTickTimestampMs: 0, winningOutcome: won ? "UP" : "DOWN", won },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.startsWith("/api/trades")) {
+        return jsonResponse({ trades: [liveTrade("1", true, 0.9, 0.6), liveTrade("2", false, 0.85, 0.62), liveTrade("3", true, 0.7, 0.5)] });
+      }
+      if (path === "/api/status") {
+        return jsonResponse({ ...status({ liveReady: true }), pnlResetAtMs: { live: resetAtMs } });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AnalysisChartsSection />);
+
+    await waitFor(() => expect(screen.getByText("Curva de equity (P&L acumulado)")).toBeInTheDocument());
+    expect(screen.getByText("Calibración: predicho vs real")).toBeInTheDocument();
+    expect(screen.getByText("Net por mercado")).toBeInTheDocument();
+    expect(screen.getByText("Distribución de resultados por trade")).toBeInTheDocument();
+  });
+
+  it("shows the P&L reset date and renders the mini charts from trades", () => {
+    const resetAtMs = Date.UTC(2026, 6, 10, 12, 0, 0);
+    const { container } = render(
+      <Dashboard
+        busy={false}
+        onResetPnl={vi.fn()}
+        onResetRiskHalt={vi.fn()}
+        trades={[
+          { ...trade({ resolvedWon: true }), id: "t1", slug: "btc-1", createdAtMs: resetAtMs + 1000, resolved: { resolvedAtMs: resetAtMs + 2000, finalPrice: 130, finalTickTimestampMs: resetAtMs + 2000, winningOutcome: "UP", won: true } },
+          { ...trade({ resolvedWon: false }), id: "t2", slug: "btc-2", createdAtMs: resetAtMs + 3000, resolved: { resolvedAtMs: resetAtMs + 4000, finalPrice: 90, finalTickTimestampMs: resetAtMs + 4000, winningOutcome: "DOWN", won: false } },
+        ]}
+        status={{
+          ...status({ liveReady: true }),
+          pnlResetAtMs: { sim: resetAtMs },
+          pnlByMode: {
+            sim: pnlSummary({ realizedUsd: 1, wonCount: 1, lostCount: 1, resolvedCount: 2 }),
+            live: pnlSummary({}),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/Reset Sim:/)).toBeInTheDocument();
+    expect(screen.getByText("P&L acumulado")).toBeInTheDocument();
+    // Two trades -> the three sparkline SVGs render.
+    expect(container.querySelectorAll("svg.sparkline").length).toBe(3);
   });
 
   it("shows the win rate for the selected P&L mode", () => {

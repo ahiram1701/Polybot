@@ -34,8 +34,19 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
 import { summarizeLogs } from "../../agent/statusSummary.js";
-import { calculateTradePnl, type PnlSummary, type TradePnl } from "../../pnl.js";
+import { calculateTradePnl, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
+import {
+  buildEquitySeries,
+  calibrationBuckets,
+  cumulativeRoi,
+  netDistribution,
+  perMarketSide,
+  resolvedTradesForCharts,
+  rollingWinRate,
+  type LabeledValue,
+} from "./chartData.js";
+import { BarChart, CalibrationChart, Sparkline } from "./charts.js";
 import type {
   AiRecommendation,
   AiRecommendationsResponse,
@@ -47,7 +58,7 @@ import type {
   RecommendationMetrics,
   TradeAttempt,
 } from "../../types.js";
-import type { AskBandSummary } from "../../askBands.js";
+import { summarizeAskBands, type AskBandSummary } from "../../askBands.js";
 import type { FiscalMonthSummary } from "../../fiscal.js";
 import type {
   AnalysisImportResponse,
@@ -465,9 +476,9 @@ export function App() {
         <nav className="tabs" aria-label="Secciones">
           <TabButton active={tab === "dashboard"} icon={<Gauge size={18} />} label="Dashboard" onClick={() => setTab("dashboard")} />
           <TabButton active={tab === "trades"} icon={<Table2 size={18} />} label="Trades" onClick={() => setTab("trades")} />
-          <TabButton active={tab === "fiscal"} icon={<Receipt size={18} />} label="Fiscal" onClick={() => setTab("fiscal")} />
           <TabButton active={tab === "analysis"} icon={<Brain size={18} />} label="Análisis" onClick={() => setTab("analysis")} />
           <TabButton active={tab === "settings"} icon={<Settings size={18} />} label="Settings" onClick={() => setTab("settings")} />
+          <TabButton active={tab === "fiscal"} icon={<Receipt size={18} />} label="Fiscal" onClick={() => setTab("fiscal")} />
           <TabButton active={tab === "telegram"} icon={<Bell size={18} />} label="Telegram" onClick={() => setTab("telegram")} />
           <TabButton active={tab === "logs"} icon={<Terminal size={18} />} label="Logs" onClick={() => setTab("logs")} />
         </nav>
@@ -513,12 +524,13 @@ export function App() {
         {error && <div className="notice error"><AlertTriangle size={18} />{error}</div>}
 
         {tab === "dashboard" && (
-          <Dashboard status={status} busy={busy} hideAmounts={hideAmounts} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
+          <Dashboard status={status} trades={trades} busy={busy} hideAmounts={hideAmounts} onResetPnl={resetPnl} onResetRiskHalt={resetRiskHalt} />
         )}
         {tab === "trades" && <TradesTable trades={trades} settings={settings} hideAmounts={hideAmounts} />}
         {tab === "fiscal" && <FiscalPanel />}
         {tab === "analysis" && (
           <>
+            <AnalysisChartsSection />
             <AskBandsSection />
             <AnalysisPanel
               recommendations={recommendations}
@@ -624,12 +636,14 @@ export function ControlBar(props: {
 
 export function Dashboard({
   status,
+  trades = [],
   busy,
   hideAmounts = false,
   onResetPnl,
   onResetRiskHalt,
 }: {
   status: UiStatus | null;
+  trades?: TradeAttempt[];
   busy: boolean;
   hideAmounts?: boolean;
   onResetPnl: (mode: Mode) => void;
@@ -726,8 +740,10 @@ export function Dashboard({
           summary={selectedPnl}
           busy={busy}
           hideAmounts={hideAmounts}
+          resetAtMs={status?.pnlResetAtMs?.[selectedPnlMode]}
           onReset={() => onResetPnl(selectedPnlMode)}
         />
+        <PnlCharts trades={trades} mode={selectedPnlMode} resetAtMs={status?.pnlResetAtMs} hideAmounts={hideAmounts} />
       </section>
 
       <section className="panel limits-panel">
@@ -1261,12 +1277,14 @@ function PnlModeSummary({
   summary,
   busy,
   hideAmounts = false,
+  resetAtMs,
   onReset,
 }: {
   label: string;
   summary?: PnlSummary;
   busy: boolean;
   hideAmounts?: boolean;
+  resetAtMs?: number;
   onReset: () => void;
 }) {
   const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
@@ -1291,10 +1309,55 @@ function PnlModeSummary({
       </div>
       <div className="hero-metrics pnl-metrics">
         <Metric label="Win rate" value={formatWinRate(summary)} tone={winRateTone(summary)} />
-        <Metric label="Reclamado" value={money(formatUsd(summary?.payoutUsd))} tone={pnlTone(summary?.payoutUsd)} />
-        <Metric label="Invertido" value={money(formatUsd(summary?.realizedStakeUsd))} />
-        <Metric label="Pendiente" value={money(formatUsd(summary?.pendingStakeUsd))} />
         <Metric label="ROI" value={formatPercent(summary?.roiPct)} tone={pnlTone(summary?.realizedUsd)} />
+        <Metric label="Invertido" value={money(formatUsd(summary?.realizedStakeUsd))} />
+        <Metric label="Reclamado" value={money(formatUsd(summary?.payoutUsd))} />
+        <Metric label="Pendiente" value={money(formatUsd(summary?.pendingStakeUsd))} />
+      </div>
+      <p className="pnl-reset-line">
+        Reset {label}: {resetAtMs ? new Date(resetAtMs).toLocaleString() : "nunca"}
+      </p>
+    </div>
+  );
+}
+
+function PnlCharts({
+  trades,
+  mode,
+  resetAtMs,
+  hideAmounts,
+}: {
+  trades: TradeAttempt[];
+  mode: Mode;
+  resetAtMs?: PnlResetAtMsByMode;
+  hideAmounts?: boolean;
+}) {
+  const series = resolvedTradesForCharts(trades, mode, resetAtMs ?? {});
+  if (series.length < 2) {
+    return <p className="chart-empty">Se necesitan ≥2 trades resueltos post-reset para las gráficas.</p>;
+  }
+  const equity = buildEquitySeries(series).map((point) => point.cumulativeUsd);
+  const winRate = rollingWinRate(series).map((value) => value * 100);
+  const roi = cumulativeRoi(series).map((value) => value * 100);
+  const netUsd = equity[equity.length - 1];
+  const lastWin = winRate[winRate.length - 1];
+  const lastRoi = roi[roi.length - 1];
+  return (
+    <div className="dashboard-charts">
+      <div className="chart-card">
+        <h3>P&L acumulado</h3>
+        <span className={`chart-value ${pnlTone(netUsd)}`}>{hideAmounts ? MASKED_AMOUNT : formatSignedUsd(netUsd)}</span>
+        <Sparkline values={equity} title="P&L acumulado post-reset" />
+      </div>
+      <div className="chart-card">
+        <h3>Win rate (móvil 20)</h3>
+        <span className="chart-value">{lastWin.toFixed(0)}%</span>
+        <Sparkline values={winRate} baseline={50} title="Win rate móvil (línea = 50%)" />
+      </div>
+      <div className="chart-card">
+        <h3>ROI acumulado</h3>
+        <span className={`chart-value ${pnlTone(lastRoi)}`}>{lastRoi.toFixed(1)}%</span>
+        <Sparkline values={roi} title="ROI acumulado post-reset" />
       </div>
     </div>
   );
@@ -1934,6 +1997,108 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
         </button>
       </div>
     </form>
+  );
+}
+
+export function AnalysisChartsSection() {
+  const [mode, setMode] = useState<Mode>("live");
+  const [trades, setTrades] = useState<TradeAttempt[]>([]);
+  const [resetAtMs, setResetAtMs] = useState<PnlResetAtMsByMode>({});
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    Promise.all([
+      api<{ trades: TradeAttempt[] }>("/api/trades?limit=500"),
+      api<UiStatus>("/api/status"),
+    ])
+      .then(([tradesPayload, status]) => {
+        if (!cancelled) {
+          setTrades(tradesPayload.trades);
+          setResetAtMs(status.pnlResetAtMs ?? {});
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Directional charts (calibration, ask bands, distribution) exclude arb pairs; equity/per-market include all.
+  const directional = resolvedTradesForCharts(trades, mode, resetAtMs, { excludeArb: true });
+  const all = resolvedTradesForCharts(trades, mode, resetAtMs);
+  const equity = buildEquitySeries(all);
+  const calibration = calibrationBuckets(directional);
+  const distribution = netDistribution(directional);
+  const { markets, sides } = perMarketSide(all);
+  const askBands = summarizeAskBands(trades, mode, resetAtMs).bands.map(
+    (band): LabeledValue => ({
+      label: `${band.lo.toFixed(2)}`,
+      value: band.netUsd,
+      reference: band.winRate,
+      count: band.trades,
+    }),
+  );
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <div className="section-title">
+          <Brain size={18} />
+          <h2>Gráficas de análisis ({mode})</h2>
+        </div>
+        <div className="segmented-control" role="group" aria-label="Modo de gráficas de análisis">
+          <button className={`segment-button ${mode === "live" ? "active" : ""}`} onClick={() => setMode("live")}>
+            Live
+          </button>
+          <button className={`segment-button ${mode === "sim" ? "active" : ""}`} onClick={() => setMode("sim")}>
+            Sim
+          </button>
+        </div>
+      </div>
+      {error && <div className="banner error">{error}</div>}
+      {all.length < 2 ? (
+        <div className="empty-state">Sin trades {mode} resueltos post-reset suficientes.</div>
+      ) : (
+        <div className="chart-grid">
+          <div className="chart-card">
+            <h3>Curva de equity (P&L acumulado)</h3>
+            <Sparkline values={equity.map((point) => point.cumulativeUsd)} title="P&L acumulado" />
+            <p className="settings-hint">
+              Max drawdown: {formatSignedUsd(Math.min(...equity.map((point) => point.drawdownUsd)))}
+            </p>
+          </div>
+          <div className="chart-card">
+            <h3>Calibración: predicho vs real</h3>
+            <CalibrationChart buckets={calibration} />
+            <p className="settings-hint">Barra = win% real; marca = probabilidad predicha. Barra corta bajo la marca = sobreconfianza.</p>
+          </div>
+          <div className="chart-card">
+            <h3>Net por banda de ask</h3>
+            <BarChart data={askBands} formatValue={(value) => formatSignedUsd(value)} />
+            <p className="settings-hint">Marca = win% de la banda. El edge vive donde el net es positivo.</p>
+          </div>
+          <div className="chart-card">
+            <h3>Net por mercado</h3>
+            <BarChart data={markets} formatValue={(value) => formatSignedUsd(value)} formatReference={(ref) => `${(100 * ref).toFixed(0)}% win`} />
+          </div>
+          <div className="chart-card">
+            <h3>Net por lado</h3>
+            <BarChart data={sides} formatValue={(value) => formatSignedUsd(value)} formatReference={(ref) => `${(100 * ref).toFixed(0)}% win`} />
+          </div>
+          <div className="chart-card">
+            <h3>Distribución de resultados por trade</h3>
+            <BarChart data={distribution} formatValue={(value) => String(value)} />
+            <p className="settings-hint">Cuántos trades cayeron en cada rango de $ neto (asimetría del payoff).</p>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
