@@ -54,7 +54,10 @@ export function calculateTradePnl(trade: TradeAttempt): TradePnl {
     };
   }
 
-  const payoutUsd = trade.resolved.won ? getPayoutUsd(trade) : 0;
+  // A COMPLETE arbitrage pair redeems $1 per set no matter which side wins; only a naked leg (pair
+  // incomplete) depends on the winner like a normal position.
+  const paysRegardlessOfWinner = trade.kind === "arb" && trade.arbPairComplete === true;
+  const payoutUsd = trade.resolved.won || paysRegardlessOfWinner ? getPayoutUsd(trade) : 0;
   const netUsd = payoutUsd - stakeUsd;
   return {
     status: "resolved",

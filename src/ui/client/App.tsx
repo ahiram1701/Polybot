@@ -145,6 +145,9 @@ const emptySettings: UiSettings = {
   maxDailyLossUsd: 0,
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
+  arbEnabled: false,
+  arbMaxUsdPerOpportunity: 25,
+  arbMinNetPerSet: 0.02,
   requirePositiveEv: true,
   evUseSimilarity: false,
   evSafetyMargin: 0.03,
@@ -1818,6 +1821,45 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <br />
           <strong>Ask cap (todos)</strong>: fija el ask cap de los 6 mercado/lado a la vez (se limita al Techo). Puedes
           afinar cada lado abajo; si difieren, este campo muestra "mixto".
+        </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <DollarSign size={18} />
+          <h2>Arbitraje de set completo</h2>
+        </div>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.arbEnabled}
+            onChange={(event) => update("arbEnabled", event.target.checked)}
+            disabled={running}
+          />
+          <span>Ejecutar arbitraje (comprar ambos lados cuando el par cuesta menos de $1 tras comisiones)</span>
+        </label>
+        <div className="settings-grid">
+          <NumberField
+            label="Máx USD por oportunidad"
+            value={draft.arbMaxUsdPerOpportunity}
+            min={1}
+            step={5}
+            onChange={(value) => update("arbMaxUsdPerOpportunity", value)}
+          />
+          <NumberField
+            label="Ganancia mín por set (USD)"
+            value={draft.arbMinNetPerSet}
+            min={0}
+            max={0.5}
+            step={0.005}
+            onChange={(value) => update("arbMinNetPerSet", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          Ganancia sin riesgo direccional: el par UP+DOWN siempre redime $1. Compra el lado delgado primero y
+          registra el par como UN trade (slug "#arb") que paga gane quien gane. Si solo llena una pata, la
+          posición direccional se registra y notifica. Respeta el límite de gasto diario y el circuit breaker.
+          Las oportunidades por debajo del mínimo solo se observan. Editable con el bot detenido.
         </p>
       </section>
 

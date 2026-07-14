@@ -39,6 +39,10 @@ export interface UiSettings {
   maxDailyLossUsd: number;
   maxConsecutiveLosses: number;
   riskHaltCooldownHours: number;
+  // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
+  arbEnabled: boolean;
+  arbMaxUsdPerOpportunity: number;
+  arbMinNetPerSet: number;
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
   evUseSimilarity: boolean;

@@ -122,6 +122,12 @@ const envSchema = z.object({
   MAX_DAILY_LOSS_USD: z.coerce.number().nonnegative().default(0),
   MAX_CONSECUTIVE_LOSSES: z.coerce.number().int().nonnegative().default(0),
   RISK_HALT_COOLDOWN_HOURS: z.coerce.number().nonnegative().default(2),
+  ARB_ENABLED: z
+    .string()
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
+  ARB_MAX_USD_PER_OPPORTUNITY: z.coerce.number().positive().default(25),
+  ARB_MIN_NET_PER_SET: z.coerce.number().nonnegative().default(0.02),
   MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(20_000),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
@@ -287,6 +293,9 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     maxDailyLossUsd: env.MAX_DAILY_LOSS_USD,
     maxConsecutiveLosses: env.MAX_CONSECUTIVE_LOSSES,
     riskHaltCooldownHours: env.RISK_HALT_COOLDOWN_HOURS,
+    arbEnabled: env.ARB_ENABLED,
+    arbMaxUsdPerOpportunity: env.ARB_MAX_USD_PER_OPPORTUNITY,
+    arbMinNetPerSet: env.ARB_MIN_NET_PER_SET,
     maxAnalyticsSamples: env.MAX_ANALYTICS_SAMPLES,
     tickStaleMs: env.TICK_STALE_MS,
     pollIntervalMs: env.POLL_INTERVAL_MS,

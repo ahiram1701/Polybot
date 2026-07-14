@@ -57,6 +57,12 @@ export interface BotConfig {
   // Hours a tripped breaker stays halted before auto re-arming with a clean slate. 0 = legacy: halted
   // for the rest of the UTC day.
   riskHaltCooldownHours?: number;
+  // Complete-set arbitrage execution (default OFF): buy both sides when ask(UP)+ask(DOWN)+fees < $1.
+  arbEnabled?: boolean;
+  // Max USD spent per arbitrage opportunity (both legs combined).
+  arbMaxUsdPerOpportunity?: number;
+  // Minimum net profit per set (post-fee) required to execute; crumbs below this are only observed.
+  arbMinNetPerSet?: number;
   // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
   // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
   maxAnalyticsSamples?: number;
@@ -355,6 +361,13 @@ export interface TradeAttempt {
   // Verification of a LIVE resolution against Polymarket's OFFICIAL market outcome (the source of
   // truth is whoever pays). `corrected` marks trades whose feed-based resolution had to be flipped.
   officialResolution?: OfficialResolution;
+  // "arb" = a complete-set arbitrage PAIR stored as one synthetic trade (slug suffixed "#arb" so it
+  // never collides with the momentum trade of the same window): amount/fills cover BOTH legs and
+  // filledShares is the number of $1-redeeming sets. Absent = normal momentum trade.
+  kind?: "arb";
+  // False when only one leg filled (the pair could not complete): the position is directional and its
+  // P&L follows the winner like a normal trade.
+  arbPairComplete?: boolean;
 }
 
 export interface SimResolution {

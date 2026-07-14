@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnalyticsRecorder } from "../src/analyticsRecorder.js";
@@ -18,9 +21,12 @@ import type {
   WindowOpening,
 } from "../src/types.js";
 
+const arbTemps: string[] = [];
+
 describe("BotRunner", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await Promise.all(arbTemps.splice(0).map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("keeps the continuous loop alive after a transient API failure", async () => {
@@ -1221,6 +1227,260 @@ describe("BotRunner", () => {
     await runner.runOnce(nowMs);
 
     expect(thinOrderbook.getQuote).toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
+  it("executes a complete-set arbitrage as ONE synthetic pair trade when enabled", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-"));
+    arbTemps.push(dataDir);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 200_000;
+    const market = marketInfo("ETH", "eth", windowStartMs);
+    const openings = new Map([
+      [
+        market.slug,
+        {
+          asset: market.asset,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        },
+      ],
+    ]);
+    const recorded: TradeAttempt[] = [];
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => recorded),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      // Reflect recorded trades so the once-per-window guard works (the watcher mock returns the same
+      // market for all three symbols, so without this the pair would execute three times).
+      hasTraded: vi.fn((slug: string) => recorded.some((trade) => trade.slug === slug)),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async (trade: TradeAttempt) => {
+        recorded.push(trade);
+      }),
+    } as unknown as StateStore;
+    // Pair costs 0.80 with $40 depth per side: net/set ~0.166 post-fee, way above the 0.02 minimum.
+    const orderbook = {
+      getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+        tokenId: "token",
+        bestAsk: 0.4,
+        bestBid: 0.39,
+        availableUsdUnderCap: 40,
+        estimatedSharesForAmount: amountUsd / 0.4,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.amountUsd / 0.4,
+        fillDetected: true,
+        filledAmountUsd: input.amountUsd,
+        filledShares: input.amountUsd / 0.4,
+        openingPrice: 100,
+        entryPrice: 100.5,
+        distanceUsd: input.distanceUsd,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const notifier = { notify: vi.fn(async () => undefined) };
+
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+    const runner = new BotRunner(
+      { ...baseConfig(), dataDir, arbEnabled: true, arbMaxUsdPerOpportunity: 25, arbMinNetPerSet: 0.02 },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook,
+        // Price near opening: no momentum signal, so any execution comes from the arb path only.
+        priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+        notifier,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    // Both legs bought (UP and DOWN), stored as ONE synthetic pair on the "#arb" slug.
+    expect(executor.execute).toHaveBeenCalledTimes(2);
+    const outcomes = (executor.execute as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0].outcome).sort();
+    expect(outcomes).toEqual(["DOWN", "UP"]);
+    expect(state.recordTradeAttempt).toHaveBeenCalledTimes(1);
+    expect(state.recordTradeAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "arb",
+        arbPairComplete: true,
+        slug: `${market.slug}#arb`,
+        filledShares: expect.closeTo(31.25, 1),
+      }),
+    );
+    expect(notifier.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Arbitraje ejecutado" }));
+  });
+
+  it("records the naked leg honestly when the second arb leg fails", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-"));
+    arbTemps.push(dataDir);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 200_000;
+    const market = marketInfo("ETH", "eth", windowStartMs);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => ({
+        asset: market.asset,
+        slug: market.slug,
+        windowStartMs,
+        openingPrice: 100,
+        openingTickTimestampMs: windowStartMs,
+        capturedAtMs: windowStartMs,
+      })),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const orderbook = {
+      getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+        tokenId: "token",
+        bestAsk: 0.4,
+        bestBid: 0.39,
+        availableUsdUnderCap: 40,
+        estimatedSharesForAmount: amountUsd / 0.4,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    let calls = 0;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => {
+        calls += 1;
+        if (calls > 1) {
+          throw new Error("not enough liquidity");
+        }
+        return {
+          id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode: "sim" as const,
+          outcome: input.outcome,
+          tokenId: "token",
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: 0.4,
+          estimatedShares: input.amountUsd / 0.4,
+          fillDetected: true,
+          filledAmountUsd: input.amountUsd,
+          filledShares: input.amountUsd / 0.4,
+          openingPrice: 100,
+          entryPrice: 100.5,
+          distanceUsd: 0,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+          createdAtMs: nowMs,
+        };
+      }),
+    } satisfies TradeExecutor;
+    const notifier = { notify: vi.fn(async () => undefined) };
+
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+    const runner = new BotRunner(
+      { ...baseConfig(), dataDir, arbEnabled: true },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook,
+        priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+        notifier,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(state.recordTradeAttempt).toHaveBeenCalledTimes(1);
+    expect(state.recordTradeAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "arb", arbPairComplete: false, slug: `${market.slug}#arb` }),
+    );
+    expect(notifier.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Arbitraje incompleto" }));
+  });
+
+  it("only observes (never executes) arbitrage when the toggle is off", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-"));
+    arbTemps.push(dataDir);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 200_000;
+    const market = marketInfo("ETH", "eth", windowStartMs);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => undefined),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const orderbook = {
+      getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+        tokenId: "token",
+        bestAsk: 0.4,
+        bestBid: 0.39,
+        availableUsdUnderCap: 40,
+        estimatedSharesForAmount: amountUsd / 0.4,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const executor = {
+      execute: vi.fn(async () => {
+        throw new Error("should not execute");
+      }),
+    } satisfies TradeExecutor;
+
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+    const runner = new BotRunner(
+      { ...baseConfig(), dataDir }, // arbEnabled undefined -> off
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook,
+        priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+      },
+    );
+
+    await runner.runOnce(nowMs);
     expect(executor.execute).not.toHaveBeenCalled();
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });

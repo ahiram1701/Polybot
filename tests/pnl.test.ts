@@ -64,6 +64,37 @@ describe("P&L calculations", () => {
     expect(pnl.netUsd).toBeGreaterThan(0);
   });
 
+  it("pays a COMPLETE arb pair its full sets no matter which side won", () => {
+    const pair: TradeAttempt = {
+      ...trade({ won: false, amountUsd: 24.09, estimatedShares: 30 }), // "lost" per winner flag
+      mode: "live",
+      kind: "arb",
+      arbPairComplete: true,
+      fillDetected: true,
+      filledAmountUsd: 24.09, // both legs (30 sets at pair cost 0.803)
+      filledShares: 30,
+      feeUsd: 0.35,
+    };
+    const pnl = calculateTradePnl(pair);
+    expect(pnl.payoutUsd).toBeCloseTo(30); // $1 per set regardless of resolved.won
+    expect(pnl.stakeUsd).toBeCloseTo(24.44);
+    expect(pnl.netUsd).toBeCloseTo(5.56, 2);
+  });
+
+  it("scores a NAKED arb leg (pair incomplete) like a normal directional trade", () => {
+    const nakedLoss: TradeAttempt = {
+      ...trade({ won: false, amountUsd: 12, estimatedShares: 30 }),
+      mode: "live",
+      kind: "arb",
+      arbPairComplete: false,
+      fillDetected: true,
+      filledAmountUsd: 12,
+      filledShares: 30,
+      feeUsd: 0.2,
+    };
+    expect(calculateTradePnl(nakedLoss).netUsd).toBeCloseTo(-12.2);
+  });
+
   it("ignores trades before the P&L reset timestamp for that mode", () => {
     const oldSim = trade({ won: true, amountUsd: 1, estimatedShares: 1.25 });
     oldSim.createdAtMs = 3;

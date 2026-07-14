@@ -2,7 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
-import { detectCompleteSetArb } from "./arbMonitor.js";
+import { detectCompleteSetArb, type ArbOpportunity } from "./arbMonitor.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
@@ -27,7 +27,7 @@ import {
 import { MarketWatcher } from "./marketWatcher.js";
 import { createDynamicNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
-import { calculatePnlSummaryByMode, calculateTradePnl } from "./pnl.js";
+import { calculatePnlSummaryByMode, calculateTradePnl, estimateTradeFeeUsd } from "./pnl.js";
 import {
   getWinningOutcome,
   isTickStale,
@@ -283,7 +283,17 @@ export class BotRunner {
         quotes: analyticsQuotes,
         nowMs,
       });
-      await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
+      const arbOpportunity = await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
+      if (arbOpportunity && !riskHalt.tripped && opening && latestTick) {
+        await this.executeArbOpportunity({
+          market,
+          quotes: analyticsQuotes,
+          opportunity: arbOpportunity,
+          opening,
+          tick: latestTick,
+          nowMs,
+        });
+      }
       // Risk circuit breaker halts trading (never analytics) for the rest of the UTC day.
       if (riskHalt.tripped) {
         this.logSkipOnce(market.slug, "risk_circuit_breaker", {
@@ -879,18 +889,18 @@ export class BotRunner {
     market: MarketInfo,
     quotes: Partial<Record<Outcome, OrderbookQuote>>,
     nowMs: number,
-  ): Promise<void> {
+  ): Promise<ArbOpportunity | undefined> {
+    const opportunity = detectCompleteSetArb({
+      market: market.asset,
+      slug: market.slug,
+      endMs: market.endMs,
+      nowMs,
+      quotes,
+    });
+    if (!opportunity) {
+      return undefined;
+    }
     try {
-      const opportunity = detectCompleteSetArb({
-        market: market.asset,
-        slug: market.slug,
-        endMs: market.endMs,
-        nowMs,
-        quotes,
-      });
-      if (!opportunity) {
-        return;
-      }
       await appendFile(join(this.config.dataDir, "arb-opportunities.jsonl"), `${JSON.stringify(opportunity)}\n`, "utf8");
       // Once per window in the visible log; the JSONL captures every tick of the same opportunity.
       this.logSkipOnce(market.slug, "arb_opportunity_observed", {
@@ -900,11 +910,177 @@ export class BotRunner {
         secondsToEnd: opportunity.secondsToEnd,
       });
     } catch (error) {
+      // Logging must never cost the opportunity itself.
       logger.warn("No se pudo registrar la oportunidad de arbitraje; continuando.", {
         slug: market.slug,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    return opportunity;
+  }
+
+  /**
+   * Execute a complete-set arbitrage: buy BOTH sides so the pair redeems $1/set at resolution no
+   * matter who wins. Guards: opt-in toggle, minimum net/set (crumbs stay observation-only), one pair
+   * per window, budget cap per opportunity, post-only aware, daily spend limit. The pair is stored as
+   * ONE synthetic trade (kind "arb", slug "#arb") so P&L/fiscal/breaker flow through the normal
+   * pipeline. The THIN side executes first: if the second leg then fails, the naked leg is recorded
+   * honestly as a directional position (arbPairComplete=false) and notified.
+   */
+  private async executeArbOpportunity(args: {
+    market: MarketInfo;
+    quotes: Partial<Record<Outcome, OrderbookQuote>>;
+    opportunity: ArbOpportunity;
+    opening: WindowOpening;
+    tick: BtcPriceTick;
+    nowMs: number;
+  }): Promise<void> {
+    const { market, quotes, opportunity, opening, tick, nowMs } = args;
+    if (!this.config.arbEnabled) {
+      return;
+    }
+    const arbSlug = `${market.slug}#arb`;
+    const minNetPerSet = this.config.arbMinNetPerSet ?? 0.02;
+    if (opportunity.netPerSet < minNetPerSet || this.postOnlySlugs.has(market.slug)) {
+      return;
+    }
+    if (this.deps.state.hasTraded(arbSlug, this.config.mode)) {
+      return;
+    }
+    if (!market.active || market.closed || !market.acceptingOrders) {
+      return;
+    }
+    const up = quotes.UP;
+    const down = quotes.DOWN;
+    if (!up?.bestAsk || !down?.bestAsk) {
+      return;
+    }
+
+    const pairCost = up.bestAsk + down.bestAsk;
+    const budget = this.config.arbMaxUsdPerOpportunity ?? 25;
+    const sets = Math.floor(Math.min(opportunity.maxSetsByDepth, budget / pairCost) * 100) / 100;
+    if (sets < Math.max(market.orderMinSize, 1)) {
+      this.logSkipOnce(market.slug, "arb_below_min_size", { sets, orderMinSize: market.orderMinSize });
+      return;
+    }
+    const totalCostUsd = sets * pairCost;
+    if (this.deps.state.getDailySpend(nowMs) + totalCostUsd > this.config.dailySpendLimitUsd) {
+      this.logSkipOnce(market.slug, "arb_daily_limit", { totalCostUsd });
+      return;
+    }
+
+    // Thin book first: it is the binding constraint; if it rejects, no position exists yet.
+    const thinFirst: Outcome[] =
+      up.availableUsdUnderCap / up.bestAsk <= down.availableUsdUnderCap / down.bestAsk ? ["UP", "DOWN"] : ["DOWN", "UP"];
+    const legs: Partial<Record<Outcome, TradeAttempt>> = {};
+    for (const outcome of thinFirst) {
+      const quote = outcome === "UP" ? up : down;
+      const result = await this.executeArbLeg({ market, outcome, quote, sets, opening, tick, nowMs });
+      if ("error" in result) {
+        const message = result.error instanceof Error ? result.error.message : String(result.error);
+        if (isPostOnlyRejection(message)) {
+          this.postOnlySlugs.add(market.slug);
+        }
+        const nakedLeg = legs[thinFirst[0]];
+        if (nakedLeg) {
+          // Second leg failed: hold the first honestly as a directional position.
+          await this.deps.state.recordTradeAttempt({
+            ...nakedLeg,
+            id: `${arbSlug}-${nowMs}`,
+            slug: arbSlug,
+            kind: "arb",
+            arbPairComplete: false,
+          });
+          logger.warn("Arbitraje incompleto: solo una pata llenó; posición direccional registrada.", {
+            slug: market.slug,
+            leg: thinFirst[0],
+            sets,
+            error: message,
+          });
+          await this.deps.notifier?.notify({
+            key: `arb-naked:${arbSlug}`,
+            level: "warn",
+            title: "Arbitraje incompleto",
+            body: `${market.asset}: solo la pata ${thinFirst[0]} llenó (${sets} sets). Queda posición direccional.`,
+            minIntervalMs: 60_000,
+          });
+        } else {
+          this.logSkipOnce(market.slug, "arb_execution_failed", { leg: outcome, error: message });
+        }
+        return;
+      }
+      legs[outcome] = result.trade;
+    }
+
+    const upLeg = legs.UP;
+    const downLeg = legs.DOWN;
+    if (!upLeg || !downLeg) {
+      return;
+    }
+    const filledSets = Math.min(upLeg.filledShares ?? sets, downLeg.filledShares ?? sets);
+    const filledCost = (upLeg.filledAmountUsd ?? upLeg.amountUsd) + (downLeg.filledAmountUsd ?? downLeg.amountUsd);
+    const pairTrade: TradeAttempt = {
+      ...upLeg,
+      id: `${arbSlug}-${nowMs}`,
+      slug: arbSlug,
+      kind: "arb",
+      arbPairComplete: true,
+      outcome: thinFirst[0],
+      amountUsd: upLeg.amountUsd + downLeg.amountUsd,
+      bestAsk: pairCost,
+      estimatedShares: sets,
+      fillDetected: true,
+      filledShares: filledSets,
+      filledAmountUsd: filledCost,
+      averageFillPrice: filledSets > 0 ? filledCost / filledSets : pairCost,
+      feeUsd: estimateTradeFeeUsd(upLeg) + estimateTradeFeeUsd(downLeg),
+      // Fills came straight from both execution responses; the per-order reconciler must not
+      // reinterpret this synthetic pair from a single legId.
+      reconciledAtMs: nowMs,
+      response: { arbLegs: { up: upLeg.orderId, down: downLeg.orderId } },
+    };
+    await this.deps.state.recordTradeAttempt(pairTrade);
+    logger.info("Arbitraje ejecutado: par completo bloqueado.", {
+      slug: market.slug,
+      sets: filledSets,
+      pairCost,
+      netPerSet: opportunity.netPerSet,
+      lockedProfitUsd: Math.round((filledSets - filledCost - pairTrade.feeUsd!) * 100) / 100,
+    });
+    await this.deps.notifier?.notify({
+      key: `arb-executed:${arbSlug}`,
+      title: "Arbitraje ejecutado",
+      body: [
+        `${market.asset}: ${filledSets} sets a $${pairCost.toFixed(3)} el par.`,
+        `Ganancia bloqueada ~${formatSignedUsd(filledSets - filledCost - (pairTrade.feeUsd ?? 0))} (paga al cierre, gane quien gane).`,
+      ].join("\n"),
+      minIntervalMs: 60_000,
+    });
+  }
+
+  private async executeArbLeg(args: {
+    market: MarketInfo;
+    outcome: Outcome;
+    quote: OrderbookQuote;
+    sets: number;
+    opening: WindowOpening;
+    tick: BtcPriceTick;
+    nowMs: number;
+  }): Promise<TradeExecutionResult> {
+    const candidate: TradeCandidate = {
+      market: args.market,
+      outcome: args.outcome,
+      amountUsd: Math.round(args.sets * args.quote.bestAsk! * 100) / 100,
+      // Small buffer over the observed ask so a 1-tick move does not reject the pair mid-flight.
+      maxAskPrice: Math.min(args.quote.bestAsk! + 0.02, 0.99),
+      opening: args.opening,
+      tick: args.tick,
+      distanceUsd: 0,
+      minDistanceUsd: 0,
+      entryWindowSeconds: 0,
+      quote: args.quote,
+    };
+    return this.executeTradeCandidate(candidate);
   }
 
   private async recordAnalyticsObservation(args: {
@@ -984,6 +1160,8 @@ export class BotRunner {
           trade.mode === "live" &&
           trade.resolved !== undefined &&
           trade.officialResolution === undefined &&
+          // Arb pairs pay $1/set regardless of the winner and their "#arb" slug is not a gamma market.
+          trade.kind !== "arb" &&
           // Give the official resolution time to land before asking.
           nowMs - trade.endMs > OFFICIAL_RESOLUTION_GRACE_MS &&
           nowMs - (this.officialCheckAttemptsMs.get(trade.slug) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
@@ -1037,7 +1215,8 @@ export class BotRunner {
     trade: TradeAttempt,
     resolution: NonNullable<TradeAttempt["resolved"]>,
   ): Promise<void> {
-    if (!this.deps.analyticsRecorder) {
+    if (!this.deps.analyticsRecorder || trade.kind === "arb") {
+      // Arb pairs are direction-neutral: they carry no signal for the momentum models.
       return;
     }
     try {
@@ -1060,10 +1239,12 @@ export class BotRunner {
     const runRoi = runPnl.roiPct !== undefined ? ` (${(runPnl.roiPct * 100).toFixed(1)}%)` : "";
     const runResolved = runPnl.wonCount + runPnl.lostCount;
     const runWinRate = runResolved > 0 ? ` (${Math.round((100 * runPnl.wonCount) / runResolved)}% win)` : "";
+    // A completed arb pair pays regardless of the winner: never announce it as "lost".
+    const arbPair = trade.kind === "arb" && trade.arbPairComplete === true;
     await this.deps.notifier?.notify({
       key: `trade-resolved:${trade.id ?? trade.slug}`,
-      level: resolution.won ? "info" : "warn",
-      title: resolution.won ? "Trade ganado" : "Trade perdido",
+      level: arbPair || resolution.won ? "info" : "warn",
+      title: arbPair ? "Arbitraje liquidado" : resolution.won ? "Trade ganado" : "Trade perdido",
       body: [
         `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
         `Comprado: ${trade.outcome}. Ganador: ${resolution.winningOutcome}.`,
