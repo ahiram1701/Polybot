@@ -519,7 +519,6 @@ export function App() {
               busy={busy}
               onStartSim={() => startBot({ mode: "sim" })}
               onOpenLive={() => setLiveModal(true)}
-              onOpenReset={() => setResetModal(true)}
               onStop={stopBot}
               onRefresh={() => refreshCore()}
             />
@@ -552,7 +551,15 @@ export function App() {
             />
           </>
         )}
-        {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
+        {tab === "settings" && (
+          <SettingsPanel
+            settings={settings}
+            running={Boolean(status?.running)}
+            busy={busy}
+            onSave={saveSettings}
+            onOpenReset={() => setResetModal(true)}
+          />
+        )}
         {tab === "telegram" && <TelegramPanel />}
         {tab === "logs" && <LogsPanel logs={status?.logs ?? []} timeZone={status?.settings.timezone} />}
       </main>
@@ -602,7 +609,6 @@ export function ControlBar(props: {
   busy: boolean;
   onStartSim: () => void;
   onOpenLive: () => void;
-  onOpenReset: () => void;
   onStop: () => void;
   onRefresh: () => void;
 }) {
@@ -612,14 +618,6 @@ export function ControlBar(props: {
     <div className="controlbar">
       <button className="icon-button" title="Actualizar" onClick={props.onRefresh} disabled={props.busy}>
         <RefreshCw size={18} />
-      </button>
-      <button
-        className="command reset"
-        onClick={props.onOpenReset}
-        disabled={props.busy}
-        title={running ? "Detener y resetear estado local" : "Resetear estado local"}
-      >
-        <RotateCcw size={18} /> Reset
       </button>
       {!running ? (
         <>
@@ -1561,11 +1559,12 @@ export function TradesTable({
   );
 }
 
-export function SettingsPanel({ settings, running, busy, onSave }: {
+export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: {
   settings: UiSettings;
   running: boolean;
   busy: boolean;
   onSave: (settings: UiSettings) => Promise<void>;
+  onOpenReset?: () => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const [selectedMarket, setSelectedMarket] = useState<MarketSymbol>("BTC");
@@ -2030,6 +2029,22 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <Save size={18} /> Guardar
         </button>
       </div>
+
+      {onOpenReset && (
+        <section className="settings-advanced danger-zone">
+          <div className="section-heading">
+            <AlertTriangle size={18} />
+            <h2>Zona de peligro</h2>
+          </div>
+          <p className="settings-hint">
+            Borra el estado local (historial de trades, P&L y gasto diario). Se guarda un respaldo automático en
+            data/backups antes de borrar, pero no lo uses a la ligera.
+          </p>
+          <button className="command reset" type="button" onClick={onOpenReset} disabled={busy}>
+            <RotateCcw size={18} /> Resetear estado local
+          </button>
+        </section>
+      )}
     </form>
   );
 }

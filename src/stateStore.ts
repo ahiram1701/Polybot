@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { writeFileAtomic } from "./atomicWrite.js";
@@ -319,6 +319,20 @@ export class StateStore {
 
   async reset(): Promise<void> {
     this.assertLoaded();
+    // A reset is destructive (it wipes the full trade ledger), so archive both files first — an
+    // accidental click must always be recoverable from data/backups/.
+    const backupDir = join(this.dataDir, "backups", `reset-${new Date().toISOString().replaceAll(":", "-")}`);
+    await mkdir(backupDir, { recursive: true });
+    for (const [source, name] of [
+      [this.statePath, "state.json"],
+      [this.tradesPath, "trades.jsonl"],
+    ] as const) {
+      try {
+        await copyFile(source, join(backupDir, name));
+      } catch {
+        // Missing file (fresh install) — nothing to back up.
+      }
+    }
     this.state = structuredClone(EMPTY_STATE);
     await this.save();
     await mkdir(dirname(this.tradesPath), { recursive: true });

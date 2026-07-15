@@ -168,7 +168,6 @@ describe("UI frontend components", () => {
         busy={false}
         onStartSim={vi.fn()}
         onOpenLive={vi.fn()}
-        onOpenReset={vi.fn()}
         onStop={vi.fn()}
         onRefresh={vi.fn()}
       />,
@@ -176,23 +175,20 @@ describe("UI frontend components", () => {
 
     expect(screen.getByRole("button", { name: /live/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /sim/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
+    // The destructive reset now lives only in Settings, never in the top bar.
+    expect(screen.queryByRole("button", { name: /reset/i })).not.toBeInTheDocument();
   });
 
-  it("keeps reset available while running", () => {
+  it("offers the local-state reset only from the Settings danger zone", () => {
+    const onOpenReset = vi.fn();
     render(
-      <ControlBar
-        status={{ ...status({ liveReady: false }), running: true, mode: "sim" }}
-        busy={false}
-        onStartSim={vi.fn()}
-        onOpenLive={vi.fn()}
-        onOpenReset={vi.fn()}
-        onStop={vi.fn()}
-        onRefresh={vi.fn()}
-      />,
+      <SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} onOpenReset={onOpenReset} />,
     );
 
-    expect(screen.getByRole("button", { name: /reset/i })).toBeEnabled();
+    const resetButton = screen.getByRole("button", { name: /resetear estado local/i });
+    expect(resetButton).toBeEnabled();
+    fireEvent.click(resetButton);
+    expect(onOpenReset).toHaveBeenCalledTimes(1);
   });
 
   it("switches the dashboard P&L between sim and live", () => {
