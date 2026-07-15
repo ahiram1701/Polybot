@@ -1,4 +1,5 @@
 import { calculateTradePnl, filterTradesForPnlReset, type PnlResetAtMsByMode } from "../../pnl.js";
+import { dayKeyInTimeZone, hourInTimeZone } from "../../timezone.js";
 import type { Mode, Outcome, TradeAttempt } from "../../types.js";
 
 /**
@@ -144,6 +145,121 @@ export function perMarketSide(trades: TradeAttempt[]): { markets: LabeledValue[]
   return {
     markets: group((trade) => trade.asset ?? "—", ["BTC", "ETH", "DOGE"]),
     sides: group((trade) => trade.outcome, ["UP", "DOWN"] as Outcome[]),
+  };
+}
+
+/**
+ * Trade counts per hour of entry in the configured timezone ("auto"/undefined = system; only hours with
+ * activity); `reference` = wins in that hour.
+ */
+export function hourOfDayHistogram(trades: TradeAttempt[], timeZone?: string): LabeledValue[] {
+  const byHour = new Map<number, { count: number; wins: number }>();
+  for (const trade of trades) {
+    const hour = hourInTimeZone(trade.createdAtMs, timeZone);
+    const entry = byHour.get(hour) ?? { count: 0, wins: 0 };
+    entry.count += 1;
+    entry.wins += trade.resolved?.won ? 1 : 0;
+    byHour.set(hour, entry);
+  }
+  return [...byHour.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([hour, entry]) => ({
+      label: `${String(hour).padStart(2, "0")}h`,
+      value: entry.count,
+      reference: entry.wins,
+      count: entry.count,
+    }));
+}
+
+/**
+ * Trades per calendar day in the configured timezone from first to last trade, including gap days at 0.
+ */
+export function tradesPerDaySeries(trades: TradeAttempt[], timeZone?: string): number[] {
+  if (trades.length === 0) {
+    return [];
+  }
+  const counts = new Map<string, number>();
+  let firstMs = Infinity;
+  let lastMs = -Infinity;
+  for (const trade of trades) {
+    const key = dayKeyInTimeZone(trade.createdAtMs, timeZone);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    firstMs = Math.min(firstMs, trade.createdAtMs);
+    lastMs = Math.max(lastMs, trade.createdAtMs);
+  }
+  // Walk the epoch in 6h steps collecting distinct day keys in order — TZ/DST-proof gap filling.
+  const orderedKeys: string[] = [];
+  const lastKey = dayKeyInTimeZone(lastMs, timeZone);
+  for (let ms = firstMs; ; ms += 6 * 3_600_000) {
+    const key = ms >= lastMs ? lastKey : dayKeyInTimeZone(ms, timeZone);
+    if (orderedKeys[orderedKeys.length - 1] !== key) {
+      orderedKeys.push(key);
+    }
+    if (key === lastKey) {
+      break;
+    }
+  }
+  return orderedKeys.map((key) => counts.get(key) ?? 0);
+}
+
+export interface ProjectionPeriod {
+  label: string;
+  netUsd: number;
+  trades: number;
+  stakeUsd: number;
+}
+
+export interface ProjectionEstimates {
+  spanDays: number;
+  tradesPerDay: number;
+  netPerDayUsd: number;
+  stakePerDayUsd: number;
+  /** Realized ROI (net/stake) — period-invariant, so shown once rather than per period. */
+  roiPct: number;
+  periods: ProjectionPeriod[];
+}
+
+const MIN_PROJECTION_TRADES = 5;
+const MIN_PROJECTION_SPAN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Linear extrapolation of the post-reset pace to week/month/year. Returns undefined when the base is
+ * too thin to be meaningful (<5 resolved trades or <6h of span).
+ */
+export function projectionEstimates(trades: TradeAttempt[]): ProjectionEstimates | undefined {
+  if (trades.length < MIN_PROJECTION_TRADES) {
+    return undefined;
+  }
+  const resolvedTimes = trades.map((trade) => trade.resolved?.resolvedAtMs ?? 0);
+  const spanMs = Math.max(...resolvedTimes) - Math.min(...resolvedTimes);
+  if (spanMs < MIN_PROJECTION_SPAN_MS) {
+    return undefined;
+  }
+  // Floor the divisor at 6h so a tight burst of trades doesn't explode into an absurd yearly figure.
+  const spanDays = Math.max(spanMs / 86_400_000, 0.25);
+  let netTotal = 0;
+  let stakeTotal = 0;
+  for (const trade of trades) {
+    const pnl = calculateTradePnl(trade);
+    netTotal += pnl.netUsd ?? 0;
+    stakeTotal += pnl.stakeUsd;
+  }
+  const netPerDayUsd = netTotal / spanDays;
+  const tradesPerDay = trades.length / spanDays;
+  const stakePerDayUsd = stakeTotal / spanDays;
+  const period = (label: string, days: number): ProjectionPeriod => ({
+    label,
+    netUsd: round2(netPerDayUsd * days),
+    trades: Math.round(tradesPerDay * days),
+    stakeUsd: round2(stakePerDayUsd * days),
+  });
+  return {
+    spanDays: round2(spanDays),
+    tradesPerDay: round2(tradesPerDay),
+    netPerDayUsd: round2(netPerDayUsd),
+    stakePerDayUsd: round2(stakePerDayUsd),
+    roiPct: stakeTotal > 0 ? round2((netTotal / stakeTotal) * 100) : 0,
+    periods: [period("Semana", 7), period("Mes", 30.44), period("Año", 365.25)],
   };
 }
 

@@ -307,6 +307,11 @@ describe("UI frontend components", () => {
     expect(screen.getByText("Calibración: predicho vs real")).toBeInTheDocument();
     expect(screen.getByText("Net por mercado")).toBeInTheDocument();
     expect(screen.getByText("Distribución de resultados por trade")).toBeInTheDocument();
+    expect(screen.getByText("Frecuencia por hora del día")).toBeInTheDocument();
+    expect(screen.getByText("Ritmo de actividad (trades/día)")).toBeInTheDocument();
+    expect(screen.getByText("Estimaciones (proyección lineal)")).toBeInTheDocument();
+    // Only 3 mock trades -> below the 5-trade projection minimum.
+    expect(screen.getByText(/Base insuficiente/)).toBeInTheDocument();
   });
 
   it("shows the P&L reset date and renders the mini charts from trades", () => {
@@ -830,6 +835,7 @@ function settings(): UiSettings {
     arbEnabled: false,
     arbMaxUsdPerOpportunity: 25,
     arbMinNetPerSet: 0.02,
+    timezone: "auto",
     evMinExpectedRoi: 0.01,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,

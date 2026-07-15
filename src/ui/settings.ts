@@ -19,6 +19,7 @@ import {
   type MarketOutcomeBooleanOverrides,
   type MarketOutcomeNumberOverrides,
 } from "../markets.js";
+import { isValidTimeZone } from "../timezone.js";
 import type { BotConfig, Outcome } from "../types.js";
 import type { UiSettings } from "./shared.js";
 
@@ -85,6 +86,11 @@ const settingsSchema = z.object({
   arbEnabled: z.boolean().default(false),
   arbMaxUsdPerOpportunity: z.coerce.number().positive().default(25),
   arbMinNetPerSet: z.coerce.number().nonnegative().default(0.02),
+  // IANA timezone or "auto" (system). Invalid names degrade to "auto" instead of rejecting the payload.
+  timezone: z
+    .string()
+    .default("auto")
+    .transform((value) => (value === "auto" || isValidTimeZone(value) ? value : "auto")),
   maxConsecutiveLosses: z.coerce.number().int().nonnegative().default(0),
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
@@ -192,6 +198,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     arbEnabled: config.arbEnabled ?? false,
     arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? 25,
     arbMinNetPerSet: config.arbMinNetPerSet ?? 0.02,
+    timezone: config.timezone ?? "auto",
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
     evUseSimilarity: config.evUseSimilarity ?? false,
@@ -257,6 +264,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     arbEnabled: settings.arbEnabled,
     arbMaxUsdPerOpportunity: settings.arbMaxUsdPerOpportunity,
     arbMinNetPerSet: settings.arbMinNetPerSet,
+    timezone: settings.timezone,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     requirePositiveEv: settings.requirePositiveEv,
     evUseSimilarity: settings.evUseSimilarity,

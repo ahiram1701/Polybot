@@ -52,6 +52,20 @@ function trade(args: {
 }
 
 describe("evaluateRiskCircuitBreaker", () => {
+  it("scopes the metrics day to the configured timezone", () => {
+    // Loss resolved 2026-07-14 04:30 UTC; evaluated at 12:00 UTC the same day.
+    const lossMs = Date.UTC(2026, 6, 14, 4, 30);
+    const nowMs = Date.UTC(2026, 6, 14, 12, 0);
+    const trades = [trade({ id: "l", won: false, resolvedAtMs: lossMs })];
+    const limits = { maxDailyLossUsd: 1, maxConsecutiveLosses: 0 };
+    // Same UTC day -> counted -> trips.
+    expect(evaluateRiskCircuitBreaker(trades, "sim", limits, nowMs).tripped).toBe(true);
+    // In Mexico City the loss belongs to Jul 13 while "now" is Jul 14 -> clean day, no trip.
+    expect(
+      evaluateRiskCircuitBreaker(trades, "sim", { ...limits, timeZone: "America/Mexico_City" }, nowMs).tripped,
+    ).toBe(false);
+  });
+
   it("does not trip when both limits are disabled (0)", () => {
     const trades = [trade({ id: "a", won: false }), trade({ id: "b", won: false })];
     const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 0, maxConsecutiveLosses: 0 }, NOW);

@@ -1,4 +1,5 @@
 import { calculateTradePnl, estimateTradeFeeUsd } from "./pnl.js";
+import { dayKeyInTimeZone } from "./timezone.js";
 import type { MarketSymbol, Outcome, TradeAttempt } from "./types.js";
 
 /**
@@ -52,7 +53,7 @@ export interface FiscalYearSummary {
 
 export type FxRateResolver = (fechaIso: string) => number | undefined;
 
-export function buildFiscalRows(trades: TradeAttempt[], resolveRate?: FxRateResolver): FiscalRow[] {
+export function buildFiscalRows(trades: TradeAttempt[], resolveRate?: FxRateResolver, timeZone?: string): FiscalRow[] {
   const rows: FiscalRow[] = [];
   for (const trade of trades) {
     if (trade.mode !== "live" || !trade.resolved) {
@@ -63,7 +64,7 @@ export function buildFiscalRows(trades: TradeAttempt[], resolveRate?: FxRateReso
       continue;
     }
     const resolvedAtMs = trade.resolved.resolvedAtMs;
-    const fechaIso = toLocalDateIso(resolvedAtMs);
+    const fechaIso = toLocalDateIso(resolvedAtMs, timeZone);
     const gananciaUsd = pnl.netUsd ?? 0;
     const tipoCambio = resolveRate?.(fechaIso);
     rows.push({
@@ -140,15 +141,13 @@ export function serializeFiscalCsv(rows: FiscalRow[]): string {
   return `﻿${[CSV_HEADER, ...lines].join("\r\n")}\r\n`;
 }
 
-export function fiscalCsvFilename(year: number, nowMs = Date.now()): string {
-  return `polybot-fiscal-${year}-generado-${toLocalDateIso(nowMs)}.csv`;
+export function fiscalCsvFilename(year: number, nowMs = Date.now(), timeZone?: string): string {
+  return `polybot-fiscal-${year}-generado-${toLocalDateIso(nowMs, timeZone)}.csv`;
 }
 
-function toLocalDateIso(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
+// Fiscal periods follow the user's configured calendar day ("auto" = system timezone).
+function toLocalDateIso(timestampMs: number, timeZone?: string): string {
+  return dayKeyInTimeZone(timestampMs, timeZone);
 }
 
 function getYear(fechaIso: string): number {

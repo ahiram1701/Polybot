@@ -142,7 +142,7 @@ export class BotRunner {
       orderbook: OrderbookService.create(config.clobHost),
       priceFeed: overrides.priceFeed ?? new ChainlinkPriceFeed(config.rtdsUrl),
       ownsPriceFeed: overrides.priceFeed === undefined,
-      state: new StateStore(config.dataDir),
+      state: new StateStore(config.dataDir, config.timezone),
       executor: config.mode === "live" ? new LiveExecutionEngine(config) : new SimulationExecutionEngine(config),
       reconciler: config.mode === "live" ? new LiveTradeReconciler(config) : new NoopTradeReconciler(),
       analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
@@ -262,6 +262,7 @@ export class BotRunner {
         maxDailyLossUsd: this.config.maxDailyLossUsd,
         maxConsecutiveLosses: this.config.maxConsecutiveLosses,
         cooldownHours: this.config.riskHaltCooldownHours,
+        timeZone: this.config.timezone,
       },
       nowMs,
       this.deps.state.getRiskHaltResetAtMs?.()?.[this.config.mode] ?? 0,
@@ -393,7 +394,7 @@ export class BotRunner {
         ? `Perdida diaria $${status.dailyLossUsd.toFixed(2)} (modo ${this.config.mode}).`
         : `${status.consecutiveLosses} perdidas seguidas (modo ${this.config.mode}).`;
     void this.deps.notifier?.notify({
-      key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs)}:${status.reason}`,
+      key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}:${status.reason}`,
       level: "warn",
       title: "Circuit breaker de riesgo activado",
       body: `${body} Trading detenido hasta el proximo dia UTC.`,

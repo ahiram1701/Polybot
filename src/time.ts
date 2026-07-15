@@ -1,4 +1,5 @@
 import { getMarketDefinition, marketSymbolFromSlug } from "./markets.js";
+import { dayKeyInTimeZone } from "./timezone.js";
 import type { MarketSymbol } from "./types.js";
 
 export const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -40,8 +41,16 @@ export function secondsToEnd(endMs: number, nowMs = Date.now()): number {
   return (endMs - nowMs) / 1000;
 }
 
-export function dailySpendKey(nowMs = Date.now()): string {
-  return new Date(nowMs).toISOString().slice(0, 10);
+/**
+ * Calendar-day key for the daily spend limit and circuit breaker. With a configured timezone the day
+ * cuts at that zone's midnight ("auto" = system); without one it keeps the legacy UTC cut so old
+ * callers/tests are unaffected.
+ */
+export function dailySpendKey(nowMs = Date.now(), timeZone?: string): string {
+  if (timeZone === undefined) {
+    return new Date(nowMs).toISOString().slice(0, 10);
+  }
+  return dayKeyInTimeZone(nowMs, timeZone);
 }
 
 export function sleep(ms: number): Promise<void> {

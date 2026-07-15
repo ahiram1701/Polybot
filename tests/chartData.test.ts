@@ -4,10 +4,13 @@ import {
   buildEquitySeries,
   calibrationBuckets,
   cumulativeRoi,
+  hourOfDayHistogram,
   netDistribution,
   perMarketSide,
+  projectionEstimates,
   resolvedTradesForCharts,
   rollingWinRate,
+  tradesPerDaySeries,
 } from "../src/ui/client/chartData.js";
 import type { MarketSymbol, Outcome, TradeAttempt } from "../src/types.js";
 
@@ -115,6 +118,74 @@ describe("chart data helpers", () => {
     const dist = netDistribution([trade({ id: "w", won: true }), trade({ id: "l", won: false })]);
     expect(dist.find((b) => b.label === "2.5..5")?.value).toBe(1); // +5 win
     expect(dist.find((b) => b.label === "≤−5")?.value).toBe(1); // -5 loss lands at the boundary bucket
+  });
+
+  it("buckets the hour histogram and day series in an explicit timezone", () => {
+    // 2026-07-14 04:30 UTC = 22:30 of 2026-07-13 in Mexico City.
+    const crossing = Date.UTC(2026, 6, 14, 4, 30);
+    const trades = [trade({ id: "x", won: true, createdAtMs: crossing })];
+    expect(hourOfDayHistogram(trades, "UTC")[0].label).toBe("04h");
+    expect(hourOfDayHistogram(trades, "America/Mexico_City")[0].label).toBe("22h");
+    const two = [
+      trade({ id: "a", won: true, createdAtMs: crossing }),
+      trade({ id: "b", won: true, createdAtMs: crossing + 3 * 3_600_000 }), // 07:30 UTC = 01:30 MX of Jul 14
+    ];
+    expect(tradesPerDaySeries(two, "UTC")).toEqual([2]);
+    expect(tradesPerDaySeries(two, "America/Mexico_City")).toEqual([1, 1]);
+  });
+
+  it("builds an hour-of-day histogram with wins as reference, skipping empty hours", () => {
+    // Local-time constructors keep the test timezone-safe.
+    const at = (hour: number, minute: number) => new Date(2026, 6, 10, hour, minute).getTime();
+    const buckets = hourOfDayHistogram([
+      trade({ id: "a", won: true, createdAtMs: at(14, 5) }),
+      trade({ id: "b", won: false, createdAtMs: at(14, 40) }),
+      trade({ id: "c", won: true, createdAtMs: at(3, 15) }),
+    ]);
+    expect(buckets.map((b) => b.label)).toEqual(["03h", "14h"]);
+    const h14 = buckets.find((b) => b.label === "14h");
+    expect(h14?.value).toBe(2);
+    expect(h14?.reference).toBe(1); // one win of the two
+  });
+
+  it("builds the trades-per-day series including zero-gap days", () => {
+    const onDay = (day: number) => new Date(2026, 6, day, 12, 0).getTime();
+    const series = tradesPerDaySeries([
+      trade({ id: "a", won: true, createdAtMs: onDay(10) }),
+      trade({ id: "b", won: true, createdAtMs: onDay(10) }),
+      trade({ id: "c", won: false, createdAtMs: onDay(12) }),
+    ]);
+    expect(series).toEqual([2, 0, 1]); // day 11 present at zero
+  });
+
+  it("projects weekly/monthly/yearly estimates from the resolved pace", () => {
+    const dayMs = 86_400_000;
+    const base = new Date(2026, 6, 10, 12, 0).getTime();
+    // 5 trades over exactly 2 days: net +5 -5 +5 -5 +5 = +5, stake 25.
+    const trades = [0, 0.5, 1, 1.5, 2].map((offsetDays, index) =>
+      trade({
+        id: `p${index}`,
+        won: index % 2 === 0,
+        createdAtMs: base + offsetDays * dayMs,
+        resolvedAtMs: base + offsetDays * dayMs + 60_000,
+      }),
+    );
+    const projection = projectionEstimates(trades);
+    expect(projection).toBeDefined();
+    expect(projection!.spanDays).toBeCloseTo(2, 1);
+    expect(projection!.netPerDayUsd).toBeCloseTo(2.5, 1); // +5 over 2 days
+    expect(projection!.tradesPerDay).toBeCloseTo(2.5, 1);
+    const week = projection!.periods.find((p) => p.label === "Semana");
+    expect(week?.netUsd).toBeCloseTo(17.5, 0); // 2.5/day * 7
+    expect(week?.trades).toBe(18); // round(2.5/day * 7 = 17.5)
+    expect(projection!.roiPct).toBeCloseTo(20, 0); // 5/25
+
+    // Thin bases refuse to project.
+    expect(projectionEstimates(trades.slice(0, 4))).toBeUndefined(); // <5 trades
+    const burst = [0, 1, 2, 3, 4].map((minutes, index) =>
+      trade({ id: `b${index}`, won: true, createdAtMs: base, resolvedAtMs: base + minutes * 60_000 }),
+    );
+    expect(projectionEstimates(burst)).toBeUndefined(); // <6h span
   });
 
   it("groups net and win rate by market and side", () => {

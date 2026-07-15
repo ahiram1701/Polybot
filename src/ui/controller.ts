@@ -51,6 +51,7 @@ import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEn
 import { StateStore } from "../stateStore.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import { dailySpendKey, secondsToEnd } from "../time.js";
+import { dayKeyInTimeZone, resolveTimeZone, yearInTimeZone } from "../timezone.js";
 import type {
   AiRecommendation,
   AiRecommendationsResponse,
@@ -189,7 +190,7 @@ export class BotController {
   ) {
     this.env = deps.env ?? process.env;
     this.settingsStore = deps.settingsStore ?? new UiSettingsStore(baseConfig.dataDir);
-    this.stateFactory = deps.stateFactory ?? (() => new StateStore(baseConfig.dataDir));
+    this.stateFactory = deps.stateFactory ?? (() => new StateStore(baseConfig.dataDir, baseConfig.timezone));
     this.watcher = deps.watcher ?? new MarketWatcher(baseConfig.gammaHost);
     this.orderbook = deps.orderbook ?? OrderbookService.create(baseConfig.clobHost);
     this.priceFeed = deps.priceFeed ?? new ChainlinkPriceFeed(baseConfig.rtdsUrl);
@@ -559,8 +560,9 @@ export class BotController {
 
   async exportAnalysisSamples(now = new Date()): Promise<AnalysisExport> {
     const samples = await readAnalyticsSamples(this.analyticsPath());
+    const settings = await this.settingsStore.load(this.baseConfig);
     return {
-      filename: analysisExportFilename(now),
+      filename: analysisExportFilename(now, settings.timezone),
       contents: serializeAnalyticsSamples(samples, now),
       sampleCount: samples.length,
     };
@@ -591,7 +593,8 @@ export class BotController {
 
   async getFiscalSummary(year?: number): Promise<FiscalSummaryResponse> {
     const rows = await this.buildFiscalRowsWithRates();
-    const targetYear = year ?? new Date().getFullYear();
+    const settings = await this.settingsStore.load(this.baseConfig);
+    const targetYear = year ?? yearInTimeZone(Date.now(), settings.timezone);
     const summary = summarizeFiscalYear(rows, targetYear);
     const store = await loadFxStore(this.baseConfig.dataDir);
     return {
@@ -602,10 +605,11 @@ export class BotController {
 
   async exportFiscalCsv(year?: number, now = new Date()): Promise<{ filename: string; contents: string }> {
     const rows = await this.buildFiscalRowsWithRates();
-    const targetYear = year ?? now.getFullYear();
+    const settings = await this.settingsStore.load(this.baseConfig);
+    const targetYear = year ?? yearInTimeZone(now.getTime(), settings.timezone);
     const yearRows = rows.filter((row) => row.fechaIso.startsWith(`${targetYear}-`));
     return {
-      filename: fiscalCsvFilename(targetYear, now.getTime()),
+      filename: fiscalCsvFilename(targetYear, now.getTime(), settings.timezone),
       contents: serializeFiscalCsv(yearRows),
     };
   }
@@ -629,10 +633,12 @@ export class BotController {
   // Live resolved trades -> fiscal rows, fetching any missing Banxico rates first (best-effort: a
   // Banxico outage or bad token must never break the report — MXN simply stays blank).
   private async buildFiscalRowsWithRates(): Promise<FiscalRow[]> {
+    const settings = await this.settingsStore.load(this.baseConfig);
+    const timeZone = settings.timezone;
     const stateSummary = await this.getStateSummary();
     const liveResolved = stateSummary.tradesSorted.filter((trade) => trade.mode === "live" && trade.resolved);
     const store = await loadFxStore(this.baseConfig.dataDir);
-    const dates = buildFiscalRows(liveResolved).map((row) => row.fechaIso);
+    const dates = buildFiscalRows(liveResolved, undefined, timeZone).map((row) => row.fechaIso);
     try {
       const added = await ensureBanxicoRates(store, dates, this.fetchImpl);
       if (added > 0) {
@@ -643,7 +649,7 @@ export class BotController {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    return buildFiscalRows(liveResolved, (fechaIso) => resolveRate(store, fechaIso));
+    return buildFiscalRows(liveResolved, (fechaIso) => resolveRate(store, fechaIso), timeZone);
   }
 
   async analyzeTradesWithOllama(prompt: string): Promise<OllamaTradeAnalysisResponse> {
@@ -787,6 +793,7 @@ export class BotController {
         maxDailyLossUsd: config.maxDailyLossUsd,
         maxConsecutiveLosses: config.maxConsecutiveLosses,
         cooldownHours: config.riskHaltCooldownHours,
+        timeZone: config.timezone,
       },
       nowMs,
       state.getRiskHaltResetAtMs()[config.mode] ?? 0,
@@ -925,10 +932,12 @@ export class BotController {
   }
 
   private async getStateSummary(nowMs = Date.now()): Promise<UiStateSummary> {
+    // One source of truth for the spend-day timezone: every caller shares the same cache key.
+    const timeZone = (await this.settingsStore.load(this.baseConfig)).timezone;
     const state = this.stateFactory();
     await state.load();
     const signature = getLoadedStateSignature(state);
-    const spendKey = dailySpendKey(nowMs);
+    const spendKey = dailySpendKey(nowMs, timeZone);
     if (signature && this.stateSummaryCache?.signature === signature && this.stateSummaryCache.spendKey === spendKey) {
       return {
         ...this.stateSummaryCache,
@@ -941,7 +950,7 @@ export class BotController {
     const summary: CachedUiStateSummary = {
       signature: signature ?? `uncached:${nowMs}`,
       spendKey,
-      dailySpendUsd: state.getDailySpend(nowMs),
+      dailySpendUsd: state.getDailySpend(nowMs, timeZone),
       tradesSorted: [...trades].sort((left, right) => right.createdAtMs - left.createdAtMs),
       pnl: calculateResetAwarePnlSummary(trades, pnlResetAtMs),
       pnlByMode: calculatePnlSummaryByMode(trades, pnlResetAtMs),
@@ -1108,6 +1117,7 @@ export class BotController {
       arbEnabled: config.arbEnabled ?? settings.arbEnabled,
       arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? settings.arbMaxUsdPerOpportunity,
       arbMinNetPerSet: config.arbMinNetPerSet ?? settings.arbMinNetPerSet,
+      timezone: config.timezone ?? settings.timezone,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
@@ -1168,15 +1178,18 @@ export class BotController {
   }
 }
 
-function analysisExportFilename(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hours = pad(date.getHours());
-  const minutes = pad(date.getMinutes());
-  const seconds = pad(date.getSeconds());
-  return `polybot-analysis-${year}${month}${day}-${hours}${minutes}${seconds}.jsonl`;
+function analysisExportFilename(date: Date, timeZone?: string): string {
+  const day = dayKeyInTimeZone(date.getTime(), timeZone).replaceAll("-", "");
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: resolveTimeZone(timeZone),
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .format(date)
+    .replaceAll(":", "");
+  return `polybot-analysis-${day}-${time}.jsonl`;
 }
 
 function mergeMarketValuesIntoOutcomeSettings(

@@ -32,7 +32,11 @@ export class StateStore {
   private loaded = false;
   private loadedSignature = "unloaded";
 
-  constructor(private readonly dataDir: string) {}
+  // timeZone drives the daily-spend calendar day (undefined = legacy UTC cut).
+  constructor(
+    private readonly dataDir: string,
+    private readonly timeZone?: string,
+  ) {}
 
   get statePath(): string {
     return join(this.dataDir, "state.json");
@@ -154,9 +158,9 @@ export class StateStore {
     return Object.values(this.state.tradedMarkets);
   }
 
-  getDailySpend(nowMs = Date.now()): number {
+  getDailySpend(nowMs = Date.now(), timeZone?: string): number {
     this.assertLoaded();
-    return this.state.dailySpendUsd[dailySpendKey(nowMs)] ?? 0;
+    return this.state.dailySpendUsd[dailySpendKey(nowMs, timeZone ?? this.timeZone)] ?? 0;
   }
 
   getPnlResetAtMs(): Partial<Record<Mode, number>> {
@@ -221,7 +225,7 @@ export class StateStore {
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
     this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug)] = trade;
-    const key = dailySpendKey(trade.createdAtMs);
+    const key = dailySpendKey(trade.createdAtMs, this.timeZone);
     this.state.dailySpendUsd[key] = (this.state.dailySpendUsd[key] ?? 0) + trade.amountUsd;
     await this.save();
     await this.appendTradeEvent({ type: "trade_attempt", trade });

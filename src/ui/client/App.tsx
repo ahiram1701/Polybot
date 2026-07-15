@@ -40,13 +40,17 @@ import {
   buildEquitySeries,
   calibrationBuckets,
   cumulativeRoi,
+  hourOfDayHistogram,
   netDistribution,
   perMarketSide,
+  projectionEstimates,
   resolvedTradesForCharts,
   rollingWinRate,
+  tradesPerDaySeries,
   type LabeledValue,
 } from "./chartData.js";
 import { BarChart, CalibrationChart, Sparkline } from "./charts.js";
+import { formatDateTimeInTimeZone, formatTimeInTimeZone } from "../../timezone.js";
 import type {
   AiRecommendation,
   AiRecommendationsResponse,
@@ -159,6 +163,7 @@ const emptySettings: UiSettings = {
   arbEnabled: false,
   arbMaxUsdPerOpportunity: 25,
   arbMinNetPerSet: 0.02,
+  timezone: "auto",
   requirePositiveEv: true,
   evUseSimilarity: false,
   evSafetyMargin: 0.03,
@@ -549,7 +554,7 @@ export function App() {
         )}
         {tab === "settings" && <SettingsPanel settings={settings} running={Boolean(status?.running)} busy={busy} onSave={saveSettings} />}
         {tab === "telegram" && <TelegramPanel />}
-        {tab === "logs" && <LogsPanel logs={status?.logs ?? []} />}
+        {tab === "logs" && <LogsPanel logs={status?.logs ?? []} timeZone={status?.settings.timezone} />}
       </main>
 
       {liveModal && (
@@ -685,8 +690,8 @@ export function Dashboard({
                 ? `Pérdida diaria ${formatUsd(riskHalt.dailyLossUsd)} alcanzó el límite.`
                 : `${riskHalt.consecutiveLosses} pérdidas seguidas alcanzaron el límite.`}{" "}
               {riskHalt.resumeAtMs
-                ? `Se re-arma solo a las ${new Date(riskHalt.resumeAtMs).toLocaleTimeString()}, o reinícialo ahora sin cambiar el límite.`
-                : "Reanuda solo el próximo día UTC, o reinícialo ahora sin cambiar el límite."}
+                ? `Se re-arma solo a las ${formatTimeInTimeZone(riskHalt.resumeAtMs, status?.settings.timezone)}, o reinícialo ahora sin cambiar el límite.`
+                : "Reanuda solo el próximo día calendario, o reinícialo ahora sin cambiar el límite."}
             </span>
           </div>
           <button
@@ -741,6 +746,7 @@ export function Dashboard({
           busy={busy}
           hideAmounts={hideAmounts}
           resetAtMs={status?.pnlResetAtMs?.[selectedPnlMode]}
+          timeZone={status?.settings.timezone}
           onReset={() => onResetPnl(selectedPnlMode)}
         />
         <PnlCharts trades={trades} mode={selectedPnlMode} resetAtMs={status?.pnlResetAtMs} hideAmounts={hideAmounts} />
@@ -1128,7 +1134,7 @@ export function AnalysisPanel({
             </span>
           )}
           {recommendations && (
-            <span className="recommendation-fresh">Actualizado {formatDateTime(recommendations.generatedAtMs)}</span>
+            <span className="recommendation-fresh">Actualizado {formatDateTime(recommendations.generatedAtMs, settings.timezone)}</span>
           )}
         </div>
         <p className="recommendation-summary-note">
@@ -1271,6 +1277,18 @@ function confidenceEs(confidence: string): string {
 // Fixed card order for the Análisis tab.
 const RECOMMENDATION_MARKET_ORDER: MarketSymbol[] = ["BTC", "ETH", "DOGE"];
 
+const TIMEZONE_OPTIONS: { value: string; label: string }[] = [
+  { value: "auto", label: "Auto (zona del sistema)" },
+  { value: "America/Mexico_City", label: "Ciudad de México" },
+  { value: "America/Cancun", label: "Cancún" },
+  { value: "America/Tijuana", label: "Tijuana" },
+  { value: "UTC", label: "UTC" },
+  { value: "America/New_York", label: "Nueva York (ET)" },
+  { value: "America/Chicago", label: "Chicago (CT)" },
+  { value: "America/Los_Angeles", label: "Los Ángeles (PT)" },
+  { value: "Europe/Madrid", label: "Madrid" },
+];
+
 
 function PnlModeSummary({
   label,
@@ -1278,6 +1296,7 @@ function PnlModeSummary({
   busy,
   hideAmounts = false,
   resetAtMs,
+  timeZone,
   onReset,
 }: {
   label: string;
@@ -1285,6 +1304,7 @@ function PnlModeSummary({
   busy: boolean;
   hideAmounts?: boolean;
   resetAtMs?: number;
+  timeZone?: string;
   onReset: () => void;
 }) {
   const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
@@ -1315,7 +1335,7 @@ function PnlModeSummary({
         <Metric label="Pendiente" value={money(formatUsd(summary?.pendingStakeUsd))} />
       </div>
       <p className="pnl-reset-line">
-        Reset {label}: {resetAtMs ? new Date(resetAtMs).toLocaleString() : "nunca"}
+        Reset {label}: {resetAtMs ? formatDateTimeInTimeZone(resetAtMs, timeZone) : "nunca"}
       </p>
     </div>
   );
@@ -1519,7 +1539,7 @@ export function TradesTable({
                 const marketSymbol = getTradeMarketSymbol(trade) ?? "BTC";
                 return (
                   <tr key={trade.id}>
-                    <td data-label="Hora">{new Date(trade.createdAtMs).toLocaleString()}</td>
+                    <td data-label="Hora">{formatDateTimeInTimeZone(trade.createdAtMs, settings?.timezone)}</td>
                     <td data-label="Mercado">{tradeMarketLabel(trade)}</td>
                     <td data-label="Ventana">{formatTradeEntryWindow(trade, settings)}</td>
                     <td data-label="Modo">{trade.mode.toUpperCase()}</td>
@@ -1555,7 +1575,7 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
 
   const commonAskCap = commonOutcomeValue(draft.maxAskPriceByMarketOutcome);
 
-  function update(key: keyof UiSettings, value: number | boolean) {
+  function update(key: keyof UiSettings, value: number | boolean | string) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
@@ -1817,6 +1837,20 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
           <span>Auto minimo live</span>
         </label>
+        <label className="field">
+          <span>Zona horaria</span>
+          <select value={draft.timezone} onChange={(event) => update("timezone", event.target.value)}>
+            {TIMEZONE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="settings-hint">
+          Se usa para todo: horas y fechas mostradas, gráficas por hora/día, días fiscales y el corte del día de riesgo
+          (límite diario y freno de pérdidas). "Auto" = zona del sistema.
+        </p>
       </section>
 
       <section className="settings-advanced">
@@ -1873,7 +1907,7 @@ export function SettingsPanel({ settings, running, busy, onSave }: {
           </label>
         </div>
         <p className="settings-hint">
-          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (UTC) o la racha de pérdidas cruza el
+          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (según la zona horaria configurada) o la racha de pérdidas cruza el
           límite, el bot deja de operar hasta el día siguiente — sigue observando para analítica. Aplica al modo en
           ejecución. Editable con el bot detenido.
         </p>
@@ -2004,6 +2038,7 @@ export function AnalysisChartsSection() {
   const [mode, setMode] = useState<Mode>("live");
   const [trades, setTrades] = useState<TradeAttempt[]>([]);
   const [resetAtMs, setResetAtMs] = useState<PnlResetAtMsByMode>({});
+  const [timeZone, setTimeZone] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2017,6 +2052,7 @@ export function AnalysisChartsSection() {
         if (!cancelled) {
           setTrades(tradesPayload.trades);
           setResetAtMs(status.pnlResetAtMs ?? {});
+          setTimeZone(status.settings?.timezone);
         }
       })
       .catch((caught) => {
@@ -2033,6 +2069,10 @@ export function AnalysisChartsSection() {
   const directional = resolvedTradesForCharts(trades, mode, resetAtMs, { excludeArb: true });
   const all = resolvedTradesForCharts(trades, mode, resetAtMs);
   const equity = buildEquitySeries(all);
+  const hourHistogram = hourOfDayHistogram(all, timeZone);
+  const perDay = tradesPerDaySeries(all, timeZone);
+  const avgPerDay = perDay.length > 0 ? perDay.reduce((sum, value) => sum + value, 0) / perDay.length : 0;
+  const projection = projectionEstimates(all);
   const calibration = calibrationBuckets(directional);
   const distribution = netDistribution(directional);
   const { markets, sides } = perMarketSide(all);
@@ -2095,6 +2135,57 @@ export function AnalysisChartsSection() {
             <h3>Distribución de resultados por trade</h3>
             <BarChart data={distribution} formatValue={(value) => String(value)} />
             <p className="settings-hint">Cuántos trades cayeron en cada rango de $ neto (asimetría del payoff).</p>
+          </div>
+          <div className="chart-card">
+            <h3>Frecuencia por hora del día</h3>
+            <BarChart
+              data={hourHistogram}
+              formatValue={(value) => String(value)}
+              formatReference={(wins) => `${wins} ganados`}
+            />
+            <p className="settings-hint">Trades por hora de entrada (zona horaria configurada). Marca = trades ganados en esa hora.</p>
+          </div>
+          <div className="chart-card">
+            <h3>Ritmo de actividad (trades/día)</h3>
+            <span className="chart-value">{avgPerDay.toFixed(1)}/día</span>
+            <Sparkline values={perDay} title="Trades por día calendario" />
+            <p className="settings-hint">Días calendario desde el primer trade post-reset; los huecos cuentan como 0.</p>
+          </div>
+          <div className="chart-card">
+            <h3>Estimaciones (proyección lineal)</h3>
+            {projection === undefined ? (
+              <p className="chart-empty">Base insuficiente (se requieren ≥5 trades y ≥6h de datos).</p>
+            ) : (
+              <>
+                <p className="settings-hint">
+                  Base: {formatSignedUsd(projection.netPerDayUsd)}/día · {projection.tradesPerDay.toFixed(1)} trades/día · ROI{" "}
+                  {projection.roiPct.toFixed(1)}% · sobre {projection.spanDays.toFixed(1)} días
+                </p>
+                <div className="projection-scroll">
+                <table className="projection-table">
+                  <thead>
+                    <tr>
+                      <th>Periodo</th>
+                      <th>Net</th>
+                      <th>Trades</th>
+                      <th>Invertido</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {projection.periods.map((period) => (
+                      <tr key={period.label}>
+                        <td>{period.label}</td>
+                        <td className={pnlTone(period.netUsd)}>{formatSignedUsd(period.netUsd)}</td>
+                        <td>{period.trades}</td>
+                        <td>{formatUsd(period.stakeUsd)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                </div>
+              </>
+            )}
+            <p className="settings-hint">Extrapolación lineal del ritmo post-reset; no es garantía.</p>
           </div>
         </div>
       )}
@@ -2576,7 +2667,7 @@ export function TelegramPanel() {
   );
 }
 
-function LogsPanel({ logs }: { logs: LogEntry[] }) {
+function LogsPanel({ logs, timeZone }: { logs: LogEntry[]; timeZone?: string }) {
   return (
     <section className="panel logs-panel">
       {logs.length === 0 ? (
@@ -2584,7 +2675,7 @@ function LogsPanel({ logs }: { logs: LogEntry[] }) {
       ) : (
         logs.map((log) => (
           <div className={`log-row ${log.level}`} key={`${log.at}-${log.message}`}>
-            <span>{new Date(log.at).toLocaleTimeString()}</span>
+            <span>{formatTimeInTimeZone(new Date(log.at).getTime(), timeZone)}</span>
             <strong>{log.level.toUpperCase()}</strong>
             <p>{log.message}</p>
           </div>
@@ -3070,11 +3161,11 @@ function formatSignedUsd(value?: number): string {
   return value > 0 ? `+${formatted}` : formatted;
 }
 
-function formatDateTime(value?: number): string {
+function formatDateTime(value?: number, timeZone?: string): string {
   if (value === undefined || !Number.isFinite(value)) {
     return "--";
   }
-  return new Date(value).toLocaleString();
+  return formatDateTimeInTimeZone(value, timeZone);
 }
 
 function formatPrice(value?: number): string {

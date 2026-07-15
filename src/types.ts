@@ -63,6 +63,9 @@ export interface BotConfig {
   arbMaxUsdPerOpportunity?: number;
   // Minimum net profit per set (post-fee) required to execute; crumbs below this are only observed.
   arbMinNetPerSet?: number;
+  // IANA timezone (or "auto" = system) driving every hour/day derivation: display, chart bucketing,
+  // fiscal calendar days, and the daily risk cutoff (spend limit / circuit breaker).
+  timezone?: string;
   // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
   // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
   maxAnalyticsSamples?: number;

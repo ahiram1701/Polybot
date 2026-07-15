@@ -1227,7 +1227,8 @@ tr.selected-row {
 }
 
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   min-height: 44px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
@@ -2328,5 +2329,55 @@ tr.selected-row {
   }
   .chart-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* --- Projection estimates table (Análisis) --- */
+.projection-table {
+  width: 100%;
+  /* The global `table` rule forces min-width: 840px (sized for the trades table); this small summary
+     table must fit inside a chart card instead. */
+  min-width: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.projection-table th,
+.projection-table td {
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+.projection-table th:first-child,
+.projection-table td:first-child {
+  text-align: left;
+}
+.projection-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+.projection-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.projection-table td.positive {
+  color: var(--positive);
+}
+.projection-table td.negative {
+  color: var(--danger-strong);
+}
+
+/* The projection table scrolls inside its card instead of squeezing/overflowing on narrow screens. */
+.projection-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+@media (max-width: 520px) {
+  .projection-table th,
+  .projection-table td {
+    padding: 4px 6px;
+    font-size: 12px;
   }
 }

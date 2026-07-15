@@ -43,6 +43,9 @@ export interface UiSettings {
   arbEnabled: boolean;
   arbMaxUsdPerOpportunity: number;
   arbMinNetPerSet: number;
+  // IANA timezone (or "auto" = system) used for display, chart bucketing, fiscal days and the daily
+  // risk cutoff.
+  timezone: string;
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
   evUseSimilarity: boolean;

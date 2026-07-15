@@ -7,8 +7,10 @@ export interface RiskLimits {
   maxConsecutiveLosses?: number;
   // Hours the halt lasts after tripping; the breaker then RE-ARMS ITSELF with a clean slate (losses
   // before the re-arm moment stop counting, exactly like a manual reset). 0 = legacy behavior: halted
-  // for the rest of the UTC day.
+  // for the rest of the day.
   cooldownHours?: number;
+  // Timezone defining the metrics day (undefined = legacy UTC cut).
+  timeZone?: string;
 }
 
 export type RiskHaltReason = "daily_loss_limit" | "consecutive_losses";
@@ -26,8 +28,9 @@ export interface RiskHaltStatus {
  * Risk circuit breaker: halts trading (not the bot/analytics) when realized losses cross a threshold.
  * With a cooldown configured, the halt lasts `cooldownHours` from the moment of the trip and then
  * re-arms automatically with a clean baseline (a fixed rest-of-day halt punished a 00:30 trip with a
- * ~23h pause but a 23:50 trip with 10 minutes — arbitrary). Metrics remain scoped to the current UTC
- * day and are derived from the trade log (no separate persisted flag — robust across restarts).
+ * ~23h pause but a 23:50 trip with 10 minutes — arbitrary). Metrics are scoped to the current calendar
+ * day in the configured timezone (legacy UTC when unset) and are derived from the trade log (no
+ * separate persisted flag — robust across restarts).
  */
 export function evaluateRiskCircuitBreaker(
   trades: TradeAttempt[],
@@ -36,13 +39,13 @@ export function evaluateRiskCircuitBreaker(
   nowMs = Date.now(),
   haltResetAtMs = 0,
 ): RiskHaltStatus {
-  const todayKey = dailySpendKey(nowMs);
+  const todayKey = dailySpendKey(nowMs, limits.timeZone);
   const resolvedToday = trades
     .filter(
       (trade) =>
         trade.mode === mode &&
         trade.resolved !== undefined &&
-        dailySpendKey(trade.resolved.resolvedAtMs) === todayKey,
+        dailySpendKey(trade.resolved.resolvedAtMs, limits.timeZone) === todayKey,
     )
     .sort((left, right) => (left.resolved?.resolvedAtMs ?? 0) - (right.resolved?.resolvedAtMs ?? 0));
 
