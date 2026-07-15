@@ -24,6 +24,20 @@ async function main(): Promise<void> {
     app.use(vite.middlewares);
   }
 
+  // 2026-07-15: el proceso murió con 6.4GB (OOM del sistema, evento 2004). Una línea de memoria cada
+  // 5 min en el log permite ver la pendiente de crecimiento y cazar al retenedor si vuelve a pasar.
+  const memoryLogTimer = setInterval(() => {
+    const usage = process.memoryUsage();
+    const mb = (bytes: number) => Math.round(bytes / 1_048_576);
+    logger.info("Uso de memoria del proceso.", {
+      rssMb: mb(usage.rss),
+      heapUsedMb: mb(usage.heapUsed),
+      heapTotalMb: mb(usage.heapTotal),
+      externalMb: mb(usage.external),
+    });
+  }, 5 * 60_000);
+  memoryLogTimer.unref();
+
   const server = app.listen(PORT, HOST, () => {
     const url = config.publicUrl ?? `http://${HOST}:${PORT}`;
     logger.info("Polybot UI listening.", { url, host: HOST, port: PORT, staticClient });
