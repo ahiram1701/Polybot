@@ -11,6 +11,7 @@ import {
   resolvedTradesForCharts,
   rollingWinRate,
   tradesPerDaySeries,
+  validationProgress,
 } from "../src/ui/client/chartData.js";
 import type { MarketSymbol, Outcome, TradeAttempt } from "../src/types.js";
 
@@ -186,6 +187,21 @@ describe("chart data helpers", () => {
       trade({ id: `b${index}`, won: true, createdAtMs: base, resolvedAtMs: base + minutes * 60_000 }),
     );
     expect(projectionEstimates(burst)).toBeUndefined(); // <6h span
+  });
+
+  it("reports validation progress with a variance band", () => {
+    // Alternating ±5 nets: mean 0, cumulative 0 -> squarely inside the luck band.
+    const balanced = [0, 1, 2, 3].map((i) => trade({ id: `v${i}`, won: i % 2 === 0 }));
+    const progress = validationProgress(balanced, 50);
+    expect(progress.resolvedCount).toBe(4);
+    expect(progress.target).toBe(50);
+    expect(progress.netUsd).toBeCloseTo(0);
+    expect(progress.varianceBandUsd).toBeGreaterThan(0);
+    expect(progress.withinBand).toBe(true);
+
+    // All wins: cumulative +20 with zero spread -> band 0, clearly signal.
+    const streak = [0, 1, 2, 3].map((i) => trade({ id: `w${i}`, won: true }));
+    expect(validationProgress(streak, 50).withinBand).toBe(false);
   });
 
   it("groups net and win rate by market and side", () => {

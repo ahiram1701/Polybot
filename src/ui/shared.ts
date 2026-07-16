@@ -146,6 +146,9 @@ export interface TelegramNotificationSettings {
   chatId: string;
   publicUrl?: string;
   source: "env" | "local" | "none";
+  // Digest mode: per-trade pings batched into one summary every N minutes.
+  digestEnabled: boolean;
+  digestIntervalMinutes: number;
 }
 
 export interface TelegramNotificationPatch {
@@ -153,6 +156,8 @@ export interface TelegramNotificationPatch {
   botToken?: string;
   chatId?: string;
   publicUrl?: string;
+  digestEnabled?: boolean;
+  digestIntervalMinutes?: number;
 }
 
 export interface TelegramNotificationTestResponse {

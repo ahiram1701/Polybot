@@ -2381,3 +2381,20 @@ tr.selected-row {
     font-size: 12px;
   }
 }
+
+/* Anti-tilt context line: progress toward the agreed validation sample + variance band. */
+.validation-context {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-soft);
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.validation-context.signal {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}

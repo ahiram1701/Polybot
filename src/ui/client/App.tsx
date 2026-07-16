@@ -47,6 +47,7 @@ import {
   resolvedTradesForCharts,
   rollingWinRate,
   tradesPerDaySeries,
+  validationProgress,
   type LabeledValue,
 } from "./chartData.js";
 import { BarChart, CalibrationChart, Sparkline } from "./charts.js";
@@ -1360,7 +1361,17 @@ function PnlCharts({
   const netUsd = equity[equity.length - 1];
   const lastWin = winRate[winRate.length - 1];
   const lastRoi = roi[roi.length - 1];
+  const progress = validationProgress(series);
+  const band = hideAmounts ? MASKED_AMOUNT : `±${formatUsd(progress.varianceBandUsd)}`;
   return (
+    <>
+    <p className={`validation-context ${progress.withinBand ? "" : "signal"}`}>
+      Validación: <strong>{Math.min(progress.resolvedCount, progress.target)}/{progress.target}</strong> trades
+      {" · "}
+      {progress.withinBand
+        ? `P&L dentro del rango esperado por varianza (${band}) — aún no significativo`
+        : `P&L FUERA del rango de varianza (${band}) — esto ya es señal, no ruido`}
+    </p>
     <div className="dashboard-charts">
       <div className="chart-card">
         <h3>P&L acumulado</h3>
@@ -1378,6 +1389,7 @@ function PnlCharts({
         <Sparkline values={roi} title="ROI acumulado post-reset" />
       </div>
     </div>
+    </>
   );
 }
 
@@ -2547,13 +2559,15 @@ export function TelegramPanel() {
         botToken: "",
         chatId: next.chatId,
         publicUrl: next.publicUrl ?? "",
+        digestEnabled: next.digestEnabled,
+        digestIntervalMinutes: next.digestIntervalMinutes,
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
   }
 
-  function updateTelegramDraft(key: keyof TelegramNotificationPatch, value: string | boolean) {
+  function updateTelegramDraft(key: keyof TelegramNotificationPatch, value: string | boolean | number) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
@@ -2577,6 +2591,8 @@ export function TelegramPanel() {
         botToken: "",
         chatId: saved.chatId,
         publicUrl: saved.publicUrl ?? "",
+        digestEnabled: saved.digestEnabled,
+        digestIntervalMinutes: saved.digestIntervalMinutes,
       });
       setMessage("Configuracion guardada.");
     } catch (caught) {
@@ -2665,6 +2681,32 @@ export function TelegramPanel() {
           />
         </label>
       </div>
+
+      <label className="switch-row">
+        <input
+          type="checkbox"
+          checked={Boolean(draft.digestEnabled)}
+          onChange={(event) => updateTelegramDraft("digestEnabled", event.target.checked)}
+        />
+        <span>Modo resumen (digest)</span>
+      </label>
+      {draft.digestEnabled && (
+        <label className="field">
+          <span>Intervalo del resumen (minutos)</span>
+          <input
+            type="number"
+            min={5}
+            step={5}
+            value={draft.digestIntervalMinutes ?? 240}
+            onChange={(event) => updateTelegramDraft("digestIntervalMinutes", Number(event.target.value))}
+          />
+        </label>
+      )}
+      <p className="settings-hint">
+        Con el modo resumen, los avisos por trade (ganado/perdido) se agrupan en un solo mensaje cada intervalo —
+        informa igual, sin invitarte a reaccionar vela por vela. Las alertas de seguridad (freno de riesgo, errores,
+        arbitraje) siguen llegando al instante.
+      </p>
 
       {settings?.source === "env" && (
         <p className="telegram-note">Usando valores de .env hasta que guardes una configuracion local.</p>

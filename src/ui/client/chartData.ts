@@ -263,6 +263,37 @@ export function projectionEstimates(trades: TradeAttempt[]): ProjectionEstimates
   };
 }
 
+export interface ValidationProgress {
+  resolvedCount: number;
+  target: number;
+  netUsd: number;
+  /** ±band: 1.96·σ·√n over per-trade nets — the cumulative range pure luck covers at ~95%. */
+  varianceBandUsd: number;
+  withinBand: boolean;
+}
+
+/** Agreed go/no-go sample size before judging a run (anti-reactive-tinkering context). */
+export const VALIDATION_TARGET_TRADES = 50;
+
+/**
+ * Progress of the post-reset run toward the agreed validation sample, with variance context: while the
+ * cumulative net sits inside ±1.96·σ·√n, the result is statistically indistinguishable from luck.
+ */
+export function validationProgress(trades: TradeAttempt[], target = VALIDATION_TARGET_TRADES): ValidationProgress {
+  const nets = trades.map((trade) => calculateTradePnl(trade).netUsd ?? 0);
+  const netUsd = nets.reduce((sum, value) => sum + value, 0);
+  const mean = nets.length > 0 ? netUsd / nets.length : 0;
+  const variance = nets.length > 1 ? nets.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (nets.length - 1) : 0;
+  const varianceBandUsd = 1.96 * Math.sqrt(variance) * Math.sqrt(nets.length);
+  return {
+    resolvedCount: nets.length,
+    target,
+    netUsd: round2(netUsd),
+    varianceBandUsd: round2(varianceBandUsd),
+    withinBand: Math.abs(netUsd) <= varianceBandUsd,
+  };
+}
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }

@@ -15,6 +15,9 @@ export interface NotificationMessage {
   key?: string;
   nowMs?: number;
   minIntervalMs?: number;
+  // "trade" = per-trade ping (won/lost) that digest mode batches into a periodic summary. Safety and
+  // system messages (risk halt, errors, arb legs) stay immediate and never carry this category.
+  category?: "trade" | "system";
 }
 
 export interface Notifier {
@@ -29,6 +32,9 @@ export interface TelegramNotificationSettings {
   chatId: string;
   publicUrl?: string;
   source: "env" | "local" | "none";
+  // Digest mode: batch per-trade pings into one summary every N minutes (anti slot-machine).
+  digestEnabled: boolean;
+  digestIntervalMinutes: number;
 }
 
 export interface TelegramNotificationPatch {
@@ -36,6 +42,8 @@ export interface TelegramNotificationPatch {
   botToken?: string;
   chatId?: string;
   publicUrl?: string;
+  digestEnabled?: boolean;
+  digestIntervalMinutes?: number;
 }
 
 interface TelegramNotificationFile {
@@ -43,6 +51,8 @@ interface TelegramNotificationFile {
   encryptedBotToken?: string;
   chatId?: string;
   publicUrl?: string;
+  digestEnabled?: boolean;
+  digestIntervalMinutes?: number;
 }
 
 interface EffectiveTelegramNotificationConfig {
@@ -51,7 +61,11 @@ interface EffectiveTelegramNotificationConfig {
   chatId?: string;
   publicUrl?: string;
   source: "env" | "local" | "none";
+  digestEnabled: boolean;
+  digestIntervalMinutes: number;
 }
+
+export const DEFAULT_DIGEST_INTERVAL_MINUTES = 240;
 
 export class NoopNotifier implements Notifier {
   async notify(): Promise<void> {
@@ -117,25 +131,75 @@ export class TelegramNotifier implements Notifier {
 export class DynamicTelegramNotifier implements Notifier {
   private notifier?: TelegramNotifier;
   private notifierKey?: string;
+  private readonly now: () => number;
+  private readonly digestBuffer: { atMs: number; title: string; body?: string }[] = [];
+  private lastDigestFlushMs: number;
 
   constructor(
     private readonly store: TelegramNotificationStore,
     private readonly fetchFn?: typeof fetch,
-  ) {}
+    options: { now?: () => number; digestTimer?: boolean } = {},
+  ) {
+    this.now = options.now ?? Date.now;
+    this.lastDigestFlushMs = this.now();
+    if (options.digestTimer !== false) {
+      setInterval(() => void this.flushDigestIfDue(), 60_000).unref();
+    }
+  }
 
   async notify(message: NotificationMessage): Promise<void> {
     const config = await this.store.loadEffective();
     if (!config.enabled || !config.botToken || !config.chatId) {
       return;
     }
+    if (config.digestEnabled && message.category === "trade") {
+      this.digestBuffer.push({ atMs: message.nowMs ?? this.now(), title: message.title, body: message.body });
+      await this.flushDigestIfDue();
+      return;
+    }
+    await this.sendWith(config, message);
+  }
+
+  /** Sends the pending digest when the configured interval elapsed. Public for tests. */
+  async flushDigestIfDue(): Promise<void> {
+    if (this.digestBuffer.length === 0) {
+      return;
+    }
+    const config = await this.store.loadEffective();
+    const intervalMs = Math.max(1, config.digestIntervalMinutes) * 60_000;
+    if (this.now() - this.lastDigestFlushMs < intervalMs) {
+      return;
+    }
+    if (!config.enabled || !config.botToken || !config.chatId) {
+      return;
+    }
+    const entries = this.digestBuffer.splice(0);
+    this.lastDigestFlushMs = this.now();
+    const wins = entries.filter((entry) => entry.title === "Trade ganado").length;
+    const losses = entries.filter((entry) => entry.title === "Trade perdido").length;
+    const other = entries.length - wins - losses;
+    const lines = entries.slice(-10).map((entry) => {
+      const time = new Date(entry.atMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `${time} ${entry.title}${entry.body ? ` — ${entry.body.split("\n")[0]}` : ""}`;
+    });
+    await this.sendWith(config, {
+      key: `telegram-digest:${this.lastDigestFlushMs}`,
+      minIntervalMs: 0,
+      title: `Resumen de trades (${wins}W/${losses}L${other > 0 ? ` +${other}` : ""})`,
+      body: lines.join("\n") + (entries.length > 10 ? `\n(+${entries.length - 10} anteriores)` : ""),
+    });
+  }
+
+  private async sendWith(config: EffectiveTelegramNotificationConfig, message: NotificationMessage): Promise<void> {
     const key = `${config.botToken}:${config.chatId}:${config.publicUrl ?? ""}`;
     if (this.notifierKey !== key) {
       this.notifierKey = key;
       this.notifier = new TelegramNotifier({
-        botToken: config.botToken,
-        chatId: config.chatId,
+        botToken: config.botToken!,
+        chatId: config.chatId!,
         publicUrl: config.publicUrl,
         fetchFn: this.fetchFn,
+        now: this.now,
       });
     }
     await this.notifier?.notify(message);
@@ -171,13 +235,15 @@ export class TelegramNotificationStore {
         chatId: local.chatId,
         publicUrl: local.publicUrl,
         source: "local",
+        digestEnabled: local.digestEnabled ?? false,
+        digestIntervalMinutes: local.digestIntervalMinutes ?? DEFAULT_DIGEST_INTERVAL_MINUTES,
       };
     }
 
     const botToken = this.fallbackConfig.telegramBotToken;
     const chatId = this.fallbackConfig.telegramChatId;
     if (!botToken && !chatId && !this.fallbackConfig.publicUrl) {
-      return { enabled: false, source: "none" };
+      return { enabled: false, source: "none", digestEnabled: false, digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES };
     }
     return {
       enabled: Boolean(botToken && chatId),
@@ -185,6 +251,8 @@ export class TelegramNotificationStore {
       chatId,
       publicUrl: this.fallbackConfig.publicUrl,
       source: botToken || chatId ? "env" : "none",
+      digestEnabled: false,
+      digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES,
     };
   }
 
@@ -196,6 +264,11 @@ export class TelegramNotificationStore {
       chatId: normalizeOptionalText(patch.chatId) ?? current.chatId,
       publicUrl: normalizeOptionalText(patch.publicUrl),
       source: "local",
+      digestEnabled: patch.digestEnabled ?? current.digestEnabled,
+      digestIntervalMinutes:
+        typeof patch.digestIntervalMinutes === "number" && patch.digestIntervalMinutes >= 5
+          ? Math.round(patch.digestIntervalMinutes)
+          : current.digestIntervalMinutes,
     };
     if (patch.publicUrl === undefined) {
       next.publicUrl = current.publicUrl;
@@ -206,6 +279,8 @@ export class TelegramNotificationStore {
       encryptedBotToken: next.botToken ? await this.encrypt(next.botToken) : undefined,
       chatId: next.chatId,
       publicUrl: next.publicUrl,
+      digestEnabled: next.digestEnabled,
+      digestIntervalMinutes: next.digestIntervalMinutes,
     };
     await writeFileAtomic(this.settingsPath, `${JSON.stringify(file, null, 2)}\n`);
     return sanitizeEffectiveConfig(next);
@@ -219,6 +294,9 @@ export class TelegramNotificationStore {
         encryptedBotToken: typeof parsed.encryptedBotToken === "string" ? parsed.encryptedBotToken : undefined,
         chatId: typeof parsed.chatId === "string" ? parsed.chatId : undefined,
         publicUrl: typeof parsed.publicUrl === "string" ? parsed.publicUrl : undefined,
+        digestEnabled: typeof parsed.digestEnabled === "boolean" ? parsed.digestEnabled : undefined,
+        digestIntervalMinutes:
+          typeof parsed.digestIntervalMinutes === "number" ? parsed.digestIntervalMinutes : undefined,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -320,6 +398,8 @@ function sanitizeEffectiveConfig(config: EffectiveTelegramNotificationConfig): T
     chatId: config.chatId ?? "",
     publicUrl: config.publicUrl,
     source: config.source,
+    digestEnabled: config.digestEnabled,
+    digestIntervalMinutes: config.digestIntervalMinutes,
   };
 }
 

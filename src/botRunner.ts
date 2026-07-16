@@ -1244,6 +1244,7 @@ export class BotRunner {
     const arbPair = trade.kind === "arb" && trade.arbPairComplete === true;
     await this.deps.notifier?.notify({
       key: `trade-resolved:${trade.id ?? trade.slug}`,
+      category: "trade",
       level: arbPair || resolution.won ? "info" : "warn",
       title: arbPair ? "Arbitraje liquidado" : resolution.won ? "Trade ganado" : "Trade perdido",
       body: [
