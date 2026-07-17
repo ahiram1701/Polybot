@@ -1187,11 +1187,13 @@ export class BotRunner {
   }
 
   /**
-   * Verify LIVE resolutions against Polymarket's OFFICIAL market outcome (gamma reports 1/0 outcome
-   * prices once resolved) and correct any mismatch — the source of truth is whoever pays. Photo-finish
-   * windows resolved off our own feed can land on the wrong side of the boundary; a real trade was
-   * scored -$5 while Polymarket paid $20 for it. Runs throttled (one sweep every 30s, 2 lookups per
-   * sweep) so the historical backlog backfills gradually without hammering gamma.
+   * Verify resolutions against Polymarket's OFFICIAL market outcome (gamma reports 1/0 outcome prices
+   * once resolved) and correct any mismatch — the source of truth is whoever pays. Our own feed judges
+   * the winner from opening vs closing tick, but the opening tick can be captured up to the grace
+   * period late (so a brief spike becomes a wrong reference) and photo-finish windows can land on the
+   * wrong side of the boundary. Runs for BOTH modes: sim must resolve identically to live for a sim
+   * test to faithfully predict live. Throttled (one sweep every 30s, 2 lookups per sweep) so the
+   * historical backlog backfills gradually without hammering gamma.
    */
   private async verifyOfficialResolutions(nowMs: number): Promise<void> {
     const getMarketBySlug = this.deps.watcher.getMarketBySlug?.bind(this.deps.watcher);
@@ -1204,19 +1206,18 @@ export class BotRunner {
       .listTrades()
       .filter(
         (trade) =>
-          trade.mode === "live" &&
           trade.resolved !== undefined &&
           trade.officialResolution === undefined &&
           // Arb pairs pay $1/set regardless of the winner and their "#arb" slug is not a gamma market.
           trade.kind !== "arb" &&
           // Give the official resolution time to land before asking.
           nowMs - trade.endMs > OFFICIAL_RESOLUTION_GRACE_MS &&
-          nowMs - (this.officialCheckAttemptsMs.get(trade.slug) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
+          nowMs - (this.officialCheckAttemptsMs.get(`${trade.mode}:${trade.slug}`) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
       )
       .slice(0, OFFICIAL_CHECKS_PER_SWEEP);
 
     for (const trade of candidates) {
-      this.officialCheckAttemptsMs.set(trade.slug, nowMs);
+      this.officialCheckAttemptsMs.set(`${trade.mode}:${trade.slug}`, nowMs);
       try {
         const market = await getMarketBySlug(trade.slug, nowMs);
         const official = officialWinningOutcome(market);

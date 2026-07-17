@@ -1571,6 +1571,84 @@ describe("BotRunner", () => {
     expect(watcher.getMarketBySlug).toHaveBeenCalledTimes(1);
   });
 
+  it("corrects a SIM resolution against the official outcome too (sim must predict live)", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 6, 17, 4, 25, 0, 0);
+    const endMs = windowStartMs + 300_000;
+    const nowMs = endMs + 10 * 60_000;
+    // Sim feed resolved DOWN (opening captured late during a spike); the official market paid UP.
+    const misResolved: TradeAttempt = {
+      id: "sim-late-open",
+      asset: "ETH",
+      slug: `eth-updown-5m-${Math.floor(windowStartMs / 1000)}`,
+      mode: "sim",
+      outcome: "UP",
+      tokenId: "token",
+      amountUsd: 5,
+      maxAskPrice: 0.85,
+      bestAsk: 0.5,
+      estimatedShares: 10,
+      fillDetected: true,
+      filledAmountUsd: 5,
+      filledShares: 10,
+      openingPrice: 1832.05,
+      entryPrice: 1831,
+      distanceUsd: -1.68,
+      windowStartMs,
+      endMs,
+      createdAtMs: endMs - 60_000,
+      resolved: {
+        resolvedAtMs: endMs + 3_000,
+        finalPrice: 1830.19,
+        finalTickTimestampMs: endMs,
+        winningOutcome: "DOWN",
+        won: false,
+      },
+    };
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => [misResolved]),
+      getOpening: vi.fn(() => undefined),
+      hasTraded: vi.fn(() => true),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+      recordTradeOfficialResolution: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const officialMarket = {
+      ...marketInfo("ETH", "eth", windowStartMs),
+      closed: true,
+      outcomes: {
+        UP: { outcome: "UP" as const, label: "Up", tokenId: "eth-up", impliedPrice: 1 },
+        DOWN: { outcome: "DOWN" as const, label: "Down", tokenId: "eth-down", impliedPrice: 0 },
+      },
+    };
+    const watcher = {
+      getCurrentMarket: vi.fn(async () => null),
+      getMarketBySlug: vi.fn(async () => officialMarket),
+    } as unknown as MarketWatcher;
+    const notifier = { notify: vi.fn(async () => undefined) };
+
+    const runner = new BotRunner(baseConfig(), {
+      watcher,
+      orderbook: fakeOrderbook(),
+      priceFeed: fakePriceFeed(),
+      state,
+      executor: {} as TradeExecutor,
+      reconciler: fakeReconciler(),
+      notifier,
+    });
+
+    await runner.runOnce(nowMs);
+
+    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(misResolved.slug, "sim", {
+      winningOutcome: "UP",
+      verifiedAtMs: nowMs,
+      corrected: true,
+    });
+  });
+
   it("stops retrying a window once the CLOB rejects with post-only mode", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
