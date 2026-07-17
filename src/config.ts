@@ -111,6 +111,10 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(false),
+  EV_CALIBRATION: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
   EV_SAFETY_MARGIN: z.coerce.number().gte(0).lt(1).default(0.03),
   MIN_DISTANCE_FLOOR_BTC: z.coerce.number().nonnegative().default(20),
   MIN_DISTANCE_FLOOR_ETH: z.coerce.number().nonnegative().default(0.1),
@@ -129,6 +133,10 @@ const envSchema = z.object({
   ARB_MAX_USD_PER_OPPORTUNITY: z.coerce.number().positive().default(25),
   ARB_MIN_NET_PER_SET: z.coerce.number().nonnegative().default(0.02),
   POLYBOT_TIMEZONE: z.string().default("auto"),
+  AI_AUTO_TUNE_ASK_CAP: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
   MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(20_000),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
@@ -281,6 +289,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evUseSimilarity: env.EV_USE_SIMILARITY,
+    evCalibration: env.EV_CALIBRATION,
     evSafetyMargin: env.EV_SAFETY_MARGIN,
     minDistanceFloorUsdByMarket: {
       BTC: env.MIN_DISTANCE_FLOOR_BTC,
@@ -298,6 +307,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     arbMaxUsdPerOpportunity: env.ARB_MAX_USD_PER_OPPORTUNITY,
     arbMinNetPerSet: env.ARB_MIN_NET_PER_SET,
     timezone: env.POLYBOT_TIMEZONE,
+    aiAutoTuneAskCap: env.AI_AUTO_TUNE_ASK_CAP,
     maxAnalyticsSamples: env.MAX_ANALYTICS_SAMPLES,
     tickStaleMs: env.TICK_STALE_MS,
     pollIntervalMs: env.POLL_INTERVAL_MS,

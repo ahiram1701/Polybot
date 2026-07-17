@@ -167,6 +167,7 @@ const emptySettings: UiSettings = {
   timezone: "auto",
   requirePositiveEv: true,
   evUseSimilarity: false,
+  evCalibration: false,
   evSafetyMargin: 0.03,
   evMinHistoryTrades: 15,
   minFillRatio: 0.5,
@@ -175,6 +176,7 @@ const emptySettings: UiSettings = {
   pollIntervalMs: 1_000,
   openingCaptureGraceMs: 15_000,
   aiAutoApplyLive: false,
+  aiAutoTuneAskCap: false,
 };
 
 const marketOptions: Array<{ symbol: MarketSymbol; label: string; step: number; min: number }> = [
@@ -1832,6 +1834,20 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           ventana y distancia por mercado/lado cuando hay alta confianza y dentro de las guardas. Corre idéntico en sim y
           en live (sin cooldown), así que una prueba en sim predice lo que hará en live. Actívalo antes de iniciar el bot.
         </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.aiAutoTuneAskCap}
+            onChange={(event) => update("aiAutoTuneAskCap", event.target.checked)}
+            disabled={running}
+          />
+          <span>Auto-tuning del ask cap por bandas realizadas (live)</span>
+        </label>
+        <p className="settings-hint">
+          Deriva el cap por mercado de la tabla de bandas de ask con fills reales: extiende el cap mientras cada banda
+          (≥20 trades) supere su break-even por 3pp. Candados: rango 0.45–0.85, cambio máx ±0.05 por aplicación, cooldown
+          24h por mercado, y notificación por Telegram en cada cambio.
+        </p>
       </section>
 
       <section className="settings-advanced">
@@ -1993,6 +2009,15 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             disabled={running}
           />
           <span>Gate por similitud (comparar en vivo con setups parecidos del histórico)</span>
+        </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.evCalibration}
+            onChange={(event) => update("evCalibration", event.target.checked)}
+            disabled={running}
+          />
+          <span>Calibración empírica (corrige la sobreconfianza con los resultados reales del propio bot)</span>
         </label>
         <div className="settings-grid">
           <NumberField
@@ -2561,6 +2586,8 @@ export function TelegramPanel() {
         publicUrl: next.publicUrl ?? "",
         digestEnabled: next.digestEnabled,
         digestIntervalMinutes: next.digestIntervalMinutes,
+        dailyReportEnabled: next.dailyReportEnabled,
+        dailyReportHour: next.dailyReportHour,
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -2593,6 +2620,8 @@ export function TelegramPanel() {
         publicUrl: saved.publicUrl ?? "",
         digestEnabled: saved.digestEnabled,
         digestIntervalMinutes: saved.digestIntervalMinutes,
+        dailyReportEnabled: saved.dailyReportEnabled,
+        dailyReportHour: saved.dailyReportHour,
       });
       setMessage("Configuracion guardada.");
     } catch (caught) {
@@ -2706,6 +2735,32 @@ export function TelegramPanel() {
         Con el modo resumen, los avisos por trade (ganado/perdido) se agrupan en un solo mensaje cada intervalo —
         informa igual, sin invitarte a reaccionar vela por vela. Las alertas de seguridad (freno de riesgo, errores,
         arbitraje) siguen llegando al instante.
+      </p>
+
+      <label className="switch-row">
+        <input
+          type="checkbox"
+          checked={Boolean(draft.dailyReportEnabled)}
+          onChange={(event) => updateTelegramDraft("dailyReportEnabled", event.target.checked)}
+        />
+        <span>Reporte diario</span>
+      </label>
+      {draft.dailyReportEnabled && (
+        <label className="field">
+          <span>Hora del reporte (0-23, zona horaria configurada)</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            step={1}
+            value={draft.dailyReportHour ?? 21}
+            onChange={(event) => updateTelegramDraft("dailyReportHour", Number(event.target.value))}
+          />
+        </label>
+      )}
+      <p className="settings-hint">
+        Un mensaje al día con P&L de hoy y post-reset, progreso del plan de validación con banda de varianza, estado del
+        autoajuste y del freno, cap sugerido por mercado y salud del proceso.
       </p>
 
       {settings?.source === "env" && (

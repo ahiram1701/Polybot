@@ -824,6 +824,7 @@ function settings(): UiSettings {
     maxConsecutiveLosses: 0,
     requirePositiveEv: true,
     evUseSimilarity: false,
+    evCalibration: false,
     evSafetyMargin: 0.03,
     evMinHistoryTrades: 10,
     minFillRatio: 0.5,
@@ -837,6 +838,7 @@ function settings(): UiSettings {
     pollIntervalMs: 1_000,
     openingCaptureGraceMs: 15_000,
     aiAutoApplyLive: false,
+    aiAutoTuneAskCap: false,
   };
 }
 

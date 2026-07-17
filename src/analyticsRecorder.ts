@@ -76,6 +76,14 @@ export class AnalyticsRecorder {
     return join(this.dataDir, "analytics-active.json");
   }
 
+  /**
+   * Tick series captured so far for the window being observed. Lets the live gate compute features
+   * (velocity) with the SAME definition the historical pool uses.
+   */
+  getActiveTicks(slug: string): AnalyticsTickPoint[] {
+    return this.activeSamples.get(slug)?.ticks ?? [];
+  }
+
   async observeMarket(observation: AnalyticsObservation): Promise<void> {
     await this.hydrateActiveSamples();
     let changed = false;

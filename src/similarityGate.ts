@@ -1,10 +1,14 @@
+import { knnEstimate, type KnnObservation, type KnnOptions, type KnnPoint } from "./knnCore.js";
+
 /**
  * Similarity ("k-NN") win-probability estimator for the LIVE entry gate.
  *
  * Instead of requiring N trades at the EXACT (window, distance) config, this compares the current live
  * setup against ALL historical setups and estimates the win probability from the nearest ones — so a
- * setup with real edge but few exact analogues can still be recognised. Feature space is scale-free
- * (relative distance) so it works across BTC/ETH/DOGE.
+ * setup with real edge but few exact analogues can still be recognised. Delegates to the shared
+ * knnCore (same feature space and weighting as the recommendation engine): time, |distance| (relative,
+ * scale-free across markets), ask, and — when available — velocity, spread and quote skew, with
+ * optional recency decay and a configurable prior.
  */
 
 export interface SimilarityObservation {
@@ -16,58 +20,58 @@ export interface SimilarityObservation {
   ask: number;
   // Did the chosen outcome win?
   won: boolean;
+  // Rich optional features (old samples without quotes simply omit them).
+  velocityUsdPerSecond?: number;
+  spread?: number;
+  quoteSkew?: number;
+  // Observation timestamp — enables recency weighting.
+  atMs?: number;
 }
 
 export type SimilarityQuery = Omit<SimilarityObservation, "won">;
 
 export interface SimilarityEstimate {
   winProbability: number;
-  // Recency-agnostic effective sample size of the weighted neighbours: (Σw)² / Σw².
+  // Effective sample size of the weighted neighbours: (Σw)² / Σw² (decay-aware when recency is on).
   effectiveSampleSize: number;
   neighborCount: number;
 }
 
-// Prior pseudo-count toward 0.5 keeps a thin match from being over-confident (the EV gate re-anchors
-// the prior to the market ask separately).
-const PRIOR_WEIGHT = 2;
-const PRIOR_PROBABILITY = 0.5;
+export type SimilarityOptions = Pick<KnnOptions, "priorProbability" | "recencyHalfLifeDays" | "nowMs">;
 
-function featureDistance(query: SimilarityQuery, observation: SimilarityObservation): number {
-  const distanceScale = Math.max(Math.abs(query.favorableDistanceUsd), Math.abs(observation.favorableDistanceUsd), 1e-9);
-  return (
-    Math.abs(query.secondsToEnd - observation.secondsToEnd) / 55 +
-    Math.abs(query.favorableDistanceUsd - observation.favorableDistanceUsd) / distanceScale +
-    Math.abs(query.ask - observation.ask) / 0.75
-  );
+/**
+ * Gate defaults. Deliberately conservative until the walk-forward backtest validates richer settings:
+ * prior 0.5 (the EV gate re-anchors to the ask separately) and no recency decay.
+ */
+export const DEFAULT_SIMILARITY_OPTIONS: SimilarityOptions = {};
+
+function toKnnPoint(value: SimilarityQuery): KnnPoint {
+  return {
+    secondsToEnd: value.secondsToEnd,
+    absDistanceUsd: Math.abs(value.favorableDistanceUsd),
+    ask: value.ask,
+    velocityUsdPerSecond: value.velocityUsdPerSecond,
+    spread: value.spread,
+    quoteSkew: value.quoteSkew,
+    atMs: value.atMs,
+  };
 }
 
 export function estimateWinProbabilityBySimilarity(
   pool: SimilarityObservation[],
   query: SimilarityQuery,
+  options: SimilarityOptions = DEFAULT_SIMILARITY_OPTIONS,
 ): SimilarityEstimate {
-  if (pool.length === 0) {
-    return { winProbability: PRIOR_PROBABILITY, effectiveSampleSize: 0, neighborCount: 0 };
-  }
-  const k = Math.min(60, Math.max(8, Math.round(Math.sqrt(pool.length) * 2)));
-  const neighbors = pool
-    .map((observation) => ({ observation, distance: featureDistance(query, observation) }))
-    .sort((left, right) => left.distance - right.distance)
-    .slice(0, k);
-
-  let weightSum = 0;
-  let weightSquareSum = 0;
-  let weightedWins = 0;
-  for (const neighbor of neighbors) {
-    const weight = 1 / (0.25 + neighbor.distance);
-    weightSum += weight;
-    weightSquareSum += weight * weight;
-    weightedWins += neighbor.observation.won ? weight : 0;
-  }
-  const winProbability = (weightedWins + PRIOR_WEIGHT * PRIOR_PROBABILITY) / (weightSum + PRIOR_WEIGHT);
-  const effectiveSampleSize = weightSquareSum > 0 ? (weightSum * weightSum) / weightSquareSum : 0;
-  return {
-    winProbability: Math.min(Math.max(winProbability, 0.05), 0.95),
-    effectiveSampleSize,
-    neighborCount: neighbors.length,
-  };
+  const observations: KnnObservation[] = pool.map((observation) => ({
+    ...toKnnPoint(observation),
+    won: observation.won,
+  }));
+  return knnEstimate(observations, toKnnPoint(query), {
+    kMin: 8,
+    kMax: 60,
+    priorWeight: 2,
+    priorProbability: options.priorProbability ?? 0.5,
+    recencyHalfLifeDays: options.recencyHalfLifeDays,
+    nowMs: options.nowMs,
+  });
 }

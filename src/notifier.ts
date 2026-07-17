@@ -35,6 +35,9 @@ export interface TelegramNotificationSettings {
   // Digest mode: batch per-trade pings into one summary every N minutes (anti slot-machine).
   digestEnabled: boolean;
   digestIntervalMinutes: number;
+  // Daily self-report at the configured hour (timezone-aware; sent by the controller).
+  dailyReportEnabled: boolean;
+  dailyReportHour: number;
 }
 
 export interface TelegramNotificationPatch {
@@ -44,6 +47,8 @@ export interface TelegramNotificationPatch {
   publicUrl?: string;
   digestEnabled?: boolean;
   digestIntervalMinutes?: number;
+  dailyReportEnabled?: boolean;
+  dailyReportHour?: number;
 }
 
 interface TelegramNotificationFile {
@@ -53,6 +58,8 @@ interface TelegramNotificationFile {
   publicUrl?: string;
   digestEnabled?: boolean;
   digestIntervalMinutes?: number;
+  dailyReportEnabled?: boolean;
+  dailyReportHour?: number;
 }
 
 interface EffectiveTelegramNotificationConfig {
@@ -63,9 +70,12 @@ interface EffectiveTelegramNotificationConfig {
   source: "env" | "local" | "none";
   digestEnabled: boolean;
   digestIntervalMinutes: number;
+  dailyReportEnabled: boolean;
+  dailyReportHour: number;
 }
 
 export const DEFAULT_DIGEST_INTERVAL_MINUTES = 240;
+export const DEFAULT_DAILY_REPORT_HOUR = 21;
 
 export class NoopNotifier implements Notifier {
   async notify(): Promise<void> {
@@ -237,13 +247,22 @@ export class TelegramNotificationStore {
         source: "local",
         digestEnabled: local.digestEnabled ?? false,
         digestIntervalMinutes: local.digestIntervalMinutes ?? DEFAULT_DIGEST_INTERVAL_MINUTES,
+        dailyReportEnabled: local.dailyReportEnabled ?? false,
+        dailyReportHour: local.dailyReportHour ?? DEFAULT_DAILY_REPORT_HOUR,
       };
     }
 
     const botToken = this.fallbackConfig.telegramBotToken;
     const chatId = this.fallbackConfig.telegramChatId;
     if (!botToken && !chatId && !this.fallbackConfig.publicUrl) {
-      return { enabled: false, source: "none", digestEnabled: false, digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES };
+      return {
+        enabled: false,
+        source: "none",
+        digestEnabled: false,
+        digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES,
+        dailyReportEnabled: false,
+        dailyReportHour: DEFAULT_DAILY_REPORT_HOUR,
+      };
     }
     return {
       enabled: Boolean(botToken && chatId),
@@ -253,6 +272,8 @@ export class TelegramNotificationStore {
       source: botToken || chatId ? "env" : "none",
       digestEnabled: false,
       digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES,
+      dailyReportEnabled: false,
+      dailyReportHour: DEFAULT_DAILY_REPORT_HOUR,
     };
   }
 
@@ -269,6 +290,11 @@ export class TelegramNotificationStore {
         typeof patch.digestIntervalMinutes === "number" && patch.digestIntervalMinutes >= 5
           ? Math.round(patch.digestIntervalMinutes)
           : current.digestIntervalMinutes,
+      dailyReportEnabled: patch.dailyReportEnabled ?? current.dailyReportEnabled,
+      dailyReportHour:
+        typeof patch.dailyReportHour === "number" && patch.dailyReportHour >= 0 && patch.dailyReportHour <= 23
+          ? Math.round(patch.dailyReportHour)
+          : current.dailyReportHour,
     };
     if (patch.publicUrl === undefined) {
       next.publicUrl = current.publicUrl;
@@ -281,6 +307,8 @@ export class TelegramNotificationStore {
       publicUrl: next.publicUrl,
       digestEnabled: next.digestEnabled,
       digestIntervalMinutes: next.digestIntervalMinutes,
+      dailyReportEnabled: next.dailyReportEnabled,
+      dailyReportHour: next.dailyReportHour,
     };
     await writeFileAtomic(this.settingsPath, `${JSON.stringify(file, null, 2)}\n`);
     return sanitizeEffectiveConfig(next);
@@ -297,6 +325,8 @@ export class TelegramNotificationStore {
         digestEnabled: typeof parsed.digestEnabled === "boolean" ? parsed.digestEnabled : undefined,
         digestIntervalMinutes:
           typeof parsed.digestIntervalMinutes === "number" ? parsed.digestIntervalMinutes : undefined,
+        dailyReportEnabled: typeof parsed.dailyReportEnabled === "boolean" ? parsed.dailyReportEnabled : undefined,
+        dailyReportHour: typeof parsed.dailyReportHour === "number" ? parsed.dailyReportHour : undefined,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -400,6 +430,8 @@ function sanitizeEffectiveConfig(config: EffectiveTelegramNotificationConfig): T
     source: config.source,
     digestEnabled: config.digestEnabled,
     digestIntervalMinutes: config.digestIntervalMinutes,
+    dailyReportEnabled: config.dailyReportEnabled,
+    dailyReportHour: config.dailyReportHour,
   };
 }
 

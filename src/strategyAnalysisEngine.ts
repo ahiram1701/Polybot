@@ -7,6 +7,7 @@ import {
   estimateWinProbabilityBySimilarity,
   type SimilarityEstimate,
   type SimilarityObservation,
+  type SimilarityOptions,
   type SimilarityQuery,
 } from "./similarityGate.js";
 import {
@@ -124,6 +125,7 @@ export class StrategyAnalysisEngine {
     outcome: Outcome,
     params: { entryWindowSeconds: number; minDistanceUsd: number; maxAskPrice: number },
     live: SimilarityQuery,
+    options?: SimilarityOptions,
   ): Promise<SimilarityEstimate> {
     const samples = await this.loadSamples();
     const pool: SimilarityObservation[] = [];
@@ -140,14 +142,20 @@ export class StrategyAnalysisEngine {
       if (!isPositiveFinite(ask) || ask > params.maxAskPrice) {
         continue;
       }
+      const bid = quote ? (outcome === "UP" ? quote.upBestBid : quote.downBestBid) : undefined;
+      const oppositeAsk = quote ? getAsk(quote, outcome === "UP" ? "DOWN" : "UP") : undefined;
       pool.push({
         secondsToEnd: signalTick.secondsToEnd,
         favorableDistanceUsd: Math.abs(signalTick.distanceUsd),
         ask,
         won: sample.winningOutcome === outcome,
+        velocityUsdPerSecond: getSignalVelocity(sample.ticks, signalTick),
+        spread: isPositiveFinite(bid) ? ask - bid : undefined,
+        quoteSkew: isPositiveFinite(oppositeAsk) ? oppositeAsk - ask : undefined,
+        atMs: signalTick.timestampMs,
       });
     }
-    return estimateWinProbabilityBySimilarity(pool, live);
+    return estimateWinProbabilityBySimilarity(pool, live, options);
   }
 
   private async loadSamples(): Promise<AnalyticsSample[]> {
@@ -527,6 +535,25 @@ function findClosestQuote(quotes: AnalyticsQuotePoint[], timestampMs: number): A
 
 function getAsk(quote: AnalyticsQuotePoint, outcome: Outcome): number | undefined {
   return outcome === "UP" ? quote.upBestAsk : quote.downBestAsk;
+}
+
+/**
+ * Move speed (USD/s) between the signal tick and the tick right before it. undefined with no
+ * predecessor so the k-NN skips the feature instead of matching against a fake 0 (same semantics as
+ * the live query).
+ */
+function getSignalVelocity(ticks: AnalyticsTickPoint[], signalTick: AnalyticsTickPoint): number | undefined {
+  let previous: AnalyticsTickPoint | undefined;
+  for (const tick of ticks) {
+    if (tick.timestampMs < signalTick.timestampMs && (!previous || tick.timestampMs > previous.timestampMs)) {
+      previous = tick;
+    }
+  }
+  if (!previous) {
+    return undefined;
+  }
+  const elapsedSeconds = (signalTick.timestampMs - previous.timestampMs) / 1000;
+  return elapsedSeconds > 0 ? (signalTick.distanceUsd - previous.distanceUsd) / elapsedSeconds : undefined;
 }
 
 function compareStrategies(left: StrategyCandidate, right: StrategyCandidate): number {

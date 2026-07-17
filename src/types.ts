@@ -42,6 +42,8 @@ export interface BotConfig {
   // Optional so test/config literals may omit them; config.ts always sets them and botRunner defaults them.
   requirePositiveEv?: boolean;
   evUseSimilarity?: boolean;
+  // Empirical calibration of the gate probability from the ledger's own resolved predictions.
+  evCalibration?: boolean;
   evSafetyMargin?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
@@ -66,6 +68,8 @@ export interface BotConfig {
   // IANA timezone (or "auto" = system) driving every hour/day derivation: display, chart bucketing,
   // fiscal calendar days, and the daily risk cutoff (spend limit / circuit breaker).
   timezone?: string;
+  // Auto-tuning del ask cap por mercado desde bandas realizadas (candados en askCapTuner.ts).
+  aiAutoTuneAskCap?: boolean;
   // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
   // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
   maxAnalyticsSamples?: number;

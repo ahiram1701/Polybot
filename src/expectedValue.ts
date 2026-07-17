@@ -1,3 +1,5 @@
+import { applyCalibration, type CalibrationMap } from "./calibration.js";
+
 export const DEFAULT_SAFETY_MARGIN = 0.02;
 export const DEFAULT_MIN_EXPECTED_ROI = 0.01;
 // Strength (in pseudo-trades) of the Bayesian prior used to shrink the raw win frequency. Kept at 2
@@ -26,6 +28,9 @@ export interface ExpectedValueInput {
   // Bayesian prior strength (pseudo-trades) for the win-rate shrinkage. Higher = more skeptical of thin
   // history, anchoring harder to the market-implied prior (the ask). Defaults to PRIOR_STRENGTH.
   priorStrength?: number;
+  // Empirical calibration map (predicted → realized win rate). Applied to the adjusted probability
+  // BEFORE the edge/ROI checks, so measured overconfidence tightens the gate automatically.
+  calibration?: CalibrationMap;
 }
 
 export interface ExpectedValueSnapshot {
@@ -69,11 +74,9 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
   const realWinProbability = calculateRealWinProbability(input.winCount, input.tradeCount);
   // Anchor the shrinkage prior to the market-implied probability (the ask): in an efficient market the
   // ask ≈ P(win), so a thin setup should start at the market price (edge ~0) rather than at 0.5.
-  const adjustedWinProbability = calculateAdjustedWinProbability(
-    input.winCount,
-    input.tradeCount,
-    input.askPrice,
-    input.priorStrength,
+  const adjustedWinProbability = applyCalibration(
+    input.calibration,
+    calculateAdjustedWinProbability(input.winCount, input.tradeCount, input.askPrice, input.priorStrength),
   );
   const edge = adjustedWinProbability - input.askPrice;
   const expectedRoi = adjustedWinProbability / input.askPrice - 1;

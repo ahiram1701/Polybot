@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
 import { detectCompleteSetArb, type ArbOpportunity } from "./arbMonitor.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
+import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
 import { evaluateRiskCircuitBreaker, type RiskHaltStatus } from "./riskCircuitBreaker.js";
@@ -130,6 +131,7 @@ export class BotRunner {
   private readonly postOnlySlugs = new Set<string>();
   private lastOfficialSweepMs = 0;
   private readonly officialCheckAttemptsMs = new Map<string, number>();
+  private calibrationCache?: { resolvedCount: number; map: CalibrationMap };
 
   constructor(
     private readonly config: BotConfig,
@@ -159,7 +161,8 @@ export class BotRunner {
       | "entryWindowSeconds"
       | "entryWindowSecondsByMarket"
       | "entryWindowSecondsByMarketOutcome"
-    >,
+    > &
+      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome">>,
   ): void {
     this.config.minDistanceUsdByMarket = settings.minDistanceUsdByMarket;
     this.config.minDistanceUsdByMarketOutcome = settings.minDistanceUsdByMarketOutcome;
@@ -167,11 +170,18 @@ export class BotRunner {
     this.config.entryWindowSeconds = settings.entryWindowSeconds;
     this.config.entryWindowSecondsByMarket = settings.entryWindowSecondsByMarket;
     this.config.entryWindowSecondsByMarketOutcome = settings.entryWindowSecondsByMarketOutcome;
+    if (settings.maxAskPrice !== undefined) {
+      this.config.maxAskPrice = settings.maxAskPrice;
+    }
+    if (settings.maxAskPriceByMarketOutcome !== undefined) {
+      this.config.maxAskPriceByMarketOutcome = settings.maxAskPriceByMarketOutcome;
+    }
     logger.info("Runtime strategy settings updated.", {
       minDistanceUsdByMarket: this.config.minDistanceUsdByMarket,
       minDistanceUsdByMarketOutcome: this.config.minDistanceUsdByMarketOutcome,
       entryWindowSecondsByMarket: this.config.entryWindowSecondsByMarket,
       entryWindowSecondsByMarketOutcome: this.config.entryWindowSecondsByMarketOutcome,
+      maxAskPriceByMarketOutcome: this.config.maxAskPriceByMarketOutcome,
     });
   }
 
@@ -666,10 +676,35 @@ export class BotRunner {
     }
   }
 
+  /**
+   * Calibration map learned from the bot's OWN deployed predictions vs outcomes: every resolved trade
+   * stores the adjustedWinProbability the gate used at entry. Thin data shrinks to the identity, so
+   * this is safe from day one and sharpens as the ledger grows. Cached by resolved-trade count.
+   */
+  private getLedgerCalibrationMap(): CalibrationMap {
+    const trades = this.deps.state.listTrades();
+    const pairs = trades.flatMap((trade) => {
+      const predicted = trade.expectedValue?.adjustedWinProbability;
+      const won = trade.resolved?.won;
+      return typeof predicted === "number" && typeof won === "boolean" && trade.kind !== "arb"
+        ? [{ predicted, won }]
+        : [];
+    });
+    if (this.calibrationCache?.resolvedCount === pairs.length) {
+      return this.calibrationCache.map;
+    }
+    const map = buildCalibrationMap(pairs);
+    this.calibrationCache = { resolvedCount: pairs.length, map };
+    return map;
+  }
+
   private async evaluateExpectedValue(
     signal: TradeSignal,
-    askPrice: number,
+    askPrice: number | undefined,
   ): Promise<ExpectedValueSnapshot | undefined> {
+    if (askPrice === undefined || askPrice <= 0) {
+      return undefined;
+    }
     if (!this.deps.strategyAnalysisEngine) {
       this.logSkipOnce(signal.market.slug, "expected_value_analysis_unavailable", {
         market: signal.market.asset,
@@ -691,12 +726,22 @@ export class BotRunner {
       if (this.config.evUseSimilarity && this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity) {
         // Similarity gate: match the live setup against the NEAREST historical setups (not the exact
         // config), so a setup with real edge but few exact analogues can still trade.
+        // 2026-07-16 estimatorBacktest: 3 features + prior anclado al ask GANÓ el walk-forward
+        // (+$539 vs +$517 exacto, calErr 0.299 vs 0.331); las features ricas (velocity/spread/skew,
+        // "knn6") PERDIERON con los quotes actuales — el pool las conserva, pero la query las omite a
+        // propósito (knnCore solo compara features presentes en ambos lados). Re-testear cuando el
+        // muestreo de quotes sea más denso.
         const secondsRemaining = (signal.market.endMs - signal.tick.timestampMs) / 1000;
         const estimate = await this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity(
           signal.market.asset,
           signal.outcome,
           params,
-          { secondsToEnd: secondsRemaining, favorableDistanceUsd: Math.abs(signal.distanceUsd), ask: askPrice },
+          {
+            secondsToEnd: secondsRemaining,
+            favorableDistanceUsd: Math.abs(signal.distanceUsd),
+            ask: askPrice,
+          },
+          { priorProbability: askPrice },
         );
         tradeCount = Math.round(estimate.effectiveSampleSize);
         winCount = Math.round(estimate.winProbability * tradeCount);
@@ -737,6 +782,7 @@ export class BotRunner {
         tradeCount,
         safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
         minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
+        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap() : undefined,
       });
       if (!expectedValue.passesRecommendedEntry) {
         this.logSkipOnce(signal.market.slug, "expected_value_gate_failed", {

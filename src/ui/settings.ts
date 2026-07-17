@@ -95,6 +95,7 @@ const settingsSchema = z.object({
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
   evUseSimilarity: z.boolean().default(false),
+  evCalibration: z.boolean().default(false),
   evSafetyMargin: z.coerce.number().nonnegative().lt(1).default(0.03),
   evMinHistoryTrades: z.coerce.number().int().nonnegative().default(15),
   minFillRatio: z.coerce.number().min(0).max(1).default(0.5),
@@ -103,6 +104,7 @@ const settingsSchema = z.object({
   pollIntervalMs: z.coerce.number().positive(),
   openingCaptureGraceMs: z.coerce.number().positive(),
   aiAutoApplyLive: z.boolean().default(false),
+  aiAutoTuneAskCap: z.boolean().default(false),
   aiLastAppliedAtMs: z.coerce.number().positive().optional(),
 });
 
@@ -202,6 +204,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
     evUseSimilarity: config.evUseSimilarity ?? false,
+    evCalibration: config.evCalibration ?? false,
     evSafetyMargin: config.evSafetyMargin ?? 0.03,
     evMinHistoryTrades: config.evMinHistoryTrades ?? 15,
     minFillRatio: config.minFillRatio ?? 0.5,
@@ -210,6 +213,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     pollIntervalMs: config.pollIntervalMs,
     openingCaptureGraceMs: config.openingCaptureGraceMs,
     aiAutoApplyLive: false,
+    aiAutoTuneAskCap: Boolean(config.aiAutoTuneAskCap ?? false),
   };
 }
 
@@ -268,6 +272,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     requirePositiveEv: settings.requirePositiveEv,
     evUseSimilarity: settings.evUseSimilarity,
+    evCalibration: settings.evCalibration,
     evSafetyMargin: settings.evSafetyMargin,
     evMinHistoryTrades: settings.evMinHistoryTrades,
     minFillRatio: settings.minFillRatio,

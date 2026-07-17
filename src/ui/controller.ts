@@ -7,6 +7,7 @@ import {
   serializeAnalyticsSamples,
 } from "../analyticsRecorder.js";
 import { summarizeAskBands, type AskBandSummary } from "../askBands.js";
+import { ASK_CAP_TUNER_LOCKS, recommendAskCap } from "../askCapTuner.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import {
@@ -41,6 +42,7 @@ import {
   calculatePnlSummaryByMode,
   calculateResetAwarePnlSummary,
   calculateTradePnl,
+  filterTradesForPnlReset,
   emptyPnlSummaryByMode,
   EMPTY_PNL_SUMMARY,
   type PnlResetAtMsByMode,
@@ -51,7 +53,9 @@ import { getWinningOutcome, isTickStale, isWithinEntryWindow } from "../signalEn
 import { StateStore } from "../stateStore.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import { dailySpendKey, secondsToEnd } from "../time.js";
+import { shouldSendDailyReport, formatDailyReport } from "../dailyReport.js";
 import { dayKeyInTimeZone, resolveTimeZone, yearInTimeZone } from "../timezone.js";
+import { validationProgress } from "./client/chartData.js";
 import type {
   AiRecommendation,
   AiRecommendationsResponse,
@@ -112,7 +116,8 @@ export interface RunnerLike {
       | "entryWindowSeconds"
       | "entryWindowSecondsByMarket"
       | "entryWindowSecondsByMarketOutcome"
-    >,
+    > &
+      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome">>,
   ): void;
   resetPnl?(mode: Mode): Promise<void>;
   resetRiskHalt?(mode: Mode): Promise<void>;
@@ -132,6 +137,8 @@ export interface BotControllerDeps {
   fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   startPriceFeed?: boolean;
+  // false = sin timer del reporte diario (tests).
+  dailyReportTimer?: boolean;
 }
 
 export interface AnalysisExport {
@@ -183,6 +190,11 @@ export class BotController {
   private stateSummaryCache?: CachedUiStateSummary;
   private aiAutoApplyTimer?: ReturnType<typeof setInterval>;
   private aiAutoApplyInFlight = false;
+  // 24h per-market cooldown of the ask-cap tuner (in-memory: a restart re-evaluates, which is fine
+  // because the tuner is deterministic over the same ledger).
+  private readonly askCapTunedAtMs = new Map<MarketSymbol, number>();
+  private dailyReportTimer?: NodeJS.Timeout;
+  private lastDailyReportDayKey?: string;
 
   constructor(
     private readonly baseConfig: BotConfig,
@@ -206,14 +218,122 @@ export class BotController {
     if (deps.startPriceFeed !== false) {
       this.priceFeed.start();
     }
+
+    // Auto-reporte diario: chequeo ligero cada 10 min; envía UNA vez al cruzar la hora configurada.
+    // Corre aunque el bot esté detenido (el reporte incluye precisamente ese estado).
+    if (deps.dailyReportTimer !== false) {
+      this.dailyReportTimer = setInterval(() => void this.runDailyReportTick(), 10 * 60_000);
+      this.dailyReportTimer.unref?.();
+    }
   }
 
   dispose(): void {
     this.stopped = true;
     this.stopAiAutoApplyLoop();
+    if (this.dailyReportTimer) {
+      clearInterval(this.dailyReportTimer);
+      this.dailyReportTimer = undefined;
+    }
     this.runner?.stop();
     this.priceFeed.stop();
     this.unsubscribeLogger();
+  }
+
+  /** Sends the daily Telegram self-report when the configured hour is crossed. Public for tests. */
+  async runDailyReportTick(nowMs = Date.now()): Promise<void> {
+    try {
+      const telegram = await this.telegramStore.loadSanitized();
+      if (!telegram.dailyReportEnabled || !telegram.configured) {
+        return;
+      }
+      const settings = await this.settingsStore.load(this.baseConfig);
+      const schedule = shouldSendDailyReport({
+        nowMs,
+        hour: telegram.dailyReportHour,
+        timeZone: settings.timezone,
+        lastSentDayKey: this.lastDailyReportDayKey,
+      });
+      if (!schedule.send) {
+        return;
+      }
+      this.lastDailyReportDayKey = schedule.dayKey;
+
+      const stateSummary = await this.getStateSummary(nowMs);
+      const config = applySettings(this.baseConfig, settings);
+      const postReset = filterTradesForPnlReset(stateSummary.tradesSorted, stateSummary.pnlResetAtMs).filter(
+        (trade) => trade.mode === "live" && trade.resolved,
+      );
+      const todayKey = dayKeyInTimeZone(nowMs, settings.timezone);
+      const today = stateSummary.tradesSorted.filter(
+        (trade) =>
+          trade.mode === "live" &&
+          trade.resolved &&
+          dayKeyInTimeZone(trade.resolved.resolvedAtMs, settings.timezone) === todayKey,
+      );
+      const progress = validationProgress(postReset);
+      const riskHalt = evaluateRiskCircuitBreaker(
+        stateSummary.tradesSorted,
+        this.mode ?? this.baseConfig.mode,
+        {
+          maxDailyLossUsd: config.maxDailyLossUsd,
+          maxConsecutiveLosses: config.maxConsecutiveLosses,
+          cooldownHours: config.riskHaltCooldownHours,
+          timeZone: config.timezone,
+        },
+        nowMs,
+        stateSummary.state.getRiskHaltResetAtMs()[this.mode ?? this.baseConfig.mode] ?? 0,
+      );
+      const capTuner = SUPPORTED_MARKETS.map((market) => {
+        const bands = summarizeAskBands(stateSummary.tradesSorted, "live", {}, { market });
+        const current = settings.maxAskPriceByMarketOutcome[market].UP;
+        return { market, current, target: recommendAskCap(bands, current)?.targetCap };
+      });
+      let autoAdjust: { market: string; state: string }[] = [];
+      try {
+        const recommendations = await this.recommendationEngine.recommend(
+          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
+          nowMs,
+          autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
+        );
+        autoAdjust = recommendations.recommendations.map((recommendation) => ({
+          market: recommendation.market,
+          state: recommendation.canAutoApply ? "auto-aplicable" : recommendation.canApply ? "aplicable (manual)" : "esperando datos",
+        }));
+      } catch {
+        // El reporte sale igual sin la sección de autoajuste.
+      }
+
+      const sumNet = (trades: typeof today) =>
+        trades.reduce((sum, trade) => sum + (calculateTradePnl(trade).netUsd ?? 0), 0);
+      const report = formatDailyReport({
+        dayKey: schedule.dayKey,
+        mode: this.mode,
+        running: this.isRunning(),
+        todayNetUsd: sumNet(today),
+        todayTrades: today.length,
+        todayWins: today.filter((trade) => trade.resolved?.won).length,
+        postResetNetUsd: sumNet(postReset),
+        postResetTrades: postReset.length,
+        validationTarget: progress.target,
+        varianceBandUsd: progress.varianceBandUsd,
+        withinBand: progress.withinBand,
+        riskHalt: { tripped: riskHalt.tripped, reason: riskHalt.reason },
+        autoAdjust,
+        capTuner,
+        memoryRssMb: Math.round(process.memoryUsage().rss / 1_048_576),
+      });
+      void this.notifier.notify({
+        key: `daily-report:${schedule.dayKey}`,
+        title: report.title,
+        body: report.body,
+        minIntervalMs: 0,
+      });
+      logger.info("Reporte diario enviado.", { dayKey: schedule.dayKey });
+    } catch (error) {
+      logger.warn("Reporte diario falló; se reintenta en el próximo chequeo.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   onEvent(listener: (event: UiEvent) => void): () => void {
@@ -498,55 +618,60 @@ export class BotController {
     }
     this.aiAutoApplyInFlight = true;
     try {
-      const settings = await this.settingsStore.load(this.baseConfig);
-      if (!settings.aiAutoApplyLive) {
-        return [];
+      let settings = await this.settingsStore.load(this.baseConfig);
+      let applicable: ApplicableRecommendation[] = [];
+
+      if (settings.aiAutoApplyLive) {
+        const response = await this.recommendationEngine.recommend(
+          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
+          nowMs,
+          autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
+        );
+        applicable = response.recommendations.filter(isApplicableRecommendation);
+        if (applicable.length > 0) {
+          const nextSettings = applyRecommendationsToSettings(
+            settings,
+            applicable,
+            nowMs,
+            this.baseConfig.minDistanceFloorUsdByMarket,
+          );
+          const saved = await this.settingsStore.save(nextSettings);
+          settings = saved;
+          this.stateSummaryCache = undefined;
+          this.runner?.updateStrategySettings?.({
+            minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
+            minDistanceUsdByMarketOutcome: saved.minDistanceUsdByMarketOutcome,
+            entryWindowSeconds: saved.entryWindowSeconds,
+            entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
+            entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
+          });
+          logger.info("Autoajuste predictivo aplico recomendaciones en tiempo real.", {
+            markets: applicable.map((recommendation) => ({
+              market: recommendation.market,
+              entryWindowSeconds: recommendation.recommended.entryWindowSeconds,
+              minDistanceUsd: recommendation.recommended.minDistanceUsd,
+              confidence: recommendation.confidence,
+              improvementAdjustedRoi: recommendation.improvementAdjustedRoi,
+              improvementYield: recommendation.improvementYield,
+            })),
+          });
+          void this.notifier.notify({
+            key: "ai-auto-apply",
+            title: "Autoajuste predictivo aplicado",
+            body: applicable
+              .map(
+                (recommendation) =>
+                  `${recommendation.market}: ventana ${recommendation.recommended.entryWindowSeconds}s, distancia ${recommendation.recommended.minDistanceUsd}.`,
+              )
+              .join("\n"),
+            minIntervalMs: 5 * 60_000,
+          });
+        }
       }
-      const response = await this.recommendationEngine.recommend(
-        toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
-        nowMs,
-        autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
-      );
-      const applicable = response.recommendations.filter(isApplicableRecommendation);
-      if (applicable.length === 0) {
-        return [];
+
+      if (settings.aiAutoTuneAskCap) {
+        await this.runAskCapTuning(settings, nowMs);
       }
-      const nextSettings = applyRecommendationsToSettings(
-        settings,
-        applicable,
-        nowMs,
-        this.baseConfig.minDistanceFloorUsdByMarket,
-      );
-      const saved = await this.settingsStore.save(nextSettings);
-      this.stateSummaryCache = undefined;
-      this.runner?.updateStrategySettings?.({
-        minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
-        minDistanceUsdByMarketOutcome: saved.minDistanceUsdByMarketOutcome,
-        entryWindowSeconds: saved.entryWindowSeconds,
-        entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
-        entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
-      });
-      logger.info("Autoajuste predictivo aplico recomendaciones en tiempo real.", {
-        markets: applicable.map((recommendation) => ({
-          market: recommendation.market,
-          entryWindowSeconds: recommendation.recommended.entryWindowSeconds,
-          minDistanceUsd: recommendation.recommended.minDistanceUsd,
-          confidence: recommendation.confidence,
-          improvementAdjustedRoi: recommendation.improvementAdjustedRoi,
-          improvementYield: recommendation.improvementYield,
-        })),
-      });
-      void this.notifier.notify({
-        key: "ai-auto-apply",
-        title: "Autoajuste predictivo aplicado",
-        body: applicable
-          .map(
-            (recommendation) =>
-              `${recommendation.market}: ventana ${recommendation.recommended.entryWindowSeconds}s, distancia ${recommendation.recommended.minDistanceUsd}.`,
-          )
-          .join("\n"),
-        minIntervalMs: 5 * 60_000,
-      });
       return applicable;
     } catch (error) {
       logger.warn("Autoajuste predictivo fallo; se reintenta en el proximo ciclo.", {
@@ -556,6 +681,64 @@ export class BotController {
     } finally {
       this.aiAutoApplyInFlight = false;
     }
+  }
+
+  /**
+   * Ask-cap auto-tuning from REALIZED live bands (full live history: fill quality across regimes), with
+   * the tuner's pre-committed locks plus a 24h per-market cooldown. Applies to both sides at once and
+   * notifies every change — the cap is the highest-impact money knob, so it never moves silently.
+   */
+  private async runAskCapTuning(settings: UiSettings, nowMs: number): Promise<void> {
+    const stateSummary = await this.getStateSummary(nowMs);
+    const changes: { market: MarketSymbol; from: number; to: number; target: number; reason: string }[] = [];
+    const nextCaps = structuredClone(settings.maxAskPriceByMarketOutcome);
+    for (const market of SUPPORTED_MARKETS) {
+      const lastTunedAtMs = this.askCapTunedAtMs.get(market) ?? 0;
+      if (nowMs - lastTunedAtMs < ASK_CAP_TUNER_LOCKS.COOLDOWN_MS) {
+        continue;
+      }
+      const bands = summarizeAskBands(stateSummary.tradesSorted, "live", {}, { market });
+      const currentCap = settings.maxAskPriceByMarketOutcome[market].UP;
+      const recommendation = recommendAskCap(bands, currentCap);
+      if (!recommendation) {
+        continue;
+      }
+      nextCaps[market] = { UP: recommendation.nextCap, DOWN: recommendation.nextCap };
+      this.askCapTunedAtMs.set(market, nowMs);
+      changes.push({
+        market,
+        from: currentCap,
+        to: recommendation.nextCap,
+        target: recommendation.targetCap,
+        reason: recommendation.reason,
+      });
+    }
+    if (changes.length === 0) {
+      return;
+    }
+    const saved = await this.settingsStore.save({ ...settings, maxAskPriceByMarketOutcome: nextCaps });
+    this.stateSummaryCache = undefined;
+    this.runner?.updateStrategySettings?.({
+      minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
+      minDistanceUsdByMarketOutcome: saved.minDistanceUsdByMarketOutcome,
+      entryWindowSeconds: saved.entryWindowSeconds,
+      entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
+      entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
+      maxAskPrice: saved.maxAskPrice,
+      maxAskPriceByMarketOutcome: saved.maxAskPriceByMarketOutcome,
+    });
+    logger.info("Auto-tuning del ask cap aplicado desde bandas realizadas.", { changes });
+    void this.notifier.notify({
+      key: `ask-cap-tuned:${nowMs}`,
+      title: "Ask cap auto-ajustado",
+      body: changes
+        .map(
+          (change) =>
+            `${change.market}: ${change.from.toFixed(2)} -> ${change.to.toFixed(2)} (objetivo ${change.target.toFixed(2)}). ${change.reason}`,
+        )
+        .join("\n"),
+      minIntervalMs: 0,
+    });
   }
 
   async exportAnalysisSamples(now = new Date()): Promise<AnalysisExport> {
@@ -1121,6 +1304,8 @@ export class BotController {
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
+      evCalibration: config.evCalibration ?? settings.evCalibration,
+      aiAutoTuneAskCap: config.aiAutoTuneAskCap ?? settings.aiAutoTuneAskCap,
       evSafetyMargin: config.evSafetyMargin ?? settings.evSafetyMargin,
       evMinHistoryTrades: config.evMinHistoryTrades ?? settings.evMinHistoryTrades,
       minFillRatio: config.minFillRatio ?? settings.minFillRatio,

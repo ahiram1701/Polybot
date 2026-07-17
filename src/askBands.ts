@@ -32,9 +32,15 @@ export function summarizeAskBands(
   trades: TradeAttempt[],
   mode: Mode,
   resetAtMsByMode: PnlResetAtMsByMode = {},
+  options: { market?: TradeAttempt["asset"] } = {},
 ): AskBandSummary {
   const resolved = filterTradesForPnlReset(trades, resetAtMsByMode)
-    .filter((trade) => trade.mode === mode && trade.resolved !== undefined)
+    .filter(
+      (trade) =>
+        trade.mode === mode &&
+        trade.resolved !== undefined &&
+        (options.market === undefined || trade.asset === options.market),
+    )
     .flatMap((trade) => (typeof trade.bestAsk === "number" ? [{ trade, ask: trade.bestAsk }] : []));
 
   const bands: AskBandRow[] = [];

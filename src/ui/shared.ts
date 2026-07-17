@@ -49,6 +49,8 @@ export interface UiSettings {
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
   evUseSimilarity: boolean;
+  // Calibracion empirica de la probabilidad del gate desde el propio ledger.
+  evCalibration: boolean;
   evSafetyMargin: number;
   evMinHistoryTrades: number;
   minFillRatio: number;
@@ -57,6 +59,8 @@ export interface UiSettings {
   pollIntervalMs: number;
   openingCaptureGraceMs: number;
   aiAutoApplyLive: boolean;
+  // Auto-tuning del ask cap por mercado desde bandas realizadas (candados fijos).
+  aiAutoTuneAskCap: boolean;
   aiLastAppliedAtMs?: number;
 }
 
@@ -149,6 +153,9 @@ export interface TelegramNotificationSettings {
   // Digest mode: per-trade pings batched into one summary every N minutes.
   digestEnabled: boolean;
   digestIntervalMinutes: number;
+  // Reporte diario a la hora configurada (tz-aware).
+  dailyReportEnabled: boolean;
+  dailyReportHour: number;
 }
 
 export interface TelegramNotificationPatch {
@@ -158,6 +165,8 @@ export interface TelegramNotificationPatch {
   publicUrl?: string;
   digestEnabled?: boolean;
   digestIntervalMinutes?: number;
+  dailyReportEnabled?: boolean;
+  dailyReportHour?: number;
 }
 
 export interface TelegramNotificationTestResponse {

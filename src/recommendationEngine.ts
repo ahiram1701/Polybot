@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
+import { knnEstimate, type KnnObservation, type KnnOptions, type KnnPoint } from "./knnCore.js";
 import { getMinDistanceUsd, SUPPORTED_MARKETS } from "./markets.js";
 import type {
   AiRecommendation,
@@ -466,37 +467,34 @@ function buildWalkForwardPredictions(observations: CandidateObservation[]): Walk
   return predictions;
 }
 
-function predictWinProbability(training: CandidateObservation[], observation: CandidateObservation): number {
-  const neighbors = training
-    .map((candidate) => ({
-      candidate,
-      distance: featureDistance(candidate, observation),
-    }))
-    .sort((left, right) => left.distance - right.distance)
-    .slice(0, Math.min(12, Math.max(5, Math.round(Math.sqrt(training.length) * 2))));
+/**
+ * Engine k-NN options. Recency/prior stay at parity with the historical behavior; the walk-forward
+ * sweep decides whether richer settings become defaults (see smoke/evGateBacktest.ts).
+ */
+export const ENGINE_KNN_OPTIONS: Pick<KnnOptions, "priorProbability" | "recencyHalfLifeDays"> = {};
 
-  let weightedWins = 1;
-  let totalWeight = 2;
-  for (const neighbor of neighbors) {
-    const weight = 1 / (0.25 + neighbor.distance);
-    weightedWins += neighbor.candidate.won ? weight : 0;
-    totalWeight += weight;
-  }
-  return clamp(weightedWins / totalWeight, 0.05, 0.95);
+function toKnnPoint(observation: CandidateObservation): KnnPoint {
+  return {
+    secondsToEnd: observation.secondsToEnd,
+    absDistanceUsd: observation.absDistanceUsd,
+    ask: observation.ask,
+    velocityUsdPerSecond: observation.velocityUsdPerSecond,
+    spread: observation.spread,
+    quoteSkew: observation.quoteSkew,
+    outcome: observation.outcome,
+    atMs: observation.timestampMs,
+  };
 }
 
-function featureDistance(left: CandidateObservation, right: CandidateObservation): number {
-  const distanceScale = Math.max(right.absDistanceUsd, left.absDistanceUsd, 1);
-  const velocityScale = Math.max(Math.abs(right.velocityUsdPerSecond), Math.abs(left.velocityUsdPerSecond), 0.1);
-  return (
-    Math.abs(left.secondsToEnd - right.secondsToEnd) / 55 +
-    Math.abs(left.absDistanceUsd - right.absDistanceUsd) / distanceScale +
-    Math.abs(left.velocityUsdPerSecond - right.velocityUsdPerSecond) / velocityScale +
-    Math.abs(left.ask - right.ask) / 0.75 +
-    Math.abs((left.spread ?? 0) - (right.spread ?? 0)) / 0.75 +
-    Math.abs((left.quoteSkew ?? 0) - (right.quoteSkew ?? 0)) / 0.75 +
-    (left.outcome === right.outcome ? 0 : 0.2)
-  );
+function predictWinProbability(training: CandidateObservation[], observation: CandidateObservation): number {
+  const pool: KnnObservation[] = training.map((candidate) => ({ ...toKnnPoint(candidate), won: candidate.won }));
+  return knnEstimate(pool, toKnnPoint(observation), {
+    kMin: 5,
+    kMax: 12,
+    priorWeight: 2,
+    nowMs: observation.timestampMs,
+    ...ENGINE_KNN_OPTIONS,
+  }).winProbability;
 }
 
 function findSignalTick(
