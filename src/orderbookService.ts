@@ -4,9 +4,11 @@ import type { OrderbookQuote } from "./types.js";
 
 // Orderbook HTTP calls had no timeout, so an occasional network stall froze the whole capture phase
 // (a 46s hang was observed in the loop-latency instrumentation, leaving the bot blind and missing
-// entries). A tight cap turns a hang into a normal skip: callers already treat a quote failure as
-// "no quote this tick".
-const DEFAULT_QUOTE_TIMEOUT_MS = 3_000;
+// entries). A healthy orderbook responds in <500ms, so a 2s cap is ample headroom; beyond it the call
+// is treated as a normal skip (callers already handle a quote failure as "no quote this tick") and the
+// next tick retries ~1-2s later. Tighter than 2s risks dropping merely-slow-but-working quotes; the
+// residual multi-second tail is Polymarket's CLOB API, not our loop.
+const DEFAULT_QUOTE_TIMEOUT_MS = 2_000;
 
 export class OrderbookService {
   constructor(
