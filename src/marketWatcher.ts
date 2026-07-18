@@ -45,7 +45,10 @@ export class MarketWatcher {
       return cached.market;
     }
 
-    const response = await this.fetchFn(`${this.gammaHost}/events/slug/${slug}`);
+    // Cap the gamma request so a stall can't delay the loop (AbortSignal actually cancels the socket).
+    const response = await this.fetchFn(`${this.gammaHost}/events/slug/${slug}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
     if (response.status === 404) {
       this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market: null });
       return null;

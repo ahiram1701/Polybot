@@ -132,6 +132,8 @@ export class BotRunner {
   private lastOfficialSweepMs = 0;
   private readonly officialCheckAttemptsMs = new Map<string, number>();
   private calibrationCache?: { resolvedCount: number; map: CalibrationMap };
+  private readonly loopDurationsMs: number[] = [];
+  private lastLoopStatsLogMs = 0;
 
   constructor(
     private readonly config: BotConfig,
@@ -251,13 +253,18 @@ export class BotRunner {
   }
 
   async runOnce(nowMs = Date.now()): Promise<void> {
+    const startedAt = Date.now();
+    let capturePhaseMs = 0;
+    let decidePhaseMs = 0;
+
     await this.reconcileLiveTrades(nowMs);
     await this.resolveCompletedTrades(nowMs);
-    await this.verifyOfficialResolutions(nowMs);
 
     const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
     if (markets.length === 0) {
       this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
+      // La verificación oficial no depende de mercados abiertos; debe seguir corriendo.
+      await this.verifyOfficialResolutions(nowMs);
       return;
     }
 
@@ -281,20 +288,34 @@ export class BotRunner {
       this.notifyRiskHalt(riskHalt, nowMs);
     }
 
-    for (const market of markets) {
-      const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
-      this.logMarketChange(market);
-      const opening = await this.ensureOpening(market, latestTick, nowMs);
-      const analyticsQuotes = await this.getAnalyticsQuotes(market, nowMs);
+    // FASE 1 — captura, EN PARALELO por mercado: la parte lenta son las llamadas HTTP al orderbook y
+    // la persistencia de analytics; en serie sumaban ~2s por iteración (gap de ticks medido p50 2s,
+    // 42% >3s). Es seguro: los samples por mercado son disjuntos, writeFileAtomic serializa por path y
+    // aquí no se mueve dinero. Todo lo que decide/ejecuta queda en la FASE 2 secuencial.
+    const captureStartedAt = Date.now();
+    const observations = await Promise.all(
+      markets.map(async (market) => {
+        const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
+        this.logMarketChange(market);
+        const opening = await this.ensureOpening(market, latestTick, nowMs);
+        const analyticsQuotes = await this.getAnalyticsQuotes(market, nowMs);
+        await this.recordAnalyticsObservation({
+          market,
+          opening,
+          latestTick,
+          quotes: analyticsQuotes,
+          nowMs,
+        });
+        const arbOpportunity = await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
+        return { market, latestTick, opening, analyticsQuotes, arbOpportunity };
+      }),
+    );
+    capturePhaseMs = Date.now() - captureStartedAt;
+    const decideStartedAt = Date.now();
+
+    // FASE 2 — decisión y ejecución, secuencial (orden determinista, límites de gasto compartidos).
+    for (const { market, latestTick, opening, analyticsQuotes, arbOpportunity } of observations) {
       analyticsQuotesBySlug.set(market.slug, analyticsQuotes);
-      await this.recordAnalyticsObservation({
-        market,
-        opening,
-        latestTick,
-        quotes: analyticsQuotes,
-        nowMs,
-      });
-      const arbOpportunity = await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
       if (arbOpportunity && !riskHalt.tripped && opening && latestTick) {
         await this.executeArbOpportunity({
           market,
@@ -332,6 +353,35 @@ export class BotRunner {
 
     const candidates = await this.buildTradeCandidates(tradeSignals, analyticsQuotesBySlug);
     await this.executeTradeCandidates(candidates);
+    decidePhaseMs = Date.now() - decideStartedAt;
+
+    // Fuera del camino caliente: la verificación oficial (2 HTTP a gamma cada 30s) corre al FINAL del
+    // tick, después de capturar precios y decidir — su latencia ya no retrasa la lectura del mercado.
+    await this.verifyOfficialResolutions(nowMs);
+
+    this.recordLoopTiming(Date.now() - startedAt, capturePhaseMs, decidePhaseMs);
+  }
+
+  /** Rolling loop-latency stats: slow iterations are logged with a breakdown; percentiles every 5 min. */
+  private recordLoopTiming(totalMs: number, captureMs: number, decideMs: number): void {
+    this.loopDurationsMs.push(totalMs);
+    if (this.loopDurationsMs.length > 600) {
+      this.loopDurationsMs.shift();
+    }
+    if (totalMs > 2_500) {
+      logger.warn("Iteración lenta del loop.", { totalMs, captureMs, decideMs });
+    }
+    const nowMs = Date.now();
+    if (nowMs - this.lastLoopStatsLogMs >= 5 * 60_000 && this.loopDurationsMs.length >= 10) {
+      this.lastLoopStatsLogMs = nowMs;
+      const sorted = [...this.loopDurationsMs].sort((left, right) => left - right);
+      logger.info("Latencia del loop (ventana móvil).", {
+        iterations: sorted.length,
+        p50Ms: sorted[Math.floor(sorted.length * 0.5)],
+        p95Ms: sorted[Math.floor(sorted.length * 0.95)],
+        maxMs: sorted[sorted.length - 1],
+      });
+    }
   }
 
   private async getCurrentMarkets(marketsToFetch: readonly MarketSymbol[], nowMs: number): Promise<MarketInfo[]> {

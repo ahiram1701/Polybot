@@ -90,6 +90,9 @@ export class StrategyAnalysisEngine {
   private cache?: { key: string; response: StrategyAnalysisResponse };
   private samplesCache?: { signature: string; samples: AnalyticsSample[] };
   private readonly pending = new Map<string, Promise<StrategyAnalysisResponse>>();
+  // The similarity pool is O(samples×ticks) to build; rebuilding it on EVERY gate evaluation added
+  // latency exactly at the entry moment. Keyed by params + the samples-file signature.
+  private similarityPoolCache?: { key: string; pool: SimilarityObservation[] };
 
   constructor(private readonly dataDir: string) {}
 
@@ -128,6 +131,17 @@ export class StrategyAnalysisEngine {
     options?: SimilarityOptions,
   ): Promise<SimilarityEstimate> {
     const samples = await this.loadSamples();
+    const cacheKey = [
+      this.samplesCache?.signature ?? "nosig",
+      market,
+      outcome,
+      params.entryWindowSeconds,
+      params.minDistanceUsd,
+      params.maxAskPrice,
+    ].join("|");
+    if (this.similarityPoolCache?.key === cacheKey) {
+      return estimateWinProbabilityBySimilarity(this.similarityPoolCache.pool, live, options);
+    }
     const pool: SimilarityObservation[] = [];
     for (const sample of samples) {
       if (sample.market !== market || !sample.winningOutcome) {
@@ -155,6 +169,7 @@ export class StrategyAnalysisEngine {
         atMs: signalTick.timestampMs,
       });
     }
+    this.similarityPoolCache = { key: cacheKey, pool };
     return estimateWinProbabilityBySimilarity(pool, live, options);
   }
 

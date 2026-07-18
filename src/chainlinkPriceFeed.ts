@@ -90,16 +90,25 @@ export class ChainlinkPriceFeed {
     if (!ticks) {
       return undefined;
     }
+    // Official criterion (same as resolution): the opening price is the oracle value IN EFFECT at the
+    // window start = the last tick at-or-before it. Preferring "most recent in ±grace" captured ticks
+    // up to 15s AFTER the open, so a momentary spike became the reference and windows resolved against
+    // the wrong side (~8% of samples measured). The first post-open tick within grace remains only as
+    // a cold-start fallback (no history at the boundary yet).
     const lo = windowStartMs - graceMs;
-    const hi = windowStartMs + graceMs;
-    let best: PriceTick | undefined;
+    let atOrBefore: PriceTick | undefined;
+    let firstAfter: PriceTick | undefined;
     for (const tick of ticks) {
-      // recentTicks is kept sorted ascending, so the last match is the most recent in range.
-      if (tick.timestampMs >= lo && tick.timestampMs <= hi) {
-        best = tick;
+      // recentTicks is kept sorted ascending.
+      if (tick.timestampMs <= windowStartMs) {
+        if (tick.timestampMs >= lo) {
+          atOrBefore = tick;
+        }
+      } else if (firstAfter === undefined && tick.timestampMs <= windowStartMs + graceMs) {
+        firstAfter = tick;
       }
     }
-    return best;
+    return atOrBefore ?? firstAfter;
   }
 
   onTick(handler: TickHandler): () => void {
