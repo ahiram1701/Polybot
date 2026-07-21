@@ -863,6 +863,14 @@ th {
   line-height: 1.45;
 }
 
+/* Para hints que contradicen lo que el ajuste promete (p. ej. un auto-ajuste que el backtest dejo
+   por debajo del valor fijo): tienen que verse, no perderse entre el gris del resto. */
+.settings-hint-warn {
+  color: var(--warning);
+  border-left: 2px solid currentColor;
+  padding-left: 8px;
+}
+
 .workspace-heading strong,
 .workspace-heading span {
   display: block;

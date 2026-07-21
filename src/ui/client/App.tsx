@@ -197,10 +197,13 @@ const outcomeOptions: Outcome[] = ["UP", "DOWN"];
 
 type OutcomeNumberSettings = UiSettings["maxAskPriceByMarketOutcome"];
 
-function mapOutcomeSettings(settings: OutcomeNumberSettings, fn: (value: number) => number): OutcomeNumberSettings {
+function mapOutcomeSettings(
+  settings: OutcomeNumberSettings,
+  fn: (value: number, symbol: MarketSymbol, outcome: Outcome) => number,
+): OutcomeNumberSettings {
   const next = {} as OutcomeNumberSettings;
   for (const { symbol } of marketOptions) {
-    next[symbol] = { UP: fn(settings[symbol].UP), DOWN: fn(settings[symbol].DOWN) };
+    next[symbol] = { UP: fn(settings[symbol].UP, symbol, "UP"), DOWN: fn(settings[symbol].DOWN, symbol, "DOWN") };
   }
   return next;
 }
@@ -1595,6 +1598,7 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
   useEffect(() => setDraft(settings), [settings]);
 
   const commonAskCap = commonOutcomeValue(draft.maxAskPriceByMarketOutcome);
+  const commonAskFloor = commonOutcomeValue(draft.minAskPriceByMarketOutcome);
 
   function update(key: keyof UiSettings, value: number | boolean | string) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1695,6 +1699,14 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
     });
   }
 
+  // Monto unico por mercado/lado. El motor solo lee los montos "live" (resolveConfiguredTradeAmountUsd),
+  // asi que sim y live operan el mismo tamano; escribimos ambos para que ningun lector legado quede
+  // desalineado y para que la UI no pueda mostrar dos cifras distintas de lo que en realidad es una sola.
+  function updateMarketAmount(symbol: MarketSymbol, outcome: Outcome, value: number) {
+    updateMarketLiveAmount(symbol, outcome, value);
+    updateMarketSimAmount(symbol, outcome, value);
+  }
+
   function updateMarketAskCap(symbol: MarketSymbol, outcome: Outcome, value: number) {
     setDraft((current) => {
       const maxAskPriceByMarketOutcome = {
@@ -1734,6 +1746,17 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         maxAskPriceByMarketOutcome,
       };
     });
+  }
+
+  // Contraparte del anterior para el piso. Se limita al techo de cada mercado/lado: un piso por encima
+  // del techo cerraria la ventana y el bot dejaria de operar ese lado en silencio.
+  function setAllAskFloors(value: number) {
+    setDraft((current) => ({
+      ...current,
+      minAskPriceByMarketOutcome: mapOutcomeSettings(current.minAskPriceByMarketOutcome, (_previous, symbol, outcome) =>
+        Math.min(value, current.maxAskPriceByMarketOutcome[symbol][outcome]),
+      ),
+    }));
   }
 
   async function submit(event: FormEvent) {
@@ -1805,18 +1828,11 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
                   onChange={(value) => updateMarketEntryWindow(selectedMarketOption.symbol, outcome, value)}
                 />
                 <NumberField
-                  label={`Monto sim ${selectedMarketOption.label} ${outcome}`}
-                  value={draft.simTradeAmountUsdByMarketOutcome[selectedMarketOption.symbol][outcome]}
-                  min={0.1}
-                  step={0.1}
-                  onChange={(value) => updateMarketSimAmount(selectedMarketOption.symbol, outcome, value)}
-                />
-                <NumberField
-                  label={`Monto live ${selectedMarketOption.label} ${outcome}`}
+                  label={`Monto por trade ${selectedMarketOption.label} ${outcome}`}
                   value={draft.liveTradeAmountUsdByMarketOutcome[selectedMarketOption.symbol][outcome]}
                   min={0.1}
                   step={0.1}
-                  onChange={(value) => updateMarketLiveAmount(selectedMarketOption.symbol, outcome, value)}
+                  onChange={(value) => updateMarketAmount(selectedMarketOption.symbol, outcome, value)}
                 />
                 <NumberField
                   label={`Piso distancia ${selectedMarketOption.label}`}
@@ -1882,12 +1898,19 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             onChange={(event) => update("aiAutoTuneAskCap", event.target.checked)}
             disabled={running}
           />
-          <span>Auto-tuning del ask cap por bandas realizadas (live)</span>
+          <span>Auto-ajuste de la ventana de ask (piso y techo)</span>
         </label>
         <p className="settings-hint">
-          Deriva el cap por mercado de la tabla de bandas de ask con fills reales: extiende el cap mientras cada banda
-          (≥20 trades) supere su break-even por 3pp. Candados: rango 0.45–0.85, cambio máx ±0.05 por aplicación, cooldown
-          24h por mercado, y notificación por Telegram en cada cambio.
+          Deriva la ventana [piso, techo] de cada mercado desde la tabla de bandas de ask con fills reales del modo
+          activo: conserva las bandas que superen su break-even por 3pp y descarta las de los extremos que no.
+          Candados: rango 0.20–0.85, ancho mínimo 0.15 (no puede estrangularse a cero), cambio máx ±0.05 por borde y
+          por aplicación, mínimo 20 trades por banda y 60 del mercado, cooldown 24h, y aviso por Telegram en cada
+          cambio.
+        </p>
+        <p className="settings-hint settings-hint-warn">
+          Advertencia honesta: en el replay histórico este auto-ajuste terminó <strong>-$25.57 por debajo</strong> de
+          dejar la ventana fija. Está activo porque tú lo pediste; si prefieres el resultado medido, apágalo y fija la
+          ventana a mano con los controles de arriba.
         </p>
       </section>
 
@@ -1923,10 +1946,19 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             onChange={(value) => update("maxAnalyticsSamples", value)}
           />
         </div>
+        <p className="settings-hint">
+          <strong>Slippage máx live</strong> es el único ajuste que de verdad solo aplica en live, y no por política
+          sino porque en sim no se manda una orden real que pueda patinar contra el libro. Todo lo demás se comporta
+          idéntico en ambos modos.
+        </p>
         <label className="switch-row">
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
-          <span>Auto minimo live</span>
+          <span>Operar al mínimo del exchange (ambos modos)</span>
         </label>
+        <p className="settings-hint">
+          Ignora el «Monto por trade» y opera al tamaño mínimo que acepta Polymarket (~$5). Aplica igual en sim y en
+          live: si el sim usara $1 mientras el live usa el mínimo real, el sim dejaría de predecir al live.
+        </p>
         <label className="field">
           <span>Zona horaria</span>
           <select value={draft.timezone} onChange={(event) => update("timezone", event.target.value)}>
@@ -1995,6 +2027,23 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
               }}
             />
           </label>
+          <label className="field">
+            <span>Ask piso (todos los mercados/lados)</span>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              placeholder={commonAskFloor === undefined ? "mixto" : undefined}
+              value={commonAskFloor === undefined ? "" : commonAskFloor}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value) && value >= 0) {
+                  setAllAskFloors(value);
+                }
+              }}
+            />
+          </label>
         </div>
         <p className="settings-hint">
           Circuit breaker (0 = desactivado). Si la pérdida realizada del día (según la zona horaria configurada) o la racha de pérdidas cruza el
@@ -2006,8 +2055,10 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           bajo = mejor relación premio/riesgo (una pérdida se recupera con menos aciertos) pero menos trades. Recomendado
           0.85; la ganancia histórica se concentra por debajo de 0.70 y arriba de 0.85 el edge desaparece.
           <br />
-          <strong>Ask cap (todos)</strong>: fija el ask cap de los 6 mercado/lado a la vez (se limita al Techo). Puedes
-          afinar cada lado abajo; si difieren, este campo muestra "mixto".
+          <strong>Ask cap (todos)</strong> y <strong>Ask piso (todos)</strong>: fijan la ventana [piso, techo] de los 6
+          mercado/lado a la vez — el cap se limita al Techo y el piso al cap de cada lado, para que la ventana nunca se
+          cierre. Solo se opera cuando el mejor ask cae dentro de esa ventana. Puedes afinar cada lado abajo; si
+          difieren, el campo muestra "mixto".
         </p>
       </section>
 

@@ -509,7 +509,7 @@ describe("UI frontend components", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
     expect(screen.getByLabelText("Ventana Bitcoin UP")).toHaveValue("20");
-    expect(screen.getByLabelText("Monto sim Bitcoin UP")).toHaveValue("1");
+    expect(screen.getByLabelText("Monto por trade Bitcoin UP")).toHaveValue("1");
     expect(screen.getByLabelText("Activar Bitcoin UP")).toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Editar Ethereum" }));
@@ -518,6 +518,36 @@ describe("UI frontend components", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Editar Dogecoin" }));
     expect(screen.getByLabelText("Ask cap Dogecoin DOWN")).toHaveValue("0.98");
+  });
+
+  it("keeps the sim and live amounts identical from the single amount field", async () => {
+    // El motor solo lee los montos "live", asi que la UI expone un campo unico. Lo que importa no es
+    // la etiqueta sino que al guardar ambos lados queden iguales: si divergieran, el sim volveria a
+    // operar un tamano distinto al live y dejaria de predecirlo.
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    fireEvent.change(screen.getByLabelText("Monto por trade Bitcoin UP"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const saved = onSave.mock.calls[0][0];
+    expect(saved.liveTradeAmountUsdByMarketOutcome.BTC.UP).toBe(7);
+    expect(saved.simTradeAmountUsdByMarketOutcome.BTC.UP).toBe(7);
+    expect(saved.liveTradeAmountUsd).toBe(7);
+    expect(saved.simTradeAmountUsd).toBe(7);
+  });
+
+  it("sets the ask floor on every market/side at once, clamped to each cap", () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    fireEvent.change(screen.getByLabelText("Ask piso (todos los mercados/lados)"), { target: { value: "0.3" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    const saved = onSave.mock.calls[0][0];
+    expect(saved.minAskPriceByMarketOutcome.BTC.UP).toBe(0.3);
+    expect(saved.minAskPriceByMarketOutcome.DOGE.DOWN).toBe(0.3);
   });
 
   it("exposes the EV gate controls in settings", () => {
