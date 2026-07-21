@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 
 import { summarizeAskBands } from "../askBands.js";
-import { recommendAskCap } from "../askCapTuner.js";
+import { recommendAskCap, recommendAskWindow } from "../askCapTuner.js";
 import { loadConfig } from "../config.js";
 import { calculateTradePnl } from "../pnl.js";
 import { SUPPORTED_MARKETS } from "../markets.js";
@@ -67,10 +67,64 @@ async function main(): Promise<void> {
     }
   }
 
+  // Brazo 4: ventana FIJA actual (configurada desde el replay de ventanas).
+  const FIXED_WINDOW: Record<string, { floor: number; cap: number }> = {
+    ETH: { floor: 0.3, cap: 0.55 },
+    BTC: { floor: 0.55, cap: 0.65 },
+    DOGE: { floor: 0.01, cap: 0.5 },
+  };
+  const fixedWindow = { trades: 0, wins: 0, net: 0 };
+  for (const trade of trades) {
+    const w = FIXED_WINDOW[trade.asset ?? "ETH"] ?? { floor: 0.01, cap: 0.65 };
+    const ask = trade.bestAsk ?? 1;
+    if (ask >= w.floor && ask <= w.cap) {
+      fixedWindow.trades += 1;
+      fixedWindow.net += calculateTradePnl(trade).netUsd ?? 0;
+      fixedWindow.wins += trade.resolved?.won ? 1 : 0;
+    }
+  }
+
+  // Brazo 5: tuner de VENTANA dinamico (mueve piso y techo cada 24h simuladas).
+  const win = new Map<MarketSymbol, { floor: number; cap: number }>(
+    SUPPORTED_MARKETS.map((m) => [m, { floor: 0.01, cap: 0.65 }]),
+  );
+  let nextWinTuneAtMs = trades.length > 0 ? trades[0].createdAtMs + DAY_MS : 0;
+  const seenW: TradeAttempt[] = [];
+  const tunedWindow = { trades: 0, wins: 0, net: 0 };
+  let winAdjustments = 0;
+  for (const trade of trades) {
+    while (trade.createdAtMs >= nextWinTuneAtMs) {
+      for (const market of SUPPORTED_MARKETS) {
+        const reco = recommendAskWindow(summarizeAskBands(seenW, "live", {}, { market }), win.get(market)!);
+        if (reco) {
+          win.set(market, { floor: reco.nextFloor, cap: reco.nextCap });
+          winAdjustments += 1;
+        }
+      }
+      nextWinTuneAtMs += DAY_MS;
+    }
+    seenW.push(trade);
+    const w = win.get((trade.asset as MarketSymbol) ?? "ETH")!;
+    const ask = trade.bestAsk ?? 1;
+    if (ask >= w.floor && ask <= w.cap) {
+      tunedWindow.trades += 1;
+      tunedWindow.net += calculateTradePnl(trade).netUsd ?? 0;
+      tunedWindow.wins += trade.resolved?.won ? 1 : 0;
+    }
+  }
+
   console.log("=== Resultados (mismo ledger, distinta política de cap) ===");
   print("cap fijo 0.65 (actual)", fixed065);
   print("cap fijo 0.85 (techo) ", fixed085);
   print("tuner dinámico        ", tuned);
+  print("VENTANA FIJA (actual) ", fixedWindow);
+  print("tuner de VENTANA      ", tunedWindow);
+  const deltaWindow = tunedWindow.net - fixedWindow.net;
+  console.log(
+    `
+[CRITERIO] tuner de ventana vs VENTANA FIJA: ${deltaWindow >= 0 ? "+" : "-"}$${Math.abs(deltaWindow).toFixed(2)} ` +
+      `(${deltaWindow >= 0 ? "ADOPTABLE" : "NO adoptar"}) | ajustes del tuner de ventana: ${winAdjustments}`,
+  );
   console.log(`\nAjustes del tuner durante el replay: ${capHistory.length}`);
   for (const line of capHistory.slice(0, 15)) {
     console.log("  " + line);

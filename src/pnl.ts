@@ -114,10 +114,9 @@ function getFeeUsd(trade: TradeAttempt): number {
   if (isPositiveFinite(trade.feeUsd)) {
     return trade.feeUsd;
   }
-  if (trade.mode !== "live") {
-    return sanitizeUsd(trade.feeUsd);
-  }
-
+  // La fee se estima en AMBOS modos. Antes sim devolvia 0, asi que su P&L era libre de comisiones
+  // (~3.7% del stake) y toda validacion en sim salia optimista frente al live que pretendia predecir:
+  // un sim ligeramente positivo podia ser un live negativo. Un sim honesto exige cobrar lo mismo.
   const filledShares = getFilledShares(trade);
   const filledAmountUsd = getFilledAmountUsd(trade);
   const price = trade.averageFillPrice ?? (

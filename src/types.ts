@@ -33,6 +33,10 @@ export interface BotConfig {
   autoMinLive: boolean;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  // Piso de ask por mercado/lado: descarta entradas por DEBAJO de este precio. El replay del ledger
+  // live mostro que las apuestas baratas de reversion (<0.30 en ETH) pierden sistematicamente.
+  // Default efectivo 0.01 = sin piso.
+  minAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
   // Hard ceiling applied on top of the per-market/outcome ask caps: no trade (and no auto-adjust)
   // may use an ask above this, to keep reward/risk sane. Optional; config.ts always sets it.
   maxAskPriceCeiling?: number;

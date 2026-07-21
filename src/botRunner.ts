@@ -164,7 +164,7 @@ export class BotRunner {
       | "entryWindowSecondsByMarket"
       | "entryWindowSecondsByMarketOutcome"
     > &
-      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome">>,
+      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome" | "minAskPriceByMarketOutcome">>,
   ): void {
     this.config.minDistanceUsdByMarket = settings.minDistanceUsdByMarket;
     this.config.minDistanceUsdByMarketOutcome = settings.minDistanceUsdByMarketOutcome;
@@ -177,6 +177,9 @@ export class BotRunner {
     }
     if (settings.maxAskPriceByMarketOutcome !== undefined) {
       this.config.maxAskPriceByMarketOutcome = settings.maxAskPriceByMarketOutcome;
+    }
+    if (settings.minAskPriceByMarketOutcome !== undefined) {
+      this.config.minAskPriceByMarketOutcome = settings.minAskPriceByMarketOutcome;
     }
     logger.info("Runtime strategy settings updated.", {
       minDistanceUsdByMarket: this.config.minDistanceUsdByMarket,
@@ -653,6 +656,18 @@ export class BotRunner {
       return undefined;
     }
 
+    // Piso de ask: por debajo de este precio la entrada es una apuesta de reversion barata, que el
+    // replay del ledger live mostro perdedora de forma sistematica (ETH <0.30: 23 de 24 perdidas).
+    const minAskPrice = this.resolveConfiguredMinAskPrice(signal.market.asset, signal.outcome);
+    if (quote.bestAsk < minAskPrice) {
+      this.logSkipOnce(signal.market.slug, "best_ask_below_floor", {
+        outcome: signal.outcome,
+        bestAsk: quote.bestAsk,
+        minAskPrice,
+      });
+      return undefined;
+    }
+
     // Guard against thin-liquidity micro-positions: if the book can only fill a small fraction of the
     // requested amount under the cap, the fill is a useless dust position (and skews per-trade P&L).
     const minFillRatio = this.config.minFillRatio ?? DEFAULT_MIN_FILL_RATIO;
@@ -882,20 +897,17 @@ export class BotRunner {
     }
   }
 
+  /**
+   * Monto por trade — MISMA fuente en sim y live. Antes cada modo leia su propio ajuste, asi que el
+   * sim podia operar un tamano distinto al que usaria el live y su P&L no era comparable. La fuente
+   * unica es el ajuste "live" (el que representa dinero real); los campos sim quedan como legado.
+   */
   private resolveConfiguredTradeAmountUsd(market: MarketSymbol, outcome: Outcome): number {
-    if (this.config.mode === "live") {
-      return getMarketOutcomeNumber(
-        this.config.liveTradeAmountUsdByMarketOutcome,
-        market,
-        outcome,
-        this.config.liveTradeAmountUsd,
-      );
-    }
     return getMarketOutcomeNumber(
-      this.config.simTradeAmountUsdByMarketOutcome,
+      this.config.liveTradeAmountUsdByMarketOutcome,
       market,
       outcome,
-      this.config.simTradeAmountUsd,
+      this.config.liveTradeAmountUsd,
     );
   }
 
@@ -905,6 +917,11 @@ export class BotRunner {
     // so the reward per win stays large enough to recover from losses.
     const ceiling = this.config.maxAskPriceCeiling ?? DEFAULT_MAX_ASK_PRICE_CEILING;
     return Math.min(configured, ceiling);
+  }
+
+  /** Piso de ask configurado (0.01 = sin piso). */
+  private resolveConfiguredMinAskPrice(market: MarketSymbol, outcome: Outcome): number {
+    return getMarketOutcomeNumber(this.config.minAskPriceByMarketOutcome, market, outcome, 0.01);
   }
 
   private resolveConfiguredMinDistance(market: MarketSymbol, outcome: Outcome): number {

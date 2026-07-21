@@ -3,15 +3,12 @@ import { describe, expect, it } from "vitest";
 import { resolveLiveOrderPrice, resolveTradeAmountUsd } from "../src/executionEngine.js";
 
 describe("execution sizing", () => {
-  it("keeps simulation at the requested $1 size", () => {
-    expect(
-      resolveTradeAmountUsd({
-        mode: "sim",
-        requestedUsd: 1,
-        orderMinSize: 5,
-        autoMinLive: true,
-      }),
-    ).toBe(1);
+  it("aplica el minimo del exchange tambien en sim (sim debe dimensionar como live)", () => {
+    // Antes sim ignoraba autoMinLive: live operaba al minimo del exchange y sim al monto pedido, asi
+    // que el sim no reproducia el tamano real. Ahora el flag es politica pura, igual en ambos modos.
+    expect(resolveTradeAmountUsd({ mode: "sim", requestedUsd: 1, orderMinSize: 5, autoMinLive: true })).toBe(5);
+    // Con el flag apagado, ambos modos respetan el monto pedido.
+    expect(resolveTradeAmountUsd({ mode: "sim", requestedUsd: 1, orderMinSize: 5, autoMinLive: false })).toBe(1);
   });
 
   it("uses the market minimum for live orders when auto-min is enabled (below the min)", () => {

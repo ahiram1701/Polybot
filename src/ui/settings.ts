@@ -78,6 +78,11 @@ const settingsSchema = z.object({
   autoMinLive: z.boolean(),
   maxAskPrice: z.coerce.number().gt(0).lte(1),
   maxAskPriceByMarketOutcome: marketOutcomeAskPriceSchema,
+  minAskPriceByMarketOutcome: marketOutcomeAskPriceSchema.default({
+    BTC: { UP: 0.01, DOWN: 0.01 },
+    ETH: { UP: 0.01, DOWN: 0.01 },
+    DOGE: { UP: 0.01, DOWN: 0.01 },
+  }),
   // Ceiling default 0.85 keeps existing ui-config.json (without this key) at the recommended value.
   maxAskPriceCeiling: z.coerce.number().gt(0).lte(1).default(0.85),
   dailySpendLimitUsd: z.coerce.number().positive(),
@@ -103,6 +108,9 @@ const settingsSchema = z.object({
   tickStaleMs: z.coerce.number().positive(),
   pollIntervalMs: z.coerce.number().positive(),
   openingCaptureGraceMs: z.coerce.number().positive(),
+  minDistanceFloorUsdByMarket: marketDistancesSchema.default({ BTC: 20, ETH: 0.1, DOGE: 0.00003 }),
+  liveMaxSlippage: z.coerce.number().nonnegative().lt(1).default(0.02),
+  maxAnalyticsSamples: z.coerce.number().int().positive().default(20_000),
   aiAutoApplyLive: z.boolean().default(false),
   aiAutoTuneAskCap: z.boolean().default(false),
   aiLastAppliedAtMs: z.coerce.number().positive().optional(),
@@ -189,6 +197,10 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     ),
     autoMinLive: config.autoMinLive,
     maxAskPrice: config.maxAskPrice,
+    minAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
+      config.minAskPriceByMarketOutcome,
+      0.01,
+    ),
     maxAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
       config.maxAskPriceByMarketOutcome,
       config.maxAskPrice,
@@ -212,6 +224,9 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     tickStaleMs: config.tickStaleMs,
     pollIntervalMs: config.pollIntervalMs,
     openingCaptureGraceMs: config.openingCaptureGraceMs,
+    minDistanceFloorUsdByMarket: defaultMarketDistances(config.minDistanceFloorUsdByMarket),
+    liveMaxSlippage: config.liveMaxSlippage ?? 0.02,
+    maxAnalyticsSamples: config.maxAnalyticsSamples ?? 20_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: Boolean(config.aiAutoTuneAskCap ?? false),
   };
@@ -280,6 +295,9 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     tickStaleMs: settings.tickStaleMs,
     pollIntervalMs: settings.pollIntervalMs,
     openingCaptureGraceMs: settings.openingCaptureGraceMs,
+    minDistanceFloorUsdByMarket: settings.minDistanceFloorUsdByMarket,
+    liveMaxSlippage: settings.liveMaxSlippage,
+    maxAnalyticsSamples: settings.maxAnalyticsSamples,
   };
 }
 
@@ -351,6 +369,10 @@ function normalizeSettings(settings: Record<string, unknown>): Record<string, un
     liveTradeAmountUsdByMarketOutcome,
     maxAskPrice: settings.maxAskPrice,
     maxAskPriceByMarketOutcome,
+    minAskPriceByMarketOutcome: defaultMarketOutcomeMaxAskPrices(
+      marketOutcomeOverrides(settings.minAskPriceByMarketOutcome),
+      0.01,
+    ),
     aiAutoApplyLive: Boolean(settings.aiAutoApplyLive),
     aiLastAppliedAtMs:
       Number.isFinite(Number(settings.aiLastAppliedAtMs)) && Number(settings.aiLastAppliedAtMs) > 0

@@ -37,6 +37,11 @@ const telegramNotificationsPatchSchema = z.object({
   botToken: z.string().optional(),
   chatId: z.string().optional(),
   publicUrl: z.union([z.string().url(), z.literal("")]).optional(),
+  // Faltaban aqui, asi que la UI podia mandarlos pero el endpoint los descartaba en silencio.
+  digestEnabled: z.boolean().optional(),
+  digestIntervalMinutes: z.coerce.number().int().min(5).optional(),
+  dailyReportEnabled: z.boolean().optional(),
+  dailyReportHour: z.coerce.number().int().min(0).max(23).optional(),
 });
 const fiscalYearQuerySchema = z.object({
   year: z.coerce.number().int().min(2020).max(2100).optional(),

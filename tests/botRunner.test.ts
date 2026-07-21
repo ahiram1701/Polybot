@@ -185,6 +185,101 @@ describe("BotRunner", () => {
     expect(trades.map((trade) => trade.asset)).toEqual(["BTC", "ETH", "DOGE"]);
   });
 
+  it("skips entries below the configured ask floor (cheap reversal bets)", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const market = marketInfo("ETH", "eth", windowStartMs);
+    const opening = {
+      asset: market.asset,
+      slug: market.slug,
+      windowStartMs,
+      openingPrice: 100,
+      openingTickTimestampMs: windowStartMs,
+      capturedAtMs: windowStartMs,
+    };
+    const watcher = {
+      getCurrentMarket: vi.fn(async (_n: number, m: MarketSymbol = "BTC") => (m === "ETH" ? market : null)),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn((m: MarketSymbol = "BTC") => ({
+        market: m,
+        symbol: priceFeedSymbol(m),
+        value: 130,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => opening),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: 0.98,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+
+    const config = {
+      ...baseConfig(),
+      enabledMarkets: ["ETH"] as MarketSymbol[],
+      minDistanceUsdByMarket: { BTC: 20, ETH: 5, DOGE: 0.0005 },
+      minAskPriceByMarketOutcome: {
+        BTC: { UP: 0.01, DOWN: 0.01 },
+        ETH: { UP: 0.3, DOWN: 0.3 },
+        DOGE: { UP: 0.01, DOWN: 0.01 },
+      },
+    };
+
+    // Ask 0.15 < piso 0.30 -> no debe operar.
+    const cheap = new BotRunner(config, {
+      watcher,
+      orderbook: fakeOrderbook(0.15),
+      priceFeed,
+      state,
+      executor,
+      reconciler: fakeReconciler(),
+    });
+    await cheap.runOnce(nowMs);
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    // Ask 0.45 dentro de la ventana -> sí opera.
+    const inWindow = new BotRunner(config, {
+      watcher,
+      orderbook: fakeOrderbook(0.45),
+      priceFeed,
+      state,
+      executor,
+      reconciler: fakeReconciler(),
+    });
+    await inWindow.runOnce(nowMs);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("records analytics for all supported markets even when trading is disabled", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -538,7 +633,12 @@ describe("BotRunner", () => {
           ETH: { UP: 20, DOWN: 20 },
           DOGE: { UP: 20, DOWN: 20 },
         },
-        simTradeAmountUsdByMarketOutcome: {
+        // autoMinLive ahora aplica en AMBOS modos; este test mide el monto por lado, asi que lo apaga
+        // para que no lo sustituya el minimo del exchange.
+        autoMinLive: false,
+        // Monto por trade: fuente UNICA (los ajustes "live") en ambos modos desde la unificacion
+        // sim/live — antes cada modo leia el suyo y el sim no reproducia el tamano real.
+        liveTradeAmountUsdByMarketOutcome: {
           BTC: { UP: 1, DOWN: 7 },
           ETH: { UP: 1, DOWN: 1 },
           DOGE: { UP: 1, DOWN: 1 },

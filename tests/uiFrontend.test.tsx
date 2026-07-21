@@ -813,6 +813,11 @@ function settings(): UiSettings {
     },
     autoMinLive: true,
     maxAskPrice: 0.98,
+  minAskPriceByMarketOutcome: {
+      BTC: { UP: 0.01, DOWN: 0.01 },
+      ETH: { UP: 0.01, DOWN: 0.01 },
+      DOGE: { UP: 0.01, DOWN: 0.01 },
+    },
     maxAskPriceCeiling: 0.85,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },
@@ -836,6 +841,9 @@ function settings(): UiSettings {
     evMinExpectedRoi: 0.01,
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,
+    minDistanceFloorUsdByMarket: { BTC: 20, ETH: 0.1, DOGE: 0.00003 },
+    liveMaxSlippage: 0.02,
+    maxAnalyticsSamples: 20000,
     openingCaptureGraceMs: 15_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: false,

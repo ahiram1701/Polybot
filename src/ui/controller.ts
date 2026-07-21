@@ -7,7 +7,7 @@ import {
   serializeAnalyticsSamples,
 } from "../analyticsRecorder.js";
 import { summarizeAskBands, type AskBandSummary } from "../askBands.js";
-import { ASK_CAP_TUNER_LOCKS, recommendAskCap } from "../askCapTuner.js";
+import { ASK_CAP_TUNER_LOCKS, recommendAskWindow } from "../askCapTuner.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import {
@@ -117,7 +117,7 @@ export interface RunnerLike {
       | "entryWindowSecondsByMarket"
       | "entryWindowSecondsByMarketOutcome"
     > &
-      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome">>,
+      Partial<Pick<BotConfig, "maxAskPrice" | "maxAskPriceByMarketOutcome" | "minAskPriceByMarketOutcome">>,
   ): void;
   resetPnl?(mode: Mode): Promise<void>;
   resetRiskHalt?(mode: Mode): Promise<void>;
@@ -260,13 +260,16 @@ export class BotController {
 
       const stateSummary = await this.getStateSummary(nowMs);
       const config = applySettings(this.baseConfig, settings);
+      // El reporte habla del modo que esta corriendo, no de "live" fijo: en sim salia vacio o con
+      // historia live vieja.
+      const reportMode = this.mode ?? this.baseConfig.mode;
       const postReset = filterTradesForPnlReset(stateSummary.tradesSorted, stateSummary.pnlResetAtMs).filter(
-        (trade) => trade.mode === "live" && trade.resolved,
+        (trade) => trade.mode === reportMode && trade.resolved,
       );
       const todayKey = dayKeyInTimeZone(nowMs, settings.timezone);
       const today = stateSummary.tradesSorted.filter(
         (trade) =>
-          trade.mode === "live" &&
+          trade.mode === reportMode &&
           trade.resolved &&
           dayKeyInTimeZone(trade.resolved.resolvedAtMs, settings.timezone) === todayKey,
       );
@@ -284,9 +287,10 @@ export class BotController {
         stateSummary.state.getRiskHaltResetAtMs()[this.mode ?? this.baseConfig.mode] ?? 0,
       );
       const capTuner = SUPPORTED_MARKETS.map((market) => {
-        const bands = summarizeAskBands(stateSummary.tradesSorted, "live", {}, { market });
+        const bands = summarizeAskBands(stateSummary.tradesSorted, reportMode, {}, { market });
         const current = settings.maxAskPriceByMarketOutcome[market].UP;
-        return { market, current, target: recommendAskCap(bands, current)?.targetCap };
+        const floor = settings.minAskPriceByMarketOutcome[market].UP;
+        return { market, current, target: recommendAskWindow(bands, { floor, cap: current })?.targetCap };
       });
       let autoAdjust: { market: string; state: string }[] = [];
       try {
@@ -690,23 +694,38 @@ export class BotController {
    */
   private async runAskCapTuning(settings: UiSettings, nowMs: number): Promise<void> {
     const stateSummary = await this.getStateSummary(nowMs);
-    const changes: { market: MarketSymbol; from: number; to: number; target: number; reason: string }[] = [];
+    const changes: {
+      market: MarketSymbol;
+      fromFloor: number;
+      toFloor: number;
+      from: number;
+      to: number;
+      target: number;
+      reason: string;
+    }[] = [];
     const nextCaps = structuredClone(settings.maxAskPriceByMarketOutcome);
+    const nextFloors = structuredClone(settings.minAskPriceByMarketOutcome);
     for (const market of SUPPORTED_MARKETS) {
       const lastTunedAtMs = this.askCapTunedAtMs.get(market) ?? 0;
       if (nowMs - lastTunedAtMs < ASK_CAP_TUNER_LOCKS.COOLDOWN_MS) {
         continue;
       }
-      const bands = summarizeAskBands(stateSummary.tradesSorted, "live", {}, { market });
+      const bands = summarizeAskBands(stateSummary.tradesSorted, this.mode ?? this.baseConfig.mode, {}, { market });
+      const currentFloor = settings.minAskPriceByMarketOutcome[market].UP;
       const currentCap = settings.maxAskPriceByMarketOutcome[market].UP;
-      const recommendation = recommendAskCap(bands, currentCap);
+      // Tuner de VENTANA: mueve piso y techo. El de solo-techo no podia excluir la cola barata
+      // perdedora — su unica reaccion era apretar el techo y cortaba la parte rentable.
+      const recommendation = recommendAskWindow(bands, { floor: currentFloor, cap: currentCap });
       if (!recommendation) {
         continue;
       }
+      nextFloors[market] = { UP: recommendation.nextFloor, DOWN: recommendation.nextFloor };
       nextCaps[market] = { UP: recommendation.nextCap, DOWN: recommendation.nextCap };
       this.askCapTunedAtMs.set(market, nowMs);
       changes.push({
         market,
+        fromFloor: currentFloor,
+        toFloor: recommendation.nextFloor,
         from: currentCap,
         to: recommendation.nextCap,
         target: recommendation.targetCap,
@@ -716,7 +735,11 @@ export class BotController {
     if (changes.length === 0) {
       return;
     }
-    const saved = await this.settingsStore.save({ ...settings, maxAskPriceByMarketOutcome: nextCaps });
+    const saved = await this.settingsStore.save({
+      ...settings,
+      maxAskPriceByMarketOutcome: nextCaps,
+      minAskPriceByMarketOutcome: nextFloors,
+    });
     this.stateSummaryCache = undefined;
     this.runner?.updateStrategySettings?.({
       minDistanceUsdByMarket: saved.minDistanceUsdByMarket,
@@ -726,15 +749,16 @@ export class BotController {
       entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
       maxAskPrice: saved.maxAskPrice,
       maxAskPriceByMarketOutcome: saved.maxAskPriceByMarketOutcome,
+      minAskPriceByMarketOutcome: saved.minAskPriceByMarketOutcome,
     });
-    logger.info("Auto-tuning del ask cap aplicado desde bandas realizadas.", { changes });
+    logger.info("Auto-tuning de la ventana de ask aplicado desde bandas realizadas.", { changes });
     void this.notifier.notify({
       key: `ask-cap-tuned:${nowMs}`,
-      title: "Ask cap auto-ajustado",
+      title: "Ventana de ask auto-ajustada",
       body: changes
         .map(
           (change) =>
-            `${change.market}: ${change.from.toFixed(2)} -> ${change.to.toFixed(2)} (objetivo ${change.target.toFixed(2)}). ${change.reason}`,
+            `${change.market}: ventana [${change.fromFloor.toFixed(2)}, ${change.from.toFixed(2)}] -> [${change.toFloor.toFixed(2)}, ${change.to.toFixed(2)}] (objetivo techo ${change.target.toFixed(2)}). ${change.reason}`,
         )
         .join("\n"),
       minIntervalMs: 0,
@@ -1293,6 +1317,7 @@ export class BotController {
       autoMinLive: config.autoMinLive,
       maxAskPrice: config.maxAskPrice,
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
+      minAskPriceByMarketOutcome: config.minAskPriceByMarketOutcome ?? settings.minAskPriceByMarketOutcome,
       maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
@@ -1313,6 +1338,9 @@ export class BotController {
       tickStaleMs: config.tickStaleMs,
       pollIntervalMs: config.pollIntervalMs,
       openingCaptureGraceMs: config.openingCaptureGraceMs,
+      minDistanceFloorUsdByMarket: config.minDistanceFloorUsdByMarket ?? settings.minDistanceFloorUsdByMarket,
+      liveMaxSlippage: config.liveMaxSlippage ?? settings.liveMaxSlippage,
+      maxAnalyticsSamples: config.maxAnalyticsSamples ?? settings.maxAnalyticsSamples,
       aiAutoApplyLive: settings.aiAutoApplyLive,
       aiLastAppliedAtMs: settings.aiLastAppliedAtMs,
       mode: config.mode,

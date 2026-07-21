@@ -156,6 +156,11 @@ const emptySettings: UiSettings = {
     ETH: { UP: 0.98, DOWN: 0.98 },
     DOGE: { UP: 0.98, DOWN: 0.98 },
   },
+  minAskPriceByMarketOutcome: {
+    BTC: { UP: 0.01, DOWN: 0.01 },
+    ETH: { UP: 0.01, DOWN: 0.01 },
+    DOGE: { UP: 0.01, DOWN: 0.01 },
+  },
   maxAskPriceCeiling: 0.85,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
@@ -174,6 +179,9 @@ const emptySettings: UiSettings = {
   evMinExpectedRoi: 0.01,
   tickStaleMs: 10_000,
   pollIntervalMs: 1_000,
+  minDistanceFloorUsdByMarket: { BTC: 20, ETH: 0.1, DOGE: 0.00003 },
+  liveMaxSlippage: 0.02,
+  maxAnalyticsSamples: 20000,
   openingCaptureGraceMs: 15_000,
   aiAutoApplyLive: false,
   aiAutoTuneAskCap: false,
@@ -1704,6 +1712,16 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
     });
   }
 
+  function updateMarketAskFloor(symbol: MarketSymbol, outcome: Outcome, value: number) {
+    setDraft((current) => ({
+      ...current,
+      minAskPriceByMarketOutcome: {
+        ...current.minAskPriceByMarketOutcome,
+        [symbol]: { ...current.minAskPriceByMarketOutcome[symbol], [outcome]: value },
+      },
+    }));
+  }
+
   // Set the same ask cap on all 6 market/outcomes at once (clamped to the ceiling so the global control
   // can't exceed the hard ceiling). Per-side fine-tuning below still works.
   function setAllAskCaps(value: number) {
@@ -1801,6 +1819,29 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
                   onChange={(value) => updateMarketLiveAmount(selectedMarketOption.symbol, outcome, value)}
                 />
                 <NumberField
+                  label={`Piso distancia ${selectedMarketOption.label}`}
+                  value={draft.minDistanceFloorUsdByMarket[selectedMarketOption.symbol]}
+                  min={0}
+                  step={selectedMarketOption.symbol === "DOGE" ? 0.00001 : selectedMarketOption.symbol === "ETH" ? 0.05 : 1}
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      minDistanceFloorUsdByMarket: {
+                        ...current.minDistanceFloorUsdByMarket,
+                        [selectedMarketOption.symbol]: value,
+                      },
+                    }))
+                  }
+                />
+                <NumberField
+                  label={`Ask piso ${selectedMarketOption.label} ${outcome}`}
+                  value={draft.minAskPriceByMarketOutcome[selectedMarketOption.symbol][outcome]}
+                  min={0.01}
+                  max={1}
+                  step={0.01}
+                  onChange={(value) => updateMarketAskFloor(selectedMarketOption.symbol, outcome, value)}
+                />
+                <NumberField
                   label={`Ask cap ${selectedMarketOption.label} ${outcome}`}
                   value={draft.maxAskPriceByMarketOutcome[selectedMarketOption.symbol][outcome]}
                   min={0.01}
@@ -1859,6 +1900,28 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           <NumberField label="Limite diario" value={draft.dailySpendLimitUsd} min={1} step={1} onChange={(value) => update("dailySpendLimitUsd", value)} />
           <NumberField label="Tick stale ms" value={draft.tickStaleMs} min={1000} step={1000} onChange={(value) => update("tickStaleMs", value)} />
           <NumberField label="Poll ms" value={draft.pollIntervalMs} min={250} step={250} onChange={(value) => update("pollIntervalMs", value)} />
+          <NumberField
+            label="Gracia captura apertura (ms)"
+            value={draft.openingCaptureGraceMs}
+            min={1000}
+            step={1000}
+            onChange={(value) => update("openingCaptureGraceMs", value)}
+          />
+          <NumberField
+            label="Slippage máx live"
+            value={draft.liveMaxSlippage}
+            min={0}
+            max={0.5}
+            step={0.005}
+            onChange={(value) => update("liveMaxSlippage", value)}
+          />
+          <NumberField
+            label="Muestras analytics (reinicio)"
+            value={draft.maxAnalyticsSamples}
+            min={1000}
+            step={1000}
+            onChange={(value) => update("maxAnalyticsSamples", value)}
+          />
         </div>
         <label className="switch-row">
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />

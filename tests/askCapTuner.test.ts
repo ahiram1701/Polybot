@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AskBandRow, AskBandSummary } from "../src/askBands.js";
-import { recommendAskCap } from "../src/askCapTuner.js";
+import { recommendAskCap, recommendAskWindow } from "../src/askCapTuner.js";
 
 function band(lo: number, hi: number, trades: number, winRate: number): AskBandRow {
   return {
@@ -66,5 +66,48 @@ describe("askCapTuner", () => {
     ]);
     const reco = recommendAskCap(bands, 0.85);
     expect(reco).toBeUndefined(); // target = techo 0.85 = actual -> nada que hacer
+  });
+});
+
+describe("recommendAskWindow (piso + techo)", () => {
+  it("sube el piso cuando la cola barata pierde y deja el techo ancho", () => {
+    // Esto es justo lo que el tuner de solo-techo no podia expresar (y por eso perdio en replay).
+    const bands = summary([
+      band(0, 0.45, 30, 0.1), // be 0.225 -> pierde: queda FUERA
+      band(0.45, 0.55, 30, 0.62), // paga: abre la ventana
+      band(0.55, 0.65, 30, 0.68), // paga: extiende
+      band(0.65, 0.7, 25, 0.6), // be 0.675 -> corta aqui
+    ]);
+    const reco = recommendAskWindow(bands, { floor: 0.01, cap: 0.65 });
+    expect(reco?.targetFloor).toBe(0.45);
+    expect(reco?.targetCap).toBe(0.65);
+    expect(reco?.nextFloor).toBe(0.06); // paso maximo 0.05 por borde
+    expect(reco?.nextCap).toBe(0.65);
+  });
+
+  it("baja el techo cuando la cola cara pierde", () => {
+    const bands = summary([
+      band(0.3, 0.45, 30, 0.5), // be 0.375 -> paga
+      band(0.45, 0.55, 30, 0.6), // paga
+      band(0.55, 0.65, 30, 0.55), // be 0.6 -> pierde: corta
+    ]);
+    const reco = recommendAskWindow(bands, { floor: 0.3, cap: 0.8 });
+    expect(reco?.targetCap).toBe(0.55);
+    expect(reco?.nextCap).toBe(0.75); // baja de a 0.05
+  });
+
+  it("rechaza ventanas demasiado estrechas (anti auto-estrangulamiento)", () => {
+    const bands = summary([
+      band(0, 0.45, 40, 0.1),
+      band(0.45, 0.55, 40, 0.62), // unica banda que paga -> ancho 0.10 < 0.15
+      band(0.55, 0.65, 40, 0.4),
+    ]);
+    expect(recommendAskWindow(bands, { floor: 0.01, cap: 0.8 })).toBeUndefined();
+  });
+
+  it("no recomienda sin muestra suficiente ni cuando ninguna banda paga", () => {
+    expect(recommendAskWindow(summary([band(0.45, 0.55, 20, 0.9)]), { floor: 0.3, cap: 0.55 })).toBeUndefined();
+    const losing = summary([band(0.3, 0.55, 40, 0.2), band(0.55, 0.8, 40, 0.3)]);
+    expect(recommendAskWindow(losing, { floor: 0.3, cap: 0.8 })).toBeUndefined();
   });
 });

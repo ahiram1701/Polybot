@@ -21,6 +21,12 @@ export const ASK_CAP_TUNER_LOCKS = {
   CAP_CEILING: 0.85,
   MAX_STEP: 0.05,
   COOLDOWN_MS: 24 * 60 * 60 * 1000,
+  // Window tuner: the whole tradeable range, not just the ceiling.
+  WINDOW_MIN: 0.2,
+  WINDOW_MAX: 0.85,
+  // A window narrower than this is refused: strangling itself to zero is exactly how the cap-only
+  // tuner lost money in replay (it kept targeting 0.45 and cut the profitable part away).
+  MIN_WINDOW_WIDTH: 0.15,
 } as const;
 
 export interface AskCapRecommendation {
@@ -29,6 +35,86 @@ export interface AskCapRecommendation {
   /** What to apply NOW: current cap moved at most MAX_STEP toward the target. */
   nextCap: number;
   reason: string;
+}
+
+export interface AskWindowRecommendation {
+  /** Window the bands justify (already clamped). */
+  targetFloor: number;
+  targetCap: number;
+  /** What to apply NOW: each edge moved at most MAX_STEP toward its target. */
+  nextFloor: number;
+  nextCap: number;
+  reason: string;
+}
+
+/**
+ * Full-window version: moves BOTH edges. The cap-only tuner could not exclude a losing cheap tail —
+ * its only lever was tightening the ceiling, so it cut the profitable middle instead (measured
+ * -$18 vs a fixed cap). Here the floor rises past leading losing bands and the cap stops at the last
+ * contiguous paying band.
+ */
+export function recommendAskWindow(
+  bands: AskBandSummary,
+  current: { floor: number; cap: number },
+): AskWindowRecommendation | undefined {
+  const locks = ASK_CAP_TUNER_LOCKS;
+  if (bands.totalTrades < locks.MIN_TOTAL_TRADES) {
+    return undefined;
+  }
+
+  const pays = (band: AskBandSummary["bands"][number]) =>
+    band.trades >= locks.MIN_BAND_TRADES && (band.winRate ?? 0) - (band.breakEvenRate ?? 1) >= locks.EDGE_MARGIN;
+
+  // Walk cheap -> expensive. The first paying band opens the window; the run ends at the first
+  // sufficiently-sampled band that does NOT pay. Thin bands neither open, extend nor close it.
+  let targetFloor: number | undefined;
+  let targetCap: number | undefined;
+  const supporting: string[] = [];
+  for (const band of bands.bands) {
+    if (band.trades < locks.MIN_BAND_TRADES) {
+      continue;
+    }
+    if (pays(band)) {
+      if (targetFloor === undefined) {
+        targetFloor = band.lo;
+      }
+      targetCap = band.hi;
+      supporting.push(
+        `${band.lo.toFixed(2)}-${band.hi.toFixed(2)} +${(((band.winRate ?? 0) - (band.breakEvenRate ?? 1)) * 100).toFixed(0)}pp (n=${band.trades})`,
+      );
+    } else if (targetFloor !== undefined) {
+      break; // la racha rentable terminó
+    }
+  }
+
+  if (targetFloor === undefined || targetCap === undefined) {
+    return undefined; // ninguna banda con muestra suficiente paga: no hay evidencia para mover nada
+  }
+  const clampedFloor = Math.min(Math.max(targetFloor, locks.WINDOW_MIN), locks.WINDOW_MAX);
+  const clampedCap = Math.min(Math.max(targetCap, locks.WINDOW_MIN), locks.WINDOW_MAX);
+  if (clampedCap - clampedFloor < locks.MIN_WINDOW_WIDTH) {
+    return undefined;
+  }
+  if (Math.abs(clampedFloor - current.floor) < 0.005 && Math.abs(clampedCap - current.cap) < 0.005) {
+    return undefined;
+  }
+  return {
+    targetFloor: round2(clampedFloor),
+    targetCap: round2(clampedCap),
+    nextFloor: stepToward(current.floor, clampedFloor, locks.MAX_STEP),
+    nextCap: stepToward(current.cap, clampedCap, locks.MAX_STEP),
+    reason: `Bandas rentables: ${supporting.join("; ")}`,
+  };
+}
+
+function stepToward(from: number, to: number, maxStep: number): number {
+  const delta = to - from;
+  const step = Math.min(Math.abs(delta), maxStep) * Math.sign(delta);
+  return round2(from + step);
+}
+
+function round2(value: number): number {
+  return Number(value.toFixed(2));
 }
 
 export function recommendAskCap(bands: AskBandSummary, currentCap: number): AskCapRecommendation | undefined {

@@ -33,6 +33,8 @@ export interface UiSettings {
   autoMinLive: boolean;
   maxAskPrice: number;
   maxAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
+  // Piso de ask por mercado/lado (0.01 = sin piso).
+  minAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   // Hard ceiling on the ask price for any trade and for what the auto-adjust may pick (reward/risk).
   maxAskPriceCeiling: number;
   dailySpendLimitUsd: number;
@@ -58,6 +60,12 @@ export interface UiSettings {
   tickStaleMs: number;
   pollIntervalMs: number;
   openingCaptureGraceMs: number;
+  // Piso duro de distancia por mercado: la distancia efectiva es max(configurada, piso).
+  minDistanceFloorUsdByMarket: MarketDistanceSettings;
+  // Cuanto por encima del best-ask puede llenar una orden live (anti-slippage).
+  liveMaxSlippage: number;
+  // Retencion de analytics.jsonl (requiere reinicio del proceso para aplicar).
+  maxAnalyticsSamples: number;
   aiAutoApplyLive: boolean;
   // Auto-tuning del ask cap por mercado desde bandas realizadas (candados fijos).
   aiAutoTuneAskCap: boolean;

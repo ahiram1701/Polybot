@@ -31,7 +31,6 @@ function trade(args: {
   return {
     id: args.id,
     slug: `eth-updown-5m-${args.id}`,
-    // Default sim so fee estimation never muddies the pure-math assertions; filtering tests pass live.
     mode: args.mode ?? "sim",
     outcome: args.outcome ?? "UP",
     asset: args.asset ?? "ETH",
@@ -43,7 +42,9 @@ function trade(args: {
     fillDetected: true,
     filledAmountUsd: 5,
     filledShares: 5 / ask,
-    feeUsd: 0,
+    // Fee real conocida (positiva => autoritativa, no se estima). Minima para que la aritmetica de
+    // los asserts siga siendo exacta ahora que sim tambien cobra comision como live.
+    feeUsd: 0.0001,
     openingPrice: 100,
     entryPrice: 101,
     distanceUsd: 1,

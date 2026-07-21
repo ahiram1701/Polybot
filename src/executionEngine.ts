@@ -45,10 +45,11 @@ export function resolveTradeAmountUsd(args: {
   orderMinSize: number;
   autoMinLive: boolean;
 }): number {
-  if (args.mode === "live" && args.autoMinLive) {
-    // "Auto minimum live": trade the exchange's minimum order size, ignoring the configured live
-    // amount, so live orders stay as small as the market allows (e.g. Polymarket's $5 minimum even
-    // when liveTradeAmountUsd is higher). Falls back to the requested size if the minimum is unknown.
+  if (args.autoMinLive) {
+    // "Auto minimum": trade the exchange's minimum order size, ignoring the configured amount, so
+    // orders stay as small as the market allows (e.g. Polymarket's $5 minimum). Aplica en AMBOS modos:
+    // antes solo en live, de modo que live operaba al minimo del exchange y sim al monto configurado
+    // — tamanos distintos hacian que el sim no predijera el sizing real.
     return Number.isFinite(args.orderMinSize) && args.orderMinSize > 0 ? args.orderMinSize : args.requestedUsd;
   }
   return args.requestedUsd;
