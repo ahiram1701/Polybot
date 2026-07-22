@@ -64,6 +64,35 @@ La UI escucha solo en `127.0.0.1:8787`.
 
 Para verla desde el celular por Tailscale con Polybot en tu PC Windows: doble clic en `INICIAR-POLYBOT.cmd` (con `POLYBOT_UI_HOST=0.0.0.0` en `.env`) y en el celular, con Tailscale activo, abre la direccion `http://100.x:8787` que muestra la ventana. Guia: [`docs/windows-tailscale.md`](docs/windows-tailscale.md).
 
+## TUI (panel en terminal)
+
+Si prefieres un panel en vivo dentro de una ventana de terminal (sin navegador), doble clic en:
+
+```text
+TUI-POLYBOT.cmd
+```
+
+Levanta el servidor en segundo plano si no estaba corriendo (sin arrancar el bot; si ya corre, **no lo
+toca**) y abre la TUI conectada a `http://127.0.0.1:8787`. Cerrarla (`q` / Ctrl+C) **no** apaga el
+servidor.
+
+Pestañas: **Dashboard** (estado, P&L post-reset por modo, win rate, circuit breaker, señal por mercado
+y "por qué no opera"), **Trades**, **Análisis** (EV por estrategia) y **Settings** (editable con el bot
+detenido). Teclas:
+
+- `←/→` o `Tab` o `1‑4` cambian de pestaña · `g` refresca · `q` sale.
+- Dashboard: `I` inicia **sim** · `S` detiene · `B` re-arma el circuit breaker · `P` resetea P&L · `X`
+  resetea estado.
+- `L` inicia **live**: pide teclear la frase exacta `ARRANCAR LIVE` (mismo candado que la web). **La
+  TUI nunca arranca live sola** — lo haces tú tecleando la frase.
+- Settings: `↑/↓` mueve, `Enter` alterna un toggle o edita un número.
+
+Para un vistazo puntual sin abrir la interfaz interactiva:
+
+```bash
+npm run tui -- --once
+```
+
 ## Watchdog En Windows
 
 Si el proceso de Polybot muere (falta de memoria, reinicio de Windows, cierre accidental), la UI deja de responder y el bot deja de observar el mercado hasta que alguien lo levante. `scripts/watchdog.ps1` lo revisa cada 5 minutos y lo relanza solo. Revive unicamente la UI/API: el bot queda detenido y Live siempre lo arrancas tu.

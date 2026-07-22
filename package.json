@@ -14,6 +14,7 @@
     "bot": "tsx src/index.ts",
     "ui": "tsx src/ui/index.ts",
     "ui:sim": "tsx src/ui/index.ts --auto-start=sim",
+    "tui": "tsx src/tui/index.ts",
     "ui:build": "vite build",
     "ui:preview": "tsx src/ui/index.ts --static",
     "start:ui": "node dist/src/ui/index.js --static",
