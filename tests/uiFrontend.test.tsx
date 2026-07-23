@@ -858,6 +858,7 @@ function settings(): UiSettings {
     maxDailyLossUsd: 0,
     maxConsecutiveLosses: 0,
     requirePositiveEv: true,
+    explorationEnabled: true,
     evUseSimilarity: false,
     evCalibration: false,
     evSafetyMargin: 0.03,

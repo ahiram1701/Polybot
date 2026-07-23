@@ -62,6 +62,15 @@ const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
+// Cold-start exploration: a market/setup needs `evMinHistoryTrades` (15) fillable samples to trade
+// normally, but a setup with thin quote coverage (BTC/DOGE) can never reach 15 because it never
+// trades — a deadlock. Exploration breaks it by allowing a BOUNDED number of probes per market/day on
+// short-history setups, but ONLY when the (Bayesian-shrunk, fee-aware) EV is still positive. Shrinkage
+// pulls a 5/5 fluke toward the market price so noise rarely passes; the real edge (DOGE ~0.9 win) does.
+// The daily cap bounds the exploration cost — these probes are data-gathering, not the profit engine.
+const DEFAULT_EXPLORATION_ENABLED = true;
+const EXPLORATION_MIN_TRADES = 5;
+const EXPLORATION_MAX_PER_MARKET_DAY = 3;
 // Official-resolution verification cadence: one sweep every 30s, 2 gamma lookups per sweep. Enough to
 // backfill dozens of historical trades within minutes without hammering the API; failed/unresolved
 // lookups retry after 5 minutes.
@@ -115,6 +124,14 @@ interface TradeSignal {
 interface TradeCandidate extends TradeSignal {
   quote: OrderbookQuote;
   expectedValue?: ExpectedValueSnapshot;
+  // True when this trade only cleared the gate via the bounded cold-start exploration path (short
+  // history but positive shrunk EV). Used to charge the per-market/day exploration budget on fill.
+  exploration?: boolean;
+}
+
+interface EvGateResult {
+  expectedValue: ExpectedValueSnapshot;
+  exploration: boolean;
 }
 
 type TradeExecutionResult =
@@ -134,6 +151,9 @@ export class BotRunner {
   private calibrationCache?: { resolvedCount: number; map: CalibrationMap };
   private readonly loopDurationsMs: number[] = [];
   private lastLoopStatsLogMs = 0;
+  // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
+  // In-memory on purpose — a restart resets it, which only makes exploration MORE conservative.
+  private readonly explorationCountByDayMarket = new Map<string, number>();
 
   constructor(
     private readonly config: BotConfig,
@@ -684,12 +704,14 @@ export class BotRunner {
     }
 
     const requirePositiveEv = this.config.requirePositiveEv ?? DEFAULT_REQUIRE_POSITIVE_EV;
-    const expectedValue = requirePositiveEv ? await this.evaluateExpectedValue(signal, quote.bestAsk) : undefined;
-    if (requirePositiveEv && !expectedValue) {
+    if (!requirePositiveEv) {
+      return { ...signal, quote };
+    }
+    const evResult = await this.evaluateExpectedValue(signal, quote.bestAsk);
+    if (!evResult) {
       return undefined;
     }
-
-    return { ...signal, quote, expectedValue };
+    return { ...signal, quote, expectedValue: evResult.expectedValue, exploration: evResult.exploration };
   }
 
   private async executeTradeCandidates(candidates: TradeCandidate[]): Promise<void> {
@@ -728,6 +750,9 @@ export class BotRunner {
       }
 
       await this.deps.state.recordTradeAttempt(result.trade);
+      if (candidate.exploration) {
+        this.chargeExplorationBudget(candidate.market.asset);
+      }
       logger.info("Trade attempt recorded.", {
         mode: result.trade.mode,
         slug: result.trade.slug,
@@ -737,6 +762,7 @@ export class BotRunner {
         estimatedShares: result.trade.estimatedShares,
         status: result.trade.status,
         orderId: result.trade.orderId,
+        exploration: candidate.exploration === true,
       });
     }
   }
@@ -766,7 +792,7 @@ export class BotRunner {
   private async evaluateExpectedValue(
     signal: TradeSignal,
     askPrice: number | undefined,
-  ): Promise<ExpectedValueSnapshot | undefined> {
+  ): Promise<EvGateResult | undefined> {
     if (askPrice === undefined || askPrice <= 0) {
       return undefined;
     }
@@ -823,7 +849,27 @@ export class BotRunner {
         winCount = metrics.winCount;
       }
 
+      // Fee-aware: a trade must clear the round-trip taker fee (which scales with price) plus the
+      // configured ROI buffer, on top of the win-probability safety margin.
+      const feeFraction = (defaultTakerFeeRateBps(signal.market.asset) / 10_000) * (1 - askPrice);
+      const expectedValue = calculateExpectedValue({
+        capitalUsd: signal.amountUsd,
+        askPrice,
+        winCount,
+        tradeCount,
+        safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
+        minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
+        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap() : undefined,
+      });
+
       if (tradeCount < minHistoryTrades) {
+        // Cold-start: not enough fillable history for the normal gate. Allow a bounded exploratory
+        // probe ONLY if there is *some* history and the shrunk, fee-aware EV is still positive — so we
+        // gather real fills to bootstrap the setup without betting on noise. See EXPLORATION_* consts.
+        const exploration = this.considerExploration(signal, tradeCount, expectedValue);
+        if (exploration) {
+          return exploration;
+        }
         this.logSkipOnce(signal.market.slug, "expected_value_history_not_found", {
           market: signal.market.asset,
           outcome: signal.outcome,
@@ -837,18 +883,6 @@ export class BotRunner {
         return undefined;
       }
 
-      // Fee-aware: a trade must clear the round-trip taker fee (which scales with price) plus the
-      // configured ROI buffer, on top of the win-probability safety margin.
-      const feeFraction = (defaultTakerFeeRateBps(signal.market.asset) / 10_000) * (1 - askPrice);
-      const expectedValue = calculateExpectedValue({
-        capitalUsd: signal.amountUsd,
-        askPrice,
-        winCount,
-        tradeCount,
-        safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
-        minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
-        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap() : undefined,
-      });
       if (!expectedValue.passesRecommendedEntry) {
         this.logSkipOnce(signal.market.slug, "expected_value_gate_failed", {
           market: signal.market.asset,
@@ -866,7 +900,7 @@ export class BotRunner {
         return undefined;
       }
 
-      return expectedValue;
+      return { expectedValue, exploration: false };
     } catch (error) {
       this.logSkipOnce(signal.market.slug, "expected_value_analysis_failed", {
         market: signal.market.asset,
@@ -875,6 +909,57 @@ export class BotRunner {
       });
       return undefined;
     }
+  }
+
+  /**
+   * Decide whether a short-history setup may fire a bounded exploratory probe. Returns the EV result
+   * (tagged exploration) when allowed, else undefined. Guards, in order: feature enabled; enough
+   * history to estimate at all (>= EXPLORATION_MIN_TRADES); the shrunk fee-aware EV still passes AND
+   * shows positive edge (noise shrinks toward the ask and fails here); daily per-market budget left.
+   */
+  private considerExploration(
+    signal: TradeSignal,
+    tradeCount: number,
+    expectedValue: ExpectedValueSnapshot,
+  ): EvGateResult | undefined {
+    const enabled = this.config.explorationEnabled ?? DEFAULT_EXPLORATION_ENABLED;
+    if (!enabled || tradeCount < EXPLORATION_MIN_TRADES) {
+      return undefined;
+    }
+    if (!expectedValue.passesRecommendedEntry || expectedValue.edge <= 0) {
+      return undefined;
+    }
+    if (this.explorationBudgetLeft(signal.market.asset) <= 0) {
+      this.logSkipOnce(signal.market.slug, "exploration_budget_exhausted", {
+        market: signal.market.asset,
+        outcome: signal.outcome,
+        maxPerMarketDay: EXPLORATION_MAX_PER_MARKET_DAY,
+      });
+      return undefined;
+    }
+    logger.info("Exploración: historial corto pero EV positivo tras shrinkage; sondeo acotado.", {
+      market: signal.market.asset,
+      outcome: signal.outcome,
+      tradeCount,
+      edge: expectedValue.edge,
+      adjustedWinProbability: expectedValue.adjustedWinProbability,
+      budgetLeft: this.explorationBudgetLeft(signal.market.asset),
+    });
+    return { expectedValue, exploration: true };
+  }
+
+  private explorationBudgetKey(market: MarketSymbol): string {
+    return `${dailySpendKey(Date.now(), this.config.timezone)}:${market}`;
+  }
+
+  private explorationBudgetLeft(market: MarketSymbol): number {
+    const used = this.explorationCountByDayMarket.get(this.explorationBudgetKey(market)) ?? 0;
+    return EXPLORATION_MAX_PER_MARKET_DAY - used;
+  }
+
+  private chargeExplorationBudget(market: MarketSymbol): void {
+    const key = this.explorationBudgetKey(market);
+    this.explorationCountByDayMarket.set(key, (this.explorationCountByDayMarket.get(key) ?? 0) + 1);
   }
 
   private async executeTradeCandidate(candidate: TradeCandidate): Promise<TradeExecutionResult> {

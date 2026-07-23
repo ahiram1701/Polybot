@@ -3,9 +3,30 @@ import { describe, expect, it } from "vitest";
 import {
   buildRecommendations,
   LIVE_AUTO_APPLY_THRESHOLDS,
+  passesRobustnessGuard,
   SIM_AUTO_APPLY_THRESHOLDS,
 } from "../src/recommendationEngine.js";
 import type { AnalyticsSample, MarketSymbol, Outcome } from "../src/types.js";
+
+describe("passesRobustnessGuard (anti-overfit auto-apply)", () => {
+  it("allows any validated change when the current config is dead (0 trades)", () => {
+    expect(passesRobustnessGuard({ tradeCount: 0, lowerBoundRoi: -1 }, { tradeCount: 5, lowerBoundRoi: 0.1 })).toBe(true);
+  });
+
+  it("allows moving to an equally- or better-sampled setup", () => {
+    expect(passesRobustnessGuard({ tradeCount: 12, lowerBoundRoi: 0.1 }, { tradeCount: 12, lowerBoundRoi: 0.05 })).toBe(true);
+    expect(passesRobustnessGuard({ tradeCount: 12, lowerBoundRoi: 0.1 }, { tradeCount: 20, lowerBoundRoi: 0.02 })).toBe(true);
+  });
+
+  it("blocks downgrading to a thinner setup that isn't clearly better out-of-sample", () => {
+    // BTC's real case: 28→35 dropped from 12 to 7 trades without a clearly higher lower bound.
+    expect(passesRobustnessGuard({ tradeCount: 12, lowerBoundRoi: 0.1 }, { tradeCount: 7, lowerBoundRoi: 0.12 })).toBe(false);
+  });
+
+  it("permits a thinner setup only when its lower bound clears the margin", () => {
+    expect(passesRobustnessGuard({ tradeCount: 12, lowerBoundRoi: 0.1 }, { tradeCount: 7, lowerBoundRoi: 0.2 })).toBe(true);
+  });
+});
 
 describe("RecommendationEngine", () => {
   it("chooses a predictive window and distance using walk-forward validation", async () => {

@@ -45,6 +45,28 @@ export const AUTO_APPLY_THRESHOLDS: AutoApplyThresholds = {
 export const LIVE_AUTO_APPLY_THRESHOLDS = AUTO_APPLY_THRESHOLDS;
 export const SIM_AUTO_APPLY_THRESHOLDS = AUTO_APPLY_THRESHOLDS;
 
+// How much better a thinner-sampled setup's out-of-sample lower bound must be to justify downgrading
+// sample robustness (see passesRobustnessGuard).
+export const ROBUST_DOWNGRADE_MARGIN = 0.05;
+
+/**
+ * Anti-overfit guard for auto-apply: never DOWNGRADE onto a setup backed by fewer trades than the one
+ * running now (the classic overfit trap — the engine kept recommending a 7-trade BTC window over a
+ * 12-trade one). A thinner setup is only accepted if its conservative out-of-sample lower bound
+ * clearly beats the current one's. A dead current config (0 trades) has nothing to protect, so any
+ * validated change is allowed — that escape valve is what bootstraps a market that never traded.
+ */
+export function passesRobustnessGuard(
+  current: { tradeCount: number; lowerBoundRoi?: number },
+  best: { tradeCount: number; lowerBoundRoi?: number },
+  margin = ROBUST_DOWNGRADE_MARGIN,
+): boolean {
+  if (current.tradeCount === 0 || best.tradeCount >= current.tradeCount) {
+    return true;
+  }
+  return (best.lowerBoundRoi ?? Number.NEGATIVE_INFINITY) > (current.lowerBoundRoi ?? Number.NEGATIVE_INFINITY) + margin;
+}
+
 export function autoApplyThresholdsForMode(_mode: Mode): AutoApplyThresholds {
   return AUTO_APPLY_THRESHOLDS;
 }
@@ -228,6 +250,9 @@ async function buildMarketRecommendation(
     best.metrics.walkForwardRoi > 0 &&
     improvementYield !== undefined &&
     improvementYield >= thresholds.minYieldImprovement &&
+    // Anti-overfit: don't auto-downgrade onto a thinner-sampled setup unless its OOS lower bound is
+    // clearly better (keeps the engine from chasing few-trade flukes over robust configs).
+    passesRobustnessGuard(current.metrics, best.metrics) &&
     // Escape valve: the max-change guard protects a WORKING config from destabilizing jumps, but a
     // config with zero trades has nothing to protect — and gradual steps can never bootstrap it,
     // because intermediate configs lack the data to validate each step (DOGE sat dead for weeks at a

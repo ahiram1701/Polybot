@@ -1328,6 +1328,7 @@ export class BotController {
       timezone: config.timezone ?? settings.timezone,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
+      explorationEnabled: config.explorationEnabled ?? settings.explorationEnabled,
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
       evCalibration: config.evCalibration ?? settings.evCalibration,
       aiAutoTuneAskCap: config.aiAutoTuneAskCap ?? settings.aiAutoTuneAskCap,

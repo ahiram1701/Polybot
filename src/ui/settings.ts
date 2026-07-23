@@ -99,6 +99,7 @@ const settingsSchema = z.object({
   maxConsecutiveLosses: z.coerce.number().int().nonnegative().default(0),
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
+  explorationEnabled: z.boolean().default(true),
   evUseSimilarity: z.boolean().default(false),
   evCalibration: z.boolean().default(false),
   evSafetyMargin: z.coerce.number().nonnegative().lt(1).default(0.03),
@@ -215,6 +216,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     timezone: config.timezone ?? "auto",
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
+    explorationEnabled: config.explorationEnabled ?? true,
     evUseSimilarity: config.evUseSimilarity ?? false,
     evCalibration: config.evCalibration ?? false,
     evSafetyMargin: config.evSafetyMargin ?? 0.03,
@@ -286,6 +288,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     timezone: settings.timezone,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     requirePositiveEv: settings.requirePositiveEv,
+    explorationEnabled: settings.explorationEnabled,
     evUseSimilarity: settings.evUseSimilarity,
     evCalibration: settings.evCalibration,
     evSafetyMargin: settings.evSafetyMargin,

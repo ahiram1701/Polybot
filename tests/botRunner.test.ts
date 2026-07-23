@@ -1200,6 +1200,119 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
 
+  describe("cold-start exploration", () => {
+    function explorationScenario(opts: {
+      tradeCount: number;
+      winCount: number;
+      bestAsk: number;
+      explorationEnabled?: boolean;
+    }) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 290_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      const openings = new Map([
+        [
+          market.slug,
+          {
+            asset: market.asset,
+            slug: market.slug,
+            windowStartMs,
+            openingPrice: 100,
+            openingTickTimestampMs: windowStartMs,
+            capturedAtMs: windowStartMs,
+          },
+        ],
+      ]);
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn(() => false),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => ({
+          id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode: "sim" as const,
+          conditionId: input.market.conditionId,
+          outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId,
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: input.quote.bestAsk,
+          expectedValue: input.expectedValue,
+          estimatedShares: input.quote.estimatedSharesForAmount,
+          openingPrice: input.opening.openingPrice,
+          entryPrice: input.tick.value,
+          distanceUsd: input.distanceUsd,
+          entryWindowSeconds: input.entryWindowSeconds,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+          createdAtMs: nowMs,
+        })),
+      } satisfies TradeExecutor;
+      const metrics = () =>
+        bestStrategy("BTC", "UP", 20, 20, 0.98, {
+          tradeCount: opts.tradeCount,
+          winCount: opts.winCount,
+          lossCount: opts.tradeCount - opts.winCount,
+        }).metrics;
+      const strategyAnalysisEngine = {
+        analyze: vi.fn(async () => strategyAnalysisResponse(bestStrategy("BTC", "UP", 20, 20, 0.98, metrics()))),
+        estimateSetupWinRate: vi.fn(async () => metrics()),
+      };
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          mode: "sim",
+          requirePositiveEv: true,
+          evMinHistoryTrades: 15, // force the short-history branch (tradeCount < 15)
+          explorationEnabled: opts.explorationEnabled ?? true,
+        },
+        {
+          watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+          orderbook: fakeOrderbook(opts.bestAsk),
+          priceFeed: livePriceFeed("BTC", 130, nowMs),
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+          strategyAnalysisEngine,
+        },
+      );
+      return { runner, executor, nowMs };
+    }
+
+    it("probes a short-history setup when the shrunk EV is still positive", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = explorationScenario({ tradeCount: 8, winCount: 7, bestAsk: 0.5 });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).toHaveBeenCalled();
+    });
+
+    it("blocks the same short-history setup when exploration is disabled", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = explorationScenario({
+        tradeCount: 8,
+        winCount: 7,
+        bestAsk: 0.5,
+        explorationEnabled: false,
+      });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("refuses to explore a short-history setup with no edge", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Win rate == ask => zero/negative edge after shrinkage: exploration must not fire on noise.
+      const { runner, executor, nowMs } = explorationScenario({ tradeCount: 8, winCount: 4, bestAsk: 0.5 });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+  });
+
   it("does not trade when the price move is below the distance floor", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

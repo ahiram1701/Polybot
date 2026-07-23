@@ -171,6 +171,7 @@ const emptySettings: UiSettings = {
   arbMinNetPerSet: 0.02,
   timezone: "auto",
   requirePositiveEv: true,
+  explorationEnabled: true,
   evUseSimilarity: false,
   evCalibration: false,
   evSafetyMargin: 0.03,
@@ -2115,6 +2116,20 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           />
           <span>Exigir valor esperado positivo</span>
         </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.explorationEnabled}
+            onChange={(event) => update("explorationEnabled", event.target.checked)}
+            disabled={running}
+          />
+          <span>Exploración de arranque en frío (sondeos acotados de EV positivo para que BTC/DOGE junten historial)</span>
+        </label>
+        <p className="settings-hint">
+          Sin esto, un mercado poco cotizado nunca opera porque nunca junta las 15 muestras que el gate exige — y nunca
+          las junta porque no opera. La exploración permite hasta {`${3}`} sondeos por mercado/día en setups de historial
+          corto, pero solo si el EV (con shrinkage y comisiones) sigue positivo: el ruido se descarta, el edge real no.
+        </p>
         <label className="switch-row">
           <input
             type="checkbox"

@@ -45,6 +45,9 @@ export interface BotConfig {
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.
   // Optional so test/config literals may omit them; config.ts always sets them and botRunner defaults them.
   requirePositiveEv?: boolean;
+  // Bounded cold-start exploration: allow a few positive-EV probes/day on short-history setups so
+  // thinly-quoted markets can bootstrap enough fills to clear the normal EV history gate.
+  explorationEnabled?: boolean;
   evUseSimilarity?: boolean;
   // Empirical calibration of the gate probability from the ledger's own resolved predictions.
   evCalibration?: boolean;

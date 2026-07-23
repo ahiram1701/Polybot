@@ -50,6 +50,8 @@ export interface UiSettings {
   timezone: string;
   // EV gate: only trade setups with a positive, fee-aware expected value backed by enough history.
   requirePositiveEv: boolean;
+  // Exploración de arranque en frío: sondeos acotados de EV positivo en setups de historial corto.
+  explorationEnabled: boolean;
   evUseSimilarity: boolean;
   // Calibracion empirica de la probabilidad del gate desde el propio ledger.
   evCalibration: boolean;
