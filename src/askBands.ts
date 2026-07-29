@@ -1,4 +1,4 @@
-import { calculateTradePnl, filterTradesForPnlReset, type PnlResetAtMsByMode } from "./pnl.js";
+import { calculateTradePnl, filterTradesForPnlReset, isCompleteArbPair, isWinningTrade, type PnlResetAtMsByMode } from "./pnl.js";
 import type { Mode, TradeAttempt } from "./types.js";
 
 /**
@@ -39,6 +39,11 @@ export function summarizeAskBands(
       (trade) =>
         trade.mode === mode &&
         trade.resolved !== undefined &&
+        // Arbitrage is not a directional entry at a price: its `bestAsk` is the cost of the whole SET
+        // (~0.93), so it lands in the top band and — since it is booked against one nominal side — it
+        // reads there as a near-break-even "loss". Left in, it poisons the very table the ask-window
+        // tuner reads. Arb P&L is reported separately; these bands are about directional entries.
+        !isCompleteArbPair(trade) &&
         (options.market === undefined || trade.asset === options.market),
     )
     .flatMap((trade) => (typeof trade.bestAsk === "number" ? [{ trade, ask: trade.bestAsk }] : []));
@@ -51,7 +56,7 @@ export function summarizeAskBands(
     if (inBand.length === 0) {
       continue;
     }
-    const wins = inBand.filter((entry) => entry.trade.resolved?.won).length;
+    const wins = inBand.filter((entry) => isWinningTrade(entry.trade)).length;
     const askSum = inBand.reduce((sum, entry) => sum + entry.ask, 0);
     const netUsd = inBand.reduce((sum, entry) => sum + (calculateTradePnl(entry.trade).netUsd ?? 0), 0);
     bands.push({

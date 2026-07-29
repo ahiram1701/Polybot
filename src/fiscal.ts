@@ -1,4 +1,4 @@
-import { calculateTradePnl, estimateTradeFeeUsd } from "./pnl.js";
+import { calculateTradePnl, estimateTradeFeeUsd, isWinningTrade } from "./pnl.js";
 import { dayKeyInTimeZone } from "./timezone.js";
 import type { MarketSymbol, Outcome, TradeAttempt } from "./types.js";
 
@@ -73,7 +73,7 @@ export function buildFiscalRows(trades: TradeAttempt[], resolveRate?: FxRateReso
       fechaIso,
       mercado: trade.asset,
       lado: trade.outcome,
-      won: trade.resolved.won,
+      won: isWinningTrade(trade),
       invertidoUsd: pnl.stakeUsd,
       comisionUsd: estimateTradeFeeUsd(trade),
       recibidoUsd: pnl.payoutUsd ?? 0,

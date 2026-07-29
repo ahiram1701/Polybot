@@ -1,4 +1,4 @@
-import { calculateTradePnl, filterTradesForPnlReset, type PnlResetAtMsByMode } from "../../pnl.js";
+import { calculateTradePnl, filterTradesForPnlReset, isWinningTrade, type PnlResetAtMsByMode } from "../../pnl.js";
 import { dayKeyInTimeZone, hourInTimeZone } from "../../timezone.js";
 import type { Mode, Outcome, TradeAttempt } from "../../types.js";
 
@@ -61,7 +61,7 @@ export function buildEquitySeries(trades: TradeAttempt[]): EquityPoint[] {
 
 /** Rolling win rate (fraction 0..1) over the last `window` resolutions; cumulative until it fills. */
 export function rollingWinRate(trades: TradeAttempt[], window = 20): number[] {
-  const wins: number[] = trades.map((trade) => (trade.resolved?.won ? 1 : 0));
+  const wins: number[] = trades.map((trade) => (isWinningTrade(trade) ? 1 : 0));
   return wins.map((_value, index) => {
     const from = Math.max(0, index - window + 1);
     const slice = wins.slice(from, index + 1);
@@ -138,7 +138,7 @@ export function perMarketSide(trades: TradeAttempt[]): { markets: LabeledValue[]
         return [];
       }
       const net = inGroup.reduce((sum, trade) => sum + (calculateTradePnl(trade).netUsd ?? 0), 0);
-      const wins = inGroup.filter((trade) => trade.resolved?.won).length;
+      const wins = inGroup.filter((trade) => isWinningTrade(trade)).length;
       return [{ label: key, value: round2(net), reference: wins / inGroup.length, count: inGroup.length }];
     });
 
@@ -158,7 +158,7 @@ export function hourOfDayHistogram(trades: TradeAttempt[], timeZone?: string): L
     const hour = hourInTimeZone(trade.createdAtMs, timeZone);
     const entry = byHour.get(hour) ?? { count: 0, wins: 0 };
     entry.count += 1;
-    entry.wins += trade.resolved?.won ? 1 : 0;
+    entry.wins += isWinningTrade(trade) ? 1 : 0;
     byHour.set(hour, entry);
   }
   return [...byHour.entries()]

@@ -3,16 +3,18 @@ import { describe, expect, it } from "vitest";
 import type { AskBandRow, AskBandSummary } from "../src/askBands.js";
 import { recommendAskCap, recommendAskWindow } from "../src/askCapTuner.js";
 
-function band(lo: number, hi: number, trades: number, winRate: number): AskBandRow {
+function band(lo: number, hi: number, trades: number, winRate: number, netUsd?: number): AskBandRow {
+  const breakEvenRate = (lo + hi) / 2; // Break-even = ask medio de la banda: usa el punto medio.
   return {
     lo,
     hi,
     trades,
     wins: Math.round(trades * winRate),
     winRate,
-    // Break-even = ask medio de la banda: usa el punto medio.
-    breakEvenRate: (lo + hi) / 2,
-    netUsd: 0,
+    breakEvenRate,
+    // Por defecto el dinero es COHERENTE con el edge (batir el break-even => gano). Pasa `netUsd`
+    // explicito para el caso interesante: una banda que gana en win% pero pierde dinero.
+    netUsd: netUsd ?? trades * (winRate - breakEvenRate) * 10,
   };
 }
 
@@ -109,5 +111,19 @@ describe("recommendAskWindow (piso + techo)", () => {
     expect(recommendAskWindow(summary([band(0.45, 0.55, 20, 0.9)]), { floor: 0.3, cap: 0.55 })).toBeUndefined();
     const losing = summary([band(0.3, 0.55, 40, 0.2), band(0.55, 0.8, 40, 0.3)]);
     expect(recommendAskWindow(losing, { floor: 0.3, cap: 0.8 })).toBeUndefined();
+  });
+
+  it("no abre el piso hacia una banda barata que PERDIO DINERO aunque gane en win%", () => {
+    // El caso real de ETH: la banda barata mezclaba una zona rentable con un pozo (19% de aciertos
+    // contra 42.5% de break-even) y el agregado pasaba el filtro de win-rate mientras sangraba. El
+    // tuner bajaba el piso ahi una y otra vez. El dinero realizado manda sobre el win% agregado.
+    const bands = summary([
+      band(0, 0.45, 30, 0.28, -56), // +5.5pp sobre break-even 0.225 PERO -$56 realizados
+      band(0.45, 0.55, 30, 0.62), // paga de verdad: aqui debe abrir
+      band(0.55, 0.65, 30, 0.68),
+    ]);
+    const reco = recommendAskWindow(bands, { floor: 0.45, cap: 0.65 });
+    // Sin candado el piso objetivo habria sido 0 (clamp 0.20); con candado se queda en la banda sana.
+    expect(reco?.targetFloor ?? 0.45).toBe(0.45);
   });
 });

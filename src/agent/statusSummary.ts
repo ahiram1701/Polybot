@@ -163,6 +163,8 @@ export interface CompactTrade {
   id: string;
   market?: MarketSymbol;
   mode: Mode;
+  /** "arb" = complete-set arbitrage: redeems $1/set regardless of the winner, so it is never a loss. */
+  kind?: TradeAttempt["kind"];
   outcome: Outcome;
   amountUsd: number;
   bestAsk?: number;
@@ -184,6 +186,7 @@ export function summarizeTrade(trade: TradeAttempt): CompactTrade {
     id: trade.id,
     market: trade.asset,
     mode: trade.mode,
+    kind: trade.kind,
     outcome: trade.outcome,
     amountUsd: trade.amountUsd,
     bestAsk: trade.bestAsk,

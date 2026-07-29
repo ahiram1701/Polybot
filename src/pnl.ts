@@ -45,6 +45,31 @@ export function emptyPnlSummaryByMode(): PnlSummaryByMode {
   };
 }
 
+/**
+ * A COMPLETE arbitrage pair redeems $1 per set no matter which side wins; only a naked leg (pair
+ * incomplete) depends on the winner like a normal position.
+ */
+export function isCompleteArbPair(trade: TradeAttempt): boolean {
+  return trade.kind === "arb" && trade.arbPairComplete === true;
+}
+
+/**
+ * Did this resolved trade MAKE MONEY? Use this — not `resolved.won` — for anything the user reads as
+ * a result (win counts, win rate, "Ganó/Perdió", the circuit breaker's losing streak).
+ *
+ * `resolved.won` only answers "did the nominal outcome match the winner", which is the wrong question
+ * for a complete arb set: it holds BOTH sides, so it always redeems $1/set and always profits, yet it
+ * is recorded against one nominal outcome and so reads as a "loss" roughly half the time. The money
+ * math already special-cased this (see calculateTradePnl); the counters did not, which is why the
+ * dashboard and Telegram showed profitable arbitrages as losses.
+ */
+export function isWinningTrade(trade: TradeAttempt): boolean {
+  if (!trade.resolved) {
+    return false;
+  }
+  return trade.resolved.won === true || isCompleteArbPair(trade);
+}
+
 export function calculateTradePnl(trade: TradeAttempt): TradePnl {
   const stakeUsd = getStakeUsd(trade);
   if (!trade.resolved) {
@@ -54,9 +79,7 @@ export function calculateTradePnl(trade: TradeAttempt): TradePnl {
     };
   }
 
-  // A COMPLETE arbitrage pair redeems $1 per set no matter which side wins; only a naked leg (pair
-  // incomplete) depends on the winner like a normal position.
-  const paysRegardlessOfWinner = trade.kind === "arb" && trade.arbPairComplete === true;
+  const paysRegardlessOfWinner = isCompleteArbPair(trade);
   const payoutUsd = trade.resolved.won || paysRegardlessOfWinner ? getPayoutUsd(trade) : 0;
   const netUsd = payoutUsd - stakeUsd;
   return {
@@ -162,7 +185,7 @@ export function calculatePnlSummary(trades: TradeAttempt[]): PnlSummary {
     summary.payoutUsd += pnl.payoutUsd ?? 0;
     summary.realizedUsd += pnl.netUsd ?? 0;
     summary.resolvedCount += 1;
-    if (trade.resolved?.won) {
+    if (isWinningTrade(trade)) {
       summary.wonCount += 1;
     } else {
       summary.lostCount += 1;

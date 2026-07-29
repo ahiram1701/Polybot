@@ -62,8 +62,15 @@ export function recommendAskWindow(
     return undefined;
   }
 
+  // Una banda solo puede ABRIR o EXTENDER la ventana si, ademas de superar su break-even por el
+  // margen, GANO DINERO de verdad (netUsd > 0). Sin este candado el tuner abria la ventana hacia
+  // bandas que el propio ledger mostraba perdedoras: la banda barata [0,0.45) mezcla una zona rentable
+  // (~0.30-0.35) con un pozo (~0.40-0.45, 19% de aciertos contra 42.5% de break-even), y el agregado
+  // podia pasar el filtro de win-rate mientras el dinero era negativo. El realizado manda.
   const pays = (band: AskBandSummary["bands"][number]) =>
-    band.trades >= locks.MIN_BAND_TRADES && (band.winRate ?? 0) - (band.breakEvenRate ?? 1) >= locks.EDGE_MARGIN;
+    band.trades >= locks.MIN_BAND_TRADES &&
+    (band.winRate ?? 0) - (band.breakEvenRate ?? 1) >= locks.EDGE_MARGIN &&
+    band.netUsd > 0;
 
   // Walk cheap -> expensive. The first paying band opens the window; the run ends at the first
   // sufficiently-sampled band that does NOT pay. Thin bands neither open, extend nor close it.

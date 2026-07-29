@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { calculatePnlSummary, calculatePnlSummaryByMode, calculateTradePnl } from "../src/pnl.js";
+import {
+  calculatePnlSummary,
+  calculatePnlSummaryByMode,
+  calculateTradePnl,
+  isCompleteArbPair,
+  isWinningTrade,
+} from "../src/pnl.js";
 import type { TradeAttempt } from "../src/types.js";
 
 describe("P&L calculations", () => {
@@ -79,6 +85,38 @@ describe("P&L calculations", () => {
     expect(pnl.payoutUsd).toBeCloseTo(30); // $1 per set regardless of resolved.won
     expect(pnl.stakeUsd).toBeCloseTo(24.44);
     expect(pnl.netUsd).toBeCloseTo(5.56, 2);
+  });
+
+  it("counts a profitable COMPLETE arb pair as WON even when its nominal side lost", () => {
+    // El bug que veia el usuario: el dinero salia bien (calculateTradePnl ya trataba el set completo)
+    // pero el CONTADOR usaba resolved.won, asi que un arbitraje rentable aparecia como perdido en el
+    // dashboard, en el win rate y en Telegram. Un set completo cobra $1/set: nunca es una perdida.
+    const arbPair: TradeAttempt = {
+      ...trade({ won: false, amountUsd: 25, estimatedShares: 26.88 }),
+      kind: "arb",
+      arbPairComplete: true,
+      filledAmountUsd: 25,
+      filledShares: 26.88,
+    };
+    expect(isWinningTrade(arbPair)).toBe(true);
+    expect(isCompleteArbPair(arbPair)).toBe(true);
+
+    const summary = calculatePnlSummary([arbPair]);
+    expect(summary.wonCount).toBe(1);
+    expect(summary.lostCount).toBe(0);
+    expect(summary.realizedUsd).toBeGreaterThan(0); // y el dinero sigue cuadrando
+  });
+
+  it("still counts a NAKED arb leg that lost as a loss", () => {
+    const naked: TradeAttempt = {
+      ...trade({ won: false, amountUsd: 12, estimatedShares: 30 }),
+      kind: "arb",
+      arbPairComplete: false,
+      filledAmountUsd: 12,
+      filledShares: 30,
+    };
+    expect(isWinningTrade(naked)).toBe(false);
+    expect(calculatePnlSummary([naked]).lostCount).toBe(1);
   });
 
   it("scores a NAKED arb leg (pair incomplete) like a normal directional trade", () => {

@@ -1,4 +1,4 @@
-import { calculateTradePnl } from "./pnl.js";
+import { calculateTradePnl, isWinningTrade } from "./pnl.js";
 import { dailySpendKey } from "./time.js";
 import type { Mode, TradeAttempt } from "./types.js";
 
@@ -94,7 +94,8 @@ function evaluateFromBaseline(
   let trippedAtMs = 0;
   for (const trade of counted) {
     netUsd += calculateTradePnl(trade).netUsd ?? 0;
-    consecutiveLosses = trade.resolved?.won ? 0 : consecutiveLosses + 1;
+    // A profitable arbitrage must not extend a losing streak just because its nominal side lost.
+    consecutiveLosses = isWinningTrade(trade) ? 0 : consecutiveLosses + 1;
     if (reason === undefined) {
       if (maxDailyLossUsd > 0 && Math.max(0, -netUsd) >= maxDailyLossUsd) {
         reason = "daily_loss_limit";

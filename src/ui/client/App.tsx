@@ -34,7 +34,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
 import { summarizeLogs } from "../../agent/statusSummary.js";
-import { calculateTradePnl, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
+import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import {
   buildEquitySeries,
@@ -3501,6 +3501,11 @@ function formatTradePayout(pnl: TradePnl): string {
 
 function tradeStatusLabel(trade: TradeAttempt): string {
   if (trade.resolved) {
+    // Un set de arbitraje completo redime $1 por set gane quien gane: nunca es una perdida, y
+    // etiquetarlo por el lado nominal mostraba "Perdio" en trades que ganaron dinero.
+    if (isCompleteArbPair(trade)) {
+      return "Arb";
+    }
     const result = trade.resolved.won ? "Gano" : "Perdio";
     if (trade.mode === "live") {
       return trade.fillSource === "clob_trades" ? `${result} CLOB` : `${result} est.`;

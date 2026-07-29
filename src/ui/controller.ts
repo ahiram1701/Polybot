@@ -44,6 +44,7 @@ import {
   calculateTradePnl,
   filterTradesForPnlReset,
   emptyPnlSummaryByMode,
+  isWinningTrade,
   EMPTY_PNL_SUMMARY,
   type PnlResetAtMsByMode,
   type PnlSummary,
@@ -315,7 +316,7 @@ export class BotController {
         running: this.isRunning(),
         todayNetUsd: sumNet(today),
         todayTrades: today.length,
-        todayWins: today.filter((trade) => trade.resolved?.won).length,
+        todayWins: today.filter((trade) => isWinningTrade(trade)).length,
         postResetNetUsd: sumNet(postReset),
         postResetTrades: postReset.length,
         validationTarget: progress.target,
@@ -1538,7 +1539,7 @@ function summarizeTrade(trade: TradeAttempt) {
     distanceUsd: trade.distanceUsd,
     entryWindowSeconds: trade.entryWindowSeconds,
     createdAtMs: trade.createdAtMs,
-    resolvedWon: trade.resolved?.won,
+    resolvedWon: trade.resolved ? isWinningTrade(trade) : undefined,
     pnl,
   };
 }

@@ -185,7 +185,11 @@ export class DynamicTelegramNotifier implements Notifier {
     }
     const entries = this.digestBuffer.splice(0);
     this.lastDigestFlushMs = this.now();
-    const wins = entries.filter((entry) => entry.title === "Trade ganado").length;
+    // Un arbitraje liquidado SIEMPRE gana (redime $1 por set gane quien gane), asi que cuenta como
+    // ganado. Antes caia en "otros" y el resumen subreportaba los aciertos frente al P&L real.
+    const wins = entries.filter(
+      (entry) => entry.title === "Trade ganado" || entry.title === "Arbitraje liquidado",
+    ).length;
     const losses = entries.filter((entry) => entry.title === "Trade perdido").length;
     const other = entries.length - wins - losses;
     const lines = entries.slice(-10).map((entry) => {

@@ -55,6 +55,22 @@ describe("telegram digest mode", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("counts a settled arbitrage as a WIN in the summary header", async () => {
+    // Un set completo de arbitraje cobra $1/set gane quien gane. Antes caia en el contador de "otros"
+    // (+N) y el resumen subreportaba los aciertos frente al P&L real que si lo contaba como ganancia.
+    await store.save({ digestEnabled: true, digestIntervalMinutes: 60 });
+
+    await notifier.notify({ category: "trade", title: "Trade ganado", body: "Modo: sim." });
+    await notifier.notify({ category: "trade", title: "Arbitraje liquidado", body: "Modo: sim." });
+    await notifier.notify({ category: "trade", title: "Trade perdido", body: "Modo: sim." });
+
+    nowMs += 61 * 60_000;
+    await notifier.flushDigestIfDue();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain("Resumen de trades (2W/1L)");
+    expect(sent[0].text).not.toContain("+1"); // ya no cae en "otros"
+  });
+
   it("keeps safety notifications immediate even with digest on", async () => {
     await store.save({ digestEnabled: true, digestIntervalMinutes: 60 });
     await notifier.notify({ title: "Circuit breaker de riesgo activado", level: "warn" });

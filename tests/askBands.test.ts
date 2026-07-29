@@ -65,4 +65,19 @@ describe("summarizeAskBands", () => {
     expect(summary.totalTrades).toBe(1);
     expect(summary.bands[0]?.wins).toBe(1);
   });
+
+  it("excludes complete arbitrage from the bands that drive the tuner", () => {
+    // El bestAsk de un arbitraje es el costo del SET (~0.93), no un precio de entrada direccional:
+    // aterrizaba en la banda cara y, al estar anotado contra un solo lado nominal, se leia ahi como
+    // una perdida. Dejarlo dentro envenenaba justo la tabla que el tuner usa para mover la ventana.
+    const arb: TradeAttempt = {
+      ...trade({ id: "arb", ask: 0.93, won: false }),
+      kind: "arb",
+      arbPairComplete: true,
+    };
+    const trades = [trade({ id: "dir", ask: 0.5, won: true }), arb];
+    const summary = summarizeAskBands(trades, "live");
+    expect(summary.totalTrades).toBe(1);
+    expect(summary.bands.find((band) => band.lo === 0.8)).toBeUndefined();
+  });
 });

@@ -205,6 +205,9 @@ function tradeRow(t: CompactTrade, width: number): string {
   let result: string;
   if (!t.resolved) {
     result = yellow(padEnd("pend.", 6));
+  } else if (t.kind === "arb") {
+    // El set completo cobra $1 por set gane quien gane: nunca es LOST.
+    result = cyan(padEnd("ARB", 6));
   } else {
     result = t.resolved.won ? green(padEnd("WON", 6)) : red(padEnd("LOST", 6));
   }
