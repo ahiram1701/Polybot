@@ -59,6 +59,9 @@ const DEFAULT_EV_MIN_EXPECTED_ROI = 0.01;
 // Backtest (evGateBacktest sweep) over all recorded analytics: min history 15 maximized net P&L across
 // BTC/ETH/DOGE (+$12/~4% vs 10) with a slightly higher win rate — trusts fewer, better-supported setups.
 const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
+// Techo a la ventaja que el modelo puede declarar sobre el mercado. El bucket edge>0.20 del ledger
+// realizo -17.6pp de discriminacion y -21.8pp de sesgo: era el que perdia. Ver ExpectedValueInput.
+const DEFAULT_EV_MAX_CLAIMED_EDGE = 0.2;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -148,7 +151,7 @@ export class BotRunner {
   private readonly postOnlySlugs = new Set<string>();
   private lastOfficialSweepMs = 0;
   private readonly officialCheckAttemptsMs = new Map<string, number>();
-  private calibrationCache?: { resolvedCount: number; map: CalibrationMap };
+  private readonly calibrationCache = new Map<MarketSymbol, { resolvedCount: number; map: CalibrationMap }>();
   private readonly loopDurationsMs: number[] = [];
   private lastLoopStatsLogMs = 0;
   // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
@@ -768,24 +771,47 @@ export class BotRunner {
   }
 
   /**
-   * Calibration map learned from the bot's OWN deployed predictions vs outcomes: every resolved trade
-   * stores the adjustedWinProbability the gate used at entry. Thin data shrinks to the identity, so
-   * this is safe from day one and sharpens as the ledger grows. Cached by resolved-trade count.
+   * Calibration learned from the bot's OWN deployed predictions vs outcomes, **one map per market**.
+   *
+   * Two corrections over the naive version, both measured on the ledger (2026-07-30):
+   *
+   * 1. **Per market, not pooled.** Pooling BTC/ETH/DOGE collapsed the model's measured skill from
+   *    +13..+30pp of discrimination *within* each market to +5pp overall — Simpson's paradox: the
+   *    per-market probabilities are not comparable (ETH ran ~13pp overconfident, BTC ~7pp under), so
+   *    mixing them puts ETH's inflated predictions in the "high confidence" bucket where they lose. A
+   *    single global map bakes that same mistake into the correction.
+   *
+   * 2. **Trained on the RAW probability**, not the already-calibrated one. Otherwise the map fits a
+   *    target it moves itself and only ever sees the residual error: it was removing ~9pp of a ~26pp
+   *    real error and could never close the gap. Legacy trades without `rawWinProbability` fall back
+   *    to the stored adjusted value (better than dropping them).
+   *
+   * Exploration probes are excluded: they are deliberately uninformed bets on thin history (measured
+   * 0.0pp discrimination by design), so they are training noise, not signal about the model's skill.
    */
-  private getLedgerCalibrationMap(): CalibrationMap {
+  private getLedgerCalibrationMap(market: MarketSymbol): CalibrationMap {
     const trades = this.deps.state.listTrades();
-    const pairs = trades.flatMap((trade) => {
-      const predicted = trade.expectedValue?.adjustedWinProbability;
-      const won = trade.resolved?.won;
-      return typeof predicted === "number" && typeof won === "boolean" && trade.kind !== "arb"
-        ? [{ predicted, won }]
-        : [];
+    const minHistory = this.config.evMinHistoryTrades ?? DEFAULT_EV_MIN_HISTORY_TRADES;
+    const usable = trades.filter((trade) => {
+      const ev = trade.expectedValue;
+      if (!ev || trade.kind === "arb" || trade.asset !== market) {
+        return false;
+      }
+      // Skip exploratory probes (short history by construction).
+      return (ev.tradeCount ?? Number.POSITIVE_INFINITY) >= minHistory;
     });
-    if (this.calibrationCache?.resolvedCount === pairs.length) {
-      return this.calibrationCache.map;
+    const pairs = usable.flatMap((trade) => {
+      const ev = trade.expectedValue;
+      const predicted = ev?.rawWinProbability ?? ev?.adjustedWinProbability;
+      const won = trade.resolved?.won;
+      return typeof predicted === "number" && typeof won === "boolean" ? [{ predicted, won }] : [];
+    });
+    const cached = this.calibrationCache.get(market);
+    if (cached?.resolvedCount === pairs.length) {
+      return cached.map;
     }
     const map = buildCalibrationMap(pairs);
-    this.calibrationCache = { resolvedCount: pairs.length, map };
+    this.calibrationCache.set(market, { resolvedCount: pairs.length, map });
     return map;
   }
 
@@ -859,7 +885,8 @@ export class BotRunner {
         tradeCount,
         safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
         minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
-        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap() : undefined,
+        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap(signal.market.asset) : undefined,
+        maxClaimedEdge: this.config.evMaxClaimedEdge ?? DEFAULT_EV_MAX_CLAIMED_EDGE,
       });
 
       if (tradeCount < minHistoryTrades) {

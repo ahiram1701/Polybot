@@ -8,6 +8,7 @@ import {
   DEFAULT_SAFETY_MARGIN,
   getAskGuidance,
 } from "../src/expectedValue.js";
+import { buildCalibrationMap } from "../src/calibration.js";
 
 describe("expected value formulas", () => {
   it("calculates real and adjusted win probability", () => {
@@ -63,6 +64,32 @@ describe("expected value formulas", () => {
     expect(failMargin.passesSafetyMargin).toBe(false);
     expect(failMargin.passesRecommendedEntry).toBe(false);
     expect(failMargin.decisionReason).toBe("safety_margin");
+  });
+
+  it("exposes the RAW probability separately from the calibrated one", () => {
+    // Entrenar el mapa con la probabilidad ya calibrada lo hacia perseguir un blanco que el propio
+    // mapa movia: solo veia el error residual y se quedaba corto para siempre (quitaba ~9pp de ~26pp).
+    // Guardar la cruda es lo que permite entrenar sobre el error COMPLETO.
+    const map = buildCalibrationMap(
+      Array.from({ length: 60 }, (_v, i) => ({ predicted: 0.7, won: i < 24 })), // predice 70%, gana 40%
+    );
+    const result = calculateExpectedValue({ capitalUsd: 5, askPrice: 0.5, winCount: 12, tradeCount: 15, calibration: map });
+    expect(result.rawWinProbability).toBeCloseTo((12 + 2 * 0.5) / (15 + 2), 5);
+    expect(result.adjustedWinProbability).toBeLessThan(result.rawWinProbability); // el mapa corrige a la baja
+  });
+
+  it("caps how much better than the market the model may claim to be", () => {
+    // El bucket edge>0.20 del ledger realizo -17.6pp de discriminacion y -21.8pp de sesgo.
+    const wild = { capitalUsd: 5, askPrice: 0.4, winCount: 19, tradeCount: 20 };
+    const uncapped = calculateExpectedValue(wild);
+    expect(uncapped.edge).toBeGreaterThan(0.4); // el historial fino declara una ventaja enorme
+
+    const capped = calculateExpectedValue({ ...wild, maxClaimedEdge: 0.2 });
+    expect(capped.edge).toBeCloseTo(0.2, 5);
+    expect(capped.adjustedWinProbability).toBeCloseTo(0.6, 5);
+    // Un edge pequeño y creible NO se toca: el techo solo doma lo implausible.
+    const modest = calculateExpectedValue({ capitalUsd: 5, askPrice: 0.5, winCount: 11, tradeCount: 20, maxClaimedEdge: 0.2 });
+    expect(modest.edge).toBeCloseTo(calculateExpectedValue({ capitalUsd: 5, askPrice: 0.5, winCount: 11, tradeCount: 20 }).edge, 5);
   });
 
   it("marks 0.98 and 0.99 asks as avoid prices", () => {

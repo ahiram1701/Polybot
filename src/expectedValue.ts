@@ -31,6 +31,19 @@ export interface ExpectedValueInput {
   // Empirical calibration map (predicted → realized win rate). Applied to the adjusted probability
   // BEFORE the edge/ROI checks, so measured overconfidence tightens the gate automatically.
   calibration?: CalibrationMap;
+  /**
+   * Ceiling on how much better than the market (the ask) the model is allowed to claim to be.
+   *
+   * Measured on the ledger (2026-07-30): trades where the gate claimed an edge above 0.20 realized
+   * **-17.6pp of discrimination and a -21.8pp bias** — they were the losing bucket, while claims of
+   * 0-0.05 and 0.10-0.20 both worked. A 20+ point edge over the market price, inferred from a few
+   * dozen observations, is noise dressed as skill.
+   *
+   * A ceiling is used instead of stronger global shrinkage on purpose: shrinkage scales every edge by
+   * the same factor and would wipe out the small-edge trades that DO work, whereas this only touches
+   * the implausible claims. Undefined = no ceiling.
+   */
+  maxClaimedEdge?: number;
 }
 
 export interface ExpectedValueSnapshot {
@@ -39,6 +52,13 @@ export interface ExpectedValueSnapshot {
   winCount: number;
   tradeCount: number;
   realWinProbability?: number;
+  /**
+   * Probabilidad ANTES de aplicar la calibracion empirica. Es la que hay que usar para ENTRENAR el
+   * mapa: entrenarlo con `adjustedWinProbability` (ya calibrada) lo hace perseguir un blanco que el
+   * propio mapa mueve, y la correccion se queda corta para siempre (medido: el mapa quitaba ~9pp de
+   * un error real de ~26pp).
+   */
+  rawWinProbability: number;
   adjustedWinProbability: number;
   breakEvenProbability: number;
   edge: number;
@@ -74,10 +94,17 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
   const realWinProbability = calculateRealWinProbability(input.winCount, input.tradeCount);
   // Anchor the shrinkage prior to the market-implied probability (the ask): in an efficient market the
   // ask ≈ P(win), so a thin setup should start at the market price (edge ~0) rather than at 0.5.
-  const adjustedWinProbability = applyCalibration(
-    input.calibration,
-    calculateAdjustedWinProbability(input.winCount, input.tradeCount, input.askPrice, input.priorStrength),
+  const rawWinProbability = calculateAdjustedWinProbability(
+    input.winCount,
+    input.tradeCount,
+    input.askPrice,
+    input.priorStrength,
   );
+  const calibrated = applyCalibration(input.calibration, rawWinProbability);
+  const adjustedWinProbability =
+    input.maxClaimedEdge !== undefined && Number.isFinite(input.maxClaimedEdge) && input.maxClaimedEdge >= 0
+      ? Math.min(calibrated, input.askPrice + input.maxClaimedEdge)
+      : calibrated;
   const edge = adjustedWinProbability - input.askPrice;
   const expectedRoi = adjustedWinProbability / input.askPrice - 1;
   const expectedValueUsd = input.capitalUsd * expectedRoi;
@@ -94,6 +121,7 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
     winCount: input.winCount,
     tradeCount: input.tradeCount,
     realWinProbability,
+    rawWinProbability,
     adjustedWinProbability,
     breakEvenProbability: input.askPrice,
     edge,

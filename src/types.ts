@@ -52,6 +52,8 @@ export interface BotConfig {
   // Empirical calibration of the gate probability from the ledger's own resolved predictions.
   evCalibration?: boolean;
   evSafetyMargin?: number;
+  // Techo a la ventaja declarable sobre el ask (los edges enormes eran ruido perdedor).
+  evMaxClaimedEdge?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
   // Minimum fraction of the requested amount that must be fillable under the ask cap for a trade to
