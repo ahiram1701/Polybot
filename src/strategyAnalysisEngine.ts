@@ -2,7 +2,8 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
-import { calculateExpectedValue } from "./expectedValue.js";
+import type { CalibrationSample } from "./calibration.js";
+import { calculateAdjustedWinProbability, calculateExpectedValue } from "./expectedValue.js";
 import {
   estimateWinProbabilityBySimilarity,
   type SimilarityEstimate,
@@ -93,6 +94,7 @@ export class StrategyAnalysisEngine {
   // The similarity pool is O(samples×ticks) to build; rebuilding it on EVERY gate evaluation added
   // latency exactly at the entry moment. Keyed by params + the samples-file signature.
   private similarityPoolCache?: { key: string; pool: SimilarityObservation[] };
+  private readonly calibrationSamplesCache = new Map<string, CalibrationSample[]>();
 
   constructor(private readonly dataDir: string) {}
 
@@ -118,6 +120,83 @@ export class StrategyAnalysisEngine {
       params.maxAskPrice,
       capitalUsd,
     );
+  }
+
+  /**
+   * Walk-forward (predicted, won) pairs for calibrating a market's win-probability model.
+   *
+   * The calibration map used to be trained ONLY on executed trades, which starves it: BTC had 48
+   * executed trades with EV data, and with the map's shrink-to-identity that produced a map that
+   * corrects essentially nothing — which is why per-market calibration fixed ETH (216 trades) and did
+   * nothing for BTC. The observation ledger holds ~20k windows, and calibration is about "did the
+   * outcome happen", which does NOT depend on getting filled — so observations are legitimate (and
+   * plentiful) training data for it, even though they are useless for P&L.
+   *
+   * Strictly walk-forward: each point's prediction is built from the stats of STRICTLY EARLIER windows
+   * only, so there is no look-ahead. Cached: it walks every sample of the market.
+   */
+  async buildCalibrationSamples(
+    market: MarketSymbol,
+    outcome: Outcome,
+    params: { entryWindowSeconds: number; minDistanceUsd: number; maxAskPrice: number },
+    selection?: { safetyMargin: number; minExpectedRoi: number; feeRate: number },
+  ): Promise<CalibrationSample[]> {
+    const samples = await this.loadSamples();
+    const cacheKey = [
+      this.samplesCache?.signature ?? "nosig",
+      market,
+      outcome,
+      params.entryWindowSeconds,
+      params.minDistanceUsd,
+      params.maxAskPrice,
+      selection ? `sel:${selection.safetyMargin}:${selection.minExpectedRoi}:${selection.feeRate}` : "all",
+    ].join("|");
+    const cached = this.calibrationSamplesCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const ordered = samples
+      .filter((sample) => sample.market === market)
+      .slice()
+      .sort((left, right) => left.windowStartMs - right.windowStartMs);
+
+    const pairs: CalibrationSample[] = [];
+    let priorWins = 0;
+    let priorTrades = 0;
+    for (const sample of ordered) {
+      const signalTick = findSignalTick(sample, outcome, params.entryWindowSeconds, params.minDistanceUsd);
+      if (!signalTick) {
+        continue;
+      }
+      const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
+      const ask = quote ? getAsk(quote, outcome) : undefined;
+      if (!isPositiveFinite(ask) || ask > params.maxAskPrice || !sample.winningOutcome) {
+        continue;
+      }
+      const won = sample.winningOutcome === outcome;
+      // Predice con lo que se sabia ANTES de esta ventana (prior anclado al ask, igual que el gate).
+      if (priorTrades > 0) {
+        const predicted = calculateAdjustedWinProbability(priorWins, priorTrades, ask);
+        // Reproduce la SELECCION del gate. Sin esto la calibracion se entrena sobre una poblacion que
+        // el bot nunca opera y sale casi insesgada (BTC +0.4pp), mientras los trades realmente tomados
+        // corren ~17pp sobreconfiados: la maldicion del ganador. El gate elige las estimaciones mas
+        // altas, que son desproporcionadamente las que tuvieron ruido a favor y revierten a la media.
+        // Calibrar hay que hacerlo sobre la subpoblacion SELECCIONADA, no sobre todas las ventanas.
+        const passes =
+          selection === undefined ||
+          (predicted >= ask + selection.safetyMargin &&
+            predicted / ask - 1 >= selection.minExpectedRoi + selection.feeRate * (1 - ask));
+        if (passes) {
+          pairs.push({ predicted, won });
+        }
+      }
+      priorTrades += 1;
+      priorWins += won ? 1 : 0;
+    }
+
+    this.calibrationSamplesCache.set(cacheKey, pairs);
+    return pairs;
   }
 
   // Similarity gate: estimate the live win probability from the NEAREST historical setups (by seconds

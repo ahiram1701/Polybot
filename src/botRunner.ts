@@ -108,7 +108,7 @@ interface BotDependencies {
   reconciler: TradeReconciler;
   analyticsRecorder?: AnalyticsRecorder;
   strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze" | "estimateSetupWinRate"> &
-    Partial<Pick<StrategyAnalysisEngine, "estimateSetupWinRateBySimilarity">>;
+    Partial<Pick<StrategyAnalysisEngine, "estimateSetupWinRateBySimilarity" | "buildCalibrationSamples">>;
   notifier?: Notifier;
 }
 
@@ -789,7 +789,7 @@ export class BotRunner {
    * Exploration probes are excluded: they are deliberately uninformed bets on thin history (measured
    * 0.0pp discrimination by design), so they are training noise, not signal about the model's skill.
    */
-  private getLedgerCalibrationMap(market: MarketSymbol): CalibrationMap {
+  private getCalibrationMap(market: MarketSymbol): CalibrationMap {
     const trades = this.deps.state.listTrades();
     const minHistory = this.config.evMinHistoryTrades ?? DEFAULT_EV_MIN_HISTORY_TRADES;
     const usable = trades.filter((trade) => {
@@ -806,6 +806,13 @@ export class BotRunner {
       const won = trade.resolved?.won;
       return typeof predicted === "number" && typeof won === "boolean" ? [{ predicted, won }] : [];
     });
+    // NO se siembra con las ventanas observadas, aunque son muchas mas (BTC: 48 ejecutados contra 141
+    // observados). Medido 2026-07-30: el sesgo de las observaciones (-3.1pp en BTC) no se parece al de
+    // los trades reales (-17pp), porque el gate en produccion estima por k-NN de similitud mientras
+    // que la reconstruccion walk-forward usa el agregado simple. Son estimadores distintos: calibrar
+    // las predicciones de uno con un mapa ajustado al otro corrige lo que no es. El backtest lo daba
+    // como leve mejora (+$3.65) solo porque ahi ambos lados usan el agregado, asi que no transfiere.
+    // `buildCalibrationSamples` se conserva como herramienta de investigacion (calibrationBacktest).
     const cached = this.calibrationCache.get(market);
     if (cached?.resolvedCount === pairs.length) {
       return cached.map;
@@ -885,7 +892,7 @@ export class BotRunner {
         tradeCount,
         safetyMargin: this.config.evSafetyMargin ?? DEFAULT_EV_SAFETY_MARGIN,
         minExpectedRoi: (this.config.evMinExpectedRoi ?? DEFAULT_EV_MIN_EXPECTED_ROI) + feeFraction,
-        calibration: this.config.evCalibration ? this.getLedgerCalibrationMap(signal.market.asset) : undefined,
+        calibration: this.config.evCalibration ? this.getCalibrationMap(signal.market.asset) : undefined,
         maxClaimedEdge: this.config.evMaxClaimedEdge ?? DEFAULT_EV_MAX_CLAIMED_EDGE,
       });
 

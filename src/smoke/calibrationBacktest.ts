@@ -16,6 +16,7 @@
 import { readFileSync } from "node:fs";
 
 import { applyCalibration, buildCalibrationMap, type CalibrationSample } from "../calibration.js";
+import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import { calculateAdjustedWinProbability, PRIOR_STRENGTH } from "../expectedValue.js";
 import { calculateTradePnl, isWinningTrade } from "../pnl.js";
 import type { MarketSymbol, TradeAttempt } from "../types.js";
@@ -30,6 +31,8 @@ interface Arm {
   perMarketCalibration: boolean;
   globalCalibration: boolean;
   maxClaimedEdge?: number;
+  /** Sembrar el historial de calibracion con pares walk-forward de las ventanas observadas. */
+  seeded?: boolean;
 }
 
 const ARMS: Arm[] = [
@@ -40,7 +43,27 @@ const ARMS: Arm[] = [
   { name: "POR MERCADO + techo 0.15", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.15 },
   { name: "POR MERCADO + techo 0.20", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.2 },
   { name: "POR MERCADO + techo 0.25", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.25 },
+  { name: "POR MERCADO + SEMBRADA", perMarketCalibration: true, globalCalibration: false, seeded: true },
+  { name: "POR MERCADO + SEMBRADA + techo", perMarketCalibration: true, globalCalibration: false, seeded: true, maxClaimedEdge: 0.2 },
 ];
+
+const SEED_PARAMS = {
+  BTC: { entryWindowSeconds: 53, minDistanceUsd: 20, maxAskPrice: 0.6 },
+  ETH: { entryWindowSeconds: 38, minDistanceUsd: 0.25, maxAskPrice: 0.65 },
+  DOGE: { entryWindowSeconds: 120, minDistanceUsd: 0.00005, maxAskPrice: 0.65 },
+} as const;
+
+async function loadSeeds(): Promise<Map<MarketSymbol, CalibrationSample[]>> {
+  const engine = new StrategyAnalysisEngine("data");
+  const selection = { safetyMargin: SAFETY_MARGIN, minExpectedRoi: MIN_EXPECTED_ROI, feeRate: FEE_RATE };
+  const out = new Map<MarketSymbol, CalibrationSample[]>();
+  for (const [market, params] of Object.entries(SEED_PARAMS) as [MarketSymbol, typeof SEED_PARAMS.BTC][]) {
+    const up = await engine.buildCalibrationSamples(market, "UP", params, selection);
+    const down = await engine.buildCalibrationSamples(market, "DOWN", params, selection);
+    out.set(market, [...up, ...down]);
+  }
+  return out;
+}
 
 function loadTrades(): TradeAttempt[] {
   const byId = new Map<string, TradeAttempt>();
@@ -85,7 +108,8 @@ function discrimination(rows: { p: number; won: boolean }[]): number | undefined
   return (hi.filter((x) => x.won).length / hi.length - lo.filter((x) => x.won).length / lo.length) * 100;
 }
 
-function run(): void {
+async function run(): Promise<void> {
+  const seeds = await loadSeeds();
   const trades = loadTrades().filter((t) => (t.expectedValue?.tradeCount ?? 0) >= MIN_HISTORY);
   console.log(`Trades evaluables (no-arb, no-exploracion, con EV): ${trades.length}\n`);
 
@@ -93,6 +117,7 @@ function run(): void {
     // Historial walk-forward: solo pares ANTERIORES a cada trade alimentan su mapa.
     const globalHistory: CalibrationSample[] = [];
     const perMarket = new Map<MarketSymbol, CalibrationSample[]>();
+    if (arm.seeded) for (const [m, v] of seeds) perMarket.set(m, [...v]);
     let net = 0;
     let taken = 0;
     let wins = 0;
@@ -138,4 +163,4 @@ function run(): void {
   }
 }
 
-run();
+await run();
