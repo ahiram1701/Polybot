@@ -16,7 +16,8 @@ export type ExpectedValueDecisionReason =
   | "safety_margin"
   | "minimum_expected_value"
   | "avoid_098"
-  | "avoid_099";
+  | "avoid_099"
+  | "implausible_edge";
 
 export interface ExpectedValueInput {
   capitalUsd: number;
@@ -39,9 +40,17 @@ export interface ExpectedValueInput {
    * 0-0.05 and 0.10-0.20 both worked. A 20+ point edge over the market price, inferred from a few
    * dozen observations, is noise dressed as skill.
    *
-   * A ceiling is used instead of stronger global shrinkage on purpose: shrinkage scales every edge by
-   * the same factor and would wipe out the small-edge trades that DO work, whereas this only touches
-   * the implausible claims. Undefined = no ceiling.
+   * Se RECHAZA el trade, no se recorta la probabilidad: recortarla lo dejaba pasar igual (0.20 sigue
+   * muy por encima del margen de seguridad) y no cambiaba nada. Walk-forward sobre 403 trades: pasar
+   * de recorte a rechazo lleva el neto de +$28.28 a +$135.23 y el win rate de 45.9% a 51.6%. Todo el
+   * rango 0.10-0.35 mejora, asi que el resultado no depende de acertar el umbral. Se elige 0.20
+   * porque salio de un analisis anterior e independiente (el bucket edge>0.20 media -17.6pp de
+   * discriminacion), no del pico de ese barrido.
+   *
+   * Tambien se probo y DESCARTO castigar la estimacion por su error estandar (cota inferior): el
+   * error estandar se maximiza en p~0.5, que es donde viven los edges modestos que si funcionan, y
+   * se anula en los extremos, que son los que pierden. Castigaba exactamente al reves: el neto caia
+   * a -$56/-$132 y el win rate de los supervivientes bajaba a 22%. Undefined = sin techo.
    */
   maxClaimedEdge?: number;
 }
@@ -100,11 +109,7 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
     input.askPrice,
     input.priorStrength,
   );
-  const calibrated = applyCalibration(input.calibration, rawWinProbability);
-  const adjustedWinProbability =
-    input.maxClaimedEdge !== undefined && Number.isFinite(input.maxClaimedEdge) && input.maxClaimedEdge >= 0
-      ? Math.min(calibrated, input.askPrice + input.maxClaimedEdge)
-      : calibrated;
+  const adjustedWinProbability = applyCalibration(input.calibration, rawWinProbability);
   const edge = adjustedWinProbability - input.askPrice;
   const expectedRoi = adjustedWinProbability / input.askPrice - 1;
   const expectedValueUsd = input.capitalUsd * expectedRoi;
@@ -113,7 +118,11 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
   const passesSafetyMargin = adjustedWinProbability >= input.askPrice + safetyMargin;
   const passesExpectedValue = expectedValueUsd >= minExpectedValueUsd;
   const askGuidance = getAskGuidance(input.askPrice);
-  const passesRecommendedEntry = passesSafetyMargin && passesExpectedValue;
+  // Una ventaja declarada implausible se RECHAZA (no se recorta): recortarla dejaba pasar el trade
+  // igual, y son justo los que perdian.
+  const claimsImplausibleEdge =
+    input.maxClaimedEdge !== undefined && Number.isFinite(input.maxClaimedEdge) && edge > input.maxClaimedEdge;
+  const passesRecommendedEntry = passesSafetyMargin && passesExpectedValue && !claimsImplausibleEdge;
 
   return {
     capitalUsd: input.capitalUsd,
@@ -137,7 +146,9 @@ export function calculateExpectedValue(input: ExpectedValueInput): ExpectedValue
     passesSafetyMargin,
     passesExpectedValue,
     passesRecommendedEntry,
-    decisionReason: expectedValueDecisionReason({
+    decisionReason: claimsImplausibleEdge
+      ? "implausible_edge"
+      : expectedValueDecisionReason({
       tradeCount: input.tradeCount,
       askGuidance,
       passesSafetyMargin,

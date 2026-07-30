@@ -33,18 +33,20 @@ interface Arm {
   maxClaimedEdge?: number;
   /** Sembrar el historial de calibracion con pares walk-forward de las ventanas observadas. */
   seeded?: boolean;
+  /** Castigo por seleccion, en errores estandar (maldicion del ganador). */
+  selectionPenalty?: number;
+  /** RECHAZA el trade si el edge declarado supera esto (la confianza extrema resulto perdedora). */
+  rejectEdgeAbove?: number;
 }
 
 const ARMS: Arm[] = [
-  { name: "BASE (hoy: global, sin techo)", perMarketCalibration: false, globalCalibration: true },
-  { name: "sin calibracion", perMarketCalibration: false, globalCalibration: false },
-  { name: "calibracion POR MERCADO", perMarketCalibration: true, globalCalibration: false },
-  { name: "BASE + techo edge 0.20", perMarketCalibration: false, globalCalibration: true, maxClaimedEdge: 0.2 },
-  { name: "POR MERCADO + techo 0.15", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.15 },
-  { name: "POR MERCADO + techo 0.20", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.2 },
-  { name: "POR MERCADO + techo 0.25", perMarketCalibration: true, globalCalibration: false, maxClaimedEdge: 0.25 },
-  { name: "POR MERCADO + SEMBRADA", perMarketCalibration: true, globalCalibration: false, seeded: true },
-  { name: "POR MERCADO + SEMBRADA + techo", perMarketCalibration: true, globalCalibration: false, seeded: true, maxClaimedEdge: 0.2 },
+  { name: "POR MERCADO (adoptada)", perMarketCalibration: true, globalCalibration: false },
+  ...[0.35, 0.3, 0.25, 0.2, 0.15, 0.12, 0.1].map((cut) => ({
+    name: `POR MERCADO + rechaza edge>${cut.toFixed(2)}`,
+    perMarketCalibration: true,
+    globalCalibration: false,
+    rejectEdgeAbove: cut,
+  })),
 ];
 
 const SEED_PARAMS = {
@@ -135,12 +137,20 @@ async function run(): Promise<void> {
       } else if (arm.globalCalibration) {
         adjusted = applyCalibration(buildCalibrationMap(globalHistory), raw);
       }
+      if (arm.selectionPenalty) {
+        const n = (t.expectedValue?.tradeCount ?? 0) + PRIOR_STRENGTH;
+        // Variante: castiga SOLO por historial fino (1/sqrt(n)), sin la curva p(1-p) que golpeaba
+        // justo a los edges modestos que si funcionan.
+        const se = n > 0 ? 1 / Math.sqrt(n) : 0;
+        adjusted = Math.max(0.01, adjusted - arm.selectionPenalty * se);
+      }
       if (arm.maxClaimedEdge !== undefined) {
         adjusted = Math.min(adjusted, ask + arm.maxClaimedEdge);
       }
 
       const won = isWinningTrade(t);
-      if (passesGate(adjusted, ask)) {
+      const rejected = arm.rejectEdgeAbove !== undefined && adjusted - ask > arm.rejectEdgeAbove;
+      if (!rejected && passesGate(adjusted, ask)) {
         net += calculateTradePnl(t).netUsd ?? 0;
         taken += 1;
         if (won) wins += 1;

@@ -1287,7 +1287,9 @@ describe("BotRunner", () => {
 
     it("probes a short-history setup when the shrunk EV is still positive", async () => {
       vi.spyOn(console, "log").mockImplementation(() => undefined);
-      const { runner, executor, nowMs } = explorationScenario({ tradeCount: 8, winCount: 7, bestAsk: 0.5 });
+      // Edge modesto (5/8 => 0.60 contra ask 0.50 = +0.10): creible. Un 7/8 declararia +0.30 y ahora
+      // se rechaza por implausible, que es justo lo que se quiere.
+      const { runner, executor, nowMs } = explorationScenario({ tradeCount: 8, winCount: 5, bestAsk: 0.5 });
       await runner.runOnce(nowMs);
       expect(executor.execute).toHaveBeenCalled();
     });
@@ -1296,7 +1298,7 @@ describe("BotRunner", () => {
       vi.spyOn(console, "log").mockImplementation(() => undefined);
       const { runner, executor, nowMs } = explorationScenario({
         tradeCount: 8,
-        winCount: 7,
+        winCount: 5,
         bestAsk: 0.5,
         explorationEnabled: false,
       });

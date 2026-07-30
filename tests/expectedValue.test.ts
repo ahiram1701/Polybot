@@ -78,18 +78,23 @@ describe("expected value formulas", () => {
     expect(result.adjustedWinProbability).toBeLessThan(result.rawWinProbability); // el mapa corrige a la baja
   });
 
-  it("caps how much better than the market the model may claim to be", () => {
-    // El bucket edge>0.20 del ledger realizo -17.6pp de discriminacion y -21.8pp de sesgo.
+  it("rejects a trade whose claimed edge over the market is implausible", () => {
+    // El bucket edge>0.20 del ledger realizo -17.6pp de discriminacion y -21.8pp de sesgo. Recortar la
+    // probabilidad no servia (el trade pasaba igual); hay que RECHAZARLO. Walk-forward: +$28 -> +$135.
     const wild = { capitalUsd: 5, askPrice: 0.4, winCount: 19, tradeCount: 20 };
     const uncapped = calculateExpectedValue(wild);
     expect(uncapped.edge).toBeGreaterThan(0.4); // el historial fino declara una ventaja enorme
+    expect(uncapped.passesRecommendedEntry).toBe(true); // sin techo, entraba
 
-    const capped = calculateExpectedValue({ ...wild, maxClaimedEdge: 0.2 });
-    expect(capped.edge).toBeCloseTo(0.2, 5);
-    expect(capped.adjustedWinProbability).toBeCloseTo(0.6, 5);
-    // Un edge pequeño y creible NO se toca: el techo solo doma lo implausible.
+    const rejected = calculateExpectedValue({ ...wild, maxClaimedEdge: 0.2 });
+    expect(rejected.passesRecommendedEntry).toBe(false);
+    expect(rejected.decisionReason).toBe("implausible_edge");
+    // La probabilidad NO se toca: el techo decide, no falsea la estimacion.
+    expect(rejected.adjustedWinProbability).toBeCloseTo(uncapped.adjustedWinProbability, 5);
+
+    // Un edge modesto y creible pasa intacto: el techo solo corta lo implausible.
     const modest = calculateExpectedValue({ capitalUsd: 5, askPrice: 0.5, winCount: 11, tradeCount: 20, maxClaimedEdge: 0.2 });
-    expect(modest.edge).toBeCloseTo(calculateExpectedValue({ capitalUsd: 5, askPrice: 0.5, winCount: 11, tradeCount: 20 }).edge, 5);
+    expect(modest.passesRecommendedEntry).toBe(true);
   });
 
   it("marks 0.98 and 0.99 asks as avoid prices", () => {
