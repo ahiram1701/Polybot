@@ -39,14 +39,22 @@ interface Arm {
   rejectEdgeAbove?: number;
 }
 
+// Brazos permanentes: el primero es lo que corre en produccion; el resto documenta lo PROBADO Y
+// RECHAZADO, para no volver a intentarlo sin datos nuevos.
+//
+// Castigo por seleccion (maldicion del ganador), medido 2026-07-31 sobre 435 trades: TODOS los niveles
+// empeoran, y monotonamente (k=0.25 -> $36, k=0.50 -> $45, k=0.75 -> -$34, k=1.00 -> -$78, contra $143
+// del baseline). Lo revelador es el win rate cayendo de 50.6% a 25% al apretar: el castigo penaliza el
+// historial fino, conserva el grueso, y AHI es donde el modelo es peor (ya se veia en el diagnostico:
+// historial 15-25 -> +9.6pp de discriminacion, 25-40 -> -6.5pp). El sesgo de seleccion es real y
+// explica la brecha de calibracion que no se cierra, pero corregirlo por incertidumbre destruye la
+// fuente de ganancia: la ventaja vive justo en los setups que la estadistica dice desconfiar.
 const ARMS: Arm[] = [
-  { name: "POR MERCADO (adoptada)", perMarketCalibration: true, globalCalibration: false },
-  ...[0.35, 0.3, 0.25, 0.2, 0.15, 0.12, 0.1].map((cut) => ({
-    name: `POR MERCADO + rechaza edge>${cut.toFixed(2)}`,
-    perMarketCalibration: true,
-    globalCalibration: false,
-    rejectEdgeAbove: cut,
-  })),
+  { name: "PRODUCCION (por mercado + rechaza >0.20)", perMarketCalibration: true, globalCalibration: false, rejectEdgeAbove: 0.2 },
+  { name: "sin rechazo de edge (peor)", perMarketCalibration: true, globalCalibration: false },
+  { name: "calibracion global (lo viejo, peor)", perMarketCalibration: false, globalCalibration: true, rejectEdgeAbove: 0.2 },
+  { name: "RECHAZADO: castigo seleccion k=0.50", perMarketCalibration: true, globalCalibration: false, rejectEdgeAbove: 0.2, selectionPenalty: 0.5 },
+  { name: "RECHAZADO: castigo seleccion k=1.00", perMarketCalibration: true, globalCalibration: false, rejectEdgeAbove: 0.2, selectionPenalty: 1.0 },
 ];
 
 const SEED_PARAMS = {
