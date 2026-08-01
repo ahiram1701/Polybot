@@ -62,6 +62,12 @@ const DEFAULT_EV_MIN_HISTORY_TRADES = 15;
 // Techo a la ventaja que el modelo puede declarar sobre el mercado. El bucket edge>0.20 del ledger
 // realizo -17.6pp de discriminacion y -21.8pp de sesgo: era el que perdia. Ver ExpectedValueInput.
 const DEFAULT_EV_MAX_CLAIMED_EDGE = 0.2;
+// No entrar en los ultimos segundos de la ventana. Medido sobre el ledger (2026-08-01): entrar con
+// menos de 10s restantes realizo 32.4% de aciertos y -19.8% de ROI (n=34), contra ~50% del resto. El
+// mecanismo se conocia de antes y es lo que lo hace creible mas alla de la muestra: cerca del cierre
+// el CLOB bloquea las ordenes taker (post_only_mode), la profundidad se adelgaza y el precio ya esta
+// practicamente resuelto. Hasta ahora el bot solo abandonaba la ventana DESPUES de que lo rechazaran.
+const DEFAULT_MIN_SECONDS_TO_END = 10;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -649,6 +655,19 @@ export class BotRunner {
   ): Promise<TradeCandidate | undefined> {
     if (this.postOnlySlugs.has(signal.market.slug)) {
       // The CLOB already rejected takers for this window; don't even quote.
+      return undefined;
+    }
+    const minSecondsToEnd = this.config.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END;
+    // Desde el tick que disparo la senal, no del reloj de pared: es el instante que realmente estamos
+    // evaluando (y hace la guardia testeable con un reloj inyectado).
+    const secondsToEnd = (signal.market.endMs - signal.tick.timestampMs) / 1000;
+    if (minSecondsToEnd > 0 && secondsToEnd < minSecondsToEnd) {
+      this.logSkipOnce(signal.market.slug, "too_close_to_close", {
+        market: signal.market.asset,
+        outcome: signal.outcome,
+        secondsToEnd: Math.round(secondsToEnd * 10) / 10,
+        minSecondsToEnd,
+      });
       return undefined;
     }
     const token = signal.market.outcomes[signal.outcome];

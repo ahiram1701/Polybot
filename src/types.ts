@@ -54,6 +54,9 @@ export interface BotConfig {
   evSafetyMargin?: number;
   // Techo a la ventaja declarable sobre el ask (los edges enormes eran ruido perdedor).
   evMaxClaimedEdge?: number;
+  // Segundos minimos restantes para abrir una entrada (0 = sin guardia). Los ultimos segundos de la
+  // ventana pierden: post-only del CLOB, profundidad fina y precio ya resuelto.
+  minSecondsToEndForEntry?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
   // Minimum fraction of the requested amount that must be fillable under the ask cap for a trade to

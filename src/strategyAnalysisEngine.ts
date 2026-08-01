@@ -199,6 +199,68 @@ export class StrategyAnalysisEngine {
     return pairs;
   }
 
+  /**
+   * Filas crudas para hacer REPLAY del gate sobre las ventanas observadas, en orden cronologico y
+   * walk-forward: `predicted` usa solo ventanas ANTERIORES. Devuelve tambien el ask, que es lo que
+   * permite calcular P&L y aplicar los filtros de ventana de ask, a diferencia de
+   * buildCalibrationSamples (que solo devuelve el par predicho/resultado).
+   *
+   * Es la via rapida para evaluar una configuracion: cientos de operaciones simuladas al instante
+   * sobre datos de mercado reales, en vez de esperar dias a que el sim las acumule.
+   */
+  async replaySignals(
+    market: MarketSymbol,
+    outcome: Outcome,
+    params: { entryWindowSeconds: number; minDistanceUsd: number },
+    /**
+     * true = usar SOLO quotes en o ANTES del tick de senal. El emparejamiento por cercania puede
+     * elegir un quote hasta 12s POSTERIOR, que es informacion que el bot no tenia al decidir — la
+     * misma clase de error que ya corregimos en la captura de apertura (getOpeningTick).
+     */
+    quotesAtOrBefore = false,
+  ): Promise<{ predicted: number; won: boolean; ask: number; windowStartMs: number }[]> {
+    const samples = await this.loadSamples();
+    const ordered = samples
+      .filter((sample) => sample.market === market)
+      .slice()
+      .sort((left, right) => left.windowStartMs - right.windowStartMs);
+
+    const rows: { predicted: number; won: boolean; ask: number; windowStartMs: number }[] = [];
+    let priorWins = 0;
+    let priorTrades = 0;
+    for (const sample of ordered) {
+      const signalTick = findSignalTick(sample, outcome, params.entryWindowSeconds, params.minDistanceUsd);
+      if (!signalTick) {
+        continue;
+      }
+      const quote = quotesAtOrBefore
+        ? sample.quotes
+            .filter(
+              (point) =>
+                point.timestampMs <= signalTick.timestampMs &&
+                signalTick.timestampMs - point.timestampMs <= QUOTE_MATCH_WINDOW_MS,
+            )
+            .sort((left, right) => right.timestampMs - left.timestampMs)[0]
+        : findClosestQuote(sample.quotes, signalTick.timestampMs);
+      const ask = quote ? getAsk(quote, outcome) : undefined;
+      if (!isPositiveFinite(ask) || !sample.winningOutcome) {
+        continue;
+      }
+      const won = sample.winningOutcome === outcome;
+      if (priorTrades > 0) {
+        rows.push({
+          predicted: calculateAdjustedWinProbability(priorWins, priorTrades, ask),
+          won,
+          ask,
+          windowStartMs: sample.windowStartMs,
+        });
+      }
+      priorTrades += 1;
+      priorWins += won ? 1 : 0;
+    }
+    return rows;
+  }
+
   // Similarity gate: estimate the live win probability from the NEAREST historical setups (by seconds
   // to end, favourable distance and ask), instead of requiring N trades at the exact config. Lets a
   // setup with real edge but few exact analogues still be recognised.

@@ -1315,6 +1315,84 @@ describe("BotRunner", () => {
     });
   });
 
+  it("refuses to enter in the final seconds of the window", async () => {
+    // Medido en el ledger: entrar con <10s restantes realizo 32.4% de aciertos y -19.8% de ROI (n=34).
+    // El mecanismo se conocia: cerca del cierre el CLOB bloquea takers (post-only), la profundidad se
+    // adelgaza y el precio ya esta resuelto. Antes el bot solo desistia DESPUES del rechazo.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const nowMs = market.endMs - 4_000; // quedan 4s: por debajo del minimo
+    const openings = new Map([
+      [market.slug, { asset: market.asset, slug: market.slug, windowStartMs, openingPrice: 100, openingTickTimestampMs: windowStartMs, capturedAtMs: windowStartMs }],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = { execute: vi.fn(async () => { throw new Error("no debe ejecutar"); }) } satisfies TradeExecutor;
+    const runner = new BotRunner(
+      { ...baseConfig(), mode: "sim", requirePositiveEv: false, entryWindowSecondsByMarket: { BTC: 120, ETH: 120, DOGE: 120 } },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.5),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+    await runner.runOnce(nowMs);
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("still enters with comfortable time left in the window", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const nowMs = market.endMs - 60_000; // 60s restantes: muy por encima del minimo
+    const openings = new Map([
+      [market.slug, { asset: market.asset, slug: market.slug, windowStartMs, openingPrice: 100, openingTickTimestampMs: windowStartMs, capturedAtMs: windowStartMs }],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: "t", asset: input.market.asset, slug: input.market.slug, mode: "sim" as const,
+        conditionId: input.market.conditionId, outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId, amountUsd: input.amountUsd,
+        maxAskPrice: input.maxAskPrice, bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount, openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value, distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds, windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs, createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const runner = new BotRunner(
+      { ...baseConfig(), mode: "sim", requirePositiveEv: false, entryWindowSecondsByMarket: { BTC: 120, ETH: 120, DOGE: 120 } },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(0.5),
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      },
+    );
+    await runner.runOnce(nowMs);
+    expect(executor.execute).toHaveBeenCalled();
+  });
+
   it("does not trade when the price move is below the distance floor", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
