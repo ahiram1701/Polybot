@@ -164,6 +164,8 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     amountUsd: input.amountUsd,
     maxAskPrice: input.maxAskPrice,
     bestAsk: input.quote.bestAsk,
+    bestBid: input.quote.bestBid,
+    availableUsdUnderCap: input.quote.availableUsdUnderCap,
     expectedValue: input.expectedValue,
     estimatedShares: input.quote.estimatedSharesForAmount,
     openingPrice: input.opening.openingPrice,

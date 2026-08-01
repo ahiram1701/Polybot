@@ -68,6 +68,14 @@ const DEFAULT_EV_MAX_CLAIMED_EDGE = 0.2;
 // el CLOB bloquea las ordenes taker (post_only_mode), la profundidad se adelgaza y el precio ya esta
 // practicamente resuelto. Hasta ahora el bot solo abandonaba la ventana DESPUES de que lo rechazaran.
 const DEFAULT_MIN_SECONDS_TO_END = 10;
+// Spread maximo (ask - bid) para entrar. Medido sobre 1.742 ventanas candidatas: el resultado se
+// degrada de forma MONOTONA con el spread — hasta 0.02 gana 60.8% contra un break-even de 53.0%, y por
+// encima de 0.12 gana 50.9% contra 55.0%. Lo que lo hace creible mas alla del patron es el mecanismo:
+// un spread ancho significa poca contraparte, asi que el precio cotizado es menos fiable y pagas el
+// diferencial completo. Los numeros absolutos de ese analisis son optimistas (asume llenado al ask);
+// lo fiable es el ORDEN, comun a todos los tramos. 0.05 deja fuera los tramos claramente malos sin
+// clavarse en el limite exacto observado.
+const DEFAULT_MAX_ASK_SPREAD = 0.05;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -696,6 +704,21 @@ export class BotRunner {
         maxAskPrice: signal.maxAskPrice,
       });
       return undefined;
+    }
+
+    const maxSpread = this.config.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD;
+    if (maxSpread > 0 && typeof quote.bestBid === "number" && quote.bestBid > 0) {
+      const spread = quote.bestAsk - quote.bestBid;
+      if (spread > maxSpread) {
+        this.logSkipOnce(signal.market.slug, "spread_too_wide", {
+          outcome: signal.outcome,
+          bestAsk: quote.bestAsk,
+          bestBid: quote.bestBid,
+          spread: Math.round(spread * 1000) / 1000,
+          maxSpread,
+        });
+        return undefined;
+      }
     }
 
     // Piso de ask: por debajo de este precio la entrada es una apuesta de reversion barata, que el

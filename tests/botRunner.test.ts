@@ -1315,6 +1315,46 @@ describe("BotRunner", () => {
     });
   });
 
+  it("refuses to enter when the spread is wide", async () => {
+    // Medido sobre 1.742 ventanas: el resultado se degrada de forma monotona con el spread (hasta 0.02
+    // gana 60.8% contra 53.0% de break-even; por encima de 0.12 gana 50.9% contra 55.0%). Mecanismo:
+    // spread ancho = poca contraparte, precio cotizado poco fiable y pagas el diferencial completo.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 200_000;
+    const market = marketInfo("BTC", "btc", windowStartMs);
+    const openings = new Map([
+      [market.slug, { asset: market.asset, slug: market.slug, windowStartMs, openingPrice: 100, openingTickTimestampMs: windowStartMs, capturedAtMs: windowStartMs }],
+    ]);
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn((slug: string) => openings.get(slug)),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = { execute: vi.fn(async () => { throw new Error("no debe ejecutar"); }) } satisfies TradeExecutor;
+    // Libro con spread de 0.20: muy por encima del maximo.
+    const wideBook = {
+      getQuote: vi.fn(async () => ({
+        tokenId: "token", bestAsk: 0.5, bestBid: 0.3, availableUsdUnderCap: 100,
+        estimatedSharesForAmount: 2, rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const runner = new BotRunner(
+      { ...baseConfig(), mode: "sim", requirePositiveEv: false, entryWindowSecondsByMarket: { BTC: 120, ETH: 120, DOGE: 120 } },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook: wideBook,
+        priceFeed: livePriceFeed("BTC", 130, nowMs),
+        state, executor, reconciler: fakeReconciler(),
+      },
+    );
+    await runner.runOnce(nowMs);
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
   it("refuses to enter in the final seconds of the window", async () => {
     // Medido en el ledger: entrar con <10s restantes realizo 32.4% de aciertos y -19.8% de ROI (n=34).
     // El mecanismo se conocia: cerca del cierre el CLOB bloquea takers (post-only), la profundidad se

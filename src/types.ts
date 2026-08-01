@@ -57,6 +57,9 @@ export interface BotConfig {
   // Segundos minimos restantes para abrir una entrada (0 = sin guardia). Los ultimos segundos de la
   // ventana pierden: post-only del CLOB, profundidad fina y precio ya resuelto.
   minSecondsToEndForEntry?: number;
+  // Spread maximo (ask - bid) para abrir una entrada (0 = sin guardia). Un spread ancho significa poca
+  // contraparte: el precio cotizado es menos fiable y pagas el diferencial completo.
+  maxAskSpread?: number;
   evMinExpectedRoi?: number;
   evMinHistoryTrades?: number;
   // Minimum fraction of the requested amount that must be fillable under the ask cap for a trade to
@@ -356,6 +359,11 @@ export interface TradeAttempt {
   amountUsd: number;
   maxAskPrice: number;
   bestAsk?: number;
+  // Liquidez observada AL DECIDIR. Se persiste porque sin ella no se puede diagnosticar la ejecucion
+  // despues: el ledger solo guardaba bestAsk, asi que la hipotesis "el precio cotizado no es el que
+  // consigues" era intesteable. El spread ya mostro degradacion monotona del resultado.
+  bestBid?: number;
+  availableUsdUnderCap?: number;
   expectedValue?: ExpectedValueSnapshot;
   estimatedShares: number;
   openingPrice: number;
