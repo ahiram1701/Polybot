@@ -1304,6 +1304,7 @@ export class BotController {
   private sanitizeConfig(config: BotConfig, settings: UiSettings): SanitizedConfig {
     return {
       minBtcDistanceUsd: config.minDistanceUsdByMarket.BTC,
+      autoStartSimOnBoot: settings.autoStartSimOnBoot,
       enabledMarkets: config.enabledMarkets,
       enabledMarketOutcomes: config.enabledMarketOutcomes ?? settings.enabledMarketOutcomes,
       minDistanceUsdByMarket: config.minDistanceUsdByMarket,

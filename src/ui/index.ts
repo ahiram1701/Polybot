@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   }, 5 * 60_000);
   memoryLogTimer.unref();
 
-  const server = app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, async () => {
     const url = config.publicUrl ?? `http://${HOST}:${PORT}`;
     logger.info("Polybot UI listening.", { url, host: HOST, port: PORT, staticClient });
     void notifier.notify({
@@ -46,7 +46,10 @@ async function main(): Promise<void> {
       title: "UI lista",
       body: `Polybot esta escuchando en ${url}. Live queda apagado hasta que lo inicies manualmente.`,
     });
-    if (autoStartMode === "sim") {
+    // El flag de linea de comandos O el ajuste persistido. Solo "sim" por diseño: live siempre lo
+    // arranca el usuario, asi que un reinicio automatico nunca puede acabar moviendo dinero real.
+    const autoStartFromSettings = (await controller.getSettings()).autoStartSimOnBoot === true;
+    if (autoStartMode === "sim" || autoStartFromSettings) {
       controller.start("sim").catch((error) => {
         logger.error("Auto-start failed.", {
           error: error instanceof Error ? error.message : String(error),

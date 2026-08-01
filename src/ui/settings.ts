@@ -100,6 +100,7 @@ const settingsSchema = z.object({
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
   explorationEnabled: z.boolean().default(true),
+  autoStartSimOnBoot: z.boolean().default(false),
   evUseSimilarity: z.boolean().default(false),
   evCalibration: z.boolean().default(false),
   evSafetyMargin: z.coerce.number().nonnegative().lt(1).default(0.03),
@@ -217,6 +218,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
     explorationEnabled: config.explorationEnabled ?? true,
+    autoStartSimOnBoot: false,
     evUseSimilarity: config.evUseSimilarity ?? false,
     evCalibration: config.evCalibration ?? false,
     evSafetyMargin: config.evSafetyMargin ?? 0.03,

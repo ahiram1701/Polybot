@@ -172,6 +172,7 @@ const emptySettings: UiSettings = {
   timezone: "auto",
   requirePositiveEv: true,
   explorationEnabled: true,
+  autoStartSimOnBoot: false,
   evUseSimilarity: false,
   evCalibration: false,
   evSafetyMargin: 0.03,
@@ -2116,6 +2117,19 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           />
           <span>Exigir valor esperado positivo</span>
         </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.autoStartSimOnBoot}
+            onChange={(event) => update("autoStartSimOnBoot", event.target.checked)}
+            disabled={running}
+          />
+          <span>Reanudar sim al reiniciar el proceso</span>
+        </label>
+        <p className="settings-hint">
+          Si el proceso se reinicia solo (el watchdog, una actualizacion, un reinicio de Windows), vuelve a arrancar en
+          <strong> simulacion</strong> en vez de quedarse detenido. Nunca arranca en live: ese modo lo activas tu.
+        </p>
         <label className="switch-row">
           <input
             type="checkbox"

@@ -859,6 +859,7 @@ function settings(): UiSettings {
     maxConsecutiveLosses: 0,
     requirePositiveEv: true,
     explorationEnabled: true,
+    autoStartSimOnBoot: false,
     evUseSimilarity: false,
     evCalibration: false,
     evSafetyMargin: 0.03,

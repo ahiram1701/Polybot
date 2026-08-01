@@ -52,6 +52,9 @@ export interface UiSettings {
   requirePositiveEv: boolean;
   // Exploración de arranque en frío: sondeos acotados de EV positivo en setups de historial corto.
   explorationEnabled: boolean;
+  // Si el PROCESO se reinicia (watchdog, actualizacion, reinicio de Windows), arrancar solo en SIM.
+  // Deliberadamente no existe la variante live: esa palanca es del usuario, siempre.
+  autoStartSimOnBoot: boolean;
   evUseSimilarity: boolean;
   // Calibracion empirica de la probabilidad del gate desde el propio ledger.
   evCalibration: boolean;
