@@ -168,3 +168,24 @@ export function logLoss(predictions: number[], labels: number[]): number {
   }
   return total / Math.max(1, predictions.length);
 }
+
+/**
+ * Expansion no lineal: cuadrados e interacciones con el ask. Una regresion logistica sobre estas
+ * features puede representar relaciones curvas y condicionales ("el momentum importa SOLO cuando el
+ * ask esta barato"), que es justo lo que un modelo lineal no puede expresar. Es la forma mas barata
+ * de preguntar si la linealidad era la limitacion, sin traer un arbol ni una dependencia nueva.
+ */
+export function expandFeatures(x: number[]): number[] {
+  const ask = x[6];
+  const out = [...x];
+  // Cuadrados de las features direccionales (curvatura).
+  for (const j of [0, 2, 4]) {
+    out.push(x[j] * x[j]);
+  }
+  // Interacciones con el ask: deja que el peso del momentum dependa del precio.
+  for (const j of [0, 2, 3, 4]) {
+    out.push(x[j] * ask);
+  }
+  return out;
+}
+

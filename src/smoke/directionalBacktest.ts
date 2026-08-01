@@ -17,6 +17,7 @@ import {
   logLoss,
   predictLogistic,
   FEATURE_NAMES,
+  expandFeatures,
   type FeatureRow,
 } from "../directionalModel.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
@@ -52,6 +53,14 @@ async function main(): Promise<void> {
   if (rows.length < MIN_TRAIN + RETRAIN_EVERY) {
     console.log("Datos insuficientes para walk-forward.");
     return;
+  }
+
+  // Variante NO LINEAL: mismas observaciones, features expandidas (cuadrados + interacciones).
+  const NONLINEAR = process.argv.includes("--nonlinear");
+  if (NONLINEAR) {
+    for (const r of rows) r.row.x = expandFeatures(r.row.x);
+    console.log(`Modo NO LINEAL: ${rows[0].row.x.length} features expandidas
+`);
   }
 
   // --- Walk-forward: entrena con el pasado, predice el bloque siguiente ---
