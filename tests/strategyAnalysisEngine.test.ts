@@ -177,10 +177,27 @@ function sample(args: {
             upBestAsk: outcome === "UP" ? args.ask : undefined,
             downBestAsk: outcome === "DOWN" ? args.ask : undefined,
           },
+          settlementQuote(endMs, args.winningOutcome),
         ],
     finalPrice: args.winningOutcome === "UP" ? 120 : 80,
     finalTickTimestampMs: endMs,
     winningOutcome: args.winningOutcome,
     resolvedAtMs: endMs,
+  };
+}
+
+/**
+ * El libro al cierre, que es de donde sale el ganador (ver `analyticsTruth`). Sin esto una muestra no
+ * tiene veredicto fiable y queda fuera de toda puntuacion, igual que en produccion.
+ */
+function settlementQuote(endMs: number, winner: Outcome) {
+  const upWins = winner === "UP";
+  return {
+    timestampMs: endMs - 1_000,
+    secondsToEnd: 1,
+    upBestAsk: upWins ? 1 : 0.01,
+    upBestBid: upWins ? 0.99 : 0,
+    downBestAsk: upWins ? 0.01 : 1,
+    downBestBid: upWins ? 0 : 0.99,
   };
 }

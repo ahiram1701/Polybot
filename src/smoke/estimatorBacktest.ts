@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "../analyticsRecorder.js";
 import { applyCalibration, buildCalibrationMap, type CalibrationSample } from "../calibration.js";
+import { scoringOutcome } from "../analyticsTruth.js";
 import { loadConfig } from "../config.js";
 import { calculateExpectedValue } from "../expectedValue.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
     const win = getEntryWindowSeconds(config.entryWindowSecondsByMarket, market, config.entryWindowSeconds);
     const cap = config.maxAskPriceByMarketOutcome?.[market]?.UP ?? config.maxAskPriceCeiling ?? 0.85;
     const samples = all
-      .filter((sample) => sample.market === market && sample.winningOutcome)
+      .filter((sample) => sample.market === market && scoringOutcome(sample) !== undefined)
       .sort((left, right) => left.windowStartMs - right.windowStartMs);
 
     const entries: Entry[] = [];
@@ -97,7 +98,7 @@ async function main(): Promise<void> {
       const oppositeAsk = outcome === "UP" ? quote.downBestAsk : quote.upBestAsk;
       const previous = signalIndex > 0 ? ticks[signalIndex - 1] : undefined;
       const elapsed = previous ? (signalTick.timestampMs - previous.timestampMs) / 1000 : 0;
-      const won = sample.winningOutcome === outcome;
+      const won = scoringOutcome(sample) === outcome;
       entries.push({
         market,
         outcome,

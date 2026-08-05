@@ -20,14 +20,18 @@ function sample(overrides: Partial<AnalyticsSample> = {}): AnalyticsSample {
       price: 100 + index,
       distanceUsd: index,
     })),
-    quotes: [60, 40, 10].map((secondsToEnd) => ({
-      timestampMs: endMs - secondsToEnd * 1000,
-      secondsToEnd,
-      upBestAsk: 0.7,
-      upBestBid: 0.68,
-      downBestAsk: 0.32,
-      downBestBid: 0.3,
-    })),
+    quotes: [
+      ...[60, 40, 10].map((secondsToEnd) => ({
+        timestampMs: endMs - secondsToEnd * 1000,
+        secondsToEnd,
+        upBestAsk: 0.7,
+        upBestBid: 0.68,
+        downBestAsk: 0.32,
+        downBestBid: 0.3,
+      })),
+      // Cierre del libro: es lo que decide el ganador (ver analyticsTruth), no el campo winningOutcome.
+      { timestampMs: endMs - 1000, secondsToEnd: 1, upBestAsk: 1, upBestBid: 0.99, downBestAsk: 0.01, downBestBid: 0 },
+    ],
     winningOutcome: "UP",
     ...overrides,
   };
@@ -53,7 +57,16 @@ describe("directional model", () => {
   });
 
   it("skips windows without an outcome or without a usable quote", () => {
-    expect(extractFeatures(sample({ winningOutcome: undefined }), "UP", 30)).toBeUndefined();
+    // Sin veredicto: el libro nunca se decanto (sigue ~50/50 al cierre). El campo `winningOutcome`
+    // ya no cuenta como ganador — se equivoca un 12.5% y correlacionado con la señal.
+    const undecided = sample();
+    expect(
+      extractFeatures(
+        { ...undecided, quotes: undecided.quotes.filter((quote) => quote.secondsToEnd > 5) },
+        "UP",
+        30,
+      ),
+    ).toBeUndefined();
     expect(extractFeatures(sample({ quotes: [] }), "UP", 30)).toBeUndefined();
   });
 

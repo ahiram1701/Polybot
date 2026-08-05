@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
+import { scoringOutcome } from "./analyticsTruth.js";
 import { knnEstimate, type KnnObservation, type KnnOptions, type KnnPoint } from "./knnCore.js";
 import { DEFAULT_MIN_SECONDS_TO_END, getMinDistanceUsd, SUPPORTED_MARKETS } from "./markets.js";
 import { passesRealizedGuard, realizedForCandidate } from "./realizedGuard.js";
@@ -489,11 +490,12 @@ function buildCandidateObservations(
 
     const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
     const ask = quote ? getAsk(quote, outcome) : undefined;
-    if (!isPositiveFinite(ask) || ask > maxAskPrice || !sample.winningOutcome) {
+    const truth = scoringOutcome(sample);
+    if (!isPositiveFinite(ask) || ask > maxAskPrice || !truth) {
       continue;
     }
 
-    const won = sample.winningOutcome === outcome;
+    const won = truth === outcome;
     const bestBid = quote ? getBid(quote, outcome) : undefined;
     const oppositeAsk = quote ? getAsk(quote, outcome === "UP" ? "DOWN" : "UP") : undefined;
     observations.push({

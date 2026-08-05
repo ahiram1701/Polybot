@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { readAnalyticsSamples } from "../analyticsRecorder.js";
+import { scoringOutcome } from "../analyticsTruth.js";
 import { loadConfig } from "../config.js";
 import { getMinDistanceUsd, SUPPORTED_MARKETS } from "../markets.js";
 import { buildCandidate, buildCandidateGrid, selectBestCandidate } from "../recommendationEngine.js";
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
 
   for (const market of SUPPORTED_MARKETS) {
     const samples = all
-      .filter((sample) => sample.market === market && sample.winningOutcome)
+      .filter((sample) => sample.market === market && scoringOutcome(sample) !== undefined)
       .sort((left, right) => left.windowStartMs - right.windowStartMs)
       .slice(-MAX_SAMPLES_PER_MARKET);
     if (samples.length < BLOCKS * 20) {

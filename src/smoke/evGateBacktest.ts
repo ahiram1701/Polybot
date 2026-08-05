@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "../analyticsRecorder.js";
+import { scoringOutcome } from "../analyticsTruth.js";
 import { loadConfig } from "../config.js";
 import { calculateExpectedValue } from "../expectedValue.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
@@ -41,7 +42,7 @@ interface Bucket {
   net: number;
 }
 
-const ASK_CEILINGS = [0.6, 0.65, 0.7, 0.85];
+const ASK_CEILINGS = [0.6, 0.7, 0.85, 0.92, 0.96, 0.99];
 const SAFETY_MARGINS = [0.03, 0.05, 0.08];
 const MIN_HISTORIES = [10, 15, 25];
 const PRIOR_STRENGTHS = [2, 4, 8];
@@ -62,7 +63,7 @@ async function main(): Promise<void> {
       config.minDistanceFloorUsdByMarket?.[market] ?? getMinDistanceUsd(config.minDistanceUsdByMarket, market);
     const win = getEntryWindowSeconds(config.entryWindowSecondsByMarket, market, config.entryWindowSeconds);
     const samples = all
-      .filter((sample) => sample.market === market && sample.winningOutcome)
+      .filter((sample) => sample.market === market && scoringOutcome(sample) !== undefined)
       .sort((left, right) => left.windowStartMs - right.windowStartMs);
 
     const entries: Entry[] = [];
@@ -86,7 +87,7 @@ async function main(): Promise<void> {
       if (ask == null || !(ask > 0)) {
         continue;
       }
-      const won = sample.winningOutcome === outcome;
+      const won = scoringOutcome(sample) === outcome;
       entries.push({ market, outcome, ask, won, result: tradeResult(ask, won, market) });
     }
     entriesByMarket.set(market, entries);

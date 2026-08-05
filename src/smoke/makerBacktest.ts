@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "../analyticsRecorder.js";
+import { scoringOutcome } from "../analyticsTruth.js";
 import { loadConfig } from "../config.js";
 import { calculateExpectedValue } from "../expectedValue.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
     const dist = config.minDistanceFloorUsdByMarket?.[market] ?? getMinDistanceUsd(config.minDistanceUsdByMarket, market);
     const win = getEntryWindowSeconds(config.entryWindowSecondsByMarket, market, config.entryWindowSeconds);
     const samples = all
-      .filter((sample) => sample.market === market && sample.winningOutcome)
+      .filter((sample) => sample.market === market && scoringOutcome(sample) !== undefined)
       .sort((left, right) => left.windowStartMs - right.windowStartMs);
 
     const history: Record<Outcome, { wins: number; trades: number }> = {
@@ -103,7 +104,7 @@ async function main(): Promise<void> {
 
       // Same EV gate as live: only setups the bot would actually take (walk-forward, no look-ahead).
       const h = history[outcome];
-      const won = sample.winningOutcome === outcome;
+      const won = scoringOutcome(sample) === outcome;
       let passes = false;
       if (h.trades >= minHistoryTrades) {
         const feeFraction = (defaultTakerFeeRateBps(market) / 10_000) * (1 - ask);

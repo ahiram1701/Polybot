@@ -10,6 +10,7 @@
  * modelo no logra superarlo fuera de muestra, no hay ventaja que extraer y eso tambien es una
  * respuesta. Todo aqui es puro y testeable; el entrenamiento walk-forward vive en el backtest.
  */
+import { scoringOutcome } from "./analyticsTruth.js";
 import type { AnalyticsSample, Outcome } from "./types.js";
 
 export const FEATURE_NAMES = [
@@ -46,7 +47,8 @@ export function extractFeatures(
   outcome: Outcome,
   targetSecondsToEnd: number,
 ): FeatureRow | undefined {
-  if (!sample.winningOutcome || !Number.isFinite(sample.openingPrice) || sample.openingPrice <= 0) {
+  const truth = scoringOutcome(sample);
+  if (!truth || !Number.isFinite(sample.openingPrice) || sample.openingPrice <= 0) {
     return undefined;
   }
   const ticks = sample.ticks.filter((tick) => tick.secondsToEnd >= targetSecondsToEnd);
@@ -95,7 +97,7 @@ export function extractFeatures(
       ask as number,
       Number.isFinite(bid) ? (ask as number) - (bid as number) : 0,
     ],
-    y: sample.winningOutcome === outcome ? 1 : 0,
+    y: truth === outcome ? 1 : 0,
     ask: ask as number,
     windowStartMs: sample.windowStartMs,
   };

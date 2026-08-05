@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
+import { scoringOutcome } from "./analyticsTruth.js";
 import type { CalibrationSample } from "./calibration.js";
 import { calculateAdjustedWinProbability, calculateExpectedValue } from "./expectedValue.js";
 import {
@@ -172,10 +173,11 @@ export class StrategyAnalysisEngine {
       }
       const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
       const ask = quote ? getAsk(quote, outcome) : undefined;
-      if (!isPositiveFinite(ask) || ask > params.maxAskPrice || !sample.winningOutcome) {
+      const truth = scoringOutcome(sample);
+      if (!isPositiveFinite(ask) || ask > params.maxAskPrice || !truth) {
         continue;
       }
-      const won = sample.winningOutcome === outcome;
+      const won = truth === outcome;
       // Predice con lo que se sabia ANTES de esta ventana (prior anclado al ask, igual que el gate).
       if (priorTrades > 0) {
         const predicted = calculateAdjustedWinProbability(priorWins, priorTrades, ask);
@@ -244,10 +246,11 @@ export class StrategyAnalysisEngine {
             .sort((left, right) => right.timestampMs - left.timestampMs)[0]
         : findClosestQuote(sample.quotes, signalTick.timestampMs);
       const ask = quote ? getAsk(quote, outcome) : undefined;
-      if (!isPositiveFinite(ask) || !sample.winningOutcome) {
+      const truth = scoringOutcome(sample);
+      if (!isPositiveFinite(ask) || !truth) {
         continue;
       }
-      const won = sample.winningOutcome === outcome;
+      const won = truth === outcome;
       if (priorTrades > 0) {
         rows.push({
           predicted: calculateAdjustedWinProbability(priorWins, priorTrades, ask),
@@ -286,7 +289,8 @@ export class StrategyAnalysisEngine {
     }
     const pool: SimilarityObservation[] = [];
     for (const sample of samples) {
-      if (sample.market !== market || !sample.winningOutcome) {
+      const truth = scoringOutcome(sample);
+      if (sample.market !== market || !truth) {
         continue;
       }
       const signalTick = findSignalTick(sample, outcome, params.entryWindowSeconds, params.minDistanceUsd);
@@ -304,7 +308,7 @@ export class StrategyAnalysisEngine {
         secondsToEnd: signalTick.secondsToEnd,
         favorableDistanceUsd: Math.abs(signalTick.distanceUsd),
         ask,
-        won: sample.winningOutcome === outcome,
+        won: truth === outcome,
         velocityUsdPerSecond: getSignalVelocity(sample.ticks, signalTick),
         spread: isPositiveFinite(bid) ? ask - bid : undefined,
         quoteSkew: isPositiveFinite(oppositeAsk) ? oppositeAsk - ask : undefined,
@@ -585,11 +589,12 @@ function buildCandidateSimulation(
 
     const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
     const ask = quote ? getAsk(quote, outcome) : undefined;
-    if (!isPositiveFinite(ask) || !sample.winningOutcome) {
+    const truth = scoringOutcome(sample);
+    if (!isPositiveFinite(ask) || !truth) {
       continue;
     }
 
-    const won = sample.winningOutcome === outcome;
+    const won = truth === outcome;
     observations.push({
       won,
       ask,

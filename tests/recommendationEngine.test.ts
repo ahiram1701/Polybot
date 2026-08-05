@@ -283,6 +283,7 @@ function predictiveSample(
           quote(earlyLosingMs, 24),
           quote(predictiveMs, 22),
           quote(currentMs, 18),
+          settlementQuote(endMs, winningOutcome),
         ]
       : [],
     finalPrice: winsUp ? 120 : 80,
@@ -317,7 +318,7 @@ function lateSignalSample(market: MarketSymbol, index: number, leadMs = 8_000): 
     openingPrice: 100,
     openingTickTimestampMs: windowStartMs,
     ticks: [{ timestampMs: signalMs, secondsToEnd: leadMs / 1_000, price: 118, distanceUsd: 18 }],
-    quotes: [quote(signalMs, leadMs / 1_000)],
+    quotes: [quote(signalMs, leadMs / 1_000), settlementQuote(endMs, "UP")],
     finalPrice: 120,
     finalTickTimestampMs: endMs,
     winningOutcome: "UP",
@@ -338,6 +339,7 @@ function frequencySample(market: MarketSymbol, index: number): AnalyticsSample {
     ticks.push({ timestampMs: lateMs, secondsToEnd: 15, price: 160, distanceUsd: 60 });
     quotes.push(quote(lateMs, 15));
   }
+  quotes.push(settlementQuote(endMs, winsUp ? "UP" : "DOWN"));
   return {
     version: 1,
     market,
@@ -359,7 +361,29 @@ function overfitSample(market: MarketSymbol, index: number, winningOutcome: Outc
   const sample = predictiveSample(market, index, "UP", true);
   return {
     ...sample,
+    // El ganador lo fija el libro al cierre, asi que hay que reescribir ESE quote (no basta con
+    // cambiar `winningOutcome`, que ya no se usa para puntuar).
+    quotes: [
+      ...sample.quotes.filter((quotedPoint) => quotedPoint.secondsToEnd > 5),
+      settlementQuote(sample.endMs, winningOutcome),
+    ],
     finalPrice: winningOutcome === "UP" ? 120 : 80,
     winningOutcome,
+  };
+}
+
+/**
+ * El libro al cierre, que es de donde sale el ganador (ver `analyticsTruth`). Sin esto una muestra no
+ * tiene veredicto fiable y queda fuera de toda puntuacion, igual que en produccion.
+ */
+function settlementQuote(endMs: number, winner: Outcome) {
+  const upWins = winner === "UP";
+  return {
+    timestampMs: endMs - 1_000,
+    secondsToEnd: 1,
+    upBestAsk: upWins ? 1 : 0.01,
+    upBestBid: upWins ? 0.99 : 0,
+    downBestAsk: upWins ? 0.01 : 1,
+    downBestBid: upWins ? 0 : 0.99,
   };
 }
