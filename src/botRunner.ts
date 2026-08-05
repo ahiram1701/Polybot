@@ -212,11 +212,12 @@ export class BotRunner {
       analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
       strategyAnalysisEngine: new StrategyAnalysisEngine(config.dataDir),
       notifier: createDynamicNotifier(config),
-      // Solo tiene sentido en live y solo si hay a quien preguntarle: en sim no hay colateral real.
-      bankrollSource:
-        config.mode === "live" && config.funderAddress
-          ? new OnChainBankrollSource(config.funderAddress, config.polygonRpcUrl)
-          : undefined,
+      // Se lee en AMBOS modos aunque la guardia solo actue en live: el saldo real es lo que hay que
+      // mirar mientras el arbitraje hace crecer el capital hacia el umbral, y en sim es cuando mas se
+      // mira la pantalla. Es una lectura cacheada a 60s, no pesa.
+      bankrollSource: config.funderAddress
+        ? new OnChainBankrollSource(config.funderAddress, config.polygonRpcUrl)
+        : undefined,
     });
   }
 
