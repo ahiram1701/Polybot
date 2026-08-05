@@ -80,6 +80,10 @@ const DEFAULT_MIN_SECONDS_TO_END = 10;
 // y -$12.05. El umbral baja de 0.05 a 0.02: por encima de 0.015 el resultado ya es negativo, y esta
 // es la unica relacion que ha aparecido dos veces, en datos distintos, en la misma direccion.
 const DEFAULT_MAX_ASK_SPREAD = 0.02;
+// Cadencia del escaneo de arbitraje FUERA de la ventana de analytics. El arbitraje aparece en
+// cualquier momento del ciclo, no solo en los ultimos 120s, pero cotizar cada segundo durante los 300
+// degrada el loop. 3s cubre el resto de la ventana sin ahogar el camino caliente.
+const ARB_SCAN_INTERVAL_MS = 3_000;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -175,6 +179,8 @@ export class BotRunner {
   // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
   // In-memory on purpose — a restart resets it, which only makes exploration MORE conservative.
   private readonly explorationCountByDayMarket = new Map<string, number>();
+  /** Ultimo escaneo de arbitraje por slug, para la cadencia reducida fuera de la ventana. */
+  private readonly lastArbScanMs = new Map<string, number>();
 
   constructor(
     private readonly config: BotConfig,
@@ -1127,12 +1133,24 @@ export class BotRunner {
     // los dos lados juntos cuestan menos de $1 y eso puede pasar en cualquier momento. Limitarlo a la
     // ventana de analytics (120s de 300) nos dejaba CIEGOS el 60% del tiempo, que es la causa de que
     // apenas se detecten oportunidades. Con arbEnabled se cotiza toda la ventana.
-    const arbNeedsQuotes = this.config.arbEnabled === true;
-    if (!arbNeedsQuotes && (!this.deps.analyticsRecorder || !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS))) {
-      return {};
-    }
-    if (arbNeedsQuotes && !this.deps.analyticsRecorder && !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS)) {
-      return {};
+    const inAnalyticsWindow = isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS);
+    if (inAnalyticsWindow) {
+      if (!this.deps.analyticsRecorder) {
+        return {};
+      }
+    } else {
+      // Fuera de la ventana de analytics solo se cotiza para el ARBITRAJE, y a cadencia reducida.
+      // Cotizar en cada iteracion triplicaba las llamadas al orderbook y degrado el loop de p50 56ms
+      // a 281ms (con picos de 20s), y un loop lento llega tarde a las entradas — que ya medimos que
+      // cuesta dinero. Cada ARB_SCAN_INTERVAL_MS basta: la oportunidad dura segundos, no milisegundos.
+      if (this.config.arbEnabled !== true) {
+        return {};
+      }
+      const last = this.lastArbScanMs.get(market.slug) ?? 0;
+      if (nowMs - last < ARB_SCAN_INTERVAL_MS) {
+        return {};
+      }
+      this.lastArbScanMs.set(market.slug, nowMs);
     }
 
     const [up, down] = await Promise.allSettled([
