@@ -1915,9 +1915,11 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         <p className="settings-hint settings-hint-warn">
           Sin medición todavía: con la ventana de ask actual (0.85–0.95) el replay sobre el historial hace{" "}
           <strong>0 ajustes</strong>, porque ese historial se generó operando en 0.35–0.65 y no tiene bandas con
-          muestra suficiente en la zona cara. Eso no es «no hace daño», es «aún no hay evidencia». El −$25.57 que
-          aquí figuraba antes medía otra configuración y ya no aplica. Déjalo apagado hasta acumular operaciones en
-          la ventana nueva; entonces vuelve a correr <code>capTunerBacktest</code> y decide con el dato.
+          muestra suficiente en la zona cara. Eso no es «no hace daño», es «aún no hay evidencia» — y el −$25.57
+          que aquí figuraba antes medía otra configuración. La forma de conseguir esa evidencia es{" "}
+          <strong>tenerlo encendido en sim</strong>: ahí no arriesga dinero y genera exactamente las operaciones
+          que faltan. Hasta que una banda dentro de tu ventana junte 20 operaciones no tocará nada, así que
+          enciéndelo, déjalo correr y vuelve a medir con <code>capTunerBacktest</code> antes de confiarle live.
         </p>
       </section>
 
