@@ -26,7 +26,13 @@ export interface AskBandSummary {
   bands: AskBandRow[];
 }
 
-const BAND_EDGES = [0, 0.45, 0.55, 0.65, 0.7, 0.75, 0.8, 1.0000001];
+// Los cortes se acaban en 0.80 y todo [0.80, 1.0] era UNA sola banda. Eso dejaba ciega justamente la
+// zona donde vive la estrategia rentable: la comision es shares*7%*p*(1-p), maxima en 0.50 y minima en
+// los extremos, asi que la banda operable subio a [0.85, 0.95] — y caia entera dentro de ese unico
+// tramo. Sin resolucion ahi, ni el tuner de ventana podia recortar nada ni la tabla que lee el usuario
+// distinguia 0.86 de 0.99, que se comportan muy distinto. Los tramos altos son mas estrechos a
+// proposito: cerca de 1 cada centimo cambia el break-even mucho mas que abajo.
+const BAND_EDGES = [0, 0.45, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.94, 0.97, 1.0000001];
 
 export function summarizeAskBands(
   trades: TradeAttempt[],

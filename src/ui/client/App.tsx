@@ -1905,15 +1905,19 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         </label>
         <p className="settings-hint">
           Deriva la ventana [piso, techo] de cada mercado desde la tabla de bandas de ask con fills reales del modo
-          activo: conserva las bandas que superen su break-even por 3pp y descarta las de los extremos que no.
-          Candados: rango 0.20–0.85, ancho mínimo 0.15 (no puede estrangularse a cero), cambio máx ±0.05 por borde y
-          por aplicación, mínimo 20 trades por banda y 60 del mercado, cooldown 24h, y aviso por Telegram en cada
-          cambio.
+          activo. Solo <strong>estrecha</strong>: sube el piso o baja el techo mientras la banda del extremo haya
+          perdido dinero de verdad, y nunca abre más allá de la ventana que tú configuraste. No es un trinquete —
+          los recortes se recalculan contra tu ventana base en cada pasada, así que si la evidencia desaparece la
+          ventana vuelve sola. Candados: nunca se come más de la mitad de tu ventana base, cambio máx ±0.05 por
+          borde y aplicación, mínimo 20 trades por banda y 60 del mercado, cooldown 24h, y aviso por Telegram en
+          cada cambio.
         </p>
         <p className="settings-hint settings-hint-warn">
-          Advertencia honesta: en el replay histórico este auto-ajuste terminó <strong>-$25.57 por debajo</strong> de
-          dejar la ventana fija. Está activo porque tú lo pediste; si prefieres el resultado medido, apágalo y fija la
-          ventana a mano con los controles de arriba.
+          Sin medición todavía: con la ventana de ask actual (0.85–0.95) el replay sobre el historial hace{" "}
+          <strong>0 ajustes</strong>, porque ese historial se generó operando en 0.35–0.65 y no tiene bandas con
+          muestra suficiente en la zona cara. Eso no es «no hace daño», es «aún no hay evidencia». El −$25.57 que
+          aquí figuraba antes medía otra configuración y ya no aplica. Déjalo apagado hasta acumular operaciones en
+          la ventana nueva; entonces vuelve a correr <code>capTunerBacktest</code> y decide con el dato.
         </p>
       </section>
 

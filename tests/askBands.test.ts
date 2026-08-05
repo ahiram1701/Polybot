@@ -81,3 +81,19 @@ describe("summarizeAskBands", () => {
     expect(summary.bands.find((band) => band.lo === 0.8)).toBeUndefined();
   });
 });
+
+describe("askBands: resolucion en la banda cara", () => {
+  it("separa 0.85-0.90 de 0.90+ en vez de meterlo todo en un tramo [0.80, 1.0]", () => {
+    // Sin cortes por encima de 0.80 la tabla no distinguia 0.86 de 0.99 — que tienen break-even muy
+    // distinto — y el tuner de ventana no podia recortar nada donde ahora opera el bot.
+    const trades = [
+      trade({ id: "a", ask: 0.87, won: true }),
+      trade({ id: "b", ask: 0.92, won: true }),
+      trade({ id: "c", ask: 0.96, won: false }),
+    ];
+    const summary = summarizeAskBands(trades, "live");
+    expect(summary.bands.find((band) => band.lo === 0.85)?.trades).toBe(1);
+    expect(summary.bands.find((band) => band.lo === 0.9)?.trades).toBe(1);
+    expect(summary.bands.find((band) => band.lo === 0.94)?.trades).toBe(1);
+  });
+});

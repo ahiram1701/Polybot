@@ -192,3 +192,42 @@ describe("recommendAskWindow: no es un trinquete", () => {
     expect(second?.targetFloor ?? first!.targetFloor).toBe(first!.targetFloor);
   });
 });
+
+/**
+ * La estrategia se movio a la banda cara ([0.85, 0.95]) porque la comision es maxima en 0.50. Los
+ * candados del tuner estaban calibrados para una ventana centrada y lo apagaban por completo ahi.
+ */
+describe("recommendAskWindow: ventana estrecha en la banda cara", () => {
+  const caras = summary([
+    band(0.85, 0.9, 40, 0.5, -30), // pierde dinero de verdad
+    band(0.9, 0.94, 80, 0.97, 25),
+    band(0.94, 0.97, 80, 0.99, 10),
+  ]);
+
+  it("recorta dentro de una ventana de solo 0.10 de ancho", () => {
+    const reco = recommendAskWindow(caras, { floor: 0.85, cap: 0.95 });
+    expect(reco?.targetFloor).toBe(0.9);
+    expect(reco?.targetCap).toBe(0.95);
+  });
+
+  it("no baja el techo por debajo de la ventana aprobada", () => {
+    // Con WINDOW_MAX en 0.85 el techo se recortaba a 0.85 y se comia la franja rentable entera.
+    const reco = recommendAskWindow(caras, { floor: 0.85, cap: 0.95 });
+    expect(reco?.targetCap).toBeGreaterThan(0.85);
+  });
+
+  it("sigue negandose a estrangular la ventana aunque sea estrecha", () => {
+    // Todas las bandas de dentro pierden: el recorte dejaria una ventana practicamente nula.
+    const todasPierden = summary([
+      band(0.85, 0.9, 40, 0.1, -30),
+      band(0.9, 0.94, 40, 0.1, -30),
+    ]);
+    expect(recommendAskWindow(todasPierden, { floor: 0.85, cap: 0.94 })).toBeUndefined();
+  });
+
+  it("no se anula por el redondeo binario de los precios", () => {
+    // 0.95 - 0.90 da 0.049999999999999934 en coma flotante: comparado crudo contra un minimo de 0.05
+    // la recomendacion se perdia por un error de representacion, no por politica.
+    expect(recommendAskWindow(caras, { floor: 0.85, cap: 0.95 })).toBeDefined();
+  });
+});

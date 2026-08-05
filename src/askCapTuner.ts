@@ -21,12 +21,27 @@ export const ASK_CAP_TUNER_LOCKS = {
   CAP_CEILING: 0.85,
   MAX_STEP: 0.05,
   COOLDOWN_MS: 24 * 60 * 60 * 1000,
-  // Window tuner: the whole tradeable range, not just the ceiling.
-  WINDOW_MIN: 0.2,
-  WINDOW_MAX: 0.85,
-  // A window narrower than this is refused: strangling itself to zero is exactly how the cap-only
-  // tuner lost money in replay (it kept targeting 0.45 and cut the profitable part away).
+  // Tuner de ventana: limites de cordura, NO la banda operable. Quien acota de verdad es la ventana
+  // BASE de configuracion, porque el tuner solo estrecha desde ella (ver `recommendAskWindow`), asi
+  // que estos solo tienen que dejar pasar cualquier base razonable.
+  //
+  // Estuvieron en [0.20, 0.85] y eso MATO el tuner al mover la banda operable a [0.85, 0.95]: el techo
+  // objetivo se recortaba a 0.85, la ventana quedaba de ancho 0 y `recommendAskWindow` devolvia
+  // undefined siempre. Peor aun si el guardia de ancho no lo hubiera atrapado — habria bajado el techo
+  // de 0.95 a 0.85, cortando justo la franja rentable. Un limite absoluto pensado para una banda
+  // centrada en 0.50 no vale para una estrategia que vive en los extremos.
+  WINDOW_MIN: 0.01,
+  WINDOW_MAX: 0.99,
+  // Anti auto-estrangulamiento: el ancho minimo es
+  //     max(HARD, min(MIN_WINDOW_WIDTH, ancho_base * RATIO))
+  // El termino absoluto manda en ventanas anchas (comportamiento de siempre) pero NUNCA puede exigir
+  // mas de la mitad de la ventana aprobada. Sin ese tope, una banda cara [0.85,0.95] — 0.10 de ancho
+  // total, menos que el minimo absoluto de 0.15 — rechazaba cualquier recomendacion posible: el
+  // candado ya no protegia de estrangularse, simplemente apagaba el tuner.
   MIN_WINDOW_WIDTH: 0.15,
+  MIN_WINDOW_WIDTH_RATIO: 0.5,
+  /** Suelo duro: por estrecha que sea la base, nunca se acepta una ventana practicamente nula. */
+  MIN_WINDOW_WIDTH_HARD: 0.02,
 } as const;
 
 /** Fraccion de una banda que puede quedar fuera de la ventana y aun considerarla contenida. */
@@ -100,10 +115,6 @@ export function recommendAskWindow(
   // operaciones que la ventana ya excluye, y el tuner le achaca al tramo de dentro perdidas de fuera:
   // medido, con suelo de ETH en 0.40 la banda [0.00,0.45] traia -$190.53 casi todos de la zona ya
   // vetada, y el recorte resultante costaba $18.31 fuera de muestra.
-  // Solo bandas contenidas en la ventana. Con solapamiento parcial el neto de la banda incluye
-  // operaciones que la ventana ya excluye, y el tuner le achaca al tramo de dentro perdidas de fuera:
-  // medido, con suelo de ETH en 0.40 la banda [0.00,0.45] traia -$190.53 casi todos de la zona ya
-  // vetada, y el recorte resultante costaba $18.31 fuera de muestra.
   //
   // La contencion se mide con tolerancia porque los bordes de banda no se alinean con los de la
   // ventana: un suelo de 0.01 deja fuera el 2% de la banda [0,0.45] (irrelevante) mientras uno de 0.40
@@ -135,17 +146,29 @@ export function recommendAskWindow(
   // recortada de una decision anterior que ya no se sostiene, esto es lo que la devuelve a su sitio.
   const clampedFloor = Math.min(Math.max(targetFloor, locks.WINDOW_MIN), locks.WINDOW_MAX);
   const clampedCap = Math.min(Math.max(targetCap, locks.WINDOW_MIN), locks.WINDOW_MAX);
-  if (clampedCap - clampedFloor < locks.MIN_WINDOW_WIDTH) {
+  // El minimo se mide contra la ventana APROBADA: "no te comas mas de la mitad de la base".
+  const baselineWidth = Math.max(0, baseline.cap - baseline.floor);
+  const minWidth = Math.max(
+    locks.MIN_WINDOW_WIDTH_HARD,
+    Math.min(locks.MIN_WINDOW_WIDTH, baselineWidth * locks.MIN_WINDOW_WIDTH_RATIO),
+  );
+  // Se compara redondeado a centimos porque estos precios se manejan asi: en binario 0.95 - 0.90 da
+  // 0.049999999999999934, que "no llega" a un minimo de 0.05 y anulaba la recomendacion por un error
+  // de representacion, no por politica.
+  if (round2(clampedCap - clampedFloor) < round2(minWidth)) {
     return undefined;
   }
   if (Math.abs(clampedFloor - current.floor) < 0.005 && Math.abs(clampedCap - current.cap) < 0.005) {
     return undefined;
   }
+  // El paso tampoco puede ser absoluto: 0.05 sobre una ventana de 0.10 se la come de una pasada, que
+  // es justo lo contrario de "moverse despacio y poder revertir".
+  const maxStep = Math.min(locks.MAX_STEP, Math.max(0.01, baselineWidth / 2));
   return {
     targetFloor: round2(clampedFloor),
     targetCap: round2(clampedCap),
-    nextFloor: stepToward(current.floor, clampedFloor, locks.MAX_STEP),
-    nextCap: stepToward(current.cap, clampedCap, locks.MAX_STEP),
+    nextFloor: stepToward(current.floor, clampedFloor, maxStep),
+    nextCap: stepToward(current.cap, clampedCap, maxStep),
     reason:
       supporting.length > 0
         ? `Recorte por bandas perdedoras: ${supporting.join("; ")}`
