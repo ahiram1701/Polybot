@@ -13,8 +13,19 @@ import { logger } from "./logger.js";
  * Solo LEE (`balanceOf`); no firma nada ni mueve fondos.
  */
 
-/** Colateral del CLOB de Polymarket en Polygon: USDC puenteado (USDC.e), 6 decimales. */
-export const POLYMARKET_COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
+/**
+ * Colateral del CLOB **V2** de Polymarket en Polygon: `pUSD` (Polymarket USD), 6 decimales.
+ *
+ * NO es USDC.e (`0x2791Bca1...`). Con la migracion a CLOB V2 (2026-04-28) Polymarket paso a su propio
+ * token de colateral, y USDC.e dejo de aparecer siquiera en `@polymarket/clob-client-v2` — de ahi se
+ * saco esta direccion, no de documentacion. Leer el token viejo devuelve 0 para una cuenta con fondos:
+ * un cero perfectamente creible que hace pensar que la wallet esta vacia.
+ *
+ * Si vuelve a cambiar, el sintoma sera el mismo (saldo 0 con fondos reales). La forma de verificarlo
+ * es buscar las direcciones del SDK y preguntar a cada una por `symbol()`: la unica que responde como
+ * ERC20 es el colateral.
+ */
+export const POLYMARKET_COLLATERAL_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
 
 export interface BankrollReading {
   usd: number;
@@ -70,7 +81,7 @@ export class OnChainBankrollSource implements BankrollSource {
         functionName: "balanceOf",
         args: [this.funderAddress],
       });
-      // USDC son 6 decimales. Se divide en Number y no en BigInt para no truncar los centavos.
+      // pUSD son 6 decimales. Se divide en Number y no en BigInt para no truncar los centavos.
       const usd = Number(raw) / 1e6;
       if (!Number.isFinite(usd)) {
         return undefined;

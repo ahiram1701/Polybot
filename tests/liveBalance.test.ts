@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { OnChainBankrollSource, resolveEffectiveBankrollUsd } from "../src/liveBalance.js";
+import {
+  OnChainBankrollSource,
+  POLYMARKET_COLLATERAL_ADDRESS,
+  resolveEffectiveBankrollUsd,
+} from "../src/liveBalance.js";
 
 const client = (impl: () => Promise<unknown>) => ({ readContract: vi.fn(impl) }) as never;
 
@@ -78,5 +82,14 @@ describe("OnChainBankrollSource", () => {
     ok = false;
     // Una lectura buena de hace un momento es mejor que quedarse sin dato.
     expect((await source.read(50_000))?.usd).toBe(7);
+  });
+});
+
+describe("colateral de Polymarket", () => {
+  it("apunta a pUSD (CLOB V2), no al USDC.e antiguo", () => {
+    // Leer USDC.e devuelve 0 para una cuenta CON fondos — un cero creible que hace concluir que la
+    // wallet esta vacia. Se comprobo contra la cadena: el saldo real vivia en pUSD.
+    expect(POLYMARKET_COLLATERAL_ADDRESS).toBe("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
+    expect(POLYMARKET_COLLATERAL_ADDRESS).not.toBe("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
   });
 });
