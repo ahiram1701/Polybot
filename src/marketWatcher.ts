@@ -23,11 +23,31 @@ export class MarketWatcher {
     return this.getMarketByWindowStartMs(getWindowStartMs(nowMs), nowMs, market);
   }
 
+  /**
+   * Los mercados que se hayan podido resolver, NUNCA una excepcion.
+   *
+   * Estuvo con `Promise.all`, que es falla-rapido: un solo fetch lento a gamma (timeout 5s) rechazaba
+   * la promesa entera, la excepcion subia sin captura hasta el bucle y se perdia la iteracion
+   * COMPLETA — apertura, muestra de analitica, arbitraje, señal y ejecucion de los TRES mercados, por
+   * culpa de uno. Medido: 415 timeouts y ~6s de ceguera cada uno.
+   *
+   * Con `allSettled` los mercados sanos siguen operando. Los que fallan quedan fuera de la lista, que
+   * es exactamente lo que el llamador ya sabe manejar (antes tambien podian faltar por un 404).
+   */
   async getCurrentMarkets(markets: MarketSymbol[], nowMs = Date.now()): Promise<MarketInfo[]> {
-    const results = await Promise.all(
+    const results = await Promise.allSettled(
       markets.map((market) => this.getMarketByWindowStartMs(getWindowStartMs(nowMs), nowMs, market)),
     );
-    return results.filter((market): market is MarketInfo => Boolean(market));
+    const rejected = results.filter((result) => result.status === "rejected");
+    // Apagon total (todo rechazado) SI es un error: no sabemos nada del mercado, y quien llama en modo
+    // one-shot tiene derecho a enterarse. Un fallo PARCIAL, en cambio, se absorbe: los mercados sanos
+    // deben seguir operando.
+    if (rejected.length === results.length && results.length > 0) {
+      throw (rejected[0] as PromiseRejectedResult).reason;
+    }
+    return results.flatMap((result) =>
+      result.status === "fulfilled" && result.value ? [result.value] : [],
+    );
   }
 
   async getMarketByWindowStartMs(
@@ -45,22 +65,33 @@ export class MarketWatcher {
       return cached.market;
     }
 
-    // Cap the gamma request so a stall can't delay the loop (AbortSignal actually cancels the socket).
-    const response = await this.fetchFn(`${this.gammaHost}/events/slug/${slug}`, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (response.status === 404) {
-      this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market: null });
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`Gamma API ${response.status} while fetching ${slug}: ${await response.text()}`);
-    }
+    try {
+      // Cap the gamma request so a stall can't delay the loop (AbortSignal actually cancels the socket).
+      const response = await this.fetchFn(`${this.gammaHost}/events/slug/${slug}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.status === 404) {
+        this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market: null });
+        return null;
+      }
+      if (!response.ok) {
+        throw new Error(`Gamma API ${response.status} while fetching ${slug}: ${await response.text()}`);
+      }
 
-    const raw = (await response.json()) as unknown;
-    const market = parseGammaEvent(raw, slug);
-    this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market });
-    return market;
+      const raw = (await response.json()) as unknown;
+      const market = parseGammaEvent(raw, slug);
+      this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market });
+      return market;
+    } catch (error) {
+      // Servir la entrada CADUCADA antes que rendirse. Dentro de una ventana de 5 minutos el slug, los
+      // tokenIds y el tick size no cambian, asi que un dato de hace unos segundos es perfectamente
+      // utilizable — y muchisimo mejor que quedarse sin mercado y perder la ventana de entrada.
+      // Deliberadamente NO se cachea el fallo: el siguiente intento vuelve a la red.
+      if (cached) {
+        return cached.market;
+      }
+      throw error;
+    }
   }
 }
 

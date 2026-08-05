@@ -39,6 +39,8 @@ export interface UiSettings {
   maxAskPriceCeiling: number;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
+  liveBankrollUsd: number;
+  minBankrollForDirectionalUsd: number;
   maxConsecutiveLosses: number;
   riskHaltCooldownHours: number;
   // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
@@ -138,6 +140,8 @@ export interface UiStatus {
   riskHalt?: RiskHaltStatus;
   logs: LogEntry[];
   snapshotError?: string;
+  /** Salud del bucle: fraccion de iteraciones que acabaron lanzando (ventana movil). */
+  loopHealth?: { iterations: number; failed: number; failedPct: number };
 }
 
 export type UiEvent =

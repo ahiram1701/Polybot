@@ -57,7 +57,11 @@ describe("BotRunner", () => {
 
     await runner.start();
 
-    expect(watcher.getCurrentMarket).toHaveBeenCalledTimes(4);
+    // 3 llamadas, una por mercado, TODAS en la misma iteracion: el fallo del primero ya no aborta la
+    // pasada. Antes eran 4 porque la excepcion tumbaba la iteracion entera y habia que empezar otra —
+    // ~6s de ceguera (timeout + sleep) en los que se perdian apertura, analitica, arbitraje y entrada
+    // de los tres mercados por culpa de uno.
+    expect(watcher.getCurrentMarket).toHaveBeenCalledTimes(3);
     expect(priceFeed.stop).toHaveBeenCalled();
   });
 
@@ -1065,6 +1069,94 @@ describe("BotRunner", () => {
     );
   });
 
+  /**
+   * Con un bankroll pequeño el minimo de orden del exchange ($5) obliga a arriesgar una fraccion
+   * enorme del capital por entrada, y la ruina llega antes que el edge: simulado con el edge REAL
+   * (83% de aciertos, ROI +4.3%/operacion — GANADORA), con $10 la probabilidad de quedarse sin poder
+   * operar en un mes es del 67.6%. Se pierde dinero teniendo razon, asi que la aritmetica la impone
+   * el codigo y no la disciplina.
+   */
+  describe("puerta de capital para el direccional", () => {
+    const setup = (mode: "sim" | "live") => {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 290_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      const openings = new Map([
+        [
+          market.slug,
+          {
+            asset: market.asset,
+            slug: market.slug,
+            windowStartMs,
+            openingPrice: 100,
+            openingTickTimestampMs: windowStartMs,
+            capturedAtMs: windowStartMs,
+          },
+        ],
+      ]);
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn(() => false),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => ({
+          id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode,
+          outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId,
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: input.quote.bestAsk,
+          estimatedShares: input.amountUsd / 0.7,
+          openingPrice: 100,
+          entryPrice: 130,
+          distanceUsd: input.distanceUsd,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+          createdAtMs: nowMs,
+        })),
+      } satisfies TradeExecutor;
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          mode,
+          requirePositiveEv: false,
+          liveBankrollUsd: 20,
+          minBankrollForDirectionalUsd: 50,
+        },
+        {
+          watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+          orderbook: fakeOrderbook(0.7),
+          priceFeed: livePriceFeed("BTC", 130, nowMs), // +30 sobre apertura: señal clara
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+        },
+      );
+      return { runner, executor, nowMs };
+    };
+
+    it("no opera direccional en LIVE cuando el capital esta por debajo del minimo", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = setup("live");
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("NO afecta a sim: seguir generando muestras es lo que valida la estrategia", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = setup("sim");
+      await runner.runOnce(nowMs);
+      expect(executor.execute).toHaveBeenCalled();
+    });
+  });
+
   it("does not block simulation trades with the conservative live gate", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -1821,6 +1913,71 @@ describe("BotRunner", () => {
     );
 
     await runner.runOnce(nowMs);
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(state.recordTradeAttempt).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El minimo del exchange esta en DOLARES ($5, confirmado contra gamma y contra la semantica de
+   * `amount` del cliente CLOB, que para BUY son dolares). La comprobacion anterior chocaba unidades
+   * — comparaba `sets` (participaciones) contra ese $5 — asi que dejaba pasar tamaños cuyas dos patas
+   * salian por debajo del minimo y el exchange rechazaba. Es la razon de que el arbitraje tuviera 0
+   * ejecuciones en live pese a detectar oportunidades.
+   */
+  it("no manda un arbitraje cuyas patas quedarian por debajo del minimo EN DOLARES", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-"));
+    arbTemps.push(dataDir);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 200_000;
+    // orderMinSize real de estos mercados: $5.
+    const market = { ...marketInfo("ETH", "eth", windowStartMs), orderMinSize: 5 };
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => undefined),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    // Par a 0.80 (0.40 cada lado): con un presupuesto de $8 salen 10 sets, o sea dos patas de $4.00.
+    // La regla vieja (`sets` 10 >= 5) lo dejaba pasar; ambas patas son sub-minimo.
+    const orderbook = {
+      getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+        tokenId: "token",
+        bestAsk: 0.4,
+        bestBid: 0.39,
+        availableUsdUnderCap: 40,
+        availableUsdAllLevels: 40,
+        estimatedSharesForAmount: amountUsd / 0.4,
+        rawAskLevels: [],
+      })),
+    } as unknown as OrderbookService;
+    const executor = { execute: vi.fn() } satisfies TradeExecutor;
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+
+    const runner = new BotRunner(
+      { ...baseConfig(), dataDir, arbEnabled: true, arbMaxUsdPerOpportunity: 8, arbMinNetPerSet: 0.02 },
+      {
+        watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+        orderbook,
+        priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+        notifier: { notify: vi.fn(async () => undefined) },
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    // Ni una sola orden: mandar $4 seria un rechazo del exchange, y si solo llenase una pata el
+    // arbitraje se convierte en una posicion direccional desnuda.
     expect(executor.execute).not.toHaveBeenCalled();
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });

@@ -155,6 +155,8 @@ const envSchema = z.object({
   MIN_FILL_RATIO: z.coerce.number().min(0).max(1).default(0.5),
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
   MAX_DAILY_LOSS_USD: z.coerce.number().nonnegative().default(0),
+  LIVE_BANKROLL_USD: z.coerce.number().nonnegative().default(0),
+  MIN_BANKROLL_FOR_DIRECTIONAL_USD: z.coerce.number().nonnegative().default(50),
   MAX_CONSECUTIVE_LOSSES: z.coerce.number().int().nonnegative().default(0),
   RISK_HALT_COOLDOWN_HOURS: z.coerce.number().nonnegative().default(2),
   ARB_ENABLED: z
@@ -342,6 +344,8 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     minFillRatio: env.MIN_FILL_RATIO,
     dailySpendLimitUsd: env.DAILY_SPEND_LIMIT_USD,
     maxDailyLossUsd: env.MAX_DAILY_LOSS_USD,
+    liveBankrollUsd: env.LIVE_BANKROLL_USD,
+    minBankrollForDirectionalUsd: env.MIN_BANKROLL_FOR_DIRECTIONAL_USD,
     maxConsecutiveLosses: env.MAX_CONSECUTIVE_LOSSES,
     riskHaltCooldownHours: env.RISK_HALT_COOLDOWN_HOURS,
     arbEnabled: env.ARB_ENABLED,

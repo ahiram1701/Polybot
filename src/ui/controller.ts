@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -6,6 +7,11 @@ import {
   readAnalyticsSamples,
   serializeAnalyticsSamples,
 } from "../analyticsRecorder.js";
+import {
+  reviewArbOpportunities,
+  type ArbOpportunity,
+  type ArbOpportunitySummary,
+} from "../arbMonitor.js";
 import { summarizeAskBands, type AskBandSummary } from "../askBands.js";
 import { ASK_CAP_TUNER_LOCKS, recommendAskWindow } from "../askCapTuner.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
@@ -112,6 +118,8 @@ export class ControllerError extends Error {
 export interface RunnerLike {
   start(options?: { once?: boolean }): Promise<void>;
   stop(): void;
+  /** Fracción de iteraciones del bucle que acabaron lanzando (ventana móvil). */
+  getLoopHealth?(): { iterations: number; failed: number; failedPct: number };
   updateStrategySettings?(
     settings: Pick<
       BotConfig,
@@ -714,7 +722,16 @@ export class BotController {
       if (nowMs - lastTunedAtMs < ASK_CAP_TUNER_LOCKS.COOLDOWN_MS) {
         continue;
       }
-      const bands = summarizeAskBands(stateSummary.tradesSorted, this.mode ?? this.baseConfig.mode, {}, { market });
+      // Respeta el marcador de reset, igual que la tabla que ve el usuario (`getAskBandSummary`).
+      // Iba con `{}`: tras un reset el usuario veia la tabla limpia mientras el tuner —que es el que
+      // ESCRIBE settings— seguia recortando con datos de la etapa anterior. Un reset es el usuario
+      // diciendo "eso era otro montaje"; quien decide es justo el que debe hacerle caso.
+      const bands = summarizeAskBands(
+        stateSummary.tradesSorted,
+        this.mode ?? this.baseConfig.mode,
+        stateSummary.pnlResetAtMs,
+        { market },
+      );
       const currentFloor = settings.minAskPriceByMarketOutcome[market].UP;
       const currentCap = settings.maxAskPriceByMarketOutcome[market].UP;
       // Tuner de VENTANA: mueve piso y techo. El de solo-techo no podia excluir la cola barata
@@ -811,6 +828,37 @@ export class BotController {
   async getAskBandSummary(mode: Mode = "live"): Promise<AskBandSummary> {
     const stateSummary = await this.getStateSummary();
     return summarizeAskBands(stateSummary.tradesSorted, mode, stateSummary.pnlResetAtMs);
+  }
+
+  /**
+   * Oportunidades de arbitraje detectadas, con el motivo por el que cada una no se pudo capturar.
+   * `data/arb-opportunities.jsonl` se venia grabando sin que nada lo mostrase: con ~0.7 oportunidades
+   * validas al dia, perder una por un motivo corregible sale caro y hay que poder verlo.
+   */
+  async getArbOpportunities(): Promise<ArbOpportunitySummary> {
+    const settings = await this.settingsStore.load(this.baseConfig);
+    let raw = "";
+    try {
+      raw = await readFile(join(this.baseConfig.dataDir, "arb-opportunities.jsonl"), "utf8");
+    } catch {
+      return { detected: 0, executable: 0, blocked: { net_below_threshold: 0, capital_below_min_legs: 0 }, capturableUsd: 0, recent: [] };
+    }
+    const opportunities = raw
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as ArbOpportunity];
+        } catch {
+          return [];
+        }
+      });
+    return reviewArbOpportunities(opportunities, {
+      minNetPerSet: settings.arbMinNetPerSet,
+      // Mínimo real de estos mercados; gamma lo confirma en cada evento.
+      orderMinSize: 5,
+      budgetUsd: settings.arbMaxUsdPerOpportunity,
+    });
   }
 
   async getFiscalSummary(year?: number): Promise<FiscalSummaryResponse> {
@@ -1015,6 +1063,7 @@ export class BotController {
       tick: primaryMarket?.tick ?? snapshot.tick,
       quotes: primaryMarket?.quotes ?? snapshot.quotes,
       snapshotError: snapshot.snapshotError,
+      loopHealth: this.runner?.getLoopHealth?.(),
     };
   }
 
@@ -1354,6 +1403,8 @@ export class BotController {
       maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
+      liveBankrollUsd: config.liveBankrollUsd ?? settings.liveBankrollUsd,
+      minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? settings.minBankrollForDirectionalUsd,
       riskHaltCooldownHours: config.riskHaltCooldownHours ?? settings.riskHaltCooldownHours,
       arbEnabled: config.arbEnabled ?? settings.arbEnabled,
       arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? settings.arbMaxUsdPerOpportunity,

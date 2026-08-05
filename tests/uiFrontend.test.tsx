@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisChartsSection, AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable } from "../src/ui/client/App.js";
+import { AnalysisChartsSection, AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable, splitPnlByKind } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
 
@@ -856,6 +856,8 @@ function settings(): UiSettings {
     },
     dailySpendLimitUsd: 50,
     maxDailyLossUsd: 0,
+  liveBankrollUsd: 0,
+  minBankrollForDirectionalUsd: 50,
     maxConsecutiveLosses: 0,
     requirePositiveEv: true,
     explorationEnabled: true,
@@ -1069,3 +1071,46 @@ function recommendationsResponse(): AiRecommendationsResponse {
     ],
   };
 }
+
+describe("splitPnlByKind", () => {
+  const trade = (over: Partial<TradeAttempt>): TradeAttempt =>
+    ({
+      id: "t",
+      slug: "eth-updown-5m-1",
+      asset: "ETH",
+      mode: "sim",
+      outcome: "UP",
+      tokenId: "tok",
+      amountUsd: 5,
+      maxAskPrice: 0.9,
+      bestAsk: 0.5,
+      estimatedShares: 10,
+      openingPrice: 100,
+      entryPrice: 101,
+      distanceUsd: 1,
+      windowStartMs: 0,
+      endMs: 300_000,
+      createdAtMs: 1_000,
+      resolved: { resolvedAtMs: 300_000, finalPrice: 101, finalTickTimestampMs: 300_000, winningOutcome: "UP", won: true },
+      ...over,
+    }) as TradeAttempt;
+
+  it("separa el arbitraje del direccional", () => {
+    const split = splitPnlByKind(
+      [
+        trade({ id: "dir-win" }),
+        trade({ id: "dir-loss", resolved: { resolvedAtMs: 300_000, finalPrice: 99, finalTickTimestampMs: 300_000, winningOutcome: "DOWN", won: false } }),
+        trade({ id: "arb", kind: "arb", arbPairComplete: true }),
+      ],
+      "sim",
+    );
+    expect(split.dir.count).toBe(2);
+    expect(split.arb.count).toBe(1);
+  });
+
+  it("una pata SUELTA cuenta como direccional: ahi es donde esta el riesgo", () => {
+    const split = splitPnlByKind([trade({ id: "naked", kind: "arb", arbPairComplete: false })], "sim");
+    expect(split.arb.count).toBe(0);
+    expect(split.dir.count).toBe(1);
+  });
+});

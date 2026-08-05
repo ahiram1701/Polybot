@@ -14,6 +14,8 @@ export class ChainlinkPriceFeed {
   private stopped = true;
   private latestTick?: PriceTick;
   private lastTickAtMs = 0;
+  private unparsedCount = 0;
+  private lastUnparsedLogMs = 0;
   private reconnectAttempts = 0;
   private readonly latestTicks = new Map<MarketSymbol, PriceTick>();
   private readonly recentTicks = new Map<MarketSymbol, PriceTick[]>();
@@ -296,7 +298,12 @@ export class ChainlinkPriceFeed {
 
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     for (const message of messages) {
-      for (const tick of parseChainlinkTicks(message)) {
+      const ticks = parseChainlinkTicks(message);
+      if (ticks.length === 0) {
+        this.noteUnparsedMessage(message);
+        continue;
+      }
+      for (const tick of ticks) {
         this.lastTickAtMs = Date.now();
         this.rememberTick(tick);
         this.latestTick = tick;
@@ -306,6 +313,33 @@ export class ChainlinkPriceFeed {
         }
       }
     }
+  }
+
+  /**
+   * Deja constancia de los mensajes que llegan y NO producen ningun tick.
+   *
+   * Antes se descartaban en silencio absoluto. Si Polymarket cambia el formato del payload, el bot se
+   * queda sin precios y lo unico que se ve es "RTDS feed delivering no ticks; forcing reconnect", sin
+   * ninguna pista de la causa — el bot reconecta en bucle contra un feed que funciona perfectamente.
+   * Se registra la FORMA (topic, type, claves) y nunca el contenido, y con throttle para que un
+   * formato incompatible no inunde el log a varios mensajes por segundo.
+   */
+  private noteUnparsedMessage(message: unknown): void {
+    this.unparsedCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - this.lastUnparsedLogMs < 60_000) {
+      return;
+    }
+    this.lastUnparsedLogMs = nowMs;
+    const record = (message ?? {}) as Record<string, unknown>;
+    const payload = record.payload as Record<string, unknown> | undefined;
+    logger.warn("Mensajes del RTDS que no producen ticks.", {
+      count: this.unparsedCount,
+      topic: record.topic,
+      type: record.type,
+      payloadKeys: payload ? Object.keys(payload).sort() : undefined,
+    });
+    this.unparsedCount = 0;
   }
 
   private rememberTick(tick: PriceTick): void {
@@ -345,6 +379,16 @@ export function parseChainlinkTicks(message: unknown): PriceTick[] {
 
   const payload = record.payload as Record<string, unknown> | undefined;
   if (!payload) {
+    return [];
+  }
+
+  // Un payload con marca de VENTANA TEMPORAL es un feed TWAP, no la serie spot sobre la que se mide
+  // toda la estrategia. Chainlink publica TWAPs de 30 y 60 segundos, y la suscripcion usa comodin
+  // (`type: "*"`), asi que si algun dia aparecen bajo este mismo topic entrarian solas. Mezclarlas con
+  // el spot corrompe a la vez el precio de apertura y la distancia — los dos terminos de la señal —
+  // sin dar la cara. Se rechazan aqui; `handleRawMessage` deja constancia de que llegó algo que no se
+  // reconoce, para que sea un fallo visible y no uno mudo.
+  if (payload.windowSeconds !== undefined || payload.feedID !== undefined) {
     return [];
   }
 

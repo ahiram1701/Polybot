@@ -86,6 +86,10 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.estimateSetupEv(setupEvQuerySchema.parse(req.query)));
   }));
 
+  app.get("/api/analysis/arb-opportunities", asyncHandler(async (_req, res) => {
+    res.json(await controller.getArbOpportunities());
+  }));
+
   app.get("/api/analysis/ask-bands", asyncHandler(async (req, res) => {
     const mode = req.query.mode === "sim" ? "sim" : "live";
     res.json(await controller.getAskBandSummary(mode));

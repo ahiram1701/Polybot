@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectCompleteSetArb } from "../src/arbMonitor.js";
+import { detectCompleteSetArb, reviewArbOpportunities } from "../src/arbMonitor.js";
 import type { OrderbookQuote } from "../src/types.js";
 
 /**
@@ -90,5 +90,49 @@ describe("detectCompleteSetArb", () => {
         quotes: { UP: quote(0.4, 50) },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("reviewArbOpportunities", () => {
+  const base = {
+    at: 1_700_000_000_000,
+    market: "ETH" as const,
+    slug: "eth-updown-5m-1",
+    secondsToEnd: 60,
+    upDepthUsd: 500,
+    downDepthUsd: 500,
+    grossPerSet: 0.1,
+    feePerSet: 0.03,
+    maxSetsByDepth: 500,
+    capturableUsd: 0,
+  };
+
+  it("distingue 'neto bajo el umbral' de 'capital insuficiente'", () => {
+    const summary = reviewArbOpportunities(
+      [
+        // Neto suficiente y patas asequibles con $25: la pata barata (0.45) exige 11.1 sets = $19.9.
+        { ...base, upAsk: 0.45, downAsk: 0.45, netPerSet: 0.08 },
+        // Neto por debajo del umbral configurado.
+        { ...base, upAsk: 0.45, downAsk: 0.45, netPerSet: 0.005 },
+        // Neto de sobra, pero la pata barata (0.10) exige 50 sets: $47.5, mas que el presupuesto.
+        { ...base, upAsk: 0.1, downAsk: 0.85, netPerSet: 0.05 },
+      ],
+      { minNetPerSet: 0.02, orderMinSize: 5, budgetUsd: 25 },
+    );
+
+    expect(summary.detected).toBe(3);
+    expect(summary.executable).toBe(1);
+    expect(summary.blocked.net_below_threshold).toBe(1);
+    expect(summary.blocked.capital_below_min_legs).toBe(1);
+  });
+
+  it("calcula el capital por la pata MAS BARATA, que es la que obliga", () => {
+    const summary = reviewArbOpportunities([{ ...base, upAsk: 0.2, downAsk: 0.75, netPerSet: 0.05 }], {
+      minNetPerSet: 0.02,
+      orderMinSize: 5,
+      budgetUsd: 1000,
+    });
+    // 5 / 0.20 = 25 sets; 25 * (0.20 + 0.75) = $23.75.
+    expect(summary.recent[0].requiredCapitalUsd).toBeCloseTo(23.75, 2);
   });
 });

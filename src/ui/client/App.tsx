@@ -29,12 +29,14 @@ import {
   TrendingDown,
   TrendingUp,
   Upload,
+  Layers,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import type { LogEntry } from "../../logger.js";
 import { summarizeLogs } from "../../agent/statusSummary.js";
-import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
+import type { ArbOpportunitySummary } from "../../arbMonitor.js";
+import { calculateTradePnl, filterTradesForPnlReset, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import {
   buildEquitySeries,
@@ -164,6 +166,8 @@ const emptySettings: UiSettings = {
   maxAskPriceCeiling: 0.85,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
+  liveBankrollUsd: 0,
+  minBankrollForDirectionalUsd: 50,
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,
@@ -462,6 +466,17 @@ export function App() {
   }
 
   async function resetPnl(mode: Mode) {
+    // El marcador de reset SOLO PUEDE AVANZAR: `reconcilePnlResetFromLog` lo reconstruye desde el log
+    // de trades en cada arranque, asi que no se deshace ni editando state.json. Un clic accidental
+    // esconde el historial para siempre. La Zona de peligro ya avisa antes de borrar; esto igual.
+    const confirmed = window.confirm(
+      `¿Resetear el P&L de ${mode}?\n\n` +
+        "El historial NO se borra, pero deja de contarse en el P&L mostrado y esto NO se puede deshacer.\n\n" +
+        "Lo que el bot ha APRENDIDO no cambia: el gate de EV, la calibración y el motor de recomendaciones no miran este marcador.",
+    );
+    if (!confirmed) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -552,6 +567,7 @@ export function App() {
         {tab === "analysis" && (
           <>
             <AnalysisChartsSection />
+            <ArbOpportunitiesSection />
             <AskBandsSection />
             <AnalysisPanel
               recommendations={recommendations}
@@ -763,6 +779,7 @@ export function Dashboard({
           resetAtMs={status?.pnlResetAtMs?.[selectedPnlMode]}
           timeZone={status?.settings.timezone}
           onReset={() => onResetPnl(selectedPnlMode)}
+          split={splitPnlByKind(trades, selectedPnlMode, status?.pnlResetAtMs)}
         />
         <PnlCharts trades={trades} mode={selectedPnlMode} resetAtMs={status?.pnlResetAtMs} hideAmounts={hideAmounts} />
       </section>
@@ -818,6 +835,14 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   risk_circuit_breaker: "Circuit breaker de riesgo",
   outcome_disabled: "Lado desactivado",
   orderbook_quote_failed: "Fallo al pedir orderbook",
+  market_fetch_failed: "Fallo al pedir el mercado (red)",
+  bankroll_below_directional_minimum: "Capital por debajo del minimo para direccional",
+  arb_below_min_size: "Arbitraje: patas bajo el minimo del exchange",
+  arb_daily_limit: "Arbitraje: limite de gasto diario",
+  best_ask_below_floor: "Ask por debajo del piso",
+  spread_too_wide: "Spread demasiado ancho",
+  too_close_to_close: "Demasiado cerca del cierre",
+  exploration_budget_exhausted: "Presupuesto de exploracion agotado",
 };
 
 function humanSkipReason(reason: string): string {
@@ -911,6 +936,16 @@ function HealthChips({ status, health }: { status: UiStatus | null; health: BotH
       <span className="chip chip-neutral" title="Tiempo corriendo">
         Uptime {formatDuration(health.uptimeSec)}
       </span>
+      {status?.loopHealth && status.loopHealth.iterations > 0 ? (
+        // Sin este chip un p95 de latencia sano ocultaba que una de cada tres iteraciones moria por
+        // timeout: las iteraciones que fallaban no llegaban a registrarse en las metricas.
+        <span
+          className={`chip ${status.loopHealth.failedPct >= 5 ? "chip-warn" : "chip-neutral"}`}
+          title={`Iteraciones del bucle que fallaron: ${status.loopHealth.failed} de ${status.loopHealth.iterations}`}
+        >
+          Loop {status.loopHealth.failedPct}% fallos
+        </span>
+      ) : null}
       <span
         className={`chip ${status?.settings.aiAutoApplyLive ? "chip-on" : "chip-neutral"}`}
         title="Autoajuste predictivo en tiempo real"
@@ -1313,6 +1348,7 @@ function PnlModeSummary({
   resetAtMs,
   timeZone,
   onReset,
+  split,
 }: {
   label: string;
   summary?: PnlSummary;
@@ -1321,6 +1357,7 @@ function PnlModeSummary({
   resetAtMs?: number;
   timeZone?: string;
   onReset: () => void;
+  split?: PnlKindSplit;
 }) {
   const money = (formatted: string) => (hideAmounts ? MASKED_AMOUNT : formatted);
   return (
@@ -1349,11 +1386,54 @@ function PnlModeSummary({
         <Metric label="Reclamado" value={money(formatUsd(summary?.payoutUsd))} />
         <Metric label="Pendiente" value={money(formatUsd(summary?.pendingStakeUsd))} />
       </div>
+      {split ? (
+        <ul className="pnl-kind-split">
+          {/* Arbitraje y direccional son estrategias con RIESGO distinto: el par completo redime $1/set
+              gane quien gane, el direccional puede perder el stake entero. Sumarlos en un solo numero
+              escondia cual de los dos gana dinero — justo lo que hay que saber para decidir cuando
+              activar el direccional. */}
+          <li className="pnl-kind-row">
+            <span className="pnl-kind-name">Arbitraje</span>
+            <span className="pnl-kind-count">{split.arb.count} ops</span>
+            <span className={`pnl-kind-net ${pnlTone(split.arb.netUsd)}`}>{money(formatSignedUsd(split.arb.netUsd))}</span>
+          </li>
+          <li className="pnl-kind-row">
+            <span className="pnl-kind-name">Direccional</span>
+            <span className="pnl-kind-count">{split.dir.count} ops</span>
+            <span className={`pnl-kind-net ${pnlTone(split.dir.netUsd)}`}>{money(formatSignedUsd(split.dir.netUsd))}</span>
+          </li>
+        </ul>
+      ) : null}
       <p className="pnl-reset-line">
         Reset {label}: {resetAtMs ? formatDateTimeInTimeZone(resetAtMs, timeZone) : "nunca"}
       </p>
     </div>
   );
+}
+
+export interface PnlKindSplit {
+  arb: { netUsd: number; count: number };
+  dir: { netUsd: number; count: number };
+}
+
+/** Neto y numero de operaciones separando arbitraje de direccional, sobre los trades post-reset. */
+export function splitPnlByKind(
+  trades: TradeAttempt[],
+  mode: Mode,
+  resetAtMsByMode: PnlResetAtMsByMode = {},
+): PnlKindSplit {
+  const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
+  for (const trade of filterTradesForPnlReset(trades, resetAtMsByMode)) {
+    if (trade.mode !== mode || !trade.resolved) {
+      continue;
+    }
+    // Una pata suelta (`arbPairComplete !== true`) NO es arbitraje: quedo como posicion direccional y
+    // se contabiliza donde de verdad esta el riesgo.
+    const bucket = isCompleteArbPair(trade) ? split.arb : split.dir;
+    bucket.netUsd += calculateTradePnl(trade).netUsd ?? 0;
+    bucket.count += 1;
+  }
+  return split;
 }
 
 function PnlCharts({
@@ -1955,6 +2035,17 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             onChange={(value) => update("maxAnalyticsSamples", value)}
           />
         </div>
+        <p className="settings-hint settings-hint-warn">
+          <strong>Capital mín. para direccional</strong> apaga el direccional en <em>live</em> mientras tu capital real
+          esté por debajo (0 en cualquiera de los dos campos = guardia desactivada). No es prudencia: es aritmética.
+          El mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme
+          del total y la ruina llega antes que el edge. Simulado con el edge <strong>real medido</strong> (83% de
+          aciertos, ROI +4,3% por operación — una estrategia <em>ganadora</em>), a un mes: con $10 la probabilidad de
+          quedarte sin poder operar es del <strong>67,6%</strong> y acabas con ~$4,88; con $50 baja al 4,8%; con $100,
+          al 0,1%. Es decir, se pierde dinero teniendo razón. El <strong>arbitraje no pasa por esta guardia</strong>:
+          un par completo redime $1 por set gane quien gane, así que no puede arruinarte — es justo con lo que se hace
+          crecer el capital hasta cruzar el umbral.
+        </p>
         <p className="settings-hint">
           <strong>Slippage máx live</strong> es el único ajuste que de verdad solo aplica en live, y no por política
           sino porque en sim no se manda una orden real que pueda patinar contra el libro. Todo lo demás se comporta
@@ -2010,6 +2101,20 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             min={0}
             step={0.5}
             onChange={(value) => update("riskHaltCooldownHours", value)}
+          />
+          <NumberField
+            label="Capital real en live (USD)"
+            value={draft.liveBankrollUsd}
+            min={0}
+            step={5}
+            onChange={(value) => update("liveBankrollUsd", value)}
+          />
+          <NumberField
+            label="Capital mín. para direccional (USD)"
+            value={draft.minBankrollForDirectionalUsd}
+            min={0}
+            step={5}
+            onChange={(value) => update("minBankrollForDirectionalUsd", value)}
           />
           <NumberField
             label="Techo de ask cap"
@@ -3609,3 +3714,100 @@ function reasonLabel(reason?: string): string {
   return labels[reason ?? ""] ?? reason ?? "--";
 }
 
+
+const ARB_BLOCKED_LABELS: Record<string, string> = {
+  net_below_threshold: "Neto por set bajo el umbral",
+  capital_below_min_legs: "Capital insuficiente (patas bajo el mínimo)",
+};
+
+/**
+ * Oportunidades de arbitraje detectadas y por qué no se capturaron.
+ *
+ * El arbitraje es la única estrategia sin riesgo direccional (el par completo redime $1 por set gane
+ * quien gane), así que es con lo que se hace crecer un capital pequeño. Pero solo aparecen ~0,7
+ * oportunidades válidas al día: perder una por un motivo corregible es caro, y hasta ahora el fichero
+ * que las registra no se mostraba en ninguna parte.
+ */
+export function ArbOpportunitiesSection() {
+  const [summary, setSummary] = useState<ArbOpportunitySummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<ArbOpportunitySummary>("/api/analysis/arb-opportunities")
+      .then((next) => {
+        if (!cancelled) {
+          setSummary(next);
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <Layers size={18} />
+        <h2>Oportunidades de arbitraje</h2>
+      </div>
+      {error ? <p className="settings-hint settings-hint-warn">{error}</p> : null}
+      {!summary ? (
+        <p className="settings-hint">Cargando…</p>
+      ) : summary.detected === 0 ? (
+        <p className="settings-hint">Todavía no se ha registrado ninguna oportunidad.</p>
+      ) : (
+        <>
+          <div className="hero-metrics">
+            <Metric label="Detectadas" value={String(summary.detected)} />
+            <Metric label="Ejecutables" value={String(summary.executable)} tone={summary.executable > 0 ? "positive" : undefined} />
+            <Metric label="Neto capturable" value={formatUsd(summary.capturableUsd)} />
+          </div>
+          <ul className="why-list">
+            {Object.entries(summary.blocked)
+              .filter(([, count]) => count > 0)
+              .map(([reason, count]) => (
+                <li key={reason} className="why-row" title={reason}>
+                  <span className="why-reason">{ARB_BLOCKED_LABELS[reason] ?? reason}</span>
+                  <span className="why-count">{count}</span>
+                </li>
+              ))}
+          </ul>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Cuándo</th>
+                <th>Mercado</th>
+                <th>Neto/set</th>
+                <th>Capital necesario</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.recent.slice(0, 15).map((row) => (
+                <tr key={`${row.slug}-${row.at}`}>
+                  <td>{new Date(row.at).toLocaleString()}</td>
+                  <td>{row.market}</td>
+                  <td>{formatUsd(row.netPerSet)}</td>
+                  <td>{Number.isFinite(row.requiredCapitalUsd) ? formatUsd(row.requiredCapitalUsd) : "--"}</td>
+                  <td>{row.blockedBy ? (ARB_BLOCKED_LABELS[row.blockedBy] ?? row.blockedBy) : "Ejecutable"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="settings-hint">
+            Cada pata es una orden independiente y debe superar el mínimo del exchange ($5) <em>en dólares</em>. La
+            pata más barata es la que manda: con precios equilibrados hace falta bastante más capital del que sugiere
+            el neto por set. Un arbitraje con una sola pata llena deja de ser arbitraje y pasa a ser una apuesta
+            direccional.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}

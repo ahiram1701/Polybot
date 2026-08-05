@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@polymarket/clob-client-v2": "^1.0.3",
+    "@polymarket/clob-client-v2": "1.0.3",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "lucide-react": "^1.14.0",

@@ -76,6 +76,27 @@ export interface BotConfig {
   // Hours a tripped breaker stays halted before auto re-arming with a clean slate. 0 = legacy: halted
   // for the rest of the UTC day.
   riskHaltCooldownHours?: number;
+  /**
+   * Capital real declarado para LIVE (0 = sin declarar, la guardia queda inactiva).
+   *
+   * El bot no puede deducirlo: no consulta el saldo de la wallet. Se declara para que la guardia de
+   * abajo pueda hacer la aritmetica que decide si operar direccional tiene sentido.
+   */
+  liveBankrollUsd?: number;
+  /**
+   * Capital minimo para operar DIRECCIONAL en live (0 = sin guardia).
+   *
+   * El minimo de orden del exchange es $5, asi que con un bankroll pequeño cada entrada arriesga una
+   * fraccion enorme del capital y la ruina llega antes que el edge. Simulado con el edge REAL medido
+   * (83% de aciertos, ROI +4.3%/operacion — estrategia GANADORA), a 300 operaciones: con $10 la
+   * probabilidad de quedarse sin poder operar es del 67.6% y el capital mediano baja a $4.88; con $50
+   * cae al 4.8%; con $100, al 0.1%. Es decir, se pierde dinero TENIENDO RAZON.
+   *
+   * El arbitraje NO pasa por esta guardia: un par completo redime $1/set gane quien gane, asi que no
+   * tiene riesgo direccional ni ruina posible — es precisamente con lo que se hace crecer el capital
+   * hasta cruzar este umbral.
+   */
+  minBankrollForDirectionalUsd?: number;
   // Complete-set arbitrage execution (default OFF): buy both sides when ask(UP)+ask(DOWN)+fees < $1.
   arbEnabled?: boolean;
   // Max USD spent per arbitrage opportunity (both legs combined).

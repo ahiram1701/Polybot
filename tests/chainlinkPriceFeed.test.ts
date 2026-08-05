@@ -94,3 +94,30 @@ describe("Chainlink RTDS parser", () => {
     ).toBeNull();
   });
 });
+
+/**
+ * La suscripcion usa comodin (`type: "*"`). Chainlink publica TWAPs de 30 y 60 segundos, y si algun
+ * dia aparecen bajo el mismo topic entrarian solas en la serie. Mezclar spot con medias temporales
+ * corrompe a la vez el precio de APERTURA y la DISTANCIA — los dos terminos de la señal — y encima
+ * de forma coherente consigo misma, que es como un error asi se vuelve invisible.
+ */
+describe("parseChainlinkTicks: no mezclar TWAP con spot", () => {
+  const spot = {
+    topic: "crypto_prices_chainlink",
+    type: "update",
+    payload: { symbol: "btc/usd", value: 64764.99, timestamp: 1785955725000 },
+  };
+
+  it("acepta el tick spot normal", () => {
+    expect(parseChainlinkTicks(spot)).toHaveLength(1);
+  });
+
+  it("rechaza un payload marcado con ventana temporal (TWAP)", () => {
+    expect(parseChainlinkTicks({ ...spot, payload: { ...spot.payload, windowSeconds: 30 } })).toEqual([]);
+    expect(parseChainlinkTicks({ ...spot, payload: { ...spot.payload, windowSeconds: 60 } })).toEqual([]);
+  });
+
+  it("rechaza un payload con feedID (feed personalizado, no la serie spot)", () => {
+    expect(parseChainlinkTicks({ ...spot, payload: { ...spot.payload, feedID: "0xabc" } })).toEqual([]);
+  });
+});

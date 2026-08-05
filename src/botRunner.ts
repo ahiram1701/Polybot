@@ -176,6 +176,8 @@ export class BotRunner {
   private readonly officialCheckAttemptsMs = new Map<string, number>();
   private readonly calibrationCache = new Map<MarketSymbol, { resolvedCount: number; map: CalibrationMap }>();
   private readonly loopDurationsMs: number[] = [];
+  /** Paralelo a `loopDurationsMs`: si esa iteración acabó lanzando. */
+  private readonly loopFailures: boolean[] = [];
   private lastLoopStatsLogMs = 0;
   // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
   // In-memory on purpose — a restart resets it, which only makes exploration MORE conservative.
@@ -303,20 +305,43 @@ export class BotRunner {
     }
   }
 
+  /**
+   * Una iteracion del bucle, midiendo SIEMPRE — tambien cuando lanza.
+   *
+   * `recordLoopTiming` era la ultima linea del cuerpo, asi que una iteracion que fallaba no se
+   * registraba nunca: los p50/p95 publicados excluian por construccion justo las iteraciones lentas
+   * que acababan en timeout, y el percentil salia sano mientras el bot se quedaba ciego 6 segundos.
+   */
   async runOnce(nowMs = Date.now()): Promise<void> {
     const startedAt = Date.now();
+    let phases = { captureMs: 0, decideMs: 0 };
+    let failed = false;
+    try {
+      phases = await this.runIteration(nowMs);
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      this.recordLoopTiming(Date.now() - startedAt, phases.captureMs, phases.decideMs, failed);
+    }
+  }
+
+  private async runIteration(nowMs: number): Promise<{ captureMs: number; decideMs: number }> {
     let capturePhaseMs = 0;
     let decidePhaseMs = 0;
 
     await this.reconcileLiveTrades(nowMs);
     await this.resolveCompletedTrades(nowMs);
 
+    // El aislamiento por mercado vive en el watcher y en `getCurrentMarkets`: un fallo parcial ya no
+    // llega hasta aqui. Lo que SI sube es el apagon total, y debe seguir subiendo — el bucle continuo
+    // lo captura en `runLoopIteration` y un `start({ once: true })` se lo devuelve a quien llamo.
     const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
     if (markets.length === 0) {
       this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
       // La verificación oficial no depende de mercados abiertos; debe seguir corriendo.
       await this.verifyOfficialResolutions(nowMs);
-      return;
+      return { captureMs: 0, decideMs: 0 };
     }
 
     const tradeSignals: TradeSignal[] = [];
@@ -410,29 +435,47 @@ export class BotRunner {
     // tick, después de capturar precios y decidir — su latencia ya no retrasa la lectura del mercado.
     await this.verifyOfficialResolutions(nowMs);
 
-    this.recordLoopTiming(Date.now() - startedAt, capturePhaseMs, decidePhaseMs);
+    return { captureMs: capturePhaseMs, decideMs: decidePhaseMs };
   }
 
   /** Rolling loop-latency stats: slow iterations are logged with a breakdown; percentiles every 5 min. */
-  private recordLoopTiming(totalMs: number, captureMs: number, decideMs: number): void {
+  private recordLoopTiming(totalMs: number, captureMs: number, decideMs: number, failed = false): void {
     this.loopDurationsMs.push(totalMs);
+    this.loopFailures.push(failed);
     if (this.loopDurationsMs.length > 600) {
       this.loopDurationsMs.shift();
+      this.loopFailures.shift();
     }
     if (totalMs > 2_500) {
-      logger.warn("Iteración lenta del loop.", { totalMs, captureMs, decideMs });
+      logger.warn("Iteración lenta del loop.", { totalMs, captureMs, decideMs, failed });
     }
     const nowMs = Date.now();
     if (nowMs - this.lastLoopStatsLogMs >= 5 * 60_000 && this.loopDurationsMs.length >= 10) {
       this.lastLoopStatsLogMs = nowMs;
       const sorted = [...this.loopDurationsMs].sort((left, right) => left - right);
+      const failures = this.loopFailures.filter(Boolean).length;
       logger.info("Latencia del loop (ventana móvil).", {
         iterations: sorted.length,
         p50Ms: sorted[Math.floor(sorted.length * 0.5)],
         p95Ms: sorted[Math.floor(sorted.length * 0.95)],
         maxMs: sorted[sorted.length - 1],
+        // Se publica junto a los percentiles a proposito: sin este numero, unos percentiles sanos
+        // ocultaban que una de cada tres iteraciones estaba muriendo por timeout.
+        failed: failures,
+        failedPct: Math.round((1000 * failures) / sorted.length) / 10,
       });
     }
+  }
+
+  /** Fracción de iteraciones fallidas de la ventana móvil, para la UI. */
+  getLoopHealth(): { iterations: number; failed: number; failedPct: number } {
+    const iterations = this.loopFailures.length;
+    const failed = this.loopFailures.filter(Boolean).length;
+    return {
+      iterations,
+      failed,
+      failedPct: iterations > 0 ? Math.round((1000 * failed) / iterations) / 10 : 0,
+    };
   }
 
   private async getCurrentMarkets(marketsToFetch: readonly MarketSymbol[], nowMs: number): Promise<MarketInfo[]> {
@@ -443,12 +486,27 @@ export class BotRunner {
       return this.deps.watcher.getCurrentMarkets([...marketsToFetch], nowMs);
     }
 
+    // Camino de respaldo (watchers sin `getCurrentMarkets`): aislar mercado a mercado. Sin esto, el
+    // primero que falle se lleva por delante a los demas, que es justo el fallo que se esta corrigiendo.
     const markets: MarketInfo[] = [];
+    const errors: unknown[] = [];
     for (const market of marketsToFetch) {
-      const currentMarket = await this.deps.watcher.getCurrentMarket(nowMs, market);
-      if (currentMarket) {
-        markets.push(currentMarket);
+      try {
+        const currentMarket = await this.deps.watcher.getCurrentMarket(nowMs, market);
+        if (currentMarket) {
+          markets.push(currentMarket);
+        }
+      } catch (error) {
+        errors.push(error);
+        this.logSkipOnce(market, "market_fetch_failed", {
+          market,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
+    }
+    // Igual que en el watcher: el apagon total se propaga (one-shot debe enterarse), el parcial no.
+    if (errors.length === marketsToFetch.length && errors.length > 0) {
+      throw errors[0];
     }
     return markets;
   }
@@ -481,13 +539,17 @@ export class BotRunner {
       logger.warn("Bot loop iteration failed; retrying.", {
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.deps.notifier?.notify({
-        key: "bot-loop-error",
-        level: "warn",
-        title: "Error en loop del bot",
-        body: error instanceof Error ? error.message : String(error),
-        minIntervalMs: 5 * 60_000,
-      });
+      // SIN await: el POST a Telegram no tiene timeout, y esperarlo aqui deja el bucle bloqueado en
+      // pleno camino de error — justo cuando ya vamos tarde. Avisar es secundario; seguir operando no.
+      void this.deps.notifier
+        ?.notify({
+          key: "bot-loop-error",
+          level: "warn",
+          title: "Error en loop del bot",
+          body: error instanceof Error ? error.message : String(error),
+          minIntervalMs: 5 * 60_000,
+        })
+        .catch(() => undefined);
     }
   }
 
@@ -574,6 +636,22 @@ export class BotRunner {
   }): TradeSignal | undefined {
     if (this.deps.state.hasTraded(args.market.slug, this.config.mode)) {
       this.logSkipOnce(args.market.slug, "market_already_traded");
+      return undefined;
+    }
+
+    // Puerta de capital: con un bankroll pequeño el minimo de orden del exchange ($5) obliga a
+    // arriesgar una fraccion enorme del capital en cada entrada, y la ruina llega antes que el edge —
+    // se pierde dinero teniendo razon (ver `minBankrollForDirectionalUsd`). Solo afecta a LIVE y solo
+    // al camino DIRECCIONAL: el arbitraje no puede arruinar (redime $1/set gane quien gane) y es
+    // justamente con lo que se hace crecer el capital hasta cruzar el umbral. Sim sigue operando todo
+    // para no dejar de generar muestras.
+    const bankrollUsd = this.config.liveBankrollUsd ?? 0;
+    const minBankrollUsd = this.config.minBankrollForDirectionalUsd ?? 0;
+    if (this.config.mode === "live" && bankrollUsd > 0 && minBankrollUsd > 0 && bankrollUsd < minBankrollUsd) {
+      this.logSkipOnce(args.market.slug, "bankroll_below_directional_minimum", {
+        bankrollUsd,
+        minBankrollUsd,
+      });
       return undefined;
     }
 
@@ -1290,17 +1368,39 @@ export class BotRunner {
     }
 
     const pairCost = up.bestAsk + down.bestAsk;
-    const budget = this.config.arbMaxUsdPerOpportunity ?? 25;
-    const sets = Math.floor(Math.min(opportunity.maxSetsByDepth, budget / pairCost) * 100) / 100;
-    if (sets < Math.max(market.orderMinSize, 1)) {
-      this.logSkipOnce(market.slug, "arb_below_min_size", { sets, orderMinSize: market.orderMinSize });
+    const budgetUsd = this.config.arbMaxUsdPerOpportunity ?? 25;
+    // El tope diario ACOTA el tamaño en vez de rechazar la oportunidad entera: antes se dimensionaba
+    // solo por presupuesto y luego se descartaba si no cabía, tirando arbitrajes que sí cabían más
+    // pequeños. Un arbitraje es rentable por set, así que uno pequeño sigue siendo dinero.
+    const dailyRoomUsd = Math.max(0, this.config.dailySpendLimitUsd - this.deps.state.getDailySpend(nowMs));
+    const affordableUsd = Math.min(budgetUsd, dailyRoomUsd);
+    const sets = Math.floor(Math.min(opportunity.maxSetsByDepth, affordableUsd / pairCost) * 100) / 100;
+
+    // AMBAS patas tienen que superar el mínimo del exchange, que está en DÓLARES. La comprobación
+    // anterior (`sets < orderMinSize`) chocaba unidades: comparaba un número de participaciones
+    // contra $5. Con precios equilibrados (~0.48) dejaba pasar 5 sets, que son dos órdenes de $2.40
+    // — ambas por debajo del mínimo y por tanto rechazadas por el exchange. Es la razón de que el
+    // arbitraje tenga 0 ejecuciones en live.
+    //
+    // Se calcula sobre el importe EXACTO que enviará `executeArbLeg` (mismo redondeo a céntimos),
+    // no sobre una aproximación, para que no se cuele nada por el borde.
+    const legUsd = (ask: number): number => Math.round(sets * ask * 100) / 100;
+    const upLegUsd = legUsd(up.bestAsk);
+    const downLegUsd = legUsd(down.bestAsk);
+    if (sets <= 0 || upLegUsd < market.orderMinSize || downLegUsd < market.orderMinSize) {
+      this.logSkipOnce(market.slug, "arb_below_min_size", {
+        sets,
+        upLegUsd,
+        downLegUsd,
+        orderMinSize: market.orderMinSize,
+        // Lo que haría falta para que la pata más barata llegue al mínimo.
+        setsNeeded: Math.ceil((market.orderMinSize / Math.min(up.bestAsk, down.bestAsk)) * 100) / 100,
+        capitalNeededUsd: Math.round((market.orderMinSize / Math.min(up.bestAsk, down.bestAsk)) * pairCost * 100) / 100,
+        affordableUsd,
+      });
       return;
     }
     const totalCostUsd = sets * pairCost;
-    if (this.deps.state.getDailySpend(nowMs) + totalCostUsd > this.config.dailySpendLimitUsd) {
-      this.logSkipOnce(market.slug, "arb_daily_limit", { totalCostUsd });
-      return;
-    }
 
     // Thin book first: it is the binding constraint; if it rejects, no position exists yet.
     const thinFirst: Outcome[] =
