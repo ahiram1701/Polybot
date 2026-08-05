@@ -31,6 +31,18 @@ const BIN_COUNT = 10;
 /** Pseudo-count pulling each bin toward the identity: n=25 data points move it halfway. */
 const SHRINK_K = 25;
 const MIN_BIN_SAMPLES = 3;
+/**
+ * Cuanta probabilidad mas alla del ultimo knot tarda la correccion en desvanecerse a cero.
+ *
+ * El mapa se entrena SOLO con trades ejecutados, y el gate solo ejecuta cuando la prediccion es alta:
+ * la evidencia cubre una franja estrecha y alta. Antes, todo lo que caia fuera de esa franja recibia
+ * ENTERO el delta aprendido en el knot del borde — un castigo constante de ~17pp (la sobreconfianza
+ * medida en BTC) aplicado a una zona sin un solo dato. Eso no es calibrar, es extrapolar un sesgo.
+ *
+ * Fuera del rango observado la unica hipotesis defendible es "no se": la correccion decae a la
+ * identidad. Se hace gradual y no de golpe para que el mapa siga siendo continuo.
+ */
+const EXTRAPOLATION_DECAY = 0.1;
 
 export function buildCalibrationMap(samples: CalibrationSample[]): CalibrationMap {
   const valid = samples.filter((sample) => Number.isFinite(sample.predicted) && sample.predicted > 0 && sample.predicted < 1);
@@ -80,7 +92,11 @@ export function buildCalibrationMap(samples: CalibrationSample[]): CalibrationMa
   return { knots, sampleCount: valid.length };
 }
 
-/** Piecewise-linear interpolation over the knots; outside the covered range the edge delta applies. */
+/**
+ * Interpolacion lineal a trozos sobre los knots. Fuera del rango con evidencia la correccion del borde
+ * se desvanece hasta la identidad (ver EXTRAPOLATION_DECAY), en vez de aplicarse entera a una zona sin
+ * datos.
+ */
 export function applyCalibration(map: CalibrationMap | undefined, predicted: number): number {
   if (!map || map.knots.length === 0 || !Number.isFinite(predicted)) {
     return predicted;
@@ -88,12 +104,20 @@ export function applyCalibration(map: CalibrationMap | undefined, predicted: num
   const knots = map.knots;
   const clampProb = (value: number) => Math.min(Math.max(value, 0.02), 0.98);
 
+  // Fuera del rango con evidencia la correccion se desvanece (ver EXTRAPOLATION_DECAY).
+  const fade = (distance: number) => Math.max(0, 1 - distance / EXTRAPOLATION_DECAY);
+
   if (predicted <= knots[0].predicted) {
-    return clampProb(predicted + (knots[0].calibrated - knots[0].predicted));
+    const weight = fade(knots[0].predicted - predicted);
+    // Sin correccion que aplicar se devuelve el valor INTACTO: el clamp a [0.02, 0.98] existe para
+    // acotar una probabilidad corregida, no para recortar la del modelo. Con la banda de ask alta las
+    // predicciones legitimas rondan 0.99, y toparlas en 0.98 bloqueaba entradas validas.
+    return weight === 0 ? predicted : clampProb(predicted + (knots[0].calibrated - knots[0].predicted) * weight);
   }
   const last = knots[knots.length - 1];
   if (predicted >= last.predicted) {
-    return clampProb(predicted + (last.calibrated - last.predicted));
+    const weight = fade(predicted - last.predicted);
+    return weight === 0 ? predicted : clampProb(predicted + (last.calibrated - last.predicted) * weight);
   }
   for (let i = 1; i < knots.length; i += 1) {
     if (predicted <= knots[i].predicted) {

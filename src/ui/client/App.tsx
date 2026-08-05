@@ -2183,6 +2183,20 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           />
           <span>Calibración empírica (corrige la sobreconfianza con los resultados reales del propio bot)</span>
         </label>
+        <p className="settings-hint">
+          Aprende, por mercado, cuánto se acierta de verdad en cada nivel de confianza y corrige la predicción con
+          esa curva. Solo se entrena con operaciones ya ejecutadas y resueltas; fuera del rango donde hay evidencia
+          la corrección se desvanece en lugar de extrapolarse.
+        </p>
+        <p className="settings-hint settings-hint-warn">
+          Con el gate por similitud activado <strong>déjala apagada</strong>: es redundante, no dañina. Anclar el
+          prior al ask ya encoge las estimaciones sobreconfiadas, así que calibrar encima corrige dos veces lo
+          mismo. Medido fuera de muestra: <strong>+$40.13 sin calibrar</strong> frente a +$35.11 con ella (el error
+          de calibración sí baja, de 0.188 a 0.167 — útil si te fías de las probabilidades para algo más que
+          decidir la entrada). Y con el gate por similitud <em>apagado</em> es claramente destructiva
+          (−$21 fuera de muestra): sobre un estimador pobre, corregir solo re-umbraliza y acaba eligiendo las
+          predicciones más infladas por suerte.
+        </p>
         <div className="settings-grid">
           <NumberField
             label="Margen de seguridad"
