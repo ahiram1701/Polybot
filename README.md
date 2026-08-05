@@ -103,7 +103,7 @@ Verificar si ya esta registrado:
 Get-ScheduledTaskInfo -TaskName "PolybotWatchdog"
 ```
 
-`LastTaskResult: 0` y un `NextRunTime` ~5 minutos adelante = funcionando. Si no existe la tarea, el comando de registro (uno solo, PowerShell sin admin), la prueba end-to-end y la solucion de problemas estan en [`docs/windows-watchdog.md`](docs/windows-watchdog.md).
+`LastTaskResult: 0` y un `NextRunTime` ~5 minutos adelante = funcionando. Si no existe la tarea, registrala con `powershell -ExecutionPolicy Bypass -File scripts\install-watchdog.ps1` (sin admin). Corre sin abrir ninguna ventana, y se puede apagar y encender desde **Settings -> "Watchdog (auto-reinicio)"** en la UI web o la TUI, sin desregistrar la tarea. La prueba end-to-end y la solucion de problemas estan en [`docs/windows-watchdog.md`](docs/windows-watchdog.md).
 
 ## Linux VPS 24/7 Con Tailscale
 

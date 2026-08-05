@@ -173,6 +173,7 @@ const emptySettings: UiSettings = {
   requirePositiveEv: true,
   explorationEnabled: true,
   autoStartSimOnBoot: false,
+  watchdogEnabled: true,
   evUseSimilarity: false,
   evCalibration: false,
   evSafetyMargin: 0.03,
@@ -2129,6 +2130,20 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         <p className="settings-hint">
           Si el proceso se reinicia solo (el watchdog, una actualizacion, un reinicio de Windows), vuelve a arrancar en
           <strong> simulacion</strong> en vez de quedarse detenido. Nunca arranca en live: ese modo lo activas tu.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.watchdogEnabled}
+            onChange={(event) => update("watchdogEnabled", event.target.checked)}
+            disabled={running}
+          />
+          <span>Watchdog (auto-reinicio de la UI)</span>
+        </label>
+        <p className="settings-hint">
+          Cada 5 minutos comprueba que la UI responda y la relanza si no. Al desmarcarlo la tarea sigue registrada pero
+          no hace nada; el cambio tarda hasta 5 minutos en notarse. Solo aplica si instalaste la tarea de Windows
+          (<code>scripts\install-watchdog.ps1</code>).
         </p>
         <label className="switch-row">
           <input

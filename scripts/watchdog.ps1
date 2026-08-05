@@ -13,6 +13,16 @@ function Log($msg) {
     Add-Content -Path $watchLog -Value $line -Encoding utf8
 }
 
+# 0) Interruptor desde las UI (Settings -> "Watchdog"). Ausente, ilegible o a medio escribir cuenta
+#    como habilitado: un JSON transitorio no debe dejarte sin watchdog.
+$configPath = Join-Path $logDir "ui-config.json"
+if (Test-Path $configPath) {
+    try {
+        $cfg = Get-Content -Path $configPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($null -ne $cfg.watchdogEnabled -and -not $cfg.watchdogEnabled) { exit 0 }
+    } catch { }
+}
+
 # 1) ¿Responde la UI? Dos intentos para no reiniciar por un hipo puntual.
 $alive = $false
 foreach ($attempt in 1..2) {
@@ -41,7 +51,14 @@ if ($conn) {
 
 # 3) Relanza con tope de heap: si hay una fuga, el proceso muere chico y rapido
 #    (y esta misma tarea lo revive) en vez de crecer a 6GB y tumbar el sistema.
+#    Se lanza con CreateNoWindow (no `Start-Process -WindowStyle Hidden`, que crea la consola y luego
+#    la esconde: eso es el parpadeo). UseShellExecute=$false ademas hereda NODE_OPTIONS.
 $env:NODE_OPTIONS = "--max-old-space-size=3072"
-Set-Location $root
-Start-Process cmd -ArgumentList '/c', "npm run ui >> `"$consoleLog`" 2>&1" -WindowStyle Hidden
+$psi = [System.Diagnostics.ProcessStartInfo]::new()
+$psi.FileName = "cmd.exe"
+$psi.Arguments = "/c npm run ui >> `"$consoleLog`" 2>&1"
+$psi.WorkingDirectory = $root
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+[System.Diagnostics.Process]::Start($psi) | Out-Null
 Log "Relanzado npm run ui (NODE_OPTIONS=$env:NODE_OPTIONS). El bot queda detenido; Live se arranca manualmente."

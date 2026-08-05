@@ -55,6 +55,9 @@ export interface UiSettings {
   // Si el PROCESO se reinicia (watchdog, actualizacion, reinicio de Windows), arrancar solo en SIM.
   // Deliberadamente no existe la variante live: esa palanca es del usuario, siempre.
   autoStartSimOnBoot: boolean;
+  // Interruptor del watchdog de Windows. No lo lee el proceso Node: lo lee `scripts/watchdog.ps1`
+  // desde data/ui-config.json en cada pasada, para poder apagarlo sin tocar el Programador de tareas.
+  watchdogEnabled: boolean;
   evUseSimilarity: boolean;
   // Calibracion empirica de la probabilidad del gate desde el propio ledger.
   evCalibration: boolean;

@@ -13,12 +13,18 @@ El watchdog resuelve eso: cada 5 minutos comprueba si la UI responde y, si no, l
 
 [`scripts/watchdog.ps1`](../scripts/watchdog.ps1):
 
-1. Pide `http://127.0.0.1:8787/api/status` (dos intentos, para no reiniciar por un hipo puntual).
-2. Si responde 200 → no hace nada y termina.
-3. Si no responde → mata cualquier proceso zombi que aún ocupe el puerto 8787 y relanza `npm run ui`
+1. Mira `watchdogEnabled` en `data/ui-config.json`. Si está en `false` (lo desmarcaste en la UI),
+   termina sin hacer nada. Si el archivo no existe o está ilegible, sigue: mejor vigilar de más.
+2. Pide `http://127.0.0.1:8787/api/status` (dos intentos, para no reiniciar por un hipo puntual).
+3. Si responde 200 → no hace nada y termina.
+4. Si no responde → mata cualquier proceso zombi que aún ocupe el puerto 8787 y relanza `npm run ui`
    con `NODE_OPTIONS=--max-old-space-size=3072` (tope de memoria: si hay una fuga, el proceso muere
    chico y rápido en vez de agotar el sistema).
-4. Deja constancia en `data/watchdog.log` y la salida del proceso en `data/ui-console.log`.
+5. Deja constancia en `data/watchdog.log` y la salida del proceso en `data/ui-console.log`.
+
+Todo ocurre **sin ninguna ventana**: la tarea corre `conhost.exe --headless` y el relanzamiento usa
+`CreateNoWindow`. Si ves parpadear una consola cada 5 minutos, tienes registrada la versión antigua
+de la tarea; re-regístrala con el script de abajo.
 
 ## Verificar si ya está registrado
 
@@ -36,14 +42,15 @@ Si responde `No matching MSFT_ScheduledTask objects found`, no está registrado:
 
 ## Registrarlo (una sola vez)
 
-PowerShell **normal, sin permisos de administrador**. Es un solo comando (cópialo completo):
+PowerShell **normal, sin permisos de administrador**, desde la carpeta del proyecto:
 
 ```powershell
-Register-ScheduledTask -TaskName "PolybotWatchdog" -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\watchdog.ps1"') -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 4))
+powershell -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\install-watchdog.ps1"
 ```
 
-Si moviste el proyecto de carpeta, ajusta la ruta del `-File` a la nueva ubicación de
-`scripts\watchdog.ps1`.
+[`scripts/install-watchdog.ps1`](../scripts/install-watchdog.ps1) apunta la tarea a la carpeta donde
+vive él mismo, así que si moviste el proyecto —o tienes varias copias— basta con ejecutar el de la
+copia que de verdad usas. Es idempotente: re-ejecutarlo actualiza la tarea existente.
 
 ## Comprobar que funciona de verdad
 
@@ -72,17 +79,29 @@ Cuando Polybot arranca manda un Telegram **"UI lista"**. Si te llega uno que tú
 watchdog acaba de revivir el proceso. Recuerda que tras revivir el bot queda detenido: si estabas
 operando en Live, hay que volver a arrancarlo manualmente.
 
+## Apagarlo sin desregistrarlo
+
+En **Settings** de la UI web o de la TUI hay una casilla **"Watchdog (auto-reinicio)"**. Al
+desmarcarla y guardar, la tarea sigue registrada y disparándose, pero cada pasada termina de
+inmediato sin tocar nada. El cambio tarda hasta 5 minutos en notarse (lo que falte para la siguiente
+pasada). Como el resto de ajustes, hay que **detener el bot** para poder editarlo.
+
+Es lo que quieres para una ventana de mantenimiento, o si vas a levantar la UI desde otra carpeta y
+no quieres que el watchdog te mate el puerto 8787.
+
 ## Quitarlo
 
 ```powershell
-Unregister-ScheduledTask -TaskName "PolybotWatchdog" -Confirm:$false
+powershell -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\install-watchdog.ps1" -Remove
 ```
 
 ## Solución de problemas
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| `LastTaskResult` distinto de 0 | La ruta del `-File` no existe (proyecto movido) | Re-registrar con la ruta correcta |
+| Parpadea una consola cada 5 min | Tienes registrada la tarea antigua (`powershell -WindowStyle Hidden`) | Re-registrar con `install-watchdog.ps1` |
+| `LastTaskResult` distinto de 0 | La ruta del `-File` no existe (proyecto movido) | Re-registrar con `install-watchdog.ps1` desde la carpeta correcta |
+| La tarea corre pero nunca revive la UI | La casilla "Watchdog" está desmarcada en Settings | Revisar `watchdogEnabled` en `data/ui-config.json` |
 | La tarea corre pero la UI no revive | `npm` no está en el PATH del usuario de la tarea | Ejecutar el script a mano y leer `data/watchdog.log` |
 | Revive en bucle cada 5 min | El proceso arranca y muere solo | Revisar `data/ui-console.log`; buscar el log `Iteración lenta del loop` o errores de arranque |
 | No corre con la sesión bloqueada | La tarea se creó "solo si el usuario inició sesión" | Re-registrar con el comando de arriba (usa los ajustes correctos) |

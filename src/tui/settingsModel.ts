@@ -26,6 +26,7 @@ const TOGGLE_LABELS: Record<string, string> = {
   requirePositiveEv: "Gate de EV positivo",
   explorationEnabled: "Exploración de arranque en frío",
   autoStartSimOnBoot: "Reanudar sim al reiniciar",
+  watchdogEnabled: "Watchdog (auto-reinicio)",
   evUseSimilarity: "Estimador por similitud (k-NN)",
   evCalibration: "Calibración empírica",
   autoMinLive: "Operar al mínimo del exchange",
@@ -57,7 +58,7 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   };
 
   header("Estrategia");
-  (["requirePositiveEv", "explorationEnabled", "autoStartSimOnBoot", "evUseSimilarity", "evCalibration", "autoMinLive", "arbEnabled"] as (keyof UiSettings)[]).forEach(toggle);
+  (["requirePositiveEv", "explorationEnabled", "autoStartSimOnBoot", "watchdogEnabled", "evUseSimilarity", "evCalibration", "autoMinLive", "arbEnabled"] as (keyof UiSettings)[]).forEach(toggle);
 
   header("Autoajuste");
   (["aiAutoApplyLive", "aiAutoTuneAskCap"] as (keyof UiSettings)[]).forEach(toggle);

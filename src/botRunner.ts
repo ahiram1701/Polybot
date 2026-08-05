@@ -73,9 +73,13 @@ const DEFAULT_MIN_SECONDS_TO_END = 10;
 // encima de 0.12 gana 50.9% contra 55.0%. Lo que lo hace creible mas alla del patron es el mecanismo:
 // un spread ancho significa poca contraparte, asi que el precio cotizado es menos fiable y pagas el
 // diferencial completo. Los numeros absolutos de ese analisis son optimistas (asume llenado al ask);
-// lo fiable es el ORDEN, comun a todos los tramos. 0.05 deja fuera los tramos claramente malos sin
-// clavarse en el limite exacto observado.
-const DEFAULT_MAX_ASK_SPREAD = 0.05;
+// lo fiable es el ORDEN, comun a todos los tramos.
+//
+// 2026-08-02, REPLICADO sobre 114 trades REALES ejecutados (no simulados) con el mismo orden
+// monotono: 0.000-0.015 gano 56.0% y +$52.45; 0.015-0.030 bajo a 50.0% y -$3.82; 0.030-0.060 a 40.0%
+// y -$12.05. El umbral baja de 0.05 a 0.02: por encima de 0.015 el resultado ya es negativo, y esta
+// es la unica relacion que ha aparecido dos veces, en datos distintos, en la misma direccion.
+const DEFAULT_MAX_ASK_SPREAD = 0.02;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -1119,7 +1123,15 @@ export class BotRunner {
     market: MarketInfo,
     nowMs: number,
   ): Promise<Partial<Record<Outcome, OrderbookQuote>>> {
-    if (!this.deps.analyticsRecorder || !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS)) {
+    // El arbitraje NO depende de la ventana de entrada: no necesita señal ni momentum, aparece cuando
+    // los dos lados juntos cuestan menos de $1 y eso puede pasar en cualquier momento. Limitarlo a la
+    // ventana de analytics (120s de 300) nos dejaba CIEGOS el 60% del tiempo, que es la causa de que
+    // apenas se detecten oportunidades. Con arbEnabled se cotiza toda la ventana.
+    const arbNeedsQuotes = this.config.arbEnabled === true;
+    if (!arbNeedsQuotes && (!this.deps.analyticsRecorder || !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS))) {
+      return {};
+    }
+    if (arbNeedsQuotes && !this.deps.analyticsRecorder && !isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS)) {
       return {};
     }
 

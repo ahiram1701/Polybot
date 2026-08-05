@@ -860,6 +860,7 @@ function settings(): UiSettings {
     requirePositiveEv: true,
     explorationEnabled: true,
     autoStartSimOnBoot: false,
+    watchdogEnabled: true,
     evUseSimilarity: false,
     evCalibration: false,
     evSafetyMargin: 0.03,

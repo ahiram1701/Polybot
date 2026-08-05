@@ -1305,6 +1305,7 @@ export class BotController {
     return {
       minBtcDistanceUsd: config.minDistanceUsdByMarket.BTC,
       autoStartSimOnBoot: settings.autoStartSimOnBoot,
+      watchdogEnabled: settings.watchdogEnabled,
       enabledMarkets: config.enabledMarkets,
       enabledMarketOutcomes: config.enabledMarketOutcomes ?? settings.enabledMarketOutcomes,
       minDistanceUsdByMarket: config.minDistanceUsdByMarket,
