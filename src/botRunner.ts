@@ -14,6 +14,12 @@ import {
   SimulationExecutionEngine,
   type TradeExecutor,
 } from "./executionEngine.js";
+import {
+  OnChainBankrollSource,
+  resolveEffectiveBankrollUsd,
+  type BankrollReading,
+  type BankrollSource,
+} from "./liveBalance.js";
 import { logger } from "./logger.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
 import {
@@ -133,6 +139,8 @@ interface BotDependencies {
   strategyAnalysisEngine?: Pick<StrategyAnalysisEngine, "analyze" | "estimateSetupWinRate"> &
     Partial<Pick<StrategyAnalysisEngine, "estimateSetupWinRateBySimilarity" | "buildCalibrationSamples">>;
   notifier?: Notifier;
+  /** Lee el colateral real on-chain. Ausente = la guardia de capital usa el valor declarado. */
+  bankrollSource?: BankrollSource;
 }
 
 interface TradeSignal {
@@ -178,6 +186,8 @@ export class BotRunner {
   private readonly loopDurationsMs: number[] = [];
   /** Paralelo a `loopDurationsMs`: si esa iteración acabó lanzando. */
   private readonly loopFailures: boolean[] = [];
+  /** Última lectura del saldo on-chain; `undefined` mientras no se haya conseguido ninguna. */
+  private lastBankrollReading?: BankrollReading;
   private lastLoopStatsLogMs = 0;
   // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
   // In-memory on purpose — a restart resets it, which only makes exploration MORE conservative.
@@ -202,6 +212,11 @@ export class BotRunner {
       analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
       strategyAnalysisEngine: new StrategyAnalysisEngine(config.dataDir),
       notifier: createDynamicNotifier(config),
+      // Solo tiene sentido en live y solo si hay a quien preguntarle: en sim no hay colateral real.
+      bankrollSource:
+        config.mode === "live" && config.funderAddress
+          ? new OnChainBankrollSource(config.funderAddress, config.polygonRpcUrl)
+          : undefined,
     });
   }
 
@@ -329,6 +344,12 @@ export class BotRunner {
   private async runIteration(nowMs: number): Promise<{ captureMs: number; decideMs: number }> {
     let capturePhaseMs = 0;
     let decidePhaseMs = 0;
+
+    // Refresca el colateral real antes de decidir. La fuente cachea (TTL 60s) y nunca lanza, asi que
+    // esto no añade una peticion de red por iteracion ni una via nueva de timeout en el camino caliente.
+    if (this.deps.bankrollSource) {
+      this.lastBankrollReading = await this.deps.bankrollSource.read(nowMs);
+    }
 
     await this.reconcileLiveTrades(nowMs);
     await this.resolveCompletedTrades(nowMs);
@@ -465,6 +486,12 @@ export class BotRunner {
         failedPct: Math.round((1000 * failures) / sorted.length) / 10,
       });
     }
+  }
+
+  /** Capital efectivo que usa la guardia, y de donde salio. Para que la UI no mienta. */
+  getBankroll(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number } {
+    const resolved = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+    return { ...resolved, atMs: this.lastBankrollReading?.atMs };
   }
 
   /** Fracción de iteraciones fallidas de la ventana móvil, para la UI. */
@@ -645,14 +672,19 @@ export class BotRunner {
     // al camino DIRECCIONAL: el arbitraje no puede arruinar (redime $1/set gane quien gane) y es
     // justamente con lo que se hace crecer el capital hasta cruzar el umbral. Sim sigue operando todo
     // para no dejar de generar muestras.
-    const bankrollUsd = this.config.liveBankrollUsd ?? 0;
     const minBankrollUsd = this.config.minBankrollForDirectionalUsd ?? 0;
-    if (this.config.mode === "live" && bankrollUsd > 0 && minBankrollUsd > 0 && bankrollUsd < minBankrollUsd) {
-      this.logSkipOnce(args.market.slug, "bankroll_below_directional_minimum", {
-        bankrollUsd,
-        minBankrollUsd,
-      });
-      return undefined;
+    if (this.config.mode === "live" && minBankrollUsd > 0) {
+      // `source: "unknown"` = ni se pudo leer on-chain ni hay valor declarado. No se bloquea por no
+      // saber: bloquear por un RPC caido seria un fallo de red disfrazado de politica de riesgo.
+      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+      if (bankroll.source !== "unknown" && bankroll.usd < minBankrollUsd) {
+        this.logSkipOnce(args.market.slug, "bankroll_below_directional_minimum", {
+          bankrollUsd: Math.round(bankroll.usd * 100) / 100,
+          minBankrollUsd,
+          source: bankroll.source,
+        });
+        return undefined;
+      }
     }
 
     if (!args.market.active || args.market.closed || !args.market.acceptingOrders) {

@@ -120,6 +120,8 @@ export interface RunnerLike {
   stop(): void;
   /** Fracción de iteraciones del bucle que acabaron lanzando (ventana móvil). */
   getLoopHealth?(): { iterations: number; failed: number; failedPct: number };
+  /** Capital efectivo de la guardia y su procedencia. */
+  getBankroll?(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   updateStrategySettings?(
     settings: Pick<
       BotConfig,
@@ -1064,6 +1066,7 @@ export class BotController {
       quotes: primaryMarket?.quotes ?? snapshot.quotes,
       snapshotError: snapshot.snapshotError,
       loopHealth: this.runner?.getLoopHealth?.(),
+      bankroll: this.runner?.getBankroll?.(),
     };
   }
 

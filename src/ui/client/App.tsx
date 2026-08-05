@@ -936,6 +936,19 @@ function HealthChips({ status, health }: { status: UiStatus | null; health: BotH
       <span className="chip chip-neutral" title="Tiempo corriendo">
         Uptime {formatDuration(health.uptimeSec)}
       </span>
+      {status?.bankroll && status.bankroll.source !== "unknown" ? (
+        <span
+          className={`chip ${status.bankroll.source === "onchain" ? "chip-neutral" : "chip-warn"}`}
+          title={
+            status.bankroll.source === "onchain"
+              ? "Colateral USDC leido on-chain de tu wallet de Polymarket"
+              : "No se pudo leer on-chain: se esta usando el capital declarado a mano"
+          }
+        >
+          Capital {formatUsd(status.bankroll.usd)}
+          {status.bankroll.source === "declared" ? " (declarado)" : ""}
+        </span>
+      ) : null}
       {status?.loopHealth && status.loopHealth.iterations > 0 ? (
         // Sin este chip un p95 de latencia sano ocultaba que una de cada tres iteraciones moria por
         // timeout: las iteraciones que fallaban no llegaban a registrarse en las metricas.
@@ -2035,9 +2048,16 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             onChange={(value) => update("maxAnalyticsSamples", value)}
           />
         </div>
+        <p className="settings-hint">
+          <strong>Capital real en live</strong> se lee <strong>solo, on-chain</strong>: el bot consulta el saldo de
+          colateral (USDC) de tu wallet de Polymarket en Polygon cada minuto. Es una lectura, no firma ni mueve nada.
+          El número que escribas abajo solo se usa <em>si la lectura falla</em> (RPC caído), para que un problema de
+          red no se confunda con quedarse sin fondos. Un saldo leído de <strong>$0 sí cuenta como $0</strong>: taparlo
+          con un valor declarado obsoleto sería justo el error que esto viene a evitar.
+        </p>
         <p className="settings-hint settings-hint-warn">
           <strong>Capital mín. para direccional</strong> apaga el direccional en <em>live</em> mientras tu capital real
-          esté por debajo (0 en cualquiera de los dos campos = guardia desactivada). No es prudencia: es aritmética.
+          esté por debajo (0 = guardia desactivada). No es prudencia: es aritmética.
           El mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme
           del total y la ruina llega antes que el edge. Simulado con el edge <strong>real medido</strong> (83% de
           aciertos, ROI +4,3% por operación — una estrategia <em>ganadora</em>), a un mes: con $10 la probabilidad de
@@ -2103,7 +2123,7 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             onChange={(value) => update("riskHaltCooldownHours", value)}
           />
           <NumberField
-            label="Capital real en live (USD)"
+            label="Capital declarado, solo si falla la lectura (USD)"
             value={draft.liveBankrollUsd}
             min={0}
             step={5}
