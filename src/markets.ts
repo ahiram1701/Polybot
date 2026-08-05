@@ -19,6 +19,17 @@ export interface MarketDefinition {
 
 export const SUPPORTED_MARKETS = ["BTC", "ETH", "DOGE"] as const satisfies readonly MarketSymbol[];
 export const DEFAULT_ENTRY_WINDOW_SECONDS = 20;
+/**
+ * Segundos finales en los que el bot ya NO entra: cerca del cierre el libro se vacia y el precio
+ * cotizado deja de ser el que se consigue.
+ *
+ * Vive aqui, y no en botRunner, porque los simuladores TIENEN que honrarlo. Cuando no lo hacian,
+ * contaban como oportunidad los ticks de (0, ventana] mientras produccion solo opera en
+ * (10, ventana]: para una ventana de 26s eso infla la oportunidad un 62%, y para una de 60s solo un
+ * 20%. El sesgo no es ruido, empuja sistematicamente hacia ventanas cortas — que es justo lo que el
+ * autoajuste venia recomendando.
+ */
+export const DEFAULT_MIN_SECONDS_TO_END = 10;
 export const DEFAULT_MAX_ASK_PRICE = 0.98;
 export const DEFAULT_TRADE_AMOUNT_USD = 1;
 export const OUTCOMES = ["UP", "DOWN"] as const satisfies readonly Outcome[];

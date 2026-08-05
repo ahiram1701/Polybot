@@ -89,12 +89,20 @@ export function summarizeOrderBook(
   const availableUsdUnderCap = asks
     .filter((ask) => ask.price <= maxAskPrice)
     .reduce((sum, ask) => sum + ask.price * ask.size, 0);
+  // Profundidad SIN el tope de ask. El tope es un control de riesgo DIRECCIONAL ("no pagues mas de
+  // 60 centavos por una apuesta"), y el arbitraje de set completo no corre ese riesgo: compra ambos
+  // lados y el par redime exactamente $1 gane quien gane. Su unica condicion es up+down<1 tras
+  // comisiones. Medido sobre el historico, exigirle el tope direccional al arbitraje bloqueaba el 78%
+  // de las oportunidades (BTC 84%, ETH 73%, DOGE 60%) — y son justo las que lo definen, porque un
+  // arbitraje aparece cuando UN lado se encarece.
+  const availableUsdAllLevels = asks.reduce((sum, ask) => sum + ask.price * ask.size, 0);
 
   return {
     tokenId: book.asset_id,
     bestAsk: asks[0]?.price,
     bestBid: bids[0]?.price,
     availableUsdUnderCap,
+    availableUsdAllLevels,
     estimatedSharesForAmount,
     estimatedAveragePrice: estimatedSharesForAmount > 0 ? filledUsd / estimatedSharesForAmount : undefined,
     rawAskLevels: asks,

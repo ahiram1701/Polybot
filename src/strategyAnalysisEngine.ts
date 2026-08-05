@@ -12,6 +12,7 @@ import {
   type SimilarityQuery,
 } from "./similarityGate.js";
 import {
+  DEFAULT_MIN_SECONDS_TO_END,
   getEntryWindowSeconds,
   getMarketOutcomeNumber,
   getMinDistanceUsd,
@@ -657,11 +658,16 @@ function findSignalTick(
   outcome: Outcome,
   entryWindowSeconds: number,
   minDistanceUsd: number,
+  // La guardia de cierre de produccion. Por defecto la REAL, no cero: un tick a 4 segundos del cierre
+  // no es una operacion que el bot pueda tomar, asi que contarlo como historia entrena al estimador
+  // sobre setups inalcanzables.
+  minSecondsToEnd: number = DEFAULT_MIN_SECONDS_TO_END,
 ): AnalyticsTickPoint | undefined {
   let best: AnalyticsTickPoint | undefined;
   for (const tick of sample.ticks) {
     if (
       tick.secondsToEnd > 0 &&
+      tick.secondsToEnd >= minSecondsToEnd &&
       tick.secondsToEnd <= entryWindowSeconds &&
       outcomeDistance(tick, outcome) >= minDistanceUsd &&
       (!best || tick.timestampMs < best.timestampMs)

@@ -92,10 +92,13 @@ import { applySettings, UiSettingsStore } from "./settings.js";
 
 const DEFAULT_OLLAMA_HOST = "https://ollama.com";
 const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
-// The predictive autoajuste re-evaluates every 2 minutes: configs don't need per-minute changes, and
-// the wider learning window (MAX_RECOMMENDATION_SAMPLES_PER_MARKET) makes each pass heavier, so this
-// keeps the CPU duty-cycle low. The compute yields to the event loop, so the bot stays responsive.
-const AI_AUTO_APPLY_POLL_MS = 120_000;
+// El autoajuste re-evalua cada 10 minutos. Subio desde 2 minutos al ampliar la historia de la rejilla
+// (MAX_RECOMMENDATION_SAMPLES_PER_MARKET 900 -> 6.000), que es lo que por fin desbloquea el candado
+// pero encarece cada pasada de ~8s a ~57s. Cada 2 minutos eso serian ~48% de CPU disputandosela al
+// bucle de trading, y la latencia en el momento de entrar es justo lo que no se puede pagar. A 10
+// minutos el ciclo de trabajo queda en ~9%, apenas por encima del 6,5% que costaba antes, con 6,7x
+// mas datos. La config de estrategia deriva en horas, no en minutos: no se pierde nada real.
+const AI_AUTO_APPLY_POLL_MS = 600_000;
 
 export class ControllerError extends Error {
   constructor(
@@ -296,7 +299,7 @@ export class BotController {
       let autoAdjust: { market: string; state: string }[] = [];
       try {
         const recommendations = await this.recommendationEngine.recommend(
-          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
+          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket, this.baseConfig.minSecondsToEndForEntry, await this.loadResolvedTradesForGuard()),
           nowMs,
           autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
         );
@@ -590,7 +593,7 @@ export class BotController {
     const settings = await this.settingsStore.load(this.baseConfig);
     const thresholds = autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode);
     const response = await this.recommendationEngine.recommend(
-      toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
+      toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket, this.baseConfig.minSecondsToEndForEntry, await this.loadResolvedTradesForGuard()),
       nowMs,
       thresholds,
     );
@@ -628,7 +631,7 @@ export class BotController {
 
       if (settings.aiAutoApplyLive) {
         const response = await this.recommendationEngine.recommend(
-          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket),
+          toRecommendationSettings(settings, this.baseConfig.minDistanceFloorUsdByMarket, this.baseConfig.minSecondsToEndForEntry, await this.loadResolvedTradesForGuard()),
           nowMs,
           autoApplyThresholdsForMode(this.mode ?? this.baseConfig.mode),
         );
@@ -716,7 +719,18 @@ export class BotController {
       const currentCap = settings.maxAskPriceByMarketOutcome[market].UP;
       // Tuner de VENTANA: mueve piso y techo. El de solo-techo no podia excluir la cola barata
       // perdedora — su unica reaccion era apretar el techo y cortaba la parte rentable.
-      const recommendation = recommendAskWindow(bands, { floor: currentFloor, cap: currentCap });
+      // La base sale de baseConfig (variables de entorno), que el tuner NUNCA escribe — solo escribe
+      // los settings de la UI. Es lo que impide que los recortes se acumulen: cada evaluacion parte de
+      // la misma referencia fija y aplica solo lo que la evidencia sostiene AHORA.
+      //
+      // Sin base no se ajusta nada. Antes esto caia en `?? currentFloor`, y como config.ts ni siquiera
+      // definia el suelo, la "base" del suelo acababa siendo el valor ya recortado: el trinquete
+      // seguia intacto justo en el borde que mas importa, y en silencio.
+      const baseline = this.baseConfig.askWindowBaseline;
+      if (!baseline) {
+        continue; // sin base no se ajusta nada: recortar contra la ventana actual seria el trinquete
+      }
+      const recommendation = recommendAskWindow(bands, { floor: currentFloor, cap: currentCap }, baseline);
       if (!recommendation) {
         continue;
       }
@@ -940,6 +954,22 @@ export class BotController {
   async getTrades(limit = 100) {
     const stateSummary = await this.getStateSummary();
     return stateSummary.tradesSorted.slice(0, limit);
+  }
+
+  /**
+   * Operaciones resueltas del modo activo, para el veto por rendimiento realizado del autoajuste.
+   *
+   * Se filtra por modo porque sim y live no son la misma poblacion de rellenos. Si falla la lectura se
+   * devuelve vacio y el veto se abstiene: nunca debe tumbar una evaluacion por un problema de E/S.
+   */
+  private async loadResolvedTradesForGuard(): Promise<TradeAttempt[]> {
+    try {
+      const stateSummary = await this.getStateSummary();
+      const mode = this.mode ?? this.baseConfig.mode;
+      return stateSummary.tradesSorted.filter((trade) => trade.mode === mode && trade.resolved);
+    } catch {
+      return [];
+    }
   }
 
   async getStatus(): Promise<UiStatus> {
@@ -1445,6 +1475,8 @@ function isApplicableRecommendation(recommendation: AiRecommendation): recommend
 function toRecommendationSettings(
   settings: UiSettings,
   distanceFloors?: Partial<Record<MarketSymbol, number>>,
+  minSecondsToEndForEntry?: number,
+  resolvedTrades?: TradeAttempt[],
 ): RecommendationSettings {
   return {
     minDistanceUsdByMarket: settings.minDistanceUsdByMarket,
@@ -1452,6 +1484,10 @@ function toRecommendationSettings(
     entryWindowSeconds: settings.entryWindowSeconds,
     maxAskPrice: settings.maxAskPrice,
     minDistanceFloorUsdByMarket: distanceFloors,
+    // El motor simula con la MISMA guardia de cierre que usa el bot; si no, sobrevalora las ventanas
+    // cortas porque cuenta segundos en los que nunca se entra.
+    minSecondsToEndForEntry,
+    resolvedTrades,
     aiLastAppliedAtMs: settings.aiLastAppliedAtMs,
   };
 }

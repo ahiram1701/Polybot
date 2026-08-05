@@ -37,6 +37,8 @@ export interface BotConfig {
   // live mostro que las apuestas baratas de reversion (<0.30 en ETH) pierden sistematicamente.
   // Default efectivo 0.01 = sin piso.
   minAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  /** Rango dentro del cual puede moverse el tuner de ask. El tuner NUNCA lo escribe: es su referencia fija. */
+  askWindowBaseline?: { floor: number; cap: number };
   // Hard ceiling applied on top of the per-market/outcome ask caps: no trade (and no auto-adjust)
   // may use an ask above this, to keep reward/risk sane. Optional; config.ts always sets it.
   maxAskPriceCeiling?: number;
@@ -154,7 +156,10 @@ export interface OrderbookQuote {
   tokenId: string;
   bestAsk?: number;
   bestBid?: number;
+  /** Profundidad hasta el tope de ask. Para el camino DIRECCIONAL. */
   availableUsdUnderCap: number;
+  /** Profundidad de todo el libro. Para el ARBITRAJE, que no corre riesgo direccional. */
+  availableUsdAllLevels: number;
   estimatedSharesForAmount: number;
   estimatedAveragePrice?: number;
   rawAskLevels: Array<{ price: number; size: number }>;

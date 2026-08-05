@@ -2,7 +2,8 @@ import { join } from "node:path";
 
 import { QUOTE_MATCH_WINDOW_MS, readAnalyticsSamples } from "./analyticsRecorder.js";
 import { knnEstimate, type KnnObservation, type KnnOptions, type KnnPoint } from "./knnCore.js";
-import { getMinDistanceUsd, SUPPORTED_MARKETS } from "./markets.js";
+import { DEFAULT_MIN_SECONDS_TO_END, getMinDistanceUsd, SUPPORTED_MARKETS } from "./markets.js";
+import { passesRealizedGuard, realizedForCandidate } from "./realizedGuard.js";
 import type {
   AiRecommendation,
   AiRecommendationsResponse,
@@ -17,6 +18,7 @@ import type {
   Outcome,
   RecommendationCandidate,
   RecommendationMetrics,
+  TradeAttempt,
 } from "./types.js";
 
 export type { AutoApplyThresholds } from "./types.js";
@@ -76,9 +78,26 @@ const WALK_FORWARD_MIN_TRAINING_TRADES = 5;
 // history (for trade-count significance) without the grid search blowing up the event loop.
 // Recent neighbours are also more relevant to the current regime.
 const WALK_FORWARD_TRAINING_WINDOW = 300;
-// Per-market history fed into the grid search. With the bounded k-NN above the cost scales
-// ~linearly, so we keep enough executable trades to reach statistical significance.
-const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 900;
+/**
+ * Historia por mercado que alimenta la rejilla.
+ *
+ * Estuvo en 900 y ESE era el motivo real de que el autoajuste nunca actuara. Con 900 ventanas ningun
+ * candidato de la rejilla llegaba a los 15 trades ejecutables que exige minAutoTrades, asi que
+ * canAutoApply salia false SIEMPRE: no por falta de robustez ni por un mal objetivo, sino porque el
+ * motor solo miraba el 13% de las 6.673 ventanas que hay por mercado.
+ *
+ * Medido sobre el historico real (ask cap 0.6), trades del candidato elegido:
+ *   cap   900 ->  BTC   6 (bloq)  ETH   6 (bloq)   7.8s por pasada
+ *   cap  2500 ->  BTC   6 (bloq)  ETH  62 (APLICA) 24s
+ *   cap  6000 ->  BTC  73 (APLICA) ETH 143 (APLICA) 57s
+ *   cap 20000 ->  BTC  63 (bloq)  ETH 155 (APLICA) 65s
+ *
+ * A 20.000 BTC vuelve a bloquearse: la historia vieja diluye el edge, asi que "mas" no es
+ * monotonamente mejor. 6.000 es el mejor de los cuatro puntos probados — no un optimo demostrado.
+ * El coste sube a ~57s por pasada, compensado alargando el intervalo de evaluacion (ver
+ * AI_AUTO_APPLY_POLL_MS): la config de estrategia deriva en horas, no en minutos.
+ */
+const MAX_RECOMMENDATION_SAMPLES_PER_MARKET = 6_000;
 // Entry-window candidates floored at 25s: below ~25s the quote coverage collapses to <=3% (measured
 // on real samples), so those configs almost never execute. Flooring here stops the autoajuste from
 // converging on degenerate 5-7s windows that barely trade.
@@ -105,6 +124,13 @@ export interface RecommendationSettings {
   // applier clamps to it. Without this the engine "recommends" sub-floor configs that get clamped
   // away, producing phantom auto-applies that never change anything.
   minDistanceFloorUsdByMarket?: Partial<Record<MarketSymbol, number>>;
+  // La guardia de cierre que aplica produccion. El motor debe simular con ella puesta o recomendara
+  // ventanas cortas que en la practica pierden sus primeros segundos utiles.
+  minSecondsToEndForEntry?: number;
+  // Operaciones ya ejecutadas y resueltas. Solo alimentan el VETO por rendimiento realizado: el motor
+  // mide sobre quotes sin profundidad y sobrevalora las ventanas tardias, asi que el ledger es lo
+  // unico que sabe lo que de verdad se cobra. Vacio o ausente = el veto se abstiene.
+  resolvedTrades?: TradeAttempt[];
   aiLastAppliedAtMs?: number;
 }
 
@@ -196,11 +222,20 @@ async function buildMarketRecommendation(
   const currentWindow = settings.entryWindowSecondsByMarket[market] ?? settings.entryWindowSeconds;
   const currentDistance = getMinDistanceUsd(settings.minDistanceUsdByMarket, market);
   const distanceFloor = Math.max(settings.minDistanceFloorUsdByMarket?.[market] ?? 0, 0);
-  const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice);
+  const minSecondsToEnd = settings.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END;
+  const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice, undefined, minSecondsToEnd);
   const grid = buildCandidateGrid(market, samples, currentDistance, distanceFloor);
   const candidates: RecommendationCandidate[] = [];
   for (let index = 0; index < grid.length; index += 1) {
-    const built = buildCandidate(market, samples, grid[index].entryWindowSeconds, grid[index].minDistanceUsd, settings.maxAskPrice);
+    const built = buildCandidate(
+      market,
+      samples,
+      grid[index].entryWindowSeconds,
+      grid[index].minDistanceUsd,
+      settings.maxAskPrice,
+      undefined,
+      minSecondsToEnd,
+    );
     if (built.metrics.adjustedRoi !== undefined) {
       candidates.push(built);
     }
@@ -236,6 +271,8 @@ async function buildMarketRecommendation(
     improvementYield !== undefined &&
     improvementYield > 0;
   const cooldownActive = isAutoApplyCooldownActive(settings.aiLastAppliedAtMs, nowMs, thresholds.autoApplyCooldownMs);
+  const realizedRegion = realizedForCandidate(settings.resolvedTrades ?? [], market, best);
+  const realizedGuard = { region: realizedRegion, passes: passesRealizedGuard(realizedRegion) };
   const canAutoApply =
     canApply &&
     !cooldownActive &&
@@ -253,6 +290,10 @@ async function buildMarketRecommendation(
     // Anti-overfit: don't auto-downgrade onto a thinner-sampled setup unless its OOS lower bound is
     // clearly better (keeps the engine from chasing few-trade flukes over robust configs).
     passesRobustnessGuard(current.metrics, best.metrics) &&
+    // Veto por rendimiento REALIZADO: nunca mudarse a una region que el ledger de ejecuciones muestra
+    // perdedora, por bien que la puntue la simulacion sobre quotes. Es lo que faltaba cuando el motor
+    // mando ETH a 26s, donde 127 operaciones reales habian perdido $41.22.
+    realizedGuard.passes &&
     // Escape valve: the max-change guard protects a WORKING config from destabilizing jumps, but a
     // config with zero trades has nothing to protect — and gradual steps can never bootstrap it,
     // because intermediate configs lack the data to validate each step (DOGE sat dead for weeks at a
@@ -350,11 +391,14 @@ export function buildCandidate(
   minDistanceUsd: number,
   maxAskPrice: number,
   outcome?: Outcome,
+  // Por defecto la guardia de cierre REAL, no cero: un simulador que la ignora sobreestima las
+  // ventanas cortas y termina recomendandolas.
+  minSecondsToEnd: number = DEFAULT_MIN_SECONDS_TO_END,
 ): RecommendationCandidate {
   return {
     entryWindowSeconds,
     minDistanceUsd,
-    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome),
+    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome, minSecondsToEnd),
   };
 }
 
@@ -363,9 +407,10 @@ function simulateCandidate(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
-  outcome?: Outcome,
+  outcome: Outcome | undefined,
+  minSecondsToEnd: number,
 ): RecommendationMetrics {
-  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome);
+  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome, minSecondsToEnd);
   const returns = simulation.observations.map((observation) => observation.returnRoi);
   const walkForward = buildWalkForwardPredictions(simulation.observations);
   const walkForwardReturns = walkForward.map((prediction) => prediction.actualReturnRoi);
@@ -423,13 +468,14 @@ function buildCandidateObservations(
   entryWindowSeconds: number,
   minDistanceUsd: number,
   maxAskPrice: number,
-  outcomeFilter?: Outcome,
+  outcomeFilter: Outcome | undefined,
+  minSecondsToEnd: number,
 ): CandidateSimulation {
   const observations: CandidateObservation[] = [];
   let signalCount = 0;
 
   for (const sample of samples) {
-    const signalTick = findSignalTick(sample, entryWindowSeconds, minDistanceUsd);
+    const signalTick = findSignalTick(sample, entryWindowSeconds, minDistanceUsd, minSecondsToEnd);
     if (!signalTick) {
       continue;
     }
@@ -526,9 +572,12 @@ function findSignalTick(
   sample: AnalyticsSample,
   entryWindowSeconds: number,
   minDistanceUsd: number,
+  minSecondsToEnd: number,
 ): AnalyticsTickPoint | undefined {
   return sample.ticks
-    .filter((tick) => tick.secondsToEnd > 0 && tick.secondsToEnd <= entryWindowSeconds)
+    // El limite inferior replica la guardia de cierre de botRunner (rechaza secondsToEnd < min, luego
+    // el igual SI entra). Sin el, el simulador contaba oportunidades que produccion nunca toma.
+    .filter((tick) => tick.secondsToEnd > 0 && tick.secondsToEnd >= minSecondsToEnd && tick.secondsToEnd <= entryWindowSeconds)
     .sort((left, right) => left.timestampMs - right.timestampMs)
     .find((tick) => Math.abs(tick.distanceUsd) >= minDistanceUsd);
 }

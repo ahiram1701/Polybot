@@ -160,14 +160,32 @@ describe("RecommendationEngine", () => {
     expect(btc?.confidence).not.toBe("high");
   });
 
-  it("never recommends an entry window below the 25s floor", async () => {
-    // Signals that would ideally fire in a 10s window: the floor must push the pick to >= 25s.
+  it("ignores signals inside the close guard instead of chasing them with a short window", async () => {
+    // La señal de este fixture cae a 8 segundos del cierre, dentro de la guardia que impide entrar.
+    // El motor NO debe contarla: si la cuenta, cree que una ventana cortisima es rentable y la
+    // recomienda, cuando en produccion esa operacion nunca se toma. Es el sesgo que empujaba al
+    // autoajuste hacia ventanas cortas.
     const samples = Array.from({ length: 45 }, (_value, index) => lateSignalSample("BTC", index));
-    const response = (await buildRecommendations(samples, settings()));
+    const response = await buildRecommendations(samples, settings());
     const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
 
-    expect((btc?.recommended ?? btc?.current)?.entryWindowSeconds).toBeGreaterThanOrEqual(25);
-    expect(btc?.recommended?.entryWindowSeconds ?? 60).toBeLessThanOrEqual(60);
+    expect(btc?.current.metrics.tradeCount).toBe(0); // no es oportunidad, es ruido inalcanzable
+    expect(btc?.recommended).toBeUndefined();
+  });
+
+  it("counts the same signal once it sits outside the close guard", async () => {
+    // Control del test anterior: MISMO fixture, pero la señal a 20s del cierre. Ahora si es operable,
+    // asi que el motor debe verla — y respetar el piso de 25s al elegir ventana.
+    const samples = Array.from({ length: 45 }, (_value, index) => lateSignalSample("BTC", index, 20_000));
+    const response = await buildRecommendations(samples, settings());
+    const btc = response.recommendations.find((recommendation) => recommendation.market === "BTC");
+
+    // La distancia del fixture ($18) queda por debajo del umbral actual de BTC ($20), asi que la
+    // señal solo aparece al explorar la rejilla — de ahi que se mire `recommended` y no `current`.
+    expect(btc?.recommended).toBeDefined();
+    expect(btc?.recommended?.metrics.tradeCount ?? 0).toBeGreaterThan(0);
+    expect(btc?.recommended?.entryWindowSeconds).toBeGreaterThanOrEqual(25);
+    expect(btc?.recommended?.entryWindowSeconds).toBeLessThanOrEqual(60);
   });
 
   it("prefers a frequent moderate-edge config over a rare high-edge one (yield objective)", async () => {
@@ -285,10 +303,11 @@ function quote(timestampMs: number, secondsToEnd: number) {
   };
 }
 
-function lateSignalSample(market: MarketSymbol, index: number): AnalyticsSample {
+/** `leadMs` decide si la señal cae dentro (8s, por defecto) o fuera de la guardia de cierre. */
+function lateSignalSample(market: MarketSymbol, index: number, leadMs = 8_000): AnalyticsSample {
   const windowStartMs = Date.UTC(2026, 4, 8, 12, index * 5, 0);
   const endMs = windowStartMs + 300_000;
-  const signalMs = endMs - 8_000; // secondsToEnd 8 — only a very short window would target this
+  const signalMs = endMs - leadMs;
   return {
     version: 1,
     market,
@@ -297,8 +316,8 @@ function lateSignalSample(market: MarketSymbol, index: number): AnalyticsSample 
     endMs,
     openingPrice: 100,
     openingTickTimestampMs: windowStartMs,
-    ticks: [{ timestampMs: signalMs, secondsToEnd: 8, price: 118, distanceUsd: 18 }],
-    quotes: [quote(signalMs, 8)],
+    ticks: [{ timestampMs: signalMs, secondsToEnd: leadMs / 1_000, price: 118, distanceUsd: 18 }],
+    quotes: [quote(signalMs, leadMs / 1_000)],
     finalPrice: 120,
     finalTickTimestampMs: endMs,
     winningOutcome: "UP",

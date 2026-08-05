@@ -194,6 +194,7 @@ function baseInput(): ExecutionInput {
       tokenId: "up-token",
       bestAsk: 0.91,
       availableUsdUnderCap: 100,
+      availableUsdAllLevels: 100,
       estimatedSharesForAmount: 5.49,
       rawAskLevels: [],
     },

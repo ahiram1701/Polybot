@@ -3,13 +3,19 @@ import { describe, expect, it } from "vitest";
 import { detectCompleteSetArb } from "../src/arbMonitor.js";
 import type { OrderbookQuote } from "../src/types.js";
 
-function quote(bestAsk: number, availableUsdUnderCap: number): OrderbookQuote {
+/**
+ * `underCap` es la profundidad que ve el camino direccional; `allLevels` la del libro entero, que es
+ * la que debe usar el arbitraje. Por defecto coinciden; se separan para probar el caso en que un lado
+ * cotiza por ENCIMA del tope de ask (underCap = 0) y el arbitraje debe seguir viendolo.
+ */
+function quote(bestAsk: number, underCap: number, allLevels = underCap): OrderbookQuote {
   return {
     tokenId: "token",
     bestAsk,
     bestBid: bestAsk - 0.01,
-    availableUsdUnderCap,
-    estimatedSharesForAmount: availableUsdUnderCap / bestAsk,
+    availableUsdUnderCap: underCap,
+    availableUsdAllLevels: allLevels,
+    estimatedSharesForAmount: underCap / bestAsk,
     rawAskLevels: [],
   } as unknown as OrderbookQuote;
 }
@@ -32,6 +38,24 @@ describe("detectCompleteSetArb", () => {
     expect(opportunity?.maxSetsByDepth).toBeCloseTo(20, 1);
     expect(opportunity?.capturableUsd).toBeCloseTo(20 * 0.0657, 2);
     expect(opportunity?.secondsToEnd).toBeCloseTo(60);
+  });
+
+  it("still sees the arb when one side quotes ABOVE the directional ask cap", () => {
+    // El caso que costaba dinero: DOWN a 0.72 supera el tope de 0.65, asi que su profundidad bajo el
+    // tope es CERO y el arbitraje quedaba descartado. Pero 0.20 + 0.72 = 0.92 y el par redime $1: es
+    // ganancia garantizada. El tope protege del riesgo direccional, que aqui no existe.
+    const opportunity = detectCompleteSetArb({
+      market: "ETH",
+      slug: "eth-updown-5m-2",
+      endMs: 100_000,
+      nowMs: 40_000,
+      quotes: { UP: quote(0.2, 50, 50), DOWN: quote(0.72, 0, 36) },
+    });
+
+    expect(opportunity).toBeDefined();
+    expect(opportunity?.netPerSet).toBeGreaterThan(0);
+    // Dimensionado por el libro completo de DOWN: $36 a 0.72 -> 50 sets (UP tambien da 250).
+    expect(opportunity?.maxSetsByDepth).toBeCloseTo(50, 1);
   });
 
   it("returns nothing when fees eat the gross edge", () => {

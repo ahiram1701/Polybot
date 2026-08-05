@@ -36,7 +36,10 @@ export function detectCompleteSetArb(args: {
 }): ArbOpportunity | undefined {
   const up = args.quotes.UP;
   const down = args.quotes.DOWN;
-  if (!up?.bestAsk || !down?.bestAsk || up.availableUsdUnderCap <= 0 || down.availableUsdUnderCap <= 0) {
+  // Profundidad del libro COMPLETO, no la limitada por el tope de ask: ese tope protege del riesgo
+  // direccional, que aqui no existe (el par redime $1 gane quien gane). La condicion economica del
+  // arbitraje es netPerSet > 0, y se comprueba abajo.
+  if (!up?.bestAsk || !down?.bestAsk || up.availableUsdAllLevels <= 0 || down.availableUsdAllLevels <= 0) {
     return undefined;
   }
 
@@ -50,7 +53,7 @@ export function detectCompleteSetArb(args: {
     return undefined;
   }
 
-  const maxSetsByDepth = Math.min(up.availableUsdUnderCap / up.bestAsk, down.availableUsdUnderCap / down.bestAsk);
+  const maxSetsByDepth = Math.min(up.availableUsdAllLevels / up.bestAsk, down.availableUsdAllLevels / down.bestAsk);
   return {
     at: args.nowMs,
     market: args.market,

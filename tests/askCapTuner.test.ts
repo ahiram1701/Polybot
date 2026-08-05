@@ -127,3 +127,68 @@ describe("recommendAskWindow (piso + techo)", () => {
     expect(reco?.targetFloor ?? 0.45).toBe(0.45);
   });
 });
+
+describe("recommendAskWindow: contencion de bandas", () => {
+  it("no achaca al tramo de dentro las perdidas de la parte ya excluida", () => {
+    // El fallo que costaba dinero: con el suelo en 0.40, la banda [0,0.45] perdia mucho, pero el 89%
+    // de esa banda queda FUERA de la ventana. Recortar por ella subia el suelo a 0.45 y tiraba un
+    // tramo que fuera de muestra era rentable (-$18.31 medido).
+    const bands = summary([
+      band(0, 0.45, 71, 0.1), // pierde, pero casi toda por debajo del suelo actual
+      band(0.45, 0.55, 60, 0.62),
+      band(0.55, 0.65, 60, 0.68),
+    ]);
+    expect(recommendAskWindow(bands, { floor: 0.4, cap: 0.65 })).toBeUndefined();
+  });
+
+  it("si la banda perdedora SI cabe dentro de la ventana, recorta", () => {
+    const bands = summary([
+      band(0.45, 0.55, 40, 0.2), // dentro de [0.45,0.75] y perdiendo -> fuera
+      band(0.55, 0.65, 40, 0.68),
+      band(0.65, 0.75, 40, 0.78),
+    ]);
+    // La ventana debe quedar en [0.55,0.75]: 0.20 de ancho, por encima del minimo anti-estrangulamiento.
+    const reco = recommendAskWindow(bands, { floor: 0.45, cap: 0.75 });
+    expect(reco?.targetFloor).toBe(0.55);
+    expect(reco?.targetCap).toBe(0.75);
+  });
+});
+
+describe("recommendAskWindow: no es un trinquete", () => {
+  it("devuelve la ventana a su base cuando la evidencia del recorte desaparece", () => {
+    // La ventana venia recortada a [0.55,0.75] por una mala racha. Ahora ninguna banda pierde con
+    // muestra suficiente, asi que el recorte ya no se sostiene y debe deshacerse hacia la base.
+    const bands = summary([
+      band(0.45, 0.55, 40, 0.62),
+      band(0.55, 0.65, 40, 0.68),
+      band(0.65, 0.75, 40, 0.78),
+    ]);
+    const reco = recommendAskWindow(bands, { floor: 0.55, cap: 0.75 }, { floor: 0.45, cap: 0.75 });
+    expect(reco?.targetFloor).toBe(0.45); // vuelve a la base
+    expect(reco?.nextFloor).toBe(0.5); // de a 0.05, sin saltos
+  });
+
+  it("no reabre MAS ALLA de la base aunque todas las bandas paguen", () => {
+    const bands = summary([
+      band(0.3, 0.45, 40, 0.6),
+      band(0.45, 0.55, 40, 0.62),
+      band(0.55, 0.65, 40, 0.68),
+    ]);
+    // Base [0.45,0.65]: la banda barata paga, pero el tuner no puede invadir territorio no aprobado.
+    const reco = recommendAskWindow(bands, { floor: 0.45, cap: 0.65 }, { floor: 0.45, cap: 0.65 });
+    expect(reco).toBeUndefined();
+  });
+
+  it("un recorte repetido no se acumula: siempre se mide contra la base", () => {
+    const bands = summary([
+      band(0.45, 0.55, 40, 0.2), // pierde
+      band(0.55, 0.65, 40, 0.68),
+      band(0.65, 0.75, 40, 0.78),
+    ]);
+    const baseline = { floor: 0.45, cap: 0.75 };
+    const first = recommendAskWindow(bands, baseline, baseline);
+    const second = recommendAskWindow(bands, { floor: first!.targetFloor, cap: first!.targetCap }, baseline);
+    // El objetivo no se mueve por haberlo aplicado ya: el recorte es el mismo, no uno encima de otro.
+    expect(second?.targetFloor ?? first!.targetFloor).toBe(first!.targetFloor);
+  });
+});

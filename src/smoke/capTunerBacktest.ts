@@ -85,8 +85,12 @@ async function main(): Promise<void> {
   }
 
   // Brazo 5: tuner de VENTANA dinamico (mueve piso y techo cada 24h simuladas).
+  // Arranca desde la MISMA ventana que el brazo fijo. Antes partia de {0.01, 0.65}, que era lo
+  // correcto cuando el tuner construia la ventana desde cero a partir de las bandas ganadoras. El
+  // tuner actual solo ESTRECHA, asi que soltarlo en 0.01 le pedia escalar hasta 0.30 de 0.05 en 0.05 y
+  // medía otra cosa. La pregunta util es: dada la config buena, ¿la mejora o la estropea?
   const win = new Map<MarketSymbol, { floor: number; cap: number }>(
-    SUPPORTED_MARKETS.map((m) => [m, { floor: 0.01, cap: 0.65 }]),
+    SUPPORTED_MARKETS.map((m) => [m, { ...(FIXED_WINDOW[m] ?? { floor: 0.01, cap: 0.65 }) }]),
   );
   let nextWinTuneAtMs = trades.length > 0 ? trades[0].createdAtMs + DAY_MS : 0;
   const seenW: TradeAttempt[] = [];

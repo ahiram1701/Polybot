@@ -54,6 +54,7 @@ const quote: OrderbookQuote = {
   bestAsk: 0.92,
   bestBid: 0.91,
   availableUsdUnderCap: 100,
+      availableUsdAllLevels: 100,
   estimatedSharesForAmount: 1.08,
   estimatedAveragePrice: 0.92,
   rawAskLevels: [{ price: 0.92, size: 100 }],

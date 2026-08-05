@@ -17,6 +17,7 @@ import {
 import { logger } from "./logger.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
 import {
+  DEFAULT_MIN_SECONDS_TO_END,
   getEntryWindowSeconds,
   getMarketOutcomeBoolean,
   getMarketOutcomeNumber,
@@ -67,7 +68,7 @@ const DEFAULT_EV_MAX_CLAIMED_EDGE = 0.2;
 // mecanismo se conocia de antes y es lo que lo hace creible mas alla de la muestra: cerca del cierre
 // el CLOB bloquea las ordenes taker (post_only_mode), la profundidad se adelgaza y el precio ya esta
 // practicamente resuelto. Hasta ahora el bot solo abandonaba la ventana DESPUES de que lo rechazaran.
-const DEFAULT_MIN_SECONDS_TO_END = 10;
+// La constante vive en markets.ts porque los simuladores tambien tienen que respetarla.
 // Spread maximo (ask - bid) para entrar. Medido sobre 1.742 ventanas candidatas: el resultado se
 // degrada de forma MONOTONA con el spread — hasta 0.02 gana 60.8% contra un break-even de 53.0%, y por
 // encima de 0.12 gana 50.9% contra 55.0%. Lo que lo hace creible mas alla del patron es el mecanismo:
@@ -1276,7 +1277,7 @@ export class BotRunner {
 
     // Thin book first: it is the binding constraint; if it rejects, no position exists yet.
     const thinFirst: Outcome[] =
-      up.availableUsdUnderCap / up.bestAsk <= down.availableUsdUnderCap / down.bestAsk ? ["UP", "DOWN"] : ["DOWN", "UP"];
+      up.availableUsdAllLevels / up.bestAsk <= down.availableUsdAllLevels / down.bestAsk ? ["UP", "DOWN"] : ["DOWN", "UP"];
     const legs: Partial<Record<Outcome, TradeAttempt>> = {};
     for (const outcome of thinFirst) {
       const quote = outcome === "UP" ? up : down;

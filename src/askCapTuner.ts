@@ -29,6 +29,9 @@ export const ASK_CAP_TUNER_LOCKS = {
   MIN_WINDOW_WIDTH: 0.15,
 } as const;
 
+/** Fraccion de una banda que puede quedar fuera de la ventana y aun considerarla contenida. */
+const BAND_CONTAINMENT_TOLERANCE = 0.15;
+
 export interface AskCapRecommendation {
   /** Cap the bands justify (already clamped to [floor, ceiling]). */
   targetCap: number;
@@ -53,9 +56,20 @@ export interface AskWindowRecommendation {
  * -$18 vs a fixed cap). Here the floor rises past leading losing bands and the cap stops at the last
  * contiguous paying band.
  */
+/**
+ * @param current  Ventana en vigor ahora mismo (de donde parten los pasos graduales).
+ * @param baseline Ventana BASE aprobada en configuracion, que el tuner nunca toca. Los recortes se
+ *   calculan siempre contra ella, no contra `current`, y por eso el tuner NO ES UN TRINQUETE: si la
+ *   evidencia que justificaba un recorte desaparece, el recorte deja de proponerse y la ventana vuelve
+ *   sola hacia la base. Sin esto, cada pasada recortaba desde donde habia quedado la anterior, un mal
+ *   parche pasajero se volvia permanente, y al dejar de operar en la franja cortada ya nunca llegaban
+ *   datos nuevos que pudieran rehabilitarla: la ventana acabaria clavada en el ancho minimo, y quiza
+ *   en el minimo equivocado. Puede reabrir HASTA la base, nunca mas alla.
+ */
 export function recommendAskWindow(
   bands: AskBandSummary,
   current: { floor: number; cap: number },
+  baseline: { floor: number; cap: number } = current,
 ): AskWindowRecommendation | undefined {
   const locks = ASK_CAP_TUNER_LOCKS;
   if (bands.totalTrades < locks.MIN_TOTAL_TRADES) {
@@ -67,36 +81,58 @@ export function recommendAskWindow(
   // bandas que el propio ledger mostraba perdedoras: la banda barata [0,0.45) mezcla una zona rentable
   // (~0.30-0.35) con un pozo (~0.40-0.45, 19% de aciertos contra 42.5% de break-even), y el agregado
   // podia pasar el filtro de win-rate mientras el dinero era negativo. El realizado manda.
-  const pays = (band: AskBandSummary["bands"][number]) =>
-    band.trades >= locks.MIN_BAND_TRADES &&
-    (band.winRate ?? 0) - (band.breakEvenRate ?? 1) >= locks.EDGE_MARGIN &&
-    band.netUsd > 0;
+  // SOLO ESTRECHA. La version anterior abria la ventana hacia las bandas que habian ganado, y perdia
+  // $28.55 contra la config fija en replay. El motivo es la asimetria del error: una banda se elige
+  // PORQUE gano, asi que las elegidas son desproporcionadamente las que tuvieron suerte, y fuera de
+  // muestra revierten (maldicion del ganador). Excluir no tiene ese problema — una banda que perdio
+  // dinero de verdad, con muestra, es evidencia utilizable, y equivocarse solo cuesta la ganancia casi
+  // nula de una banda neutra. Es la misma asimetria que hace util al veto de realizedGuard.ts.
+  const lost = (band: AskBandSummary["bands"][number]) =>
+    band.trades >= locks.MIN_BAND_TRADES && band.netUsd < 0;
+  const measured = (band: AskBandSummary["bands"][number]) => band.trades >= locks.MIN_BAND_TRADES;
 
-  // Walk cheap -> expensive. The first paying band opens the window; the run ends at the first
-  // sufficiently-sampled band that does NOT pay. Thin bands neither open, extend nor close it.
-  let targetFloor: number | undefined;
-  let targetCap: number | undefined;
+  // Se parte de la BASE, no de la ventana actual: asi los recortes se re-justifican en cada pasada en
+  // vez de acumularse. Si ya no hay evidencia, el objetivo vuelve a ser la base.
+  let targetFloor = baseline.floor;
+  let targetCap = baseline.cap;
   const supporting: string[] = [];
-  for (const band of bands.bands) {
-    if (band.trades < locks.MIN_BAND_TRADES) {
-      continue;
-    }
-    if (pays(band)) {
-      if (targetFloor === undefined) {
-        targetFloor = band.lo;
-      }
-      targetCap = band.hi;
-      supporting.push(
-        `${band.lo.toFixed(2)}-${band.hi.toFixed(2)} +${(((band.winRate ?? 0) - (band.breakEvenRate ?? 1)) * 100).toFixed(0)}pp (n=${band.trades})`,
-      );
-    } else if (targetFloor !== undefined) {
-      break; // la racha rentable terminó
-    }
+  // Solo bandas contenidas ENTERAS en la ventana. Con solapamiento parcial el neto de la banda incluye
+  // operaciones que la ventana ya excluye, y el tuner le achaca al tramo de dentro perdidas de fuera:
+  // medido, con suelo de ETH en 0.40 la banda [0.00,0.45] traia -$190.53 casi todos de la zona ya
+  // vetada, y el recorte resultante costaba $18.31 fuera de muestra.
+  // Solo bandas contenidas en la ventana. Con solapamiento parcial el neto de la banda incluye
+  // operaciones que la ventana ya excluye, y el tuner le achaca al tramo de dentro perdidas de fuera:
+  // medido, con suelo de ETH en 0.40 la banda [0.00,0.45] traia -$190.53 casi todos de la zona ya
+  // vetada, y el recorte resultante costaba $18.31 fuera de muestra.
+  //
+  // La contencion se mide con tolerancia porque los bordes de banda no se alinean con los de la
+  // ventana: un suelo de 0.01 deja fuera el 2% de la banda [0,0.45] (irrelevante) mientras uno de 0.40
+  // deja fuera el 89% (decisivo). Se exige que la parte excluida sea marginal.
+  const contained = (band: AskBandSummary["bands"][number]) => {
+    const width = band.hi - band.lo;
+    if (width <= 0) return false;
+    const belowFloor = Math.max(0, baseline.floor - band.lo) / width;
+    const aboveCap = Math.max(0, band.hi - baseline.cap) / width;
+    return belowFloor <= BAND_CONTAINMENT_TOLERANCE && aboveCap <= BAND_CONTAINMENT_TOLERANCE;
+  };
+  const inside = bands.bands.filter(contained);
+
+  // Desde abajo: subir el suelo mientras la banda mas barata dentro de la ventana pierda dinero. Se
+  // para en la primera que NO perdio o que no tiene muestra: nunca se corta a ciegas.
+  for (const band of inside) {
+    if (!measured(band) || !lost(band)) break;
+    targetFloor = Math.max(targetFloor, band.hi);
+    supporting.push(`fuera ${band.lo.toFixed(2)}-${band.hi.toFixed(2)} ($${band.netUsd.toFixed(2)}, n=${band.trades})`);
+  }
+  // Desde arriba: bajar el techo con el mismo criterio.
+  for (const band of [...inside].reverse()) {
+    if (band.hi <= targetFloor || !measured(band) || !lost(band)) break;
+    targetCap = Math.min(targetCap, band.lo);
+    supporting.push(`fuera ${band.lo.toFixed(2)}-${band.hi.toFixed(2)} ($${band.netUsd.toFixed(2)}, n=${band.trades})`);
   }
 
-  if (targetFloor === undefined || targetCap === undefined) {
-    return undefined; // ninguna banda con muestra suficiente paga: no hay evidencia para mover nada
-  }
+  // Sin recortes justificados el objetivo ES la base. No se sale antes de tiempo: si la ventana venia
+  // recortada de una decision anterior que ya no se sostiene, esto es lo que la devuelve a su sitio.
   const clampedFloor = Math.min(Math.max(targetFloor, locks.WINDOW_MIN), locks.WINDOW_MAX);
   const clampedCap = Math.min(Math.max(targetCap, locks.WINDOW_MIN), locks.WINDOW_MAX);
   if (clampedCap - clampedFloor < locks.MIN_WINDOW_WIDTH) {
@@ -110,8 +146,30 @@ export function recommendAskWindow(
     targetCap: round2(clampedCap),
     nextFloor: stepToward(current.floor, clampedFloor, locks.MAX_STEP),
     nextCap: stepToward(current.cap, clampedCap, locks.MAX_STEP),
-    reason: `Bandas rentables: ${supporting.join("; ")}`,
+    reason:
+      supporting.length > 0
+        ? `Recorte por bandas perdedoras: ${supporting.join("; ")}`
+        : "Sin bandas perdedoras con muestra: se devuelve la ventana a su base configurada",
   };
+}
+
+/**
+ * Cota inferior de Wilson al 95% para una proporcion. Se prefiere al intervalo normal porque no se
+ * rompe con muestras pequeñas ni con tasas cercanas a 0 o 1, que es justo donde vive este problema.
+ *
+ * Responde a la pregunta correcta: "descontando lo que puede ser suerte, ¿que tasa de acierto puedo
+ * defender?". Con 20 operaciones al 55% devuelve ~0.34; con 200 al 55%, ~0.48.
+ */
+export function wilsonLowerBound(winRate: number, trades: number, z = 1.96): number {
+  if (trades <= 0) {
+    return 0;
+  }
+  const p = Math.min(Math.max(winRate, 0), 1);
+  const z2 = z * z;
+  const denominator = 1 + z2 / trades;
+  const centre = p + z2 / (2 * trades);
+  const margin = z * Math.sqrt((p * (1 - p)) / trades + z2 / (4 * trades * trades));
+  return Math.max(0, (centre - margin) / denominator);
 }
 
 function stepToward(from: number, to: number, maxStep: number): number {

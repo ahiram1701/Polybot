@@ -103,6 +103,37 @@ const envSchema = z.object({
   MAX_ASK_PRICE_ETH_DOWN: optionalAskPrice,
   MAX_ASK_PRICE_DOGE_UP: optionalAskPrice,
   MAX_ASK_PRICE_DOGE_DOWN: optionalAskPrice,
+  // Suelo de ask por mercado/lado. Existe en BotConfig, y no solo en los settings de la UI, porque es
+  // la BASE contra la que el tuner de ventana mide sus recortes. Si la base viviera en el mismo
+  // fichero que el tuner escribe, cada recorte moveria la referencia del siguiente y los recortes se
+  // acumularian: exactamente el trinquete que el tuner debe evitar.
+  // Base ANCHA a proposito. El tuner solo recorta desde aqui, asi que dejar el suelo abierto le
+  // permite APRENDER el suelo de cada mercado en vez de heredar el que yo elegi a mano: medido, la
+  // banda [0,0.45] gana +$123.60 en BTC y pierde -$116.27 en ETH, de modo que el mismo suelo para los
+  // dos es necesariamente el equivocado para uno. Ademas 0.01 y 0.70 son BORDES DE BANDA: una base a
+  // media banda (0.25, pongamos) dejaria esa banda permanentemente inevaluable por el criterio de
+  // contencion, y el tuner quedaria ciego justo donde ETH sangra.
+  MIN_ASK_PRICE: z.coerce.number().gte(0).lt(1).default(0.01),
+  MIN_ASK_PRICE_BTC_UP: optionalAskPrice,
+  MIN_ASK_PRICE_BTC_DOWN: optionalAskPrice,
+  MIN_ASK_PRICE_ETH_UP: optionalAskPrice,
+  MIN_ASK_PRICE_ETH_DOWN: optionalAskPrice,
+  MIN_ASK_PRICE_DOGE_UP: optionalAskPrice,
+  MIN_ASK_PRICE_DOGE_DOWN: optionalAskPrice,
+  // Ventana BASE del tuner de ask: el unico rango dentro del cual puede moverse. Es un dato aparte, y
+  // no los defaults de arranque de arriba, porque esos valen 0.01/0.98 — reutilizarlos dejaria al
+  // tuner "volver" hacia 0.98, la zona que en el ledger hizo 225 operaciones para ganar $8.68.
+  //
+  // Ancha a proposito, para que el tuner APRENDA cada borde en vez de heredar el que yo elegi a mano:
+  // la banda barata gana +$123.60 en BTC y pierde -$116.27 en ETH, asi que un mismo suelo para ambos
+  // es forzosamente el equivocado para uno. Techo en 0.70, un escalon sobre el 0.65 de hoy y lejos de
+  // la zona sin dinero; el techo duro de MAX_ASK_PRICE_CEILING sigue por encima como red.
+  //
+  // Ambos son BORDES DE BANDA (0.45/0.55/0.65/0.70/0.75/0.80). Una base a media banda dejaria esa
+  // banda permanentemente inevaluable por el criterio de contencion, y el tuner quedaria ciego justo
+  // donde ETH sangra.
+  ASK_WINDOW_BASELINE_MIN: z.coerce.number().gte(0).lt(1).default(0.01),
+  ASK_WINDOW_BASELINE_MAX: z.coerce.number().gt(0).lte(1).default(0.7),
   REQUIRE_POSITIVE_EV: z
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
@@ -266,6 +297,14 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     },
     env.MAX_ASK_PRICE,
   );
+  const minAskPriceByMarketOutcome = defaultMarketOutcomeMaxAskPrices(
+    {
+      BTC: { UP: env.MIN_ASK_PRICE_BTC_UP, DOWN: env.MIN_ASK_PRICE_BTC_DOWN },
+      ETH: { UP: env.MIN_ASK_PRICE_ETH_UP, DOWN: env.MIN_ASK_PRICE_ETH_DOWN },
+      DOGE: { UP: env.MIN_ASK_PRICE_DOGE_UP, DOWN: env.MIN_ASK_PRICE_DOGE_DOWN },
+    },
+    env.MIN_ASK_PRICE,
+  );
 
   const config: BotConfig = {
     mode,
@@ -285,6 +324,8 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     autoMinLive: env.AUTO_MIN_LIVE,
     maxAskPrice: env.MAX_ASK_PRICE,
     maxAskPriceByMarketOutcome,
+    minAskPriceByMarketOutcome,
+    askWindowBaseline: { floor: env.ASK_WINDOW_BASELINE_MIN, cap: env.ASK_WINDOW_BASELINE_MAX },
     maxAskPriceCeiling: env.MAX_ASK_PRICE_CEILING,
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
