@@ -13,7 +13,9 @@ import type { MarketSymbol, Outcome } from "../types.js";
 /**
  * Walk-forward sweep of the ESTIMATOR feeding the EV gate (the gate knobs stay at the deployed
  * config). Dimensions:
- *   estimador  {exact, knn3, knn6}   — exact per-outcome counting vs similarity with 3 or 6 features
+ *   estimador  {exact, knn3, knn5, knn6} — conteo exacto por lado vs similitud con 3, 5 o 6 features
+ *                                      (knn5 = knn6 sin quoteSkew: la variante desplegable sin pedir
+ *                                      el libro contrario; medirla revelo que es PEOR que knn3)
  *   halfLife   {inf, 3, 7, 14} días  — recency decay of neighbour weights (knn only)
  *   prior      {0.5, ask}            — k-NN prior anchor (knn only)
  *   calibración {off, on}            — empirical map built ONLY from previously taken trades (no
@@ -39,7 +41,10 @@ interface Entry {
   atMs: number;
 }
 
-type EstimatorKind = "exact" | "knn3" | "knn6";
+// knn5 = velocidad + spread pero SIN quoteSkew: es exactamente lo que produccion puede aportar sin
+// una peticion extra al libro del lado contrario en plena ventana de entrada (el loop ya sufre
+// timeouts de red). Medir la variante DESPLEGABLE, no solo la ideal.
+type EstimatorKind = "exact" | "knn3" | "knn5" | "knn6";
 
 interface Variant {
   estimator: EstimatorKind;
@@ -123,7 +128,7 @@ async function main(): Promise<void> {
   );
 
   const variants: Variant[] = [{ estimator: "exact", priorAsk: false, calibrated: false }];
-  for (const estimator of ["knn3", "knn6"] as EstimatorKind[]) {
+  for (const estimator of ["knn3", "knn5", "knn6"] as EstimatorKind[]) {
     for (const halfLifeDays of [undefined, 3, 7, 14]) {
       for (const priorAsk of [false, true]) {
         variants.push({ estimator, halfLifeDays, priorAsk, calibrated: false });
@@ -133,39 +138,65 @@ async function main(): Promise<void> {
   // Calibración: sobre el baseline exacto y sobre el mejor knn "plano" (se agregan aquí explícitas).
   variants.push({ estimator: "exact", priorAsk: false, calibrated: true });
   variants.push({ estimator: "knn6", priorAsk: true, calibrated: true });
+  variants.push({ estimator: "knn5", priorAsk: true, calibrated: true });
   variants.push({ estimator: "knn6", priorAsk: false, calibrated: true });
 
-  const rows: { variant: Variant; agg: Result }[] = [];
-  for (const variant of variants) {
-    const agg: Result = { trades: 0, wins: 0, net: 0, calibrationErrorSum: 0 };
-    for (const market of SUPPORTED_MARKETS) {
-      const result = runVariant(entriesByMarket.get(market) ?? [], variant, { safetyMargin, minExpectedRoi, minHistory });
-      agg.trades += result.trades;
-      agg.wins += result.wins;
-      agg.net += result.net;
-      agg.calibrationErrorSum += result.calibrationErrorSum;
-    }
-    rows.push({ variant, agg });
-  }
+  // Corte cronologico global: la mitad temprana elige variante, la tardia la juzga.
+  const allAtMs = [...entriesByMarket.values()].flat().map((entry) => entry.atMs).sort((a, b) => a - b);
+  const splitMs = allAtMs[Math.floor(allAtMs.length / 2)] ?? 0;
+  console.log(`Corte in/out: ${new Date(splitMs).toISOString().slice(0, 16).replace("T", " ")} UTC\n`);
 
-  rows.sort((left, right) => right.agg.net - left.agg.net);
-  console.log("=== Variantes (ordenadas por net $ desc) ===");
-  console.log("  estimador  halfLife  prior  calib | trades  win%   net$     ROI%   calErr");
-  for (const { variant, agg } of rows) {
+  const sweep = (countFromMs: number): Map<Variant, Result> => {
+    const out = new Map<Variant, Result>();
+    for (const variant of variants) {
+      const agg: Result = { trades: 0, wins: 0, net: 0, calibrationErrorSum: 0 };
+      for (const market of SUPPORTED_MARKETS) {
+        const result = runVariant(entriesByMarket.get(market) ?? [], variant, {
+          safetyMargin,
+          minExpectedRoi,
+          minHistory,
+          countFromMs,
+        });
+        agg.trades += result.trades;
+        agg.wins += result.wins;
+        agg.net += result.net;
+        agg.calibrationErrorSum += result.calibrationErrorSum;
+      }
+      out.set(variant, agg);
+    }
+    return out;
+  };
+
+  const full = sweep(0);
+  const oos = sweep(splitMs);
+  const rows = variants
+    .map((variant) => ({ variant, agg: full.get(variant)!, out: oos.get(variant)! }))
+    .sort((left, right) => right.agg.net - left.agg.net);
+
+  console.log("=== Variantes (ordenadas por net $ del periodo COMPLETO) ===");
+  console.log("  estimador  halfLife  prior  calib | COMPLETO trades  win%   net$     ROI%   calErr | FUERA DE MUESTRA trades   net$     ROI%");
+  for (const { variant, agg, out } of rows) {
     const tag = variant.estimator === "exact" && !variant.calibrated ? "  <= BASELINE" : "";
     const hl = variant.estimator === "exact" ? "  -" : variant.halfLifeDays === undefined ? "inf" : String(variant.halfLifeDays);
     const calErr = agg.trades > 0 ? (agg.calibrationErrorSum / agg.trades).toFixed(3) : "-";
     console.log(
       `  ${variant.estimator.padEnd(9)}  ${hl.padStart(5)}    ${variant.priorAsk ? "ask " : "0.5 "}  ${variant.calibrated ? "on " : "off"} | ` +
-        `${String(agg.trades).padStart(5)}  ${pct(agg.wins, agg.trades).padStart(4)}  ${fmtNet(agg.net)}  ${roi(agg).padStart(6)}  ${calErr}${tag}`,
+        `${String(agg.trades).padStart(13)}  ${pct(agg.wins, agg.trades).padStart(4)}  ${fmtNet(agg.net)}  ${roi(agg).padStart(6)}  ${calErr} | ` +
+        `${String(out.trades).padStart(16)}  ${fmtNet(out.net)}  ${roi(out).padStart(6)}${tag}`,
     );
   }
 }
 
+/**
+ * `countFromMs` separa "aprender" de "puntuar": las entradas anteriores siguen alimentando la
+ * historia del estimador (walk-forward intacto) pero NO suman al resultado. Es lo que permite elegir
+ * variante en la primera mitad y medirla en la segunda sin contaminar el estimador con un arranque en
+ * frio. Barrer ~20 variantes y quedarse con el maximo es sobreajuste garantizado sin esto.
+ */
 function runVariant(
   entries: Entry[],
   variant: Variant,
-  gate: { safetyMargin: number; minExpectedRoi: number; minHistory: number },
+  gate: { safetyMargin: number; minExpectedRoi: number; minHistory: number; countFromMs?: number },
 ): Result {
   const exactHistory: Record<Outcome, { wins: number; trades: number }> = {
     UP: { wins: 0, trades: 0 },
@@ -183,14 +214,15 @@ function runVariant(
       tradeCount = exactHistory[entry.outcome].trades;
     } else {
       const rich = variant.estimator === "knn6";
+      const withVelocityAndSpread = rich || variant.estimator === "knn5";
       const estimate = estimateWinProbabilityBySimilarity(
         pool,
         {
           secondsToEnd: entry.secondsToEnd,
           favorableDistanceUsd: entry.absDistanceUsd,
           ask: entry.ask,
-          velocityUsdPerSecond: rich ? entry.velocityUsdPerSecond : undefined,
-          spread: rich ? entry.spread : undefined,
+          velocityUsdPerSecond: withVelocityAndSpread ? entry.velocityUsdPerSecond : undefined,
+          spread: withVelocityAndSpread ? entry.spread : undefined,
           quoteSkew: rich ? entry.quoteSkew : undefined,
         },
         {
@@ -217,11 +249,13 @@ function runVariant(
         calibration,
       });
       if (ev.passesRecommendedEntry) {
-        result.trades += 1;
-        result.net += entry.result;
-        result.calibrationErrorSum += Math.abs(ev.adjustedWinProbability - (entry.won ? 1 : 0));
-        if (entry.won) {
-          result.wins += 1;
+        if (entry.atMs >= (gate.countFromMs ?? 0)) {
+          result.trades += 1;
+          result.net += entry.result;
+          result.calibrationErrorSum += Math.abs(ev.adjustedWinProbability - (entry.won ? 1 : 0));
+          if (entry.won) {
+            result.wins += 1;
+          }
         }
         // Runtime parity: the ledger stores the PRE-calibration shrinkage probability of taken trades.
         const raw = variant.calibrated

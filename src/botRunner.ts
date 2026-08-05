@@ -763,7 +763,13 @@ export class BotRunner {
     if (!requirePositiveEv) {
       return { ...signal, quote };
     }
-    const evResult = await this.evaluateExpectedValue(signal, quote.bestAsk);
+    // El libro del lado CONTRARIO ya viene cotizado en la misma pasada (se piden UP y DOWN en
+    // paralelo), asi que `quoteSkew` no cuesta ni una llamada extra en plena ventana de entrada.
+    const oppositeQuote = quoteCache.get(signal.market.slug)?.[signal.outcome === "UP" ? "DOWN" : "UP"];
+    const evResult = await this.evaluateExpectedValue(signal, quote.bestAsk, {
+      bestBid: quote.bestBid,
+      oppositeAsk: oppositeQuote?.bestAsk,
+    });
     if (!evResult) {
       return undefined;
     }
@@ -878,6 +884,7 @@ export class BotRunner {
   private async evaluateExpectedValue(
     signal: TradeSignal,
     askPrice: number | undefined,
+    book?: { bestBid?: number; oppositeAsk?: number },
   ): Promise<EvGateResult | undefined> {
     if (askPrice === undefined || askPrice <= 0) {
       return undefined;
@@ -903,12 +910,26 @@ export class BotRunner {
       if (this.config.evUseSimilarity && this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity) {
         // Similarity gate: match the live setup against the NEAREST historical setups (not the exact
         // config), so a setup with real edge but few exact analogues can still trade.
-        // 2026-07-16 estimatorBacktest: 3 features + prior anclado al ask GANÓ el walk-forward
-        // (+$539 vs +$517 exacto, calErr 0.299 vs 0.331); las features ricas (velocity/spread/skew,
-        // "knn6") PERDIERON con los quotes actuales — el pool las conserva, pero la query las omite a
-        // propósito (knnCore solo compara features presentes en ambos lados). Re-testear cuando el
-        // muestreo de quotes sea más denso.
+        // Features RICAS (velocity/spread/quoteSkew, "knn6") + prior anclado al ask.
+        //
+        // El barrido de 2026-07-16 concluyó lo contrario (knn3 gana, knn6 pierde), pero se puntuó con
+        // `sample.winningOutcome`, que se equivoca un 12.5% y correlacionado con la señal — ver
+        // `analyticsTruth`. Rebarrido 2026-08-05 con el juez de mercado, con corte in/out en
+        // 2026-07-22 (net $ sobre stake $1, columna fuera de muestra):
+        //   knn6 + prior ask   +$41.84 total  |  +$40.21 fuera de muestra (7.9% ROI)
+        //   knn3 + prior ask   +$31.55        |  +$25.33                  (4.7%)
+        //   knn5 (sin skew)    +$16.11        |  +$15.01                  (2.8%)
+        //   exact (baseline)    +$6.60        |   +$8.51                  (1.9%)
+        // knn6 gana en AMBAS mitades y todas sus variantes baten a todas las de knn3. Ojo con knn5:
+        // añadir velocity y spread SIN quoteSkew es PEOR que knn3 — el trabajo lo hace el skew, y las
+        // otras dos solas solo diluyen la distancia del k-NN. Si algun dia el skew deja de estar
+        // disponible, hay que volver a knn3, no quedarse a medias.
         const secondsRemaining = (signal.market.endMs - signal.tick.timestampMs) / 1000;
+        const previousTick = this.deps.priceFeed.getTickAtOrBefore?.(
+          signal.market.asset,
+          signal.tick.timestampMs - 1,
+        );
+        const elapsedSeconds = previousTick ? (signal.tick.timestampMs - previousTick.timestampMs) / 1000 : 0;
         const estimate = await this.deps.strategyAnalysisEngine.estimateSetupWinRateBySimilarity(
           signal.market.asset,
           signal.outcome,
@@ -917,6 +938,12 @@ export class BotRunner {
             secondsToEnd: secondsRemaining,
             favorableDistanceUsd: Math.abs(signal.distanceUsd),
             ask: askPrice,
+            velocityUsdPerSecond:
+              previousTick && elapsedSeconds > 0
+                ? (signal.tick.value - previousTick.value) / elapsedSeconds
+                : undefined,
+            spread: book?.bestBid != null && book.bestBid > 0 ? askPrice - book.bestBid : undefined,
+            quoteSkew: book?.oppositeAsk != null && book.oppositeAsk > 0 ? book.oppositeAsk - askPrice : undefined,
           },
           { priorProbability: askPrice },
         );
