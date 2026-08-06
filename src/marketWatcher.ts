@@ -10,6 +10,9 @@ import { marketSymbolFromSlug } from "./markets.js";
 
 type FetchLike = typeof fetch;
 
+/** Duracion de una ventana Up/Down. */
+const WINDOW_MS = 300_000;
+
 /** Margen a cada lado de la ventana donde el estado del mercado SI cambia (apertura y cierre). */
 const BOUNDARY_MS = 30_000;
 
@@ -60,6 +63,30 @@ export class MarketWatcher {
     );
   }
 
+  /**
+   * Calienta la cache con la ventana SIGUIENTE antes de que llegue.
+   *
+   * El fetch a gamma resulto ser el 75,6% del tiempo de las iteraciones lentas, y siempre por lo
+   * mismo: al cambiar de ventana el slug es nuevo, la cache esta fria y toca esperar hasta 5s por un
+   * dato que ademas hace falta ya — es justo el momento en que se captura el precio de apertura.
+   *
+   * Pero el slug de la ventana siguiente es determinista, asi que se puede pedir con antelacion,
+   * durante la parte tranquila de la ventana actual. Cuando llega el cambio, ya esta en cache.
+   *
+   * No espera ni propaga errores: si falla, el camino normal lo reintenta como siempre. Una mejora de
+   * latencia jamas debe poder tumbar la iteracion que intenta acelerar.
+   */
+  prefetchNextWindow(markets: readonly MarketSymbol[], nowMs = Date.now()): void {
+    const nextWindowStartMs = getWindowEndMs(getWindowStartMs(nowMs));
+    for (const market of markets) {
+      const slug = getUpDownSlugFromStartMs(market, nextWindowStartMs);
+      if (this.cache.has(slug)) {
+        continue;
+      }
+      void this.getMarketBySlug(slug, nowMs).catch(() => undefined);
+    }
+  }
+
   async getMarketByWindowStartMs(
     windowStartMs: number,
     nowMs = Date.now(),
@@ -85,6 +112,14 @@ export class MarketWatcher {
       return this.cacheTtlMs;
     }
     const msDesdeApertura = nowMs - windowStartMs;
+    // Ventana que aun no ha empezado (la trae `prefetchNextWindow`): sus metadatos no pueden haber
+    // cambiado todavia, asi que la entrada debe sobrevivir HASTA el cambio de ventana. Con la regla
+    // de borde de abajo caducaria a los 5s y el prefetch no habria servido de nada.
+    if (msDesdeApertura < 0) {
+      // Acotado a una ventana: el prefetch se lanza como mucho con 5 min de antelacion, y sin tope un
+      // slug con marca de tiempo incoherente cachearia durante anos.
+      return Math.min(-msDesdeApertura + BOUNDARY_MS, WINDOW_MS + BOUNDARY_MS);
+    }
     const msAlCierre = getWindowEndMs(windowStartMs) - nowMs;
     const enElBorde = msAlCierre <= BOUNDARY_MS || msDesdeApertura <= BOUNDARY_MS;
     return enElBorde ? this.cacheTtlMs : this.midWindowCacheTtlMs;

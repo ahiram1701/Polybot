@@ -106,15 +106,18 @@ describe("MarketWatcher: resiliencia de red", () => {
       }
       throw new TypeError("fetch failed");
     }) as unknown as typeof fetch;
-    // TTL de 1ms: la segunda llamada ya encuentra la entrada caducada y tiene que ir a la red.
-    const watcher = new MarketWatcher("https://gamma.test", fetchFn, 1);
+    // Ambos TTL a 1ms: la segunda llamada encuentra la entrada caducada y tiene que ir a la red.
+    // Las marcas de tiempo van DENTRO de la ventana del slug, porque desde que el TTL depende de la
+    // posicion en la ventana, un `now` incoherente con el slug ya no describe nada real.
+    const enVentana = 1778127900_000 + 150_000;
+    const watcher = new MarketWatcher("https://gamma.test", fetchFn, 1, 1);
 
-    const first = await watcher.getMarketBySlug("btc-updown-5m-1778127900", 1_000);
+    const first = await watcher.getMarketBySlug("btc-updown-5m-1778127900", enVentana);
     expect(first?.slug).toBe("btc-updown-5m-1778127900");
 
     // Dentro de una ventana de 5 min el slug y los tokenIds no cambian: un dato de hace segundos
     // vale, y es infinitamente mejor que perder la ventana de entrada.
-    const stale = await watcher.getMarketBySlug("btc-updown-5m-1778127900", 60_000);
+    const stale = await watcher.getMarketBySlug("btc-updown-5m-1778127900", enVentana + 10_000);
     expect(stale?.slug).toBe("btc-updown-5m-1778127900");
     expect(calls).toBe(2);
   });
@@ -240,5 +243,88 @@ describe("MarketWatcher: cache y timeout segun lo que hay en juego", () => {
     }) as unknown as typeof fetch;
     const watcher = new MarketWatcher("https://gamma.test", fetchFn);
     await expect(watcher.getMarketBySlug(SLUG, WINDOW_START_MS + 150_000)).rejects.toThrow("timeout");
+  });
+});
+
+/**
+ * El fetch a gamma resulto ser el 75,6% del tiempo de las iteraciones lentas, y siempre por lo mismo:
+ * al cambiar de ventana el slug es nuevo, la cache esta fria y toca esperar por un dato que hace falta
+ * justo entonces — es cuando se captura el precio de apertura. El slug siguiente es determinista, asi
+ * que se puede pedir por adelantado.
+ */
+describe("MarketWatcher: prefetch de la ventana siguiente", () => {
+  const WINDOW_START_MS = 1778127900_000;
+
+  function espia() {
+    const pedidos: string[] = [];
+    const fetchFn = (async (url: string) => {
+      const slug = String(url).split("/").pop() ?? "";
+      pedidos.push(slug);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          title: "T",
+          markets: [
+            {
+              slug,
+              question: "q",
+              conditionId: "0x1",
+              outcomes: JSON.stringify(["Up", "Down"]),
+              clobTokenIds: JSON.stringify(["u", "d"]),
+              outcomePrices: JSON.stringify(["0.5", "0.5"]),
+              endDate: new Date(WINDOW_START_MS + 600_000).toISOString(),
+              eventStartTime: new Date(WINDOW_START_MS + 300_000).toISOString(),
+              acceptingOrders: true,
+              active: true,
+              closed: false,
+              orderPriceMinTickSize: 0.01,
+              orderMinSize: 5,
+              negRisk: false,
+            },
+          ],
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { fetchFn, pedidos };
+  }
+
+  it("pide la ventana siguiente, no la actual", async () => {
+    const s = espia();
+    const watcher = new MarketWatcher("https://gamma.test", s.fetchFn);
+    watcher.prefetchNextWindow(["BTC"], WINDOW_START_MS + 150_000);
+    await new Promise((r) => setTimeout(r, 0));
+    // 1778127900 + 300s = 1778128200
+    expect(s.pedidos).toEqual(["btc-updown-5m-1778128200"]);
+  });
+
+  it("no repite el prefetch si ya esta en cache", async () => {
+    const s = espia();
+    const watcher = new MarketWatcher("https://gamma.test", s.fetchFn);
+    watcher.prefetchNextWindow(["BTC"], WINDOW_START_MS + 150_000);
+    await new Promise((r) => setTimeout(r, 0));
+    watcher.prefetchNextWindow(["BTC"], WINDOW_START_MS + 160_000);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.pedidos).toHaveLength(1);
+  });
+
+  it("lo prefetcheado sigue vivo cuando llega el cambio de ventana", async () => {
+    // Sin esto el prefetch no serviria de nada: la regla de borde lo caducaria a los 5s.
+    const s = espia();
+    const watcher = new MarketWatcher("https://gamma.test", s.fetchFn);
+    watcher.prefetchNextWindow(["BTC"], WINDOW_START_MS + 150_000);
+    await new Promise((r) => setTimeout(r, 0));
+    const alAbrir = await watcher.getMarketBySlug("btc-updown-5m-1778128200", WINDOW_START_MS + 301_000);
+    expect(alAbrir?.slug).toBe("btc-updown-5m-1778128200");
+    expect(s.pedidos).toHaveLength(1);
+  });
+
+  it("un fallo del prefetch no propaga: nunca debe tumbar la iteracion que acelera", async () => {
+    const fetchFn = (async () => {
+      throw new Error("gamma caido");
+    }) as unknown as typeof fetch;
+    const watcher = new MarketWatcher("https://gamma.test", fetchFn);
+    expect(() => watcher.prefetchNextWindow(["BTC", "ETH", "DOGE"], WINDOW_START_MS + 150_000)).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
   });
 });

@@ -121,6 +121,8 @@ interface MarketWatcherLike {
   getCurrentMarket(nowMs?: number, market?: MarketSymbol): Promise<MarketInfo | null>;
   getCurrentMarkets?(markets: MarketSymbol[], nowMs?: number): Promise<MarketInfo[]>;
   getMarketBySlug?(slug: string, nowMs?: number): Promise<MarketInfo | null>;
+  /** Opcional: los dobles de test no lo implementan y el bucle funciona igual, solo con la cache fria. */
+  prefetchNextWindow?(markets: readonly MarketSymbol[], nowMs?: number): void;
 }
 
 export interface RunnerPriceFeed {
@@ -395,6 +397,10 @@ export class BotRunner {
     // El aislamiento por mercado vive en el watcher y en `getCurrentMarkets`: un fallo parcial ya no
     // llega hasta aqui. Lo que SI sube es el apagon total, y debe seguir subiendo — el bucle continuo
     // lo captura en `runLoopIteration` y un `start({ once: true })` se lo devuelve a quien llamo.
+    // Calienta la ventana siguiente durante la parte tranquila de la actual: el cambio de ventana era
+    // el unico sitio donde la cache llegaba fria, y ahi un fetch lento cuesta el precio de apertura.
+    // Va SIN await a proposito — no debe sumar ni un milisegundo al bucle.
+    this.deps.watcher.prefetchNextWindow?.(SUPPORTED_MARKETS, nowMs);
     const markets = await timer.time("fetch", () => this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs));
     if (markets.length === 0) {
       this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
