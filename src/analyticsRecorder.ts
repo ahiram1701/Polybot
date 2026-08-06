@@ -1,6 +1,7 @@
 import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { averageFillPrice } from "./orderbookService.js";
 import { writeFileAtomic } from "./atomicWrite.js";
 import { marketSymbolFromSlug } from "./markets.js";
 import { secondsToEnd } from "./time.js";
@@ -230,6 +231,11 @@ export class AnalyticsRecorder {
       upBestBid: quotes.UP?.bestBid,
       downBestAsk: quotes.DOWN?.bestAsk,
       downBestBid: quotes.DOWN?.bestBid,
+      // El bot YA tiene la profundidad en la mano aqui y hasta ahora la tiraba.
+      upAskAvgFill: quotes.UP ? averageFillPrice(quotes.UP.rawAskLevels) : undefined,
+      downAskAvgFill: quotes.DOWN ? averageFillPrice(quotes.DOWN.rawAskLevels) : undefined,
+      upAskDepthUsd: quotes.UP?.availableUsdAllLevels,
+      downAskDepthUsd: quotes.DOWN?.availableUsdAllLevels,
     };
     return upsertByTimestamp(sample.quotes, point);
   }
@@ -564,7 +570,14 @@ function isAnalyticsQuotePoint(value: unknown): value is AnalyticsQuotePoint {
     (value.upBestAsk === undefined || isFiniteNumber(value.upBestAsk)) &&
     (value.upBestBid === undefined || isFiniteNumber(value.upBestBid)) &&
     (value.downBestAsk === undefined || isFiniteNumber(value.downBestAsk)) &&
-    (value.downBestBid === undefined || isFiniteNumber(value.downBestBid))
+    (value.downBestBid === undefined || isFiniteNumber(value.downBestBid)) &&
+    // Ausentes en las ~20k muestras anteriores a 2026-08-06, que deben seguir leyendose. Presentes,
+    // tienen que ser numeros: un valor corrupto aqui envenena en silencio el analisis que decide la
+    // ventana de ask, y ese camino ya mueve dinero.
+    (value.upAskAvgFill === undefined || isFiniteNumber(value.upAskAvgFill)) &&
+    (value.downAskAvgFill === undefined || isFiniteNumber(value.downAskAvgFill)) &&
+    (value.upAskDepthUsd === undefined || isFiniteNumber(value.upAskDepthUsd)) &&
+    (value.downAskDepthUsd === undefined || isFiniteNumber(value.downAskDepthUsd))
   );
 }
 

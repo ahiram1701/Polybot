@@ -208,6 +208,19 @@ export interface AnalyticsQuotePoint {
   upBestBid?: number;
   downBestAsk?: number;
   downBestBid?: number;
+  /**
+   * Precio MEDIO real de comprar el tamaño de referencia (`DEPTH_PROBE_USD`) bajando por el libro, y
+   * dolares disponibles en todo el lado vendedor. `undefined` cuando el libro no daba para ese tamaño.
+   *
+   * Se graban porque su ausencia ya costo dinero: sin profundidad, un backtest sobre estas muestras
+   * asume relleno perfecto al mejor precio, y cerca del cierre el libro se adelgaza — el simulador
+   * salia mas optimista justo donde la realidad es peor. Opcionales porque las ~20k muestras anteriores
+   * a 2026-08-06 no los tienen y deben seguir siendo legibles.
+   */
+  upAskAvgFill?: number;
+  downAskAvgFill?: number;
+  upAskDepthUsd?: number;
+  downAskDepthUsd?: number;
 }
 
 export interface AnalyticsSample {

@@ -119,6 +119,51 @@ export function summarizeOrderBook(
  * bid: en un libro fino los niveles de abajo pagan bastante menos, y esa diferencia puede convertir un
  * arbitraje aparente en una perdida.
  */
+/**
+ * Tamaño de referencia para el resumen de profundidad que se graba en la analitica.
+ *
+ * Es una constante DELIBERADA, no el tamaño de operacion configurado. Se graba en el historico y ese
+ * historico se lee meses despues: si dependiera de un ajuste que el usuario cambia, las muestras
+ * viejas y las nuevas medirian cosas distintas y no serian comparables entre si.
+ */
+export const DEPTH_PROBE_USD = 5;
+
+/**
+ * Precio MEDIO REAL de comprar `amountUsd` bajando por el libro, o `undefined` si el libro no da.
+ *
+ * Existe para cerrar el agujero que documenta `realizedGuard.ts` y que ya costo dinero: la analitica
+ * solo guardaba el MEJOR precio, asi que cualquier backtest sobre ella asumia relleno perfecto y
+ * gratis. Cerca del cierre el libro se adelgaza y el precio cotizado no es el que se consigue — o sea
+ * que el simulador era mas optimista justo donde la realidad es peor, y empujaba hacia ahi.
+ *
+ * Grabar esto convierte ese sesgo en un dato medible en vez de una advertencia en un comentario.
+ */
+export function averageFillPrice(
+  levels: Array<{ price: number; size: number }>,
+  amountUsd = DEPTH_PROBE_USD,
+): number | undefined {
+  let restanteUsd = amountUsd;
+  let shares = 0;
+  for (const level of levels) {
+    if (restanteUsd <= 0) {
+      break;
+    }
+    if (!(level.price > 0) || !(level.size > 0)) {
+      continue;
+    }
+    const usdEnEsteNivel = Math.min(restanteUsd, level.price * level.size);
+    shares += usdEnEsteNivel / level.price;
+    restanteUsd -= usdEnEsteNivel;
+  }
+  // Relleno PARCIAL devuelve undefined a proposito: un precio medio sobre media compra no responde la
+  // pregunta que se le hace ("¿cuanto pagaria por este tamaño?") y leerlo como si si es como se cuelan
+  // los backtests optimistas.
+  if (restanteUsd > 1e-9 || shares <= 0) {
+    return undefined;
+  }
+  return (amountUsd - restanteUsd) / shares;
+}
+
 export function proceedsFromSelling(
   levels: Array<{ price: number; size: number }>,
   shares: number,
