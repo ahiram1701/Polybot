@@ -10,6 +10,15 @@ import { marketSymbolFromSlug } from "./markets.js";
 
 type FetchLike = typeof fetch;
 
+/** Margen a cada lado de la ventana donde el estado del mercado SI cambia (apertura y cierre). */
+const BOUNDARY_MS = 30_000;
+
+/** Sin nada cacheado que servir, quedarse sin mercado cuesta la ventana: merece la pena esperar. */
+const FIRST_FETCH_TIMEOUT_MS = 5_000;
+
+/** Con una entrada rancia disponible, esperar mas es regalar tiempo del bucle a cambio de nada. */
+const REFRESH_TIMEOUT_MS = 1_500;
+
 export class MarketWatcher {
   private readonly cache = new Map<string, { expiresAtMs: number; market: MarketInfo | null }>();
 
@@ -17,6 +26,7 @@ export class MarketWatcher {
     private readonly gammaHost: string,
     private readonly fetchFn: FetchLike = fetch,
     private readonly cacheTtlMs = 5_000,
+    private readonly midWindowCacheTtlMs = 60_000,
   ) {}
 
   async getCurrentMarket(nowMs = Date.now(), market: MarketSymbol = "BTC"): Promise<MarketInfo | null> {
@@ -59,16 +69,42 @@ export class MarketWatcher {
     return this.getMarketBySlug(slug, nowMs);
   }
 
+  /**
+   * Cuanto vale un dato cacheado, que depende de DONDE estemos en la ventana.
+   *
+   * Dentro de una ventana de 5 minutos los metadatos son inmutables — slug, tokenIds y `endMs` no
+   * cambian — asi que repreguntar a gamma cada 5s es gasto puro: tres peticiones cada 5 segundos,
+   * cada una capaz de bloquear la iteracion. Solo `active`, `closed` y `acceptingOrders` se mueven, y
+   * lo hacen en los bordes.
+   *
+   * Cerca del borde el TTL vuelve a ser corto: ahi SI aparece un mercado nuevo y hay que verlo ya.
+   */
+  private cacheTtlForSlug(slug: string, nowMs: number): number {
+    const windowStartMs = getWindowStartMsFromSlug(slug);
+    if (windowStartMs === undefined) {
+      return this.cacheTtlMs;
+    }
+    const msDesdeApertura = nowMs - windowStartMs;
+    const msAlCierre = getWindowEndMs(windowStartMs) - nowMs;
+    const enElBorde = msAlCierre <= BOUNDARY_MS || msDesdeApertura <= BOUNDARY_MS;
+    return enElBorde ? this.cacheTtlMs : this.midWindowCacheTtlMs;
+  }
+
   async getMarketBySlug(slug: string, nowMs = Date.now()): Promise<MarketInfo | null> {
     const cached = this.cache.get(slug);
     if (cached && cached.expiresAtMs > nowMs) {
       return cached.market;
     }
 
+    // El timeout refleja lo que se pierde al rendirse, no un numero fijo. Con una entrada rancia que
+    // servir no hay razon para esperar cinco segundos: el dato viejo es igual de bueno y el bucle
+    // sigue. Sin nada que servir — la primera vez que vemos esta ventana — merece la pena esperar,
+    // porque quedarse sin mercado cuesta la ventana de entrada entera.
+    const timeoutMs = cached ? REFRESH_TIMEOUT_MS : FIRST_FETCH_TIMEOUT_MS;
     try {
       // Cap the gamma request so a stall can't delay the loop (AbortSignal actually cancels the socket).
       const response = await this.fetchFn(`${this.gammaHost}/events/slug/${slug}`, {
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.status === 404) {
         this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market: null });
@@ -80,7 +116,7 @@ export class MarketWatcher {
 
       const raw = (await response.json()) as unknown;
       const market = parseGammaEvent(raw, slug);
-      this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlMs, market });
+      this.cache.set(slug, { expiresAtMs: nowMs + this.cacheTtlForSlug(slug, nowMs), market });
       return market;
     } catch (error) {
       // Servir la entrada CADUCADA antes que rendirse. Dentro de una ventana de 5 minutos el slug, los

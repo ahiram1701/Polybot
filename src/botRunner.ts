@@ -23,6 +23,7 @@ import {
   type BankrollSource,
 } from "./liveBalance.js";
 import { logger } from "./logger.js";
+import { LOOP_PHASES, PhaseTimer, unaccountedMs, type LoopPhaseMs } from "./loopPhases.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
 import {
   DEFAULT_MIN_SECONDS_TO_END,
@@ -191,6 +192,7 @@ export class BotRunner {
   private readonly loopDurationsMs: number[] = [];
   /** Paralelo a `loopDurationsMs`: si esa iteración acabó lanzando. */
   private readonly loopFailures: boolean[] = [];
+  private readonly loopPhasesMs: Array<LoopPhaseMs & { sinAtribuir: number }> = [];
   /** Última lectura del saldo on-chain; `undefined` mientras no se haya conseguido ninguna. */
   /**
    * Capital comprometido en arbitrajes DENTRO de la iteracion en curso. Los tres mercados comparten
@@ -353,21 +355,21 @@ export class BotRunner {
    */
   async runOnce(nowMs = Date.now()): Promise<void> {
     const startedAt = Date.now();
-    let phases = { captureMs: 0, decideMs: 0 };
+    // El cronometro se crea AQUI, no dentro de runIteration: si la iteracion lanza, lo medido hasta el
+    // fallo se registra igual. Antes una iteracion que reventaba publicaba fases a cero.
+    const timer = new PhaseTimer();
     let failed = false;
     try {
-      phases = await this.runIteration(nowMs);
+      await this.runIteration(nowMs, timer);
     } catch (error) {
       failed = true;
       throw error;
     } finally {
-      this.recordLoopTiming(Date.now() - startedAt, phases.captureMs, phases.decideMs, failed);
+      this.recordLoopTiming(Date.now() - startedAt, timer.phases(), failed);
     }
   }
 
-  private async runIteration(nowMs: number): Promise<{ captureMs: number; decideMs: number }> {
-    let capturePhaseMs = 0;
-    let decidePhaseMs = 0;
+  private async runIteration(nowMs: number, timer: PhaseTimer): Promise<void> {
 
     // SIN await: la lectura tiene timeout de 8s y esperarla bloqueaba el bucle entero cada vez que el
     // RPC iba lento — exactamente la clase de parón que este mismo fichero intenta evitar. El saldo no
@@ -387,18 +389,18 @@ export class BotRunner {
         });
     }
 
-    await this.reconcileLiveTrades(nowMs);
-    await this.resolveCompletedTrades(nowMs);
+    await timer.time("reconcile", () => this.reconcileLiveTrades(nowMs));
+    await timer.time("resolve", () => this.resolveCompletedTrades(nowMs));
 
     // El aislamiento por mercado vive en el watcher y en `getCurrentMarkets`: un fallo parcial ya no
     // llega hasta aqui. Lo que SI sube es el apagon total, y debe seguir subiendo — el bucle continuo
     // lo captura en `runLoopIteration` y un `start({ once: true })` se lo devuelve a quien llamo.
-    const markets = await this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs);
+    const markets = await timer.time("fetch", () => this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs));
     if (markets.length === 0) {
       this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
       // La verificación oficial no depende de mercados abiertos; debe seguir corriendo.
-      await this.verifyOfficialResolutions(nowMs);
-      return { captureMs: 0, decideMs: 0 };
+      await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
+      return;
     }
 
     const tradeSignals: TradeSignal[] = [];
@@ -426,9 +428,9 @@ export class BotRunner {
     // la persistencia de analytics; en serie sumaban ~2s por iteración (gap de ticks medido p50 2s,
     // 42% >3s). Es seguro: los samples por mercado son disjuntos, writeFileAtomic serializa por path y
     // aquí no se mueve dinero. Todo lo que decide/ejecuta queda en la FASE 2 secuencial.
-    const captureStartedAt = Date.now();
-    const observations = await Promise.all(
-      markets.map(async (market) => {
+    const observations = await timer.time("capture", () =>
+      Promise.all(
+      markets.map(async (market: MarketInfo) => {
         const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
         this.logMarketChange(market);
         const opening = await this.ensureOpening(market, latestTick, nowMs);
@@ -444,9 +446,8 @@ export class BotRunner {
         await this.observeMintOpportunity(market, analyticsQuotes, nowMs);
         return { market, latestTick, opening, analyticsQuotes, arbOpportunity };
       }),
+      ),
     );
-    capturePhaseMs = Date.now() - captureStartedAt;
-    const decideStartedAt = Date.now();
 
     // FASE 2 — decisión y ejecución, secuencial (orden determinista, límites de gasto compartidos).
     for (const { market, latestTick, opening, analyticsQuotes, arbOpportunity } of observations) {
@@ -495,27 +496,37 @@ export class BotRunner {
       }
     }
 
-    const candidates = await this.buildTradeCandidates(tradeSignals, analyticsQuotesBySlug);
-    await this.executeTradeCandidates(candidates);
-    decidePhaseMs = Date.now() - decideStartedAt;
+    const candidates = await timer.time("decide", async () => {
+      const built = await this.buildTradeCandidates(tradeSignals, analyticsQuotesBySlug);
+      await this.executeTradeCandidates(built);
+      return built;
+    });
+    void candidates;
 
     // Fuera del camino caliente: la verificación oficial (2 HTTP a gamma cada 30s) corre al FINAL del
     // tick, después de capturar precios y decidir — su latencia ya no retrasa la lectura del mercado.
-    await this.verifyOfficialResolutions(nowMs);
-
-    return { captureMs: capturePhaseMs, decideMs: decidePhaseMs };
+    await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
   }
 
   /** Rolling loop-latency stats: slow iterations are logged with a breakdown; percentiles every 5 min. */
-  private recordLoopTiming(totalMs: number, captureMs: number, decideMs: number, failed = false): void {
+  private recordLoopTiming(totalMs: number, phases: LoopPhaseMs, failed = false): void {
     this.loopDurationsMs.push(totalMs);
     this.loopFailures.push(failed);
+    this.loopPhasesMs.push({ ...phases, sinAtribuir: unaccountedMs(totalMs, phases) });
     if (this.loopDurationsMs.length > 600) {
       this.loopDurationsMs.shift();
       this.loopFailures.shift();
+      this.loopPhasesMs.shift();
     }
     if (totalMs > 2_500) {
-      logger.warn("Iteración lenta del loop.", { totalMs, captureMs, decideMs, failed });
+      // `sinAtribuir` es la pieza que importa: si crece, es que hay trabajo en el bucle que nadie
+      // cronometra, que es exactamente como se perdio el 94% del tiempo lento durante meses.
+      logger.warn("Iteración lenta del loop.", {
+        totalMs,
+        ...phases,
+        sinAtribuirMs: unaccountedMs(totalMs, phases),
+        failed,
+      });
     }
     const nowMs = Date.now();
     if (nowMs - this.lastLoopStatsLogMs >= 5 * 60_000 && this.loopDurationsMs.length >= 10) {
@@ -531,8 +542,21 @@ export class BotRunner {
         // ocultaban que una de cada tres iteraciones estaba muriendo por timeout.
         failed: failures,
         failedPct: Math.round((1000 * failures) / sorted.length) / 10,
+        // Mediana por fase: es lo que convierte "el bucle va lento" en "gamma va lento". El total de
+        // arriba no dice donde mirar; esto si.
+        ...this.medianPhaseMs(),
       });
     }
+  }
+
+  /** Mediana de cada fase sobre la ventana movil, con el prefijo `p50` para leerlo de un vistazo. */
+  private medianPhaseMs(): Record<string, number> {
+    const salida: Record<string, number> = {};
+    for (const fase of [...LOOP_PHASES, "sinAtribuir"] as const) {
+      const valores = this.loopPhasesMs.map((entrada) => entrada[fase] ?? 0).sort((x, y) => x - y);
+      salida[`p50_${fase}`] = valores[Math.floor(valores.length * 0.5)] ?? 0;
+    }
+    return salida;
   }
 
   /**
