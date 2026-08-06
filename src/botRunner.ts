@@ -22,6 +22,8 @@ import {
   type BankrollReading,
   type BankrollSource,
 } from "./liveBalance.js";
+import { activeProgram, type BandProgram } from "./bandProbeProgram.js";
+import { effectiveAskWindow, isProbeEntry, PROBE_MAX_PER_MARKET_DAY } from "./probeWindow.js";
 import { logger } from "./logger.js";
 import { LOOP_PHASES, PhaseTimer, unaccountedMs, type LoopPhaseMs } from "./loopPhases.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
@@ -210,6 +212,13 @@ export class BotRunner {
    * direccional que nadie pidio. Dos seguidas ya no es mala suerte.
    */
   private arbNakedLegStreak = 0;
+
+  /**
+   * Sondeos de banda en curso. El autoajuste no puede ver bandas donde nunca ha operado, asi que para
+   * comprobar una candidata hay que dejar entrar unas pocas operaciones a su precio — con presupuesto.
+   */
+  private bandPrograms: readonly BandProgram[] = [];
+  private readonly probeCountByDayMarket = new Map<string, number>();
 
   private lastBankrollReading?: BankrollReading;
   private readonly askWindowDetector = new AskWindowDeadlockDetector();
@@ -850,7 +859,17 @@ export class BotRunner {
       orderMinSize: args.market.orderMinSize,
       autoMinLive: this.config.autoMinLive,
     });
-    const maxAskPrice = this.resolveConfiguredMaxAskPrice(args.market.asset, winner.outcome);
+    // Con un sondeo en curso la ventana se ensancha hasta cubrir la banda en pruebas. Tiene que llegar
+    // hasta aqui y no solo al filtro posterior: este tope viaja a `getQuote`, que lo usa para calcular
+    // la profundidad disponible bajo el — con el tope viejo, los precios que se quieren sondear
+    // saldrian como "sin liquidez" y el sondeo no ocurriria jamas.
+    const maxAskPrice = effectiveAskWindow(
+      {
+        floor: this.resolveConfiguredMinAskPrice(args.market.asset, winner.outcome),
+        cap: this.resolveConfiguredMaxAskPrice(args.market.asset, winner.outcome),
+      },
+      this.probeFor(args.market.asset, args.nowMs),
+    ).cap;
 
     if (args.reservedDailySpendUsd + amountUsd > this.config.dailySpendLimitUsd) {
       this.logSkipOnce(args.market.slug, "daily_spend_limit_reached", {
@@ -950,7 +969,13 @@ export class BotRunner {
 
     // Piso de ask: por debajo de este precio la entrada es una apuesta de reversion barata, que el
     // replay del ledger live mostro perdedora de forma sistematica (ETH <0.30: 23 de 24 perdidas).
-    const minAskPrice = this.resolveConfiguredMinAskPrice(signal.market.asset, signal.outcome);
+    const minAskPrice = effectiveAskWindow(
+      {
+        floor: this.resolveConfiguredMinAskPrice(signal.market.asset, signal.outcome),
+        cap: signal.maxAskPrice,
+      },
+      this.probeFor(signal.market.asset, signal.tick.timestampMs),
+    ).floor;
     if (quote.bestAsk < minAskPrice) {
       this.logSkipOnce(signal.market.slug, "best_ask_below_floor", {
         outcome: signal.outcome,
@@ -1034,6 +1059,31 @@ export class BotRunner {
       await this.deps.state.recordTradeAttempt(result.trade);
       if (candidate.exploration) {
         this.chargeExplorationBudget(candidate.market.asset);
+      }
+      // El presupuesto de sondeo se cobra al LLENAR, no al proponer: una señal cara que acaba
+      // rechazada por el gate de EV no ha comprobado nada, y cobrarla gastaria el presupuesto sin
+      // recoger un solo dato.
+      const sondeo = this.probeFor(candidate.market.asset, candidate.tick.timestampMs);
+      const askEjecutado = result.trade.bestAsk ?? candidate.quote.bestAsk;
+      if (
+        sondeo &&
+        typeof askEjecutado === "number" &&
+        isProbeEntry(
+          askEjecutado,
+          {
+            floor: this.resolveConfiguredMinAskPrice(candidate.market.asset, candidate.outcome),
+            cap: this.resolveConfiguredMaxAskPrice(candidate.market.asset, candidate.outcome),
+          },
+          sondeo,
+        )
+      ) {
+        this.noteProbeUsed(candidate.market.asset, candidate.tick.timestampMs);
+        logger.info("Sondeo de banda ejecutado.", {
+          market: candidate.market.asset,
+          banda: `${sondeo.lo}-${sondeo.hi}`,
+          ask: askEjecutado,
+          prometido: sondeo.expectedNetPerTradeUsd,
+        });
       }
       logger.info("Trade attempt recorded.", {
         mode: result.trade.mode,
@@ -1336,6 +1386,27 @@ export class BotRunner {
     // so the reward per win stays large enough to recover from losses.
     const ceiling = this.config.maxAskPriceCeiling ?? DEFAULT_MAX_ASK_PRICE_CEILING;
     return Math.min(configured, ceiling);
+  }
+
+  /** Programas de sondeo vigentes. Los calcula y persiste el controlador; aqui solo se consultan. */
+  setBandPrograms(programs: readonly BandProgram[]): void {
+    this.bandPrograms = programs;
+  }
+
+  /** Sondeo en curso para un mercado, si queda presupuesto hoy. Sin presupuesto se comporta como si
+   * no hubiera sondeo: la ventana vuelve a la configurada y la señal cara se descarta como siempre. */
+  private probeFor(market: MarketSymbol, nowMs: number): BandProgram | undefined {
+    const program = activeProgram(this.bandPrograms, market);
+    if (!program) {
+      return undefined;
+    }
+    const key = `${dailySpendKey(nowMs, this.config.timezone)}:${market}`;
+    return (this.probeCountByDayMarket.get(key) ?? 0) < PROBE_MAX_PER_MARKET_DAY ? program : undefined;
+  }
+
+  private noteProbeUsed(market: MarketSymbol, nowMs: number): void {
+    const key = `${dailySpendKey(nowMs, this.config.timezone)}:${market}`;
+    this.probeCountByDayMarket.set(key, (this.probeCountByDayMarket.get(key) ?? 0) + 1);
   }
 
   /** Piso de ask configurado (0.01 = sin piso). */

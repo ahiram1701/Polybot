@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnalyticsRecorder } from "../src/analyticsRecorder.js";
+import { startBandProgram } from "../src/bandProbeProgram.js";
+import { PROBE_MAX_PER_MARKET_DAY } from "../src/probeWindow.js";
 import { BotRunner } from "../src/botRunner.js";
 import type { ChainlinkPriceFeed } from "../src/chainlinkPriceFeed.js";
 import type { ExecutionInput, TradeExecutor } from "../src/executionEngine.js";
@@ -1177,6 +1179,134 @@ describe("BotRunner", () => {
       const { runner, executor, nowMs } = setup("sim");
       await runner.runOnce(nowMs);
       expect(executor.execute).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * El autoajuste no puede ver bandas donde nunca ha operado — el bot no opera fuera de su ventana, asi
+   * que esas bandas tienen n=0 para siempre. Los sondeos rompen ese bucle dejando entrar unas pocas
+   * operaciones al precio de la banda candidata, con presupuesto acotado.
+   */
+  describe("sondeos de banda", () => {
+    const montar = (askDelLibro: number) => {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 290_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      const openings = new Map([
+        [
+          market.slug,
+          {
+            asset: market.asset,
+            slug: market.slug,
+            windowStartMs,
+            openingPrice: 100,
+            openingTickTimestampMs: windowStartMs,
+            capturedAtMs: windowStartMs,
+          },
+        ],
+      ]);
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn(() => false),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => ({
+          id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode: "sim" as const,
+          outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId,
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: input.quote.bestAsk,
+          estimatedShares: input.amountUsd / askDelLibro,
+          openingPrice: 100,
+          entryPrice: 130,
+          distanceUsd: input.distanceUsd,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+          createdAtMs: nowMs,
+        })),
+      } satisfies TradeExecutor;
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          requirePositiveEv: false,
+          // Ventana configurada [0.70, 0.80]: el libro a 0.88 queda FUERA.
+          maxAskPrice: 0.8,
+          maxAskPriceByMarketOutcome: {
+            BTC: { UP: 0.8, DOWN: 0.8 },
+            ETH: { UP: 0.8, DOWN: 0.8 },
+            DOGE: { UP: 0.8, DOWN: 0.8 },
+          },
+          minAskPriceByMarketOutcome: {
+            BTC: { UP: 0.7, DOWN: 0.7 },
+            ETH: { UP: 0.7, DOWN: 0.7 },
+            DOGE: { UP: 0.7, DOWN: 0.7 },
+          },
+        },
+        {
+          watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+          orderbook: fakeOrderbook(askDelLibro),
+          priceFeed: livePriceFeed("BTC", 130, nowMs),
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+        },
+      );
+      return { runner, executor, nowMs };
+    };
+
+    const programa = () =>
+      startBandProgram({
+        market: "BTC",
+        lo: 0.85,
+        hi: 0.9,
+        expectedNetPerTradeUsd: 0.3,
+        outOfSampleTrades: 60,
+        reason: "gana en ambas mitades",
+        nowMs: 0,
+      });
+
+    it("sin sondeo, un precio por encima del techo se descarta como siempre", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = montar(0.88);
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("con sondeo en curso, ese mismo precio SI entra", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = montar(0.88);
+      runner.setBandPrograms([programa()]);
+      await runner.runOnce(nowMs);
+      expect(executor.execute).toHaveBeenCalled();
+    });
+
+    it("el sondeo se agota: el presupuesto diario acota lo que cuesta comprobar una banda", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = montar(0.88);
+      runner.setBandPrograms([programa()]);
+      // Cada iteracion es una ventana distinta, asi que la guardia de "ya operado" no interfiere.
+      for (let i = 0; i < 6; i += 1) {
+        await runner.runOnce(nowMs + i * 300_000);
+      }
+      expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(
+        PROBE_MAX_PER_MARKET_DAY,
+      );
+    });
+
+    it("un programa ya decidido no abre nada: solo sondea el que esta en pruebas", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = montar(0.88);
+      runner.setBandPrograms([{ ...programa(), status: "confirmed" as const }]);
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
     });
   });
 
