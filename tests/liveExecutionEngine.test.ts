@@ -1,7 +1,14 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ExecutionInput } from "../src/executionEngine.js";
 import type { BotConfig, MarketInfo, WindowOpening } from "../src/types.js";
+
+/** Nunca el `data/` real: un test no debe poder escribir en produccion. */
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), "polybot-test-data-"));
 
 const mocks = vi.hoisted(() => {
   const transport = { kind: "http-transport" };
@@ -144,7 +151,7 @@ function baseConfig(): BotConfig {
     tickStaleMs: 10_000,
     pollIntervalMs: 1_000,
     openingCaptureGraceMs: 15_000,
-    dataDir: "data",
+    dataDir: TEST_DATA_DIR,
     gammaHost: "https://gamma-api.polymarket.com",
     clobHost: "https://clob.polymarket.com",
     rtdsUrl: "wss://ws-live-data.polymarket.com",
@@ -197,6 +204,8 @@ function baseInput(): ExecutionInput {
       availableUsdAllLevels: 100,
       estimatedSharesForAmount: 5.49,
       rawAskLevels: [],
+      rawBidLevels: [],
+      availableBidUsdAllLevels: 0,
     },
     opening,
     tick: {

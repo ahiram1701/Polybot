@@ -1,6 +1,7 @@
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnalyticsRecorder } from "../src/analyticsRecorder.js";
@@ -22,6 +23,28 @@ import type {
 } from "../src/types.js";
 
 const arbTemps: string[] = [];
+
+/**
+ * Directorio de datos por defecto de los tests. Antes `baseConfig()` devolvia `dataDir: "data"`, que
+ * resuelve al directorio de datos REAL del proyecto: cualquier test que ejercitara un camino con
+ * escritura ensuciaba produccion en silencio. Paso de verdad — 12 oportunidades de arbitraje falsas
+ * acabaron en `data/arb-opportunities.jsonl` y contaminaron el panel de la UI y los analisis. Ahora
+ * el defecto es un temporal, asi que olvidarse de pasar `dataDir` ya no puede tocar `data/`.
+ */
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), "polybot-test-data-"));
+
+/**
+ * Guardia contra el fallo que ya ocurrio: `baseConfig()` devolvia el directorio de datos REAL, asi que
+ * cualquier test con un camino de escritura ensuciaba produccion sin que nada lo dijera.
+ */
+describe("aislamiento de los tests", () => {
+  it("baseConfig() no apunta al directorio de datos real", () => {
+    const dir = baseConfig().dataDir;
+    expect(dir).not.toBe("data");
+    expect(resolve(dir)).not.toBe(resolve(process.cwd(), "data"));
+    expect(dir.startsWith(tmpdir())).toBe(true);
+  });
+});
 
 describe("BotRunner", () => {
   afterEach(async () => {
@@ -2776,7 +2799,7 @@ function baseConfig(): BotConfig {
     tickStaleMs: 10_000,
     pollIntervalMs: 1,
     openingCaptureGraceMs: 15_000,
-    dataDir: "data",
+    dataDir: TEST_DATA_DIR,
     gammaHost: "https://gamma-api.polymarket.com",
     clobHost: "https://clob.polymarket.com",
     rtdsUrl: "wss://ws-live-data.polymarket.com",

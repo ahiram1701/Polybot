@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
 import { detectCompleteSetArb, type ArbOpportunity } from "./arbMonitor.js";
+import { detectMintArb } from "./mintMonitor.js";
 import { AskWindowDeadlockDetector, describeDeadlock } from "./askWindowDeadlock.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
@@ -440,6 +441,7 @@ export class BotRunner {
           nowMs,
         });
         const arbOpportunity = await this.observeArbOpportunity(market, analyticsQuotes, nowMs);
+        await this.observeMintOpportunity(market, analyticsQuotes, nowMs);
         return { market, latestTick, opening, analyticsQuotes, arbOpportunity };
       }),
     );
@@ -1438,6 +1440,52 @@ export class BotRunner {
       });
     }
     return opportunity;
+  }
+
+  /**
+   * SOLO OBSERVACION (no mueve dinero, ni en cadena ni en el libro): registra los momentos de MINT-arb
+   * — acuñar un set por $1 y vender ambos lados contra los bids por mas de $1 tras comisiones — con la
+   * profundidad real de los dos libros compradores.
+   *
+   * Se mide antes de construir la ejecucion porque el barrido historico solo tenia el MEJOR bid, sin
+   * profundidad: dice cuantas VECES se abre la puerta, no cuantos dolares caben por ella. Unos dias de
+   * esto responden lo segundo, que es lo unico que decide si merece la pena escribir en cadena.
+   */
+  private async observeMintOpportunity(
+    market: MarketInfo,
+    quotes: Partial<Record<Outcome, OrderbookQuote>>,
+    nowMs: number,
+  ): Promise<void> {
+    const opportunity = detectMintArb({
+      market: market.asset,
+      slug: market.slug,
+      endMs: market.endMs,
+      nowMs,
+      quotes,
+    });
+    if (!opportunity) {
+      return;
+    }
+    try {
+      await appendFile(
+        join(this.config.dataDir, "mint-opportunities.jsonl"),
+        `${JSON.stringify(opportunity)}
+`,
+        "utf8",
+      );
+      this.logSkipOnce(market.slug, "mint_opportunity_observed", {
+        market: market.asset,
+        netPerSet: opportunity.netPerSet,
+        netUsdAtDepth: opportunity.netUsdAtDepth,
+        sets: opportunity.maxSetsByDepth,
+        secondsToEnd: opportunity.secondsToEnd,
+      });
+    } catch (error) {
+      logger.warn("No se pudo registrar la oportunidad de MINT-arb; continuando.", {
+        slug: market.slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**

@@ -368,6 +368,8 @@ function quote(tokenId: string, bestAsk: number): OrderbookQuote {
       availableUsdAllLevels: 100,
     estimatedSharesForAmount: 1 / bestAsk,
     rawAskLevels: [{ price: bestAsk, size: 100 }],
+    rawBidLevels: [{ price: bestAsk - 0.01, size: 100 }],
+    availableBidUsdAllLevels: (bestAsk - 0.01) * 100,
   };
 }
 

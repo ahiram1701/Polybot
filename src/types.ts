@@ -184,6 +184,14 @@ export interface OrderbookQuote {
   estimatedSharesForAmount: number;
   estimatedAveragePrice?: number;
   rawAskLevels: Array<{ price: number; size: number }>;
+  /**
+   * Niveles del lado COMPRADOR, de mejor a peor precio. Necesarios para el MINT-arb: ahi no se compra,
+   * se VENDE contra los bids, y los ingresos caen a medida que se baja por el libro. Con solo
+   * `bestBid` el dimensionado seria ciego — se supondria que todo el tamaño entra al mejor precio.
+   */
+  rawBidLevels: Array<{ price: number; size: number }>;
+  /** Lo que pagaria el libro comprador entero, sumando precio x tamaño de cada nivel. */
+  availableBidUsdAllLevels: number;
 }
 
 export interface AnalyticsTickPoint {

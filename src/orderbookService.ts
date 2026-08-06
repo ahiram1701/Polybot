@@ -106,5 +106,34 @@ export function summarizeOrderBook(
     estimatedSharesForAmount,
     estimatedAveragePrice: estimatedSharesForAmount > 0 ? filledUsd / estimatedSharesForAmount : undefined,
     rawAskLevels: asks,
+    rawBidLevels: bids,
+    availableBidUsdAllLevels: bids.reduce((sum, bid) => sum + bid.price * bid.size, 0),
   };
+}
+
+/**
+ * Ingresos reales de vender `shares` contra los bids, bajando por el libro. Devuelve tambien cuantas
+ * se pudieron colocar: si el libro no da para todas, vender a ciegas dejaria parte sin ejecutar.
+ *
+ * Se usa para dimensionar el MINT-arb. El error que evita es cobrar todas las participaciones al mejor
+ * bid: en un libro fino los niveles de abajo pagan bastante menos, y esa diferencia puede convertir un
+ * arbitraje aparente en una perdida.
+ */
+export function proceedsFromSelling(
+  levels: Array<{ price: number; size: number }>,
+  shares: number,
+): { proceedsUsd: number; sharesSold: number; worstPrice?: number } {
+  let restantes = shares;
+  let proceedsUsd = 0;
+  let worstPrice: number | undefined;
+  for (const level of levels) {
+    if (restantes <= 0) {
+      break;
+    }
+    const usadas = Math.min(restantes, level.size);
+    proceedsUsd += usadas * level.price;
+    restantes -= usadas;
+    worstPrice = level.price;
+  }
+  return { proceedsUsd, sharesSold: shares - restantes, worstPrice };
 }

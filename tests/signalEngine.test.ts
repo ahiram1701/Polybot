@@ -58,6 +58,8 @@ const quote: OrderbookQuote = {
   estimatedSharesForAmount: 1.08,
   estimatedAveragePrice: 0.92,
   rawAskLevels: [{ price: 0.92, size: 100 }],
+  rawBidLevels: [{ price: 0.91, size: 100 }],
+  availableBidUsdAllLevels: 91,
 };
 
 describe("signal engine", () => {
