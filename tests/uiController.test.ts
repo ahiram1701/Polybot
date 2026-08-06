@@ -37,6 +37,55 @@ afterEach(async () => {
   await Promise.all(temps.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
+/**
+ * Los sondeos de banda solo avanzan si el runner sabe que existen. Antes solo se le pasaban cuando
+ * habia un CAMBIO, lo que creaba un bloqueo perfecto: tras un reinicio el runner arranca vacio, asi que
+ * no sondea; sin sondeos no hay veredicto; y sin veredicto no hay cambio que dispare el envio. Y no da
+ * la cara — se veria como "los sondeos no hacen nada", indistinguible de "todavia no hay muestra".
+ */
+describe("BotController: sondeos de banda tras reiniciar", () => {
+  class ProbeAwareRunner extends FakeRunner {
+    programsReceived: readonly unknown[] | undefined;
+    setBandPrograms(programs: readonly unknown[]): void {
+      this.programsReceived = programs;
+    }
+  }
+
+  it("entrega al runner los programas persistidos nada mas arrancar", async () => {
+    const config = await baseConfig();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(config.dataDir, "band-programs.json"),
+      JSON.stringify([
+        {
+          market: "ETH",
+          lo: 0.85,
+          hi: 0.9,
+          createdAtMs: 1,
+          expectedNetPerTradeUsd: 0.3,
+          outOfSampleTrades: 84,
+          reason: "x",
+          status: "probing",
+        },
+      ]),
+      "utf8",
+    );
+    const runner = new ProbeAwareRunner();
+    const controller = new BotController(config, {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => runner,
+    });
+
+    await controller.start("sim");
+    // La carga es asincrona y deliberadamente no bloquea el arranque.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(runner.programsReceived).toHaveLength(1);
+    await controller.stop();
+  });
+});
+
 describe("BotController", () => {
   it("starts and stops a simulation runner", async () => {
     const runner = new FakeRunner();

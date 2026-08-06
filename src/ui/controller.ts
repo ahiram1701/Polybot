@@ -425,7 +425,25 @@ export class BotController {
       });
 
     this.startAiAutoApplyLoop();
+    // Los sondeos vigentes, al runner YA. El ciclo de autoajuste corre cada 30 min, asi que esperarlo
+    // dejaria media hora sin sondear despues de cada arranque — y con el watchdog reiniciando, esa
+    // media hora se repite y los programas no avanzan nunca.
+    void this.pushBandProgramsToRunner();
     return this.getStatus();
+  }
+
+  /** Carga los programas persistidos y se los pasa al runner. Nunca lanza: es una mejora, no un
+   * requisito para operar. */
+  private async pushBandProgramsToRunner(): Promise<void> {
+    try {
+      this.bandProgramStoreCache ??= new BandProgramStore(this.baseConfig.dataDir);
+      const programas = await this.bandProgramStoreCache.load();
+      this.runner?.setBandPrograms?.(programas);
+    } catch (error) {
+      logger.warn("No se pudieron cargar los sondeos de banda al arrancar.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async stop(): Promise<UiStatus> {
@@ -828,8 +846,12 @@ export class BotController {
 
     if (cambio) {
       await store.replaceAll(programas);
-      this.runner?.setBandPrograms?.(programas);
     }
+    // SIEMPRE, no solo cuando hay cambio. El runner arranca sin programas, asi que tras un reinicio
+    // —y el watchdog reinicia— no sondearia; sin sondeos no hay veredicto, y sin veredicto no hay
+    // cambio que dispare este envio. Un bloqueo perfecto que ademas no da la cara: se veria como "los
+    // sondeos no hacen nada", indistinguible de "todavia no hay muestra".
+    this.runner?.setBandPrograms?.(programas);
   }
 
   /** Escribe una ventana de ask nueva para un mercado, en ambos lados. */
