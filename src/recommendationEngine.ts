@@ -14,6 +14,7 @@ import type {
   AutoApplyThresholds,
   MarketDistanceSettings,
   MarketEntryWindowSettings,
+  MarketOutcomeNumberSettings,
   MarketSymbol,
   Mode,
   Outcome,
@@ -23,6 +24,12 @@ import type {
 } from "./types.js";
 
 export type { AutoApplyThresholds } from "./types.js";
+
+/** Ventana de ask que aplica produccion para un mercado/lado. */
+export interface AskWindow {
+  floor: number;
+  cap: number;
+}
 
 const MIN_READY_SAMPLES = 10;
 const MIN_AUTO_TRADES = 20;
@@ -118,6 +125,12 @@ const DISTANCE_STEPS: Record<MarketSymbol, number> = {
 
 export interface RecommendationSettings {
   minDistanceUsdByMarket: MarketDistanceSettings;
+  /**
+   * Ventana de ask por mercado y lado, la que aplica produccion. Sin esto el motor simulaba con el
+   * techo global y SIN piso, y recomendaba configuraciones que el bot no podia ejecutar.
+   */
+  minAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
+  maxAskPriceByMarketOutcome?: MarketOutcomeNumberSettings;
   entryWindowSecondsByMarket: MarketEntryWindowSettings;
   entryWindowSeconds: number;
   maxAskPrice: number;
@@ -254,7 +267,14 @@ async function buildMarketRecommendation(
   const currentDistance = getMinDistanceUsd(settings.minDistanceUsdByMarket, market);
   const distanceFloor = Math.max(settings.minDistanceFloorUsdByMarket?.[market] ?? 0, 0);
   const minSecondsToEnd = settings.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END;
-  const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice, undefined, minSecondsToEnd);
+  // La ventana de ask REAL de este mercado. Se toma el lado UP como representativo porque los
+  // autoajustes escriben siempre el mismo valor en UP y DOWN; si algun dia dejaran de hacerlo, esto
+  // habria que resolverlo por lado.
+  const askWindow: AskWindow = {
+    floor: settings.minAskPriceByMarketOutcome?.[market]?.UP ?? 0,
+    cap: settings.maxAskPriceByMarketOutcome?.[market]?.UP ?? settings.maxAskPrice,
+  };
+  const current = buildCandidate(market, samples, currentWindow, currentDistance, askWindow, undefined, minSecondsToEnd);
   const grid = buildCandidateGrid(market, samples, currentDistance, distanceFloor);
   const candidates: RecommendationCandidate[] = [];
   const budget = new EventLoopBudget();
@@ -264,7 +284,7 @@ async function buildMarketRecommendation(
       samples,
       grid[index].entryWindowSeconds,
       grid[index].minDistanceUsd,
-      settings.maxAskPrice,
+      askWindow,
       undefined,
       minSecondsToEnd,
     );
@@ -414,12 +434,21 @@ function buildDistanceCandidates(
   return [...distances].sort((left, right) => left - right);
 }
 
+/**
+ * `askWindow` es la ventana [piso, techo] que aplica PRODUCCION, no solo el techo global.
+ *
+ * Simular unicamente con el techo (y sin piso) hacia que el motor puntuase entradas que el bot nunca
+ * podria tomar, y por tanto recomendase configuraciones imposibles: llego a fijar la distancia de BTC
+ * en 49 USD — que empuja el lado del momentum a costar 0.96+ — mientras la ventana en vigor era
+ * [0.70, 0.80]. El 100% de las señales de BTC moria en `no_ask_liquidity_under_cap`, en silencio y
+ * para siempre, porque cada ajuste era razonable por separado y nadie comprobaba la combinacion.
+ */
 export function buildCandidate(
   market: MarketSymbol,
   samples: AnalyticsSample[],
   entryWindowSeconds: number,
   minDistanceUsd: number,
-  maxAskPrice: number,
+  askWindow: AskWindow,
   outcome?: Outcome,
   // Por defecto la guardia de cierre REAL, no cero: un simulador que la ignora sobreestima las
   // ventanas cortas y termina recomendandolas.
@@ -428,7 +457,7 @@ export function buildCandidate(
   return {
     entryWindowSeconds,
     minDistanceUsd,
-    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome, minSecondsToEnd),
+    metrics: simulateCandidate(samples, entryWindowSeconds, minDistanceUsd, askWindow, outcome, minSecondsToEnd),
   };
 }
 
@@ -436,11 +465,11 @@ function simulateCandidate(
   samples: AnalyticsSample[],
   entryWindowSeconds: number,
   minDistanceUsd: number,
-  maxAskPrice: number,
+  askWindow: AskWindow,
   outcome: Outcome | undefined,
   minSecondsToEnd: number,
 ): RecommendationMetrics {
-  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, maxAskPrice, outcome, minSecondsToEnd);
+  const simulation = buildCandidateObservations(samples, entryWindowSeconds, minDistanceUsd, askWindow, outcome, minSecondsToEnd);
   const returns = simulation.observations.map((observation) => observation.returnRoi);
   const walkForward = buildWalkForwardPredictions(simulation.observations);
   const walkForwardReturns = walkForward.map((prediction) => prediction.actualReturnRoi);
@@ -497,7 +526,7 @@ function buildCandidateObservations(
   samples: AnalyticsSample[],
   entryWindowSeconds: number,
   minDistanceUsd: number,
-  maxAskPrice: number,
+  askWindow: AskWindow,
   outcomeFilter: Outcome | undefined,
   minSecondsToEnd: number,
 ): CandidateSimulation {
@@ -520,7 +549,9 @@ function buildCandidateObservations(
     const quote = findClosestQuote(sample.quotes, signalTick.timestampMs);
     const ask = quote ? getAsk(quote, outcome) : undefined;
     const truth = scoringOutcome(sample);
-    if (!isPositiveFinite(ask) || ask > maxAskPrice || !truth) {
+    // Ambos limites, como en produccion: por encima del techo no hay liquidez aceptable, y por
+    // debajo del piso la entrada es una apuesta de reversion barata que el bot rechaza.
+    if (!isPositiveFinite(ask) || ask > askWindow.cap || ask < askWindow.floor || !truth) {
       continue;
     }
 

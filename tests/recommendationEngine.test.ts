@@ -419,3 +419,49 @@ describe("RecommendationEngine: no puede dejar ciego al bot", () => {
     expect(peor).toBeLessThan(2_000);
   });
 });
+
+/**
+ * La causa raiz del deadlock de BTC: el motor simulaba con el techo GLOBAL y sin piso, asi que
+ * puntuaba entradas que produccion rechaza y podia recomendar una configuracion imposible.
+ */
+describe("RecommendationEngine: simula con la ventana de ask REAL", () => {
+  const settingsConVentana = (floor: number, cap: number) => ({
+    ...settings(),
+    minAskPriceByMarketOutcome: {
+      BTC: { UP: floor, DOWN: floor },
+      ETH: { UP: floor, DOWN: floor },
+      DOGE: { UP: floor, DOWN: floor },
+    },
+    maxAskPriceByMarketOutcome: {
+      BTC: { UP: cap, DOWN: cap },
+      ETH: { UP: cap, DOWN: cap },
+      DOGE: { UP: cap, DOWN: cap },
+    },
+  });
+
+  it("no cuenta como operables las entradas que quedan fuera de la ventana", async () => {
+    // El fixture cotiza a 0.50 (ver `quote`). Con la ventana en [0.70, 0.80] produccion las rechaza
+    // TODAS, asi que el motor tampoco debe contarlas: antes las sumaba porque 0.50 <= techo global.
+    const samples = Array.from({ length: 45 }, (_value, index) =>
+      predictiveSample("BTC", index, index % 2 === 0 ? "UP" : "DOWN", true),
+    );
+    const fuera = await buildRecommendations(samples, settingsConVentana(0.7, 0.8));
+    const btcFuera = fuera.recommendations.find((r) => r.market === "BTC");
+    expect(btcFuera?.current.metrics.tradeCount).toBe(0);
+
+    // Control: con una ventana que SI cubre 0.50, las mismas muestras si producen operaciones.
+    const dentro = await buildRecommendations(samples, settingsConVentana(0.4, 0.6));
+    const btcDentro = dentro.recommendations.find((r) => r.market === "BTC");
+    expect(btcDentro?.current.metrics.tradeCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it("con la ventana bloqueada no propone nada que aplicar", async () => {
+    const samples = Array.from({ length: 45 }, (_value, index) =>
+      predictiveSample("BTC", index, index % 2 === 0 ? "UP" : "DOWN", true),
+    );
+    const response = await buildRecommendations(samples, settingsConVentana(0.7, 0.8));
+    const btc = response.recommendations.find((r) => r.market === "BTC");
+    // Sin operaciones simulables no hay evidencia para auto-aplicar nada.
+    expect(btc?.canAutoApply).toBe(false);
+  });
+});

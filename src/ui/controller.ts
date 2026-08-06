@@ -1547,6 +1547,12 @@ function toRecommendationSettings(
     entryWindowSecondsByMarket: settings.entryWindowSecondsByMarket,
     entryWindowSeconds: settings.entryWindowSeconds,
     maxAskPrice: settings.maxAskPrice,
+    // La ventana de ask que aplica el bot, no solo el techo global. Sin esto el motor puntuaba
+    // entradas que produccion rechaza y llegaba a recomendar configuraciones IMPOSIBLES: fijo la
+    // distancia de BTC en 49 USD (que empuja el ask a 0.96+) con la ventana en [0.70, 0.80], y el
+    // 100% de las señales de BTC murio en `no_ask_liquidity_under_cap` sin que nada lo detectara.
+    minAskPriceByMarketOutcome: settings.minAskPriceByMarketOutcome,
+    maxAskPriceByMarketOutcome: settings.maxAskPriceByMarketOutcome,
     minDistanceFloorUsdByMarket: distanceFloors,
     // El motor simula con la MISMA guardia de cierre que usa el bot; si no, sobrevalora las ventanas
     // cortas porque cuenta segundos en los que nunca se entra.

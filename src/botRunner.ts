@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { AnalyticsRecorder, ANALYTICS_WINDOW_SECONDS } from "./analyticsRecorder.js";
 import { detectCompleteSetArb, type ArbOpportunity } from "./arbMonitor.js";
+import { AskWindowDeadlockDetector, describeDeadlock } from "./askWindowDeadlock.js";
 import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
@@ -188,6 +189,7 @@ export class BotRunner {
   private readonly loopFailures: boolean[] = [];
   /** Última lectura del saldo on-chain; `undefined` mientras no se haya conseguido ninguna. */
   private lastBankrollReading?: BankrollReading;
+  private readonly askWindowDetector = new AskWindowDeadlockDetector();
   /** Evita encadenar lecturas de saldo si una va lenta. */
   private bankrollRefreshInFlight = false;
   private lastLoopStatsLogMs = 0;
@@ -500,6 +502,33 @@ export class BotRunner {
         failed: failures,
         failedPct: Math.round((1000 * failures) / sorted.length) / 10,
       });
+    }
+  }
+
+  /**
+   * Registra una señal descartada por precio y avisa si ese mercado lleva tantas seguidas que su
+   * ventana de ask lo tiene bloqueado. Sin esto, una configuracion imposible se ve exactamente igual
+   * que un mercado tranquilo: skips normales, para siempre.
+   */
+  private noteAskRejected(signal: TradeSignal, bestAsk?: number): void {
+    const market = signal.market.asset;
+    this.askWindowDetector.recordRejected(market, bestAsk);
+    const deadlock = this.askWindowDetector.takeDeadlock(
+      market,
+      this.resolveConfiguredMinAskPrice(market, signal.outcome),
+      signal.maxAskPrice,
+    );
+    if (deadlock) {
+      logger.warn(`Ventana de ask bloqueada. ${describeDeadlock(deadlock)}`, deadlock);
+      void this.deps.notifier
+        ?.notify({
+          key: `ask-deadlock-${market}`,
+          level: "warn",
+          title: `${market}: ventana de ask bloqueada`,
+          body: describeDeadlock(deadlock),
+          minIntervalMs: 6 * 60 * 60_000,
+        })
+        .catch(() => undefined);
     }
   }
 
@@ -830,6 +859,7 @@ export class BotRunner {
 
     if (!quote.bestAsk || quote.availableUsdUnderCap <= 0) {
       this.logSkipOnce(signal.market.slug, "no_ask_liquidity_under_cap", { outcome: signal.outcome });
+      this.noteAskRejected(signal, quote.bestAsk);
       return undefined;
     }
 
@@ -839,6 +869,7 @@ export class BotRunner {
         bestAsk: quote.bestAsk,
         maxAskPrice: signal.maxAskPrice,
       });
+      this.noteAskRejected(signal, quote.bestAsk);
       return undefined;
     }
 
@@ -866,8 +897,12 @@ export class BotRunner {
         bestAsk: quote.bestAsk,
         minAskPrice,
       });
+      this.noteAskRejected(signal, quote.bestAsk);
       return undefined;
     }
+
+    // Pasó la ventana de precio: la configuración de este mercado es operable.
+    this.askWindowDetector.recordAccepted(signal.market.asset);
 
     // Guard against thin-liquidity micro-positions: if the book can only fill a small fraction of the
     // requested amount under the cap, the fill is a useless dust position (and skews per-trade P&L).

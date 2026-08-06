@@ -63,25 +63,25 @@ async function main(): Promise<void> {
       const grid = buildCandidateGrid(market, train, currentDistance, floor);
 
       // SYMMETRIC: one pick for both sides (the current engine's behavior).
-      const symCurrent = buildCandidate(market, train, currentWindow, currentDistance, maxAsk);
+      const symCurrent = buildCandidate(market, train, currentWindow, currentDistance, { floor: 0, cap: maxAsk });
       const symCandidates: RecommendationCandidate[] = [];
       for (const cell of grid) {
-        const built = buildCandidate(market, train, cell.entryWindowSeconds, cell.minDistanceUsd, maxAsk);
+        const built = buildCandidate(market, train, cell.entryWindowSeconds, cell.minDistanceUsd, { floor: 0, cap: maxAsk });
         if (built.metrics.adjustedRoi !== undefined) {
           symCandidates.push(built);
         }
       }
       const symBest = pickPositive(selectBestCandidate(symCandidates, symCurrent) ?? symCurrent);
       if (symBest) {
-        accumulate(sym, buildCandidate(market, test, symBest.entryWindowSeconds, symBest.minDistanceUsd, maxAsk));
+        accumulate(sym, buildCandidate(market, test, symBest.entryWindowSeconds, symBest.minDistanceUsd, { floor: 0, cap: maxAsk }));
       }
 
       // ASYMMETRIC: independent pick per side, evaluated per side on the test block.
       for (const outcome of OUTCOMES) {
-        const sideCurrent = buildCandidate(market, train, currentWindow, currentDistance, maxAsk, outcome);
+        const sideCurrent = buildCandidate(market, train, currentWindow, currentDistance, { floor: 0, cap: maxAsk }, outcome);
         const sideCandidates: RecommendationCandidate[] = [];
         for (const cell of grid) {
-          const built = buildCandidate(market, train, cell.entryWindowSeconds, cell.minDistanceUsd, maxAsk, outcome);
+          const built = buildCandidate(market, train, cell.entryWindowSeconds, cell.minDistanceUsd, { floor: 0, cap: maxAsk }, outcome);
           if (built.metrics.adjustedRoi !== undefined) {
             sideCandidates.push(built);
           }
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
         if (sideBest) {
           accumulate(
             asym,
-            buildCandidate(market, test, sideBest.entryWindowSeconds, sideBest.minDistanceUsd, maxAsk, outcome),
+            buildCandidate(market, test, sideBest.entryWindowSeconds, sideBest.minDistanceUsd, { floor: 0, cap: maxAsk }, outcome),
           );
         }
       }
