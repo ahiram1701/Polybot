@@ -188,6 +188,8 @@ export class BotRunner {
   private readonly loopFailures: boolean[] = [];
   /** Última lectura del saldo on-chain; `undefined` mientras no se haya conseguido ninguna. */
   private lastBankrollReading?: BankrollReading;
+  /** Evita encadenar lecturas de saldo si una va lenta. */
+  private bankrollRefreshInFlight = false;
   private lastLoopStatsLogMs = 0;
   // Cold-start exploration budget: how many exploratory probes have fired per `${dayKey}:${market}`.
   // In-memory on purpose — a restart resets it, which only makes exploration MORE conservative.
@@ -346,10 +348,22 @@ export class BotRunner {
     let capturePhaseMs = 0;
     let decidePhaseMs = 0;
 
-    // Refresca el colateral real antes de decidir. La fuente cachea (TTL 60s) y nunca lanza, asi que
-    // esto no añade una peticion de red por iteracion ni una via nueva de timeout en el camino caliente.
-    if (this.deps.bankrollSource) {
-      this.lastBankrollReading = await this.deps.bankrollSource.read(nowMs);
+    // SIN await: la lectura tiene timeout de 8s y esperarla bloqueaba el bucle entero cada vez que el
+    // RPC iba lento — exactamente la clase de parón que este mismo fichero intenta evitar. El saldo no
+    // cambia entre iteraciones, asi que se refresca en segundo plano y se usa la ultima lectura buena.
+    if (this.deps.bankrollSource && !this.bankrollRefreshInFlight) {
+      this.bankrollRefreshInFlight = true;
+      void this.deps.bankrollSource
+        .read(nowMs)
+        .then((reading) => {
+          if (reading) {
+            this.lastBankrollReading = reading;
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          this.bankrollRefreshInFlight = false;
+        });
     }
 
     await this.reconcileLiveTrades(nowMs);
