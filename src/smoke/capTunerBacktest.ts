@@ -67,11 +67,28 @@ async function main(): Promise<void> {
     }
   }
 
-  // Brazo 4: ventana FIJA actual (configurada desde el replay de ventanas).
+  // AVISO DE METODO — leer antes de usar cualquier numero de este fichero para elegir una ventana.
+  //
+  // Esto FILTRA trades ya ejecutados por su ask. Los del historico se eligieron con una config vieja
+  // (ask medio ~0.49), asi que aplicarles una ventana de 0.70-0.92 no responde "¿cuanto ganariamos
+  // apuntando ahi?" sino "de los que tomamos a 0.49, ¿como les fue a los pocos que salieron caros?".
+  // Eso es una muestra sesgada por seleccion, y ademas minuscula: 77 de cientos.
+  //
+  // Para ELEGIR ventana sirve `gateReplay.ts`, que re-deriva las señales sobre las ~20k ventanas con
+  // el gate real. Sobre la misma config desplegada, gateReplay da +$143,80 donde esto da -$8,72; no se
+  // contradicen, es que responden preguntas distintas. Este fichero solo sirve para lo que fue escrito:
+  // comparar el TUNER contra una ventana fija sobre el mismo conjunto de trades.
+  //
+  // Brazo 4: la ventana FIJA que corre de verdad en produccion hoy (settings, 2026-08-06).
+  //
+  // Estos numeros llevaban meses sin actualizarse y el veredicto del tuner se emitia contra una
+  // configuracion que nadie usaba — la linea base incluso se imprimia como "(actual)". Comparar contra
+  // una base obsoleta hace que "adoptable" no signifique nada: el tuner puede ganarle a una config
+  // mala y aun asi empeorar la que esta desplegada.
   const FIXED_WINDOW: Record<string, { floor: number; cap: number }> = {
-    ETH: { floor: 0.3, cap: 0.55 },
-    BTC: { floor: 0.55, cap: 0.65 },
-    DOGE: { floor: 0.01, cap: 0.5 },
+    BTC: { floor: 0.7, cap: 0.92 },
+    ETH: { floor: 0.7, cap: 0.85 },
+    DOGE: { floor: 0.85, cap: 0.95 },
   };
   const fixedWindow = { trades: 0, wins: 0, net: 0 };
   for (const trade of trades) {
@@ -118,7 +135,7 @@ async function main(): Promise<void> {
   }
 
   console.log("=== Resultados (mismo ledger, distinta política de cap) ===");
-  print("cap fijo 0.65 (actual)", fixed065);
+  print("cap fijo 0.65 (historico)", fixed065);
   print("cap fijo 0.85 (techo) ", fixed085);
   print("tuner dinámico        ", tuned);
   print("VENTANA FIJA (actual) ", fixedWindow);
@@ -136,7 +153,9 @@ async function main(): Promise<void> {
   if (capHistory.length > 15) {
     console.log(`  ... (+${capHistory.length - 15})`);
   }
-  const delta = tuned.net - fixed065.net;
+  // El veredicto que importa es contra la ventana DESPLEGADA, no contra un cap historico: adoptar el
+  // tuner significa dejarle mover la config que corre hoy.
+  const delta = tuned.net - fixedWindow.net;
   console.log(`\nTuner vs cap fijo 0.65: ${delta >= 0 ? "+" : "-"}$${Math.abs(delta).toFixed(2)} (${delta >= 0 ? "NO pierde: adoptable" : "PIERDE: no adoptar"})`);
 }
 

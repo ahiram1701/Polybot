@@ -35,12 +35,27 @@ interface MarketConfig {
 }
 type Config = Record<MarketSymbol, MarketConfig>;
 
-/** La configuracion CONGELADA que corre ahora (autoajustes apagados el 2026-08-01). */
+/** La configuracion que corre HOY en produccion (leida de settings, 2026-08-06). */
 const FROZEN: Config = {
-  BTC: { entryWindowSeconds: 53, minDistanceUsd: 20, minAsk: 0.35, maxAsk: 0.6 },
-  ETH: { entryWindowSeconds: 25, minDistanceUsd: 0.25, minAsk: 0.4, maxAsk: 0.6 },
-  DOGE: { entryWindowSeconds: 120, minDistanceUsd: 0.00005, minAsk: 0.01, maxAsk: 0.65 },
+  BTC: { entryWindowSeconds: 34, minDistanceUsd: 49, minAsk: 0.7, maxAsk: 0.8 },
+  ETH: { entryWindowSeconds: 42, minDistanceUsd: 0.7, minAsk: 0.7, maxAsk: 0.85 },
+  DOGE: { entryWindowSeconds: 42, minDistanceUsd: 0.00005, minAsk: 0.85, maxAsk: 0.95 },
 };
+
+/**
+ * Candidatas. Salen de `askBandScan`, que sobre el historico dice que la unica banda de BTC con
+ * esperanza positiva es 0,85-0,92 — y el techo esta en 0,80, asi que produccion no puede tocarla.
+ * Eso es lo que cuentan los 9.022 `no_ask_liquidity_under_cap` del log, el motivo de skip numero uno.
+ *
+ * Pero esa tabla mide una regla simple de banda+momentum, y el bot ademas aplica el gate de EV, la
+ * similitud y la exploracion. Por eso se replica el gate REAL antes de mover nada: la tabla es una
+ * pista, no una orden.
+ */
+const CANDIDATAS: [string, Config][] = [
+  ["BTC techo 0.80 -> 0.92", withBtc(FROZEN, { maxAsk: 0.92 })],
+  ["BTC banda 0.85-0.92", withBtc(FROZEN, { minAsk: 0.85, maxAsk: 0.92 })],
+  ["DOGE techo 0.95 -> 0.92", { ...FROZEN, DOGE: { ...FROZEN.DOGE, maxAsk: 0.92 } }],
+];
 
 function withEth(base: Config, patch: Partial<MarketConfig>): Config {
   return { ...base, ETH: { ...base.ETH, ...patch } };
@@ -166,12 +181,12 @@ async function main(): Promise<void> {
   console.log("PRUEBA: de donde sale el optimismo del replay");
   console.log("Referencia REAL del bot: sim ~51% de aciertos, live ~36%");
   console.log("");
-  const casos: [string, boolean][] = [
-    ["quote mas CERCANO (puede ser posterior)", false],
-    ["quote SOLO en o antes de la senal", true],
-  ];
-  for (const [name, strict] of casos) {
-    console.log(line(name, await replay(engine, FROZEN, undefined, strict)));
+  // `strictQuotes` = solo quotes en o ANTES de la senal. Es el unico modo honesto para comparar
+  // configuraciones: el otro puede leer un precio posterior a la decision.
+  console.log(line("PRODUCCION (hoy)", await replay(engine, FROZEN, undefined, true)));
+  console.log("");
+  for (const [nombre, config] of CANDIDATAS) {
+    console.log(line(nombre, await replay(engine, config, undefined, true)));
   }
 }
 
