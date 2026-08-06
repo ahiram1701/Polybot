@@ -1,4 +1,5 @@
 import { loadConfig } from "../config.js";
+import { installHttpKeepAlive } from "../httpAgent.js";
 import { logger } from "../logger.js";
 import { createDynamicNotifier } from "../notifier.js";
 import { BotController } from "./controller.js";
@@ -6,6 +7,9 @@ import { createUiApp } from "./server.js";
 
 const HOST = process.env.POLYBOT_UI_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.POLYBOT_UI_PORT ?? 8787);
+
+// Antes de cualquier peticion: reutilizar conexiones evita reabrir (y reresolver) en cada llamada.
+installHttpKeepAlive();
 
 async function main(): Promise<void> {
   const staticClient = process.argv.includes("--static");

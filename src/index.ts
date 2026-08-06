@@ -1,6 +1,10 @@
 import { BotRunner } from "./botRunner.js";
 import { loadConfig, usage } from "./config.js";
+import { installHttpKeepAlive } from "./httpAgent.js";
 import { logger } from "./logger.js";
+
+// Antes de cualquier peticion: reutilizar conexiones evita reabrir (y reresolver) en cada llamada.
+installHttpKeepAlive();
 
 async function main(): Promise<void> {
   const { config, cli } = loadConfig();
