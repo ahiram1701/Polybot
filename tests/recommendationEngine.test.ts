@@ -387,3 +387,35 @@ function settlementQuote(endMs: number, winner: Outcome) {
     downBestBid: upWins ? 0 : 0.99,
   };
 }
+
+/**
+ * La rejilla es CPU pura y corre en el mismo hilo que el trading. Si no cede el control con la
+ * frecuencia suficiente, el bot se queda ciego — y peor: se disfraza de fallo de red, porque con el
+ * bucle parado el `AbortSignal.timeout(5s)` de los fetch acaba disparando contra una red sana.
+ *
+ * Medido en el equipo del usuario antes de arreglarlo: retraso mediano del bucle de 1.896ms y picos
+ * de 9.6s durante una pasada. Cediendo por TIEMPO en vez de por conteo de candidatos: mediana 55ms,
+ * maximo 851ms, y cero latidos retrasados mas de un segundo.
+ */
+describe("RecommendationEngine: no puede dejar ciego al bot", () => {
+  it("cede el control con la frecuencia suficiente para que el bucle siga latiendo", async () => {
+    const samples = Array.from({ length: 60 }, (_value, index) => predictiveSample("BTC", index, index % 2 === 0 ? "UP" : "DOWN", true));
+
+    const lags: number[] = [];
+    let last = Date.now();
+    const beat = setInterval(() => {
+      const now = Date.now();
+      lags.push(now - last - 10);
+      last = now;
+    }, 10);
+    try {
+      await buildRecommendations(samples, settings());
+    } finally {
+      clearInterval(beat);
+    }
+
+    // El umbral que importa: por debajo del AbortSignal de 5s de los fetch, con margen de sobra.
+    const peor = lags.length > 0 ? Math.max(...lags) : 0;
+    expect(peor).toBeLessThan(2_000);
+  });
+});

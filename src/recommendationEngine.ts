@@ -178,12 +178,42 @@ export class RecommendationEngine {
 
 // The grid search is CPU-heavy; yield to the event loop every few candidates so the recommendation
 // tick never freezes the bot's trading/polling loop (see buildMarketRecommendation).
-const CANDIDATE_YIELD_INTERVAL = 40;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
     setImmediate(resolve);
   });
+}
+
+/**
+ * Cede el control si se lleva mas de `YIELD_BUDGET_MS` sin hacerlo.
+ *
+ * Ceder cada N CANDIDATOS (antes: 40) no acota nada: lo que importa es cuanto se tarda entre cesiones,
+ * y eso depende de la maquina y del tamaño del dataset. Medido en el equipo del usuario (i7-4770, 20k
+ * muestras): un candidato costaba ~47ms, asi que 40 candidatos eran ~1.9s de bucle bloqueado de
+ * mediana y hasta 9.6s en los picos — con 66 de 86 latidos retrasados mas de un segundo durante una
+ * pasada de 242s.
+ *
+ * Eso no solo hace perder ventanas de entrada: se disfraza de fallo de RED. Con el bucle parado, la
+ * continuacion del `fetch` no puede ejecutarse y el `AbortSignal.timeout(5s)` acaba disparando, asi
+ * que el sintoma visible era "The operation was aborted due to timeout" contra una red perfectamente
+ * sana.
+ *
+ * Por tiempo el limite se respeta en cualquier maquina: en una mas lenta simplemente se cede mas a
+ * menudo, en vez de degradarse en silencio.
+ */
+const YIELD_BUDGET_MS = 15;
+
+class EventLoopBudget {
+  private lastYieldAtMs = Date.now();
+
+  async yieldIfNeeded(nowMs = Date.now()): Promise<void> {
+    if (nowMs - this.lastYieldAtMs < YIELD_BUDGET_MS) {
+      return;
+    }
+    await yieldToEventLoop();
+    this.lastYieldAtMs = Date.now();
+  }
 }
 
 export async function buildRecommendations(
@@ -227,6 +257,7 @@ async function buildMarketRecommendation(
   const current = buildCandidate(market, samples, currentWindow, currentDistance, settings.maxAskPrice, undefined, minSecondsToEnd);
   const grid = buildCandidateGrid(market, samples, currentDistance, distanceFloor);
   const candidates: RecommendationCandidate[] = [];
+  const budget = new EventLoopBudget();
   for (let index = 0; index < grid.length; index += 1) {
     const built = buildCandidate(
       market,
@@ -240,10 +271,8 @@ async function buildMarketRecommendation(
     if (built.metrics.adjustedRoi !== undefined) {
       candidates.push(built);
     }
-    // Yield periodically so a large grid never blocks the event loop (keeps trading responsive).
-    if ((index + 1) % CANDIDATE_YIELD_INTERVAL === 0) {
-      await yieldToEventLoop();
-    }
+    // Por TIEMPO, no por conteo: es lo unico que acota el retraso del bucle en cualquier maquina.
+    await budget.yieldIfNeeded();
   }
   const best = selectBestCandidate(candidates, current) ?? current;
   const improvementAdjustedRoi =

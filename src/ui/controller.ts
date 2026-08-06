@@ -104,7 +104,17 @@ const DEFAULT_OLLAMA_MODEL = "gpt-oss:120b";
 // bucle de trading, y la latencia en el momento de entrar es justo lo que no se puede pagar. A 10
 // minutos el ciclo de trabajo queda en ~9%, apenas por encima del 6,5% que costaba antes, con 6,7x
 // mas datos. La config de estrategia deriva en horas, no en minutos: no se pierde nada real.
-const AI_AUTO_APPLY_POLL_MS = 600_000;
+/**
+ * Cada cuanto reevalua el autoajuste predictivo.
+ *
+ * Estaba en 10 min con un coste documentado de ~57s por pasada. Medido en el equipo real (i7-4770,
+ * 20.000 muestras) la pasada tarda **~258s**: casi la mitad del intervalo con los cuatro nucleos
+ * ocupados. El bucle ya no se queda ciego (la cesion es por tiempo, ver `EventLoopBudget`), pero
+ * disputar CPU al camino de trading el 43% del tiempo no aporta nada: como dice el propio motor, "la
+ * config de estrategia deriva en horas, no en minutos". A 30 min el ciclo de trabajo baja al ~14% sin
+ * perder capacidad de reaccion.
+ */
+const AI_AUTO_APPLY_POLL_MS = 1_800_000;
 
 export class ControllerError extends Error {
   constructor(
