@@ -14,9 +14,8 @@
  * aparte contra el live real y salio favorable (slippage medio -0.029, 6/30 peores, 3/30 parciales),
  * asi que para comparar CONFIGURACIONES entre si el sesgo es comun a todas y se cancela.
  */
-import { buildCalibrationMap, applyCalibration, type CalibrationSample } from "../calibration.js";
 import { calculateTradeFeeUsd, defaultTakerFeeRateBps } from "../fees.js";
-import { calculateAdjustedWinProbability } from "../expectedValue.js";
+import { simulateGate } from "../gateSimulation.js";
 import { StrategyAnalysisEngine } from "../strategyAnalysisEngine.js";
 import type { MarketSymbol, Outcome } from "../types.js";
 
@@ -103,51 +102,29 @@ async function replay(engine: StrategyAnalysisEngine, config: Config, rejectEdge
     }
     signals.sort((left, right) => left.windowStartMs - right.windowStartMs);
 
-    const history: CalibrationSample[] = [];
-    // El historial que alimenta la estimacion se restringe a la VENTANA DE ASK configurada, igual que
-    // produccion (estimateSetupWinRate filtra por ask <= cap). Sin este filtro entran las ventanas
-    // carisimas (0.9+), que casi siempre ganan, y la probabilidad estimada se dispara a ~91%: todo
-    // declararia un edge enorme y el rechazo de >0.20 tumbaria absolutamente todo.
-    let priorWins = 0;
-    let priorTrades = 0;
+    // La decision la toma `simulateGate`, compartido con el evaluador contrafactual del autoajuste.
+    // Tener DOS implementaciones del gate ya se equivoco una vez (la tabla simple y DOGE), asi que
+    // aqui no se reimplementa: se llama.
     const stats = out.perMarket.get(market) ?? { trades: 0, wins: 0, net: 0 };
-    for (const signal of signals) {
-      const { ask, won } = signal;
-      if (ask < cfg.minAsk || ask > cfg.maxAsk) {
-        continue;
-      }
-      if (priorTrades === 0) {
-        priorTrades += 1;
-        priorWins += won ? 1 : 0;
-        continue;
-      }
-      const predicted = calculateAdjustedWinProbability(priorWins, priorTrades, ask);
-      const adjusted = applyCalibration(buildCalibrationMap(history), predicted);
-      const edge = adjusted - ask;
-      const expectedRoi = adjusted / ask - 1;
-      const feeFraction = (feeRateBps / 10_000) * (1 - ask);
-      const passes =
-        adjusted >= ask + SAFETY_MARGIN &&
-        expectedRoi >= MIN_EXPECTED_ROI + feeFraction &&
-        !(rejectEdgeAbove !== undefined && edge > rejectEdgeAbove);
-
-      if (passes) {
-        const shares = STAKE_USD / ask;
-        const fee = calculateTradeFeeUsd({ shares, price: ask, feeRateBps });
-        const net = (won ? shares : 0) - STAKE_USD - fee;
-        out.trades += 1;
-        out.stakeUsd += STAKE_USD + fee;
-        out.netUsd += net;
-        out.predictedSum += adjusted;
-        if (won) out.wins += 1;
-        out.rows.push({ p: adjusted, won });
-        stats.trades += 1;
-        stats.net += net;
-        if (won) stats.wins += 1;
-      }
-      history.push({ predicted, won });
-      priorTrades += 1;
-      priorWins += won ? 1 : 0;
+    const simulados = simulateGate(signals, {
+      minAsk: cfg.minAsk,
+      maxAsk: cfg.maxAsk,
+      safetyMargin: SAFETY_MARGIN,
+      minExpectedRoi: MIN_EXPECTED_ROI,
+      stakeUsd: STAKE_USD,
+      feeRateBps,
+      rejectEdgeAbove,
+    });
+    for (const trade of simulados) {
+      out.trades += 1;
+      out.stakeUsd += trade.stakeUsd;
+      out.netUsd += trade.netUsd;
+      out.predictedSum += trade.adjusted;
+      if (trade.won) out.wins += 1;
+      out.rows.push({ p: trade.adjusted, won: trade.won });
+      stats.trades += 1;
+      stats.net += trade.netUsd;
+      if (trade.won) stats.wins += 1;
     }
     out.perMarket.set(market, stats);
   }

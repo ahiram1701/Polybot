@@ -32,7 +32,7 @@ export interface AskBandSummary {
 // tramo. Sin resolucion ahi, ni el tuner de ventana podia recortar nada ni la tabla que lee el usuario
 // distinguia 0.86 de 0.99, que se comportan muy distinto. Los tramos altos son mas estrechos a
 // proposito: cerca de 1 cada centimo cambia el break-even mucho mas que abajo.
-const BAND_EDGES = [0, 0.45, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.94, 0.97, 1.0000001];
+export const BAND_EDGES = [0, 0.45, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.94, 0.97, 1.0000001];
 
 export function summarizeAskBands(
   trades: TradeAttempt[],
