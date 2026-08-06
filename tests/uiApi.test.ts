@@ -1048,3 +1048,26 @@ function apiTrade(overrides: Partial<TradeAttempt> = {}): TradeAttempt {
     ...overrides,
   };
 }
+
+/**
+ * El watchdog reinicia el proceso si esta sonda no responde en 5s. Sondear `/api/status` era un error:
+ * ese endpoint cotiza mercados en vivo, asi que con la red lenta tardaba mas de 5s y el watchdog
+ * mataba un bot sano — 4 reinicios en 2 horas, perdiendo estado en memoria cada vez.
+ */
+describe("GET /api/health", () => {
+  it("responde sin depender de la red ni del controlador", async () => {
+    // Un controlador cuyo getStatus SIEMPRE cuelga: si la sonda dependiera de el, este test expiraria.
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: () => new Promise(() => undefined),
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    const response = await request(app).get("/api/health").expect(200);
+    expect(response.body.ok).toBe(true);
+    expect(typeof response.body.uptimeSeconds).toBe("number");
+    controller.dispose();
+  });
+});

@@ -24,10 +24,14 @@ if (Test-Path $configPath) {
 }
 
 # 1) ¿Responde la UI? Dos intentos para no reiniciar por un hipo puntual.
+#    Se sondea /api/health y NO /api/status: este ultimo cotiza mercados en vivo (gamma + 2
+#    getQuote por mercado), asi que con la red lenta tarda mas de 5s y el watchdog acababa
+#    matando un bot sano — 4 reinicios en 2 horas, perdiendo estado en memoria cada vez.
+#    /api/health no toca la red: solo confirma que el proceso atiende peticiones.
 $alive = $false
 foreach ($attempt in 1..2) {
     try {
-        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8787/api/status" -UseBasicParsing -TimeoutSec 5
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8787/api/health" -UseBasicParsing -TimeoutSec 5
         if ($resp.StatusCode -eq 200) { $alive = $true; break }
     } catch {
         Start-Sleep -Seconds 5

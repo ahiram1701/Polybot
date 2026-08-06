@@ -61,6 +61,24 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
   app.disable("x-powered-by");
   app.use(express.json());
 
+  /**
+   * Sonda de vida. Responde SIN tocar la red: solo dice si el proceso esta vivo y atendiendo.
+   *
+   * `/api/status` no vale para esto: cotiza mercados en vivo (gamma + 2 getQuote por mercado), asi
+   * que cuando la red va lenta tarda mas de 5s. El watchdog lo interpretaba como "UI caida" y mataba
+   * un bot perfectamente sano — 4 reinicios en 2 horas, cada uno perdiendo el estado en memoria y
+   * volviendo a leer las 20.000 muestras en frio.
+   *
+   * Una sonda de vida debe comprobar que el proceso responde, no que las APIs de terceros van rapidas.
+   */
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      uptimeSeconds: Math.round(process.uptime()),
+      rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    });
+  });
+
   app.get("/api/status", asyncHandler(async (_req, res) => {
     res.json(await controller.getStatus());
   }));
