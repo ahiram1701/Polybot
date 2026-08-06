@@ -1982,6 +1982,220 @@ describe("BotRunner", () => {
     expect(state.recordTradeAttempt).not.toHaveBeenCalled();
   });
 
+  /**
+   * El arbitraje solo carece de riesgo direccional si llenan las DOS patas. Dimensionarlo por encima
+   * del colateral real garantiza lo contrario: la primera llena, la segunda se queda sin fondos y
+   * queda una apuesta desnuda. Con $10 de saldo y presupuesto de $25 pasaria en cada oportunidad.
+   */
+  describe("arbitraje en LIVE: el tamaño no puede superar el colateral real", () => {
+    const montarArb = async (opciones: {
+      liveBankrollUsd?: number;
+      budget: number;
+      mercados?: number;
+      perdidaPreviaUsd?: number;
+      fallaSegundaPata?: boolean;
+    }) => {
+      const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-live-"));
+      arbTemps.push(dataDir);
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 200_000;
+      const market = { ...marketInfo("ETH", "eth", windowStartMs), orderMinSize: 5 };
+      // Un slug distinto por mercado, si no el guardia de "ya operado" tapa el segundo arbitraje.
+      const mercados = Array.from({ length: opciones.mercados ?? 1 }, (_unused, i) => ({
+        ...market,
+        slug: `${market.slug}-${i}`,
+      }));
+      const openings = new Map(
+        mercados.map((m) => [
+          m.slug,
+          {
+            asset: m.asset,
+            slug: m.slug,
+            windowStartMs,
+            openingPrice: 100,
+            openingTickTimestampMs: windowStartMs,
+            capturedAtMs: windowStartMs,
+          },
+        ]),
+      );
+      let siguienteMercado = 0;
+      const recorded: TradeAttempt[] = [];
+      if (opciones.perdidaPreviaUsd) {
+        recorded.push({
+          id: "perdida-previa",
+          asset: "ETH",
+          slug: "eth-perdida-previa",
+          mode: "live",
+          outcome: "UP",
+          tokenId: "t",
+          amountUsd: opciones.perdidaPreviaUsd,
+          maxAskPrice: 0.9,
+          bestAsk: 0.9,
+          estimatedShares: opciones.perdidaPreviaUsd / 0.9,
+          fillDetected: true,
+          filledAmountUsd: opciones.perdidaPreviaUsd,
+          filledShares: opciones.perdidaPreviaUsd / 0.9,
+          openingPrice: 100,
+          entryPrice: 100.5,
+          distanceUsd: 1,
+          windowStartMs,
+          endMs: windowStartMs + 300_000,
+          createdAtMs: windowStartMs - 60_000,
+          resolved: {
+            resolvedAtMs: windowStartMs - 30_000,
+            finalPrice: 90,
+            finalTickTimestampMs: windowStartMs - 30_000,
+            winningOutcome: "DOWN",
+            won: false,
+          },
+        } as unknown as TradeAttempt);
+      }
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => recorded),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn((slug: string) => recorded.some((trade) => trade.slug === slug)),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async (trade: TradeAttempt) => {
+          recorded.push(trade);
+        }),
+      } as unknown as StateStore;
+      // Par a 0.80 con profundidad de sobra: net/set ~0.166, muy por encima del minimo.
+      const orderbook = {
+        getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+          tokenId: "token",
+          bestAsk: 0.4,
+          bestBid: 0.39,
+          availableUsdUnderCap: 400,
+          availableUsdAllLevels: 400,
+          estimatedSharesForAmount: amountUsd / 0.4,
+          rawAskLevels: [],
+        })),
+      } as unknown as OrderbookService;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => {
+          // La primera pata es UP (profundidad igual en ambos lados): fallar DOWN deja pata suelta.
+          if (opciones.fallaSegundaPata && input.outcome === "DOWN") {
+            throw new Error("no funds");
+          }
+          return {
+            id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode: "live" as const,
+          outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId,
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: input.quote.bestAsk,
+          estimatedShares: input.amountUsd / 0.4,
+          fillDetected: true,
+          filledAmountUsd: input.amountUsd,
+          filledShares: input.amountUsd / 0.4,
+          openingPrice: 100,
+          entryPrice: 100.5,
+          distanceUsd: input.distanceUsd,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+            createdAtMs: nowMs,
+          };
+        }),
+      } satisfies TradeExecutor;
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          dataDir,
+          mode: "live",
+          confirmLive: true,
+          arbEnabled: true,
+          arbMaxUsdPerOpportunity: opciones.budget,
+          arbMinNetPerSet: 0.02,
+          liveBankrollUsd: opciones.liveBankrollUsd ?? 0,
+          minBankrollForDirectionalUsd: 0,
+          maxDailyLossUsd: 10,
+          riskHaltCooldownHours: 1,
+        },
+        {
+          watcher: {
+            getCurrentMarket: vi.fn(async () => mercados[siguienteMercado++ % mercados.length]),
+          } as unknown as MarketWatcher,
+          orderbook,
+          priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+          analyticsRecorder: {
+            observeMarket: vi.fn(async () => undefined),
+            recordResolvedTrade: vi.fn(async () => undefined),
+          } as unknown as AnalyticsRecorder,
+          notifier: { notify: vi.fn(async () => undefined) },
+        },
+      );
+      return { runner, executor, nowMs };
+    };
+
+    it("acota el tamaño al capital declarado en vez de gastar el presupuesto entero", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Presupuesto $25 pero solo $12 de capital: cada pata debe salir de esos $12, no de los $25.
+      const { runner, executor, nowMs } = await montarArb({ liveBankrollUsd: 12, budget: 25 });
+      await runner.runOnce(nowMs);
+      const importes = (executor.execute as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].amountUsd);
+      expect(importes.length).toBe(2);
+      expect(importes.reduce((a: number, b: number) => a + b, 0)).toBeLessThanOrEqual(12);
+      // ...y aun asi ambas patas superan el minimo del exchange, o no habria que mandarlas.
+      for (const importe of importes) {
+        expect(importe).toBeGreaterThanOrEqual(5);
+      }
+    });
+
+    it("no compromete el mismo saldo dos veces cuando dos mercados dan arbitraje a la vez", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Los tres mercados comparten la ventana de 5 min: sus oportunidades aparecen correlacionadas.
+      const { runner, executor, nowMs } = await montarArb({ liveBankrollUsd: 12, budget: 25, mercados: 2 });
+      await runner.runOnce(nowMs);
+      const importes = (executor.execute as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].amountUsd);
+      const total = importes.reduce((a: number, b: number) => a + b, 0);
+      // El segundo arbitraje solo puede usar lo que sobra del primero, no los $12 otra vez.
+      expect(total).toBeLessThanOrEqual(12);
+    });
+
+    it("el cortacircuitos de riesgo NO frena el arbitraje: un par completo no tiene riesgo direccional", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      // Perdida diaria por encima del limite: el direccional queda parado, el arbitraje no debe.
+      const { runner, executor, nowMs } = await montarArb({
+        liveBankrollUsd: 12,
+        budget: 25,
+        perdidaPreviaUsd: 40,
+      });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("deja de intentar arbitrajes tras dos patas sueltas seguidas", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      // Si la segunda pata deja de llenar de forma sistematica, cada intento abre una posicion
+      // direccional que nadie pidio. Eso SI tiene que parar, aunque el cortacircuitos no aplique.
+      const { runner, executor, nowMs } = await montarArb({
+        liveBankrollUsd: 40,
+        budget: 25,
+        mercados: 3,
+        fallaSegundaPata: true,
+      });
+      await runner.runOnce(nowMs);
+      // Dos mercados intentados (2 patas cada uno); el tercero ya no se intenta.
+      expect(executor.execute).toHaveBeenCalledTimes(4);
+    });
+
+    it("NO opera si el capital real se desconoce: dimensionar a ciegas es la pata desnuda", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executor, nowMs } = await montarArb({ liveBankrollUsd: 0, budget: 25 });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+  });
+
   it("corrects a live resolution when Polymarket's official outcome contradicts the feed", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);

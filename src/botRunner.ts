@@ -92,6 +92,9 @@ const DEFAULT_MAX_ASK_SPREAD = 0.02;
 // cualquier momento del ciclo, no solo en los ultimos 120s, pero cotizar cada segundo durante los 300
 // degrada el loop. 3s cubre el resto de la ventana sin ahogar el camino caliente.
 const ARB_SCAN_INTERVAL_MS = 3_000;
+
+/** Patas sueltas seguidas antes de dejar de intentar arbitrajes. */
+const ARB_NAKED_LEG_HALT_STREAK = 2;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -188,6 +191,21 @@ export class BotRunner {
   /** Paralelo a `loopDurationsMs`: si esa iteración acabó lanzando. */
   private readonly loopFailures: boolean[] = [];
   /** Última lectura del saldo on-chain; `undefined` mientras no se haya conseguido ninguna. */
+  /**
+   * Capital comprometido en arbitrajes DENTRO de la iteracion en curso. Los tres mercados comparten
+   * la misma ventana de 5 min, asi que sus oportunidades tienden a aparecer a la vez; sin esto cada
+   * una se dimensionaria contra el saldo ENTERO, porque la lectura on-chain esta cacheada y no baja
+   * al gastar. Dos arbitrajes de $10 con $10 en la cuenta dejan el segundo a medio llenar.
+   */
+  private arbCommittedUsdThisIteration = 0;
+
+  /**
+   * Patas sueltas seguidas. Es el unico riesgo real del arbitraje: si la segunda pata deja de llenar
+   * de forma sistematica (libro roto, post-only, saldo mal leido) cada intento abre una posicion
+   * direccional que nadie pidio. Dos seguidas ya no es mala suerte.
+   */
+  private arbNakedLegStreak = 0;
+
   private lastBankrollReading?: BankrollReading;
   private readonly askWindowDetector = new AskWindowDeadlockDetector();
   /** Evita encadenar lecturas de saldo si una va lenta. */
@@ -383,6 +401,7 @@ export class BotRunner {
     }
 
     const tradeSignals: TradeSignal[] = [];
+    this.arbCommittedUsdThisIteration = 0;
     const analyticsQuotesBySlug = new Map<string, Partial<Record<Outcome, OrderbookQuote>>>();
     const dailySpendUsd = this.deps.state.getDailySpend(nowMs);
     let reservedSpendUsd = 0;
@@ -430,7 +449,16 @@ export class BotRunner {
     // FASE 2 — decisión y ejecución, secuencial (orden determinista, límites de gasto compartidos).
     for (const { market, latestTick, opening, analyticsQuotes, arbOpportunity } of observations) {
       analyticsQuotesBySlug.set(market.slug, analyticsQuotes);
-      if (arbOpportunity && !riskHalt.tripped && opening && latestTick) {
+      // El cortacircuitos NO frena el arbitraje. Sus dos disparadores — perdida diaria y racha de
+      // perdidas — miden riesgo DIRECCIONAL; un par completo redime $1/set gane quien gane, asi que
+      // pararlo tras un dia malo quita justo la unica estrategia que recupera capital sin arriesgar.
+      // El riesgo propio del arbitraje es otro — que se quede una pata sola — y lo cubre la racha de
+      // patas sueltas, que si para.
+      const arbBloqueado = this.arbNakedLegStreak >= ARB_NAKED_LEG_HALT_STREAK;
+      if (arbOpportunity && arbBloqueado) {
+        this.logSkipOnce(market.slug, "arb_naked_leg_halt", { streak: this.arbNakedLegStreak });
+      }
+      if (arbOpportunity && !arbBloqueado && opening && latestTick) {
         await this.executeArbOpportunity({
           market,
           quotes: analyticsQuotes,
@@ -1455,7 +1483,31 @@ export class BotRunner {
     // solo por presupuesto y luego se descartaba si no cabía, tirando arbitrajes que sí cabían más
     // pequeños. Un arbitraje es rentable por set, así que uno pequeño sigue siendo dinero.
     const dailyRoomUsd = Math.max(0, this.config.dailySpendLimitUsd - this.deps.state.getDailySpend(nowMs));
-    const affordableUsd = Math.min(budgetUsd, dailyRoomUsd);
+    let affordableUsd = Math.min(budgetUsd, dailyRoomUsd);
+
+    // En LIVE el tamaño no puede superar el colateral REAL. Intentar un arbitraje que no se puede
+    // pagar es el peor resultado posible de esta estrategia: la primera pata llena, la segunda se
+    // queda sin fondos, y lo que iba a ser una posicion sin riesgo direccional se convierte en una
+    // apuesta desnuda. Con $10 de saldo y un presupuesto de $25, eso pasaria en CADA oportunidad.
+    // En sim no aplica: no hay colateral que agotar.
+    if (this.config.mode === "live") {
+      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+      if (bankroll.source === "unknown") {
+        // Nunca se pudo leer el saldo NI hay valor declarado: dimensionar a ciegas arriesga
+        // exactamente la pata desnuda que esto evita. Mejor perder la oportunidad.
+        this.logSkipOnce(market.slug, "arb_bankroll_unknown", { budgetUsd });
+        return;
+      }
+      const sinComprometerUsd = Math.max(0, bankroll.usd - this.arbCommittedUsdThisIteration);
+      if (sinComprometerUsd <= 0) {
+        this.logSkipOnce(market.slug, "arb_bankroll_exhausted", {
+          bankrollUsd: bankroll.usd,
+          committedUsd: this.arbCommittedUsdThisIteration,
+        });
+        return;
+      }
+      affordableUsd = Math.min(affordableUsd, sinComprometerUsd);
+    }
     const sets = Math.floor(Math.min(opportunity.maxSetsByDepth, affordableUsd / pairCost) * 100) / 100;
 
     // AMBAS patas tienen que superar el mínimo del exchange, que está en DÓLARES. La comprobación
@@ -1483,6 +1535,9 @@ export class BotRunner {
       return;
     }
     const totalCostUsd = sets * pairCost;
+    // Se reserva ANTES de mandar nada: el dinero sale en cuanto llena la primera pata, y sigue fuera
+    // aunque la segunda falle. Reservar despues del exito dejaria la ventana abierta justo en medio.
+    this.arbCommittedUsdThisIteration += totalCostUsd;
 
     // Thin book first: it is the binding constraint; if it rejects, no position exists yet.
     const thinFirst: Outcome[] =
@@ -1506,6 +1561,7 @@ export class BotRunner {
             kind: "arb",
             arbPairComplete: false,
           });
+          this.arbNakedLegStreak += 1;
           logger.warn("Arbitraje incompleto: solo una pata llenó; posición direccional registrada.", {
             slug: market.slug,
             leg: thinFirst[0],
@@ -1554,6 +1610,7 @@ export class BotRunner {
       reconciledAtMs: nowMs,
       response: { arbLegs: { up: upLeg.orderId, down: downLeg.orderId } },
     };
+    this.arbNakedLegStreak = 0;
     await this.deps.state.recordTradeAttempt(pairTrade);
     logger.info("Arbitraje ejecutado: par completo bloqueado.", {
       slug: market.slug,

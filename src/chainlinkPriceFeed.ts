@@ -27,7 +27,11 @@ export class ChainlinkPriceFeed {
     private readonly markets: readonly MarketSymbol[] = SUPPORTED_MARKETS,
     private readonly historyWindowMs = 10 * 60 * 1000,
     private readonly noTickTimeoutMs = 30_000,
-    private readonly maxReconnectDelayMs = 30_000,
+    // Tope bajo a proposito. El backoff exponencial existe para no machacar un servidor caido, pero
+    // aqui el coste de esperar no es teorico: el precio de apertura se captura en los primeros
+    // segundos de cada ventana de 5 min, asi que dormir 30s tras un corte de red tira la ventana
+    // entera — direccional Y arbitraje. Con 10s se pierde como mucho el arranque de una.
+    private readonly maxReconnectDelayMs = 10_000,
     // Re-subscribe on an interval to pull fresh snapshots. Chainlink pushes some assets (ETH/DOGE)
     // infrequently, so without this their ticks go stale between the sparse streaming updates and
     // the opening tick can't be captured. Must be well under the opening capture grace (~15s).
