@@ -3,7 +3,9 @@
 // by asserting on the returned strings. The runtime owns all side effects (polling, keypresses, the
 // screen buffer); it just feeds a ViewModel in and prints what comes out.
 
+import { splitCompactPnlByKind } from "../agent/statusSummary.js";
 import type { CompactStatus, CompactStrategy, CompactTrade } from "../agent/statusSummary.js";
+import { humanSkipReason } from "../ui/shared.js";
 import {
   bold,
   boxed,
@@ -148,6 +150,23 @@ export function renderDashboard(vm: ViewModel): string[] {
   const spend = `${fmtUsd(s.dailySpendUsd)}${s.dailySpendLimitUsd !== undefined ? ` / ${fmtUsd(s.dailySpendLimitUsd)}` : ""}`;
   stateLines.push(labelValue("Gasto hoy", spend));
   stateLines.push(labelValue("Live listo", s.liveReady ? green("sí") : gray("no")));
+  if (s.bankroll) {
+    // De donde sale el capital importa tanto como el numero: "declarado" significa que la lectura
+    // on-chain fallo y el bot esta dimensionando con un valor escrito a mano.
+    const fuente =
+      s.bankroll.source === "onchain"
+        ? green("on-chain")
+        : s.bankroll.source === "declared"
+          ? yellow("declarado")
+          : red("desconocido");
+    stateLines.push(labelValue("Capital", `${fmtUsd(s.bankroll.usd)} ${dim("(")}${fuente}${dim(")")}`));
+  }
+  if (s.loopHealth && s.loopHealth.iterations > 0) {
+    const pct = s.loopHealth.failedPct;
+    const texto = `${pct.toFixed(1)}% fallidas ${dim(`(${s.loopHealth.failed}/${s.loopHealth.iterations})`)}`;
+    // Un bucle que falla llega tarde a las entradas, y eso no aparece en ningun motivo de skip.
+    stateLines.push(labelValue("Loop", pct >= 5 ? red(texto) : pct > 0 ? yellow(texto) : green(texto)));
+  }
   if (s.riskHalt?.tripped) {
     const resume = s.riskHalt.resumeAtMs ? ` — re-arma ${hhmm(s.riskHalt.resumeAtMs)}` : "";
     stateLines.push(
@@ -170,6 +189,19 @@ export function renderDashboard(vm: ViewModel): string[] {
     ...pnlLines("SIM", s.pnlByMode.sim, s.mode === "sim" && s.running),
     ...pnlLines("LIVE", s.pnlByMode.live, s.mode === "live" && s.running),
   ];
+  // Desglose arbitraje vs direccional: con la estrategia arb-first, saber CUAL de los dos genera el
+  // dinero es el numero que importa. El total mezclado lo esconde.
+  if (vm.trades?.length) {
+    const modo = s.mode ?? "sim";
+    const split = splitCompactPnlByKind(vm.trades, modo, s.pnlResetAtMs);
+    if (split.arb.count > 0 || split.dir.count > 0) {
+      const fila = (etiqueta: string, parte: { netUsd: number; count: number }): string => {
+        const neto = parte.netUsd >= 0 ? green(fmtUsd(parte.netUsd)) : red(fmtUsd(parte.netUsd));
+        return `${bold(padEnd(etiqueta, 5))} ${padStart(neto, 18)}  ${dim(`${parte.count} ops`)}`;
+      };
+      pnlBody.push(dim("— por estrategia —"), fila("ARB", split.arb), fila("DIR", split.dir));
+    }
+  }
   out.push(...boxed("P&L (post-reset)", pnlBody, width));
 
   // Mercados
@@ -179,7 +211,7 @@ export function renderDashboard(vm: ViewModel): string[] {
         const secs = m.secondsToEnd !== undefined ? `${padStart(fmtInt(m.secondsToEnd), 3)}s` : "  —";
         const side = m.outcome ? padEnd(m.outcome, 4) : "    ";
         const dist = m.distanceUsd !== undefined ? padStart(fmtUsd(m.distanceUsd), 8) : padStart("—", 8);
-        return `${bold(padEnd(m.marketSymbol, 5))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(m.reason, width - 40))}`;
+        return `${bold(padEnd(m.marketSymbol, 5))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
       })
     : [dim("sin mercados observados")];
   out.push(...boxed("Mercados", marketLines, width));
@@ -187,7 +219,7 @@ export function renderDashboard(vm: ViewModel): string[] {
   // Por qué no opera
   const skips = Object.entries(s.recentActivity.skipReasonCounts).sort((a, b) => b[1] - a[1]);
   const skipLines = skips.length
-    ? skips.slice(0, 6).map(([reason, count]) => `${padStart(String(count), 4)} × ${reason}`)
+    ? skips.slice(0, 6).map(([reason, count]) => `${padStart(String(count), 4)} × ${humanSkipReason(reason)}`)
     : [dim("sin skips recientes")];
   out.push(...boxed(`Por qué no opera (muestra ${s.recentActivity.sampleSize})`, skipLines, width));
 

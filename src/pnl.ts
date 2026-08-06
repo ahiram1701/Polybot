@@ -49,7 +49,7 @@ export function emptyPnlSummaryByMode(): PnlSummaryByMode {
  * A COMPLETE arbitrage pair redeems $1 per set no matter which side wins; only a naked leg (pair
  * incomplete) depends on the winner like a normal position.
  */
-export function isCompleteArbPair(trade: TradeAttempt): boolean {
+export function isCompleteArbPair(trade: Pick<TradeAttempt, "kind" | "arbPairComplete">): boolean {
   return trade.kind === "arb" && trade.arbPairComplete === true;
 }
 

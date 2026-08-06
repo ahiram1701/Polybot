@@ -1,5 +1,5 @@
 import type { LogEntry } from "../logger.js";
-import { calculateTradePnl, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
+import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type {
   MarketSymbol,
@@ -60,6 +60,14 @@ export interface CompactStatus {
   // When each mode's P&L was last reset (epoch ms); omitted = never reset.
   pnlResetAtMs: PnlResetAtMsByMode;
   riskHalt?: RiskHaltStatus;
+  /**
+   * Salud del bucle (ventana movil) y capital efectivo. Estaban solo en la UI web, asi que ni la TUI
+   * ni los agentes que leen este resumen podian ver que el bot llevaba horas fallando iteraciones o
+   * que el saldo no se estaba pudiendo leer — justo las dos cosas que explican "por que no opera"
+   * cuando los motivos de skip no lo explican.
+   */
+  loopHealth?: { iterations: number; failed: number; failedPct: number };
+  bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   recentActivity: RecentActivity;
 }
 
@@ -105,6 +113,8 @@ export function summarizeStatus(
     },
     pnlResetAtMs: status.pnlResetAtMs ?? {},
     riskHalt: status.riskHalt,
+    loopHealth: status.loopHealth,
+    bankroll: status.bankroll,
     recentActivity: summarizeLogs(status.logs ?? [], sampleSize),
   };
 }
@@ -165,6 +175,11 @@ export interface CompactTrade {
   mode: Mode;
   /** "arb" = complete-set arbitrage: redeems $1/set regardless of the winner, so it is never a loss. */
   kind?: TradeAttempt["kind"];
+  /**
+   * Solo un par COMPLETO carece de riesgo direccional. Sin esta bandera una pata suelta se contaria
+   * como arbitraje, que es exactamente al reves de donde esta el riesgo.
+   */
+  arbPairComplete?: boolean;
   outcome: Outcome;
   amountUsd: number;
   bestAsk?: number;
@@ -187,6 +202,7 @@ export function summarizeTrade(trade: TradeAttempt): CompactTrade {
     market: trade.asset,
     mode: trade.mode,
     kind: trade.kind,
+    arbPairComplete: trade.arbPairComplete,
     outcome: trade.outcome,
     amountUsd: trade.amountUsd,
     bestAsk: trade.bestAsk,
@@ -265,4 +281,39 @@ export function summarizeStrategyAnalysis(
     topStrategies: response.strategies.slice(0, top).map(summarizeStrategy),
     currentStrategies: response.currentStrategies.map(summarizeStrategy),
   };
+}
+
+export interface PnlKindSplit {
+  arb: { netUsd: number; count: number };
+  dir: { netUsd: number; count: number };
+}
+
+/**
+ * Neto y numero de operaciones separando arbitraje de direccional, post-reset.
+ *
+ * Es EL numero de la estrategia arb-first: el total mezclado no dice cual de las dos genera el dinero.
+ * Vivia solo en la UI web; la TUI y los agentes veian un unico total.
+ *
+ * La clasificacion la decide `isCompleteArbPair`, la misma funcion que usa el calculo de P&L, para que
+ * las dos superficies no puedan discrepar sobre que cuenta como arbitraje.
+ */
+export function splitCompactPnlByKind(
+  trades: readonly CompactTrade[],
+  mode: Mode,
+  resetAtMsByMode: PnlResetAtMsByMode = {},
+): PnlKindSplit {
+  const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
+  const resetAtMs = resetAtMsByMode[mode];
+  for (const trade of trades) {
+    if (trade.mode !== mode || !trade.resolved) {
+      continue;
+    }
+    if (resetAtMs !== undefined && trade.createdAtMs <= resetAtMs) {
+      continue;
+    }
+    const bucket = isCompleteArbPair(trade) ? split.arb : split.dir;
+    bucket.netUsd += trade.netUsd ?? 0;
+    bucket.count += 1;
+  }
+  return split;
 }

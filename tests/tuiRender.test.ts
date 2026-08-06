@@ -115,6 +115,9 @@ function baseVm(overrides: Partial<ViewModel> = {}): ViewModel {
   };
 }
 
+/** Salto de linea, para no repetir el literal en cada assert. */
+const NL = "\n";
+
 describe("TUI render", () => {
   it("renders the dashboard with running mode, P&L, win rate, markets and skip reasons", () => {
     const text = stripAnsi(renderDashboard(baseVm({ status: statusFixture() })).join("\n"));
@@ -122,8 +125,52 @@ describe("TUI render", () => {
     expect(text).toContain("-$11.37");
     expect(text).toContain("win 33.3%");
     expect(text).toContain("ETH");
-    expect(text).toContain("btc_distance_below_threshold");
+    // Traducido, no el codigo crudo: la TUI comparte el mapa de etiquetas con la UI web.
+    expect(text).toContain("Distancia insuficiente");
+    expect(text).not.toContain("btc_distance_below_threshold");
     expect(text).toContain("$10.00 / $250.00");
+  });
+
+  /**
+   * Capital y salud del bucle vivian solo en la UI web. Son justo las dos cosas que explican "por que
+   * no opera" cuando ningun motivo de skip lo explica: un saldo que no se puede leer, o un bucle que
+   * falla y llega tarde a las entradas.
+   */
+  it("muestra el capital y de donde sale", () => {
+    const conSaldo = stripAnsi(
+      renderDashboard(
+        baseVm({ status: statusFixture({ bankroll: { usd: 17.8, source: "onchain" } }) }),
+      ).join(NL),
+    );
+    expect(conSaldo).toContain("$17.80");
+    expect(conSaldo).toContain("on-chain");
+
+    // "declarado" avisa de que la lectura on-chain fallo y se esta dimensionando a mano.
+    const declarado = stripAnsi(
+      renderDashboard(
+        baseVm({ status: statusFixture({ bankroll: { usd: 17, source: "declared" } }) }),
+      ).join(NL),
+    );
+    expect(declarado).toContain("declarado");
+  });
+
+  it("muestra el porcentaje de iteraciones fallidas del bucle", () => {
+    const text = stripAnsi(
+      renderDashboard(
+        baseVm({ status: statusFixture({ loopHealth: { iterations: 600, failed: 42, failedPct: 7 } }) }),
+      ).join(NL),
+    );
+    expect(text).toContain("7.0% fallidas");
+    expect(text).toContain("42/600");
+  });
+
+  it("no inventa una fila de bucle cuando todavia no hay iteraciones", () => {
+    const text = stripAnsi(
+      renderDashboard(
+        baseVm({ status: statusFixture({ loopHealth: { iterations: 0, failed: 0, failedPct: 0 } }) }),
+      ).join(NL),
+    );
+    expect(text).not.toContain("fallidas");
   });
 
   it("shows the risk halt banner when tripped", () => {

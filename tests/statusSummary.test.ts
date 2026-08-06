@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { summarizeStatus, summarizeStrategyAnalysis, summarizeTrade } from "../src/agent/statusSummary.js";
+import {
+  splitCompactPnlByKind,
+  summarizeStatus,
+  summarizeStrategyAnalysis,
+  summarizeTrade,
+} from "../src/agent/statusSummary.js";
+import { splitPnlByKind } from "../src/ui/client/App.js";
 import type { StrategyAnalysisResponse, StrategyCandidate, TradeAttempt } from "../src/types.js";
 import type { UiStatus } from "../src/ui/shared.js";
 
@@ -224,5 +230,86 @@ describe("summarizeStrategyAnalysis", () => {
     expect(compact.topStrategies[0]).toMatchObject({ market: "BTC", outcome: "UP", evRoi: 0.15, tradeCount: 62 });
     // The heavy per-strategy metrics blob is not carried through verbatim.
     expect(JSON.stringify(compact.topStrategies[0])).not.toContain("maxDrawdown");
+  });
+});
+
+/**
+ * El desglose ARB/DIR vive dos veces: la UI web lo calcula sobre trades completos y la TUI / los
+ * agentes sobre la forma compacta. La regla de clasificacion es unica (`isCompleteArbPair`), pero el
+ * bucle no, asi que esto comprueba que las dos dan lo MISMO. Un desacuerdo aqui significaria que una
+ * superficie te dice que el arbitraje gana y la otra que pierde.
+ */
+describe("splitCompactPnlByKind", () => {
+  function tradeConResultado(overrides: Partial<TradeAttempt>): TradeAttempt {
+    return {
+      id: "x",
+      asset: "ETH",
+      slug: "eth-1",
+      mode: "sim",
+      outcome: "UP",
+      tokenId: "t",
+      amountUsd: 10,
+      maxAskPrice: 0.9,
+      bestAsk: 0.5,
+      estimatedShares: 20,
+      filledShares: 20,
+      filledAmountUsd: 10,
+      openingPrice: 100,
+      entryPrice: 101,
+      distanceUsd: 1,
+      windowStartMs: 1_000,
+      endMs: 301_000,
+      createdAtMs: 2_000,
+      resolved: {
+        resolvedAtMs: 301_000,
+        finalPrice: 101,
+        finalTickTimestampMs: 301_000,
+        winningOutcome: "UP",
+        won: true,
+      },
+      ...overrides,
+    } as TradeAttempt;
+  }
+
+  it("separa el par completo del direccional", () => {
+    const trades = [
+      tradeConResultado({ id: "arb", kind: "arb", arbPairComplete: true }),
+      tradeConResultado({ id: "dir" }),
+    ];
+    const split = splitCompactPnlByKind(trades.map(summarizeTrade), "sim");
+    expect(split.arb.count).toBe(1);
+    expect(split.dir.count).toBe(1);
+  });
+
+  it("una pata suelta cuenta como DIRECCIONAL: ahi es donde esta el riesgo", () => {
+    const naked = summarizeTrade(tradeConResultado({ id: "naked", kind: "arb", arbPairComplete: false }));
+    const split = splitCompactPnlByKind([naked], "sim");
+    expect(split.arb.count).toBe(0);
+    expect(split.dir.count).toBe(1);
+  });
+
+  it("respeta el reset de P&L y el modo", () => {
+    const trades = [
+      summarizeTrade(tradeConResultado({ id: "viejo", createdAtMs: 1_000 })),
+      summarizeTrade(tradeConResultado({ id: "nuevo", createdAtMs: 9_000 })),
+      summarizeTrade(tradeConResultado({ id: "otroModo", mode: "live", createdAtMs: 9_000 })),
+    ];
+    const split = splitCompactPnlByKind(trades, "sim", { sim: 5_000 });
+    expect(split.dir.count).toBe(1);
+  });
+
+  it("coincide con el calculo de la UI web sobre los mismos trades", () => {
+    const trades = [
+      tradeConResultado({ id: "a", kind: "arb", arbPairComplete: true }),
+      tradeConResultado({ id: "b", resolved: undefined }),
+      tradeConResultado({ id: "c", kind: "arb", arbPairComplete: false }),
+      tradeConResultado({ id: "d" }),
+    ];
+    const compacto = splitCompactPnlByKind(trades.map(summarizeTrade), "sim");
+    const web = splitPnlByKind(trades, "sim");
+    expect(compacto.arb.count).toBe(web.arb.count);
+    expect(compacto.dir.count).toBe(web.dir.count);
+    expect(compacto.arb.netUsd).toBeCloseTo(web.arb.netUsd, 6);
+    expect(compacto.dir.netUsd).toBeCloseTo(web.dir.netUsd, 6);
   });
 });

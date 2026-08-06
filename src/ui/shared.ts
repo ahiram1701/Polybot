@@ -214,3 +214,45 @@ export interface FiscalFxPatch {
   // Year whose refreshed summary should be returned after saving.
   year?: number;
 }
+
+/**
+ * Motivos de skip en castellano. Vive aqui y no en la UI web porque hay TRES superficies que los
+ * enseñan — web, TUI y el status compacto que leen los agentes — y con el mapa en el cliente las otras
+ * dos pintaban el codigo crudo (`arb_bankroll_exhausted`), que no le dice nada a nadie.
+ */
+export const SKIP_REASON_LABELS: Record<string, string> = {
+  btc_distance_below_threshold: "Distancia insuficiente",
+  no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",
+  best_ask_above_cap: "Ask por encima del cap",
+  expected_value_gate_failed: "EV no supera el umbral",
+  expected_value_history_not_found: "Historia insuficiente (EV)",
+  missing_opening_chainlink_tick: "Sin apertura (feed)",
+  missing_current_chainlink_tick: "Sin tick actual (feed)",
+  stale_chainlink_tick: "Tick viejo (feed)",
+  market_already_traded: "Ya operado",
+  market_not_accepting_orders: "Mercado cerrado",
+  daily_spend_limit_reached: "Limite de gasto",
+  risk_circuit_breaker: "Circuit breaker de riesgo",
+  outcome_disabled: "Lado desactivado",
+  orderbook_quote_failed: "Fallo al pedir orderbook",
+  market_fetch_failed: "Fallo al pedir el mercado (red)",
+  bankroll_below_directional_minimum: "Capital por debajo del minimo para direccional",
+  arb_below_min_size: "Arbitraje: patas bajo el minimo del exchange",
+  arb_daily_limit: "Arbitraje: limite de gasto diario",
+  arb_bankroll_unknown: "Arbitraje: capital real desconocido",
+  arb_bankroll_exhausted: "Arbitraje: capital ya comprometido en otro mercado",
+  arb_naked_leg_halt: "Arbitraje detenido: dos patas sueltas seguidas",
+  // No son motivos de "no opera": son avisos de que la puerta se abrio. Se listan aqui porque el
+  // panel muestra cualquier motivo registrado, y sin etiqueta saldrian como codigo crudo.
+  arb_opportunity_observed: "Arbitraje detectado (observado)",
+  mint_opportunity_observed: "MINT-arb detectado (observado, aun sin ejecutar)",
+  best_ask_below_floor: "Ask por debajo del piso",
+  spread_too_wide: "Spread demasiado ancho",
+  too_close_to_close: "Demasiado cerca del cierre",
+  exploration_budget_exhausted: "Presupuesto de exploracion agotado",
+};
+
+
+export function humanSkipReason(reason: string): string {
+  return SKIP_REASON_LABELS[reason] ?? reason;
+}
