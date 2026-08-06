@@ -108,6 +108,7 @@ export interface BotConfig {
   timezone?: string;
   // Auto-tuning del ask cap por mercado desde bandas realizadas (candados en askCapTuner.ts).
   aiAutoTuneAskCap?: boolean;
+  aiAutoProbeBands?: boolean;
   // Retention cap for analytics.jsonl (most-recent resolved samples kept on disk). More history =
   // better EV-gate win-rate estimates, at the cost of parse time/memory. Optional; defaults in config.
   maxAnalyticsSamples?: number;

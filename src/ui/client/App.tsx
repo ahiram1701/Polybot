@@ -193,6 +193,7 @@ const emptySettings: UiSettings = {
   openingCaptureGraceMs: 15_000,
   aiAutoApplyLive: false,
   aiAutoTuneAskCap: false,
+    aiAutoProbeBands: false,
 };
 
 const marketOptions: Array<{ symbol: MarketSymbol; label: string; step: number; min: number }> = [
@@ -1959,6 +1960,29 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           internet) evalúa las muestras de Análisis cada ~60s mientras el bot corre y aplica automáticamente la mejor
           ventana y distancia por mercado/lado cuando hay alta confianza y dentro de las guardas. Corre idéntico en sim y
           en live (sin cooldown), así que una prueba en sim predice lo que hará en live. Actívalo antes de iniciar el bot.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.aiAutoProbeBands}
+            onChange={(event) => update("aiAutoProbeBands", event.target.checked)}
+            disabled={running}
+          />
+          <span>Sondeos de banda (puede ABRIR la ventana)</span>
+        </label>
+        <p className="settings-hint">
+          El otro auto-ajuste solo puede <strong>estrechar</strong>, y por una razón de fondo: su única fuente son
+          los trades ya ejecutados, y como el bot nunca opera fuera de su ventana, una banda de fuera tiene cero
+          muestras <em>para siempre</em>. Esto rompe ese bucle usando las ~20k ventanas de Análisis, que existen se
+          opere o no, juzgadas con el gate real.
+        </p>
+        <p className="settings-hint">
+          Encontrar una banda prometedora <strong>no</strong> abre la ventana. El bot escribe primero qué espera
+          conseguir, deja entrar unos pocos sondeos acotados a ese precio, y solo abre —un paso, no la banda
+          entera— si la realidad entrega al menos la mitad de lo prometido. El filtro que importa no es «¿gana
+          dinero?» sino «¿entrega lo que dijo?»: el histórico guarda solo el mejor precio del libro, así que la
+          simulación sale optimista justo cerca del cierre. Después sigue vigilando, y revierte solo si la banda
+          deja de pagar.
         </p>
         <label className="switch-row">
           <input

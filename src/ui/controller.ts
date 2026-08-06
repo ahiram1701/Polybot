@@ -712,10 +712,11 @@ export class BotController {
         }
       }
 
+      // Dos interruptores, no uno: estrechar y abrir no comparten ni riesgo ni maquinaria.
       if (settings.aiAutoTuneAskCap) {
         await this.runAskCapTuning(settings, nowMs);
-        // El camino de ABRIR va aparte del de estrechar y con un liston mucho mas alto: estrechar se
-        // justifica con perdidas realizadas, abrir apuesta dinero contra una simulacion optimista.
+      }
+      if (settings.aiAutoProbeBands) {
         await this.runBandProbePrograms(settings, nowMs);
       }
       return applicable;
@@ -1566,6 +1567,7 @@ export class BotController {
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,
       evCalibration: config.evCalibration ?? settings.evCalibration,
       aiAutoTuneAskCap: config.aiAutoTuneAskCap ?? settings.aiAutoTuneAskCap,
+      aiAutoProbeBands: config.aiAutoProbeBands ?? settings.aiAutoProbeBands,
       evSafetyMargin: config.evSafetyMargin ?? settings.evSafetyMargin,
       evMinHistoryTrades: config.evMinHistoryTrades ?? settings.evMinHistoryTrades,
       minFillRatio: config.minFillRatio ?? settings.minFillRatio,

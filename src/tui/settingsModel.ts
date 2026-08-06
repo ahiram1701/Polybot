@@ -32,7 +32,8 @@ const TOGGLE_LABELS: Record<string, string> = {
   autoMinLive: "Operar al mínimo del exchange",
   arbEnabled: "Arbitraje de set completo",
   aiAutoApplyLive: "Autoajuste predictivo",
-  aiAutoTuneAskCap: "Autoajuste de la ventana de ask",
+  aiAutoTuneAskCap: "Autoajuste de la ventana de ask (solo estrecha)",
+  aiAutoProbeBands: "Sondeos de banda (puede abrir)",
 };
 
 const TOGGLE_KEYS = Object.keys(TOGGLE_LABELS) as (keyof UiSettings)[];
@@ -61,7 +62,7 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   (["requirePositiveEv", "explorationEnabled", "autoStartSimOnBoot", "watchdogEnabled", "evUseSimilarity", "evCalibration", "autoMinLive", "arbEnabled"] as (keyof UiSettings)[]).forEach(toggle);
 
   header("Autoajuste");
-  (["aiAutoApplyLive", "aiAutoTuneAskCap"] as (keyof UiSettings)[]).forEach(toggle);
+  (["aiAutoApplyLive", "aiAutoTuneAskCap", "aiAutoProbeBands"] as (keyof UiSettings)[]).forEach(toggle);
 
   header("Límites y ventana (global)");
   fields.push({ id: "dailySpendLimitUsd", label: "Límite diario", kind: "number", value: fmtUsd(settings.dailySpendLimitUsd), editable: true });

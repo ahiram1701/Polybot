@@ -80,6 +80,8 @@ export interface UiSettings {
   aiAutoApplyLive: boolean;
   // Auto-tuning del ask cap por mercado desde bandas realizadas (candados fijos).
   aiAutoTuneAskCap: boolean;
+  /** Sondeos de banda: el camino que puede ABRIR la ventana. Interruptor aparte del de estrechar. */
+  aiAutoProbeBands: boolean;
   aiLastAppliedAtMs?: number;
 }
 

@@ -118,6 +118,18 @@ const settingsSchema = z.object({
   maxAnalyticsSamples: z.coerce.number().int().positive().default(20_000),
   aiAutoApplyLive: z.boolean().default(false),
   aiAutoTuneAskCap: z.boolean().default(false),
+  /**
+   * Interruptor SEPARADO del de estrechar, y separado a proposito.
+   *
+   * Los dos caminos no comparten ni riesgo ni maquinaria. Estrechar parte de `askWindowBaseline`, que
+   * es una base GLOBAL mientras las ventanas son por mercado: cuando no encuentra bandas perdedoras
+   * devuelve la ventana a esa base, o sea que empujaria BTC, ETH y DOGE hacia [0,65 - 0,96] sin
+   * ninguna evidencia, deshaciendo el ajuste por mercado. Ademas, sobre la ventana desplegada el
+   * backtest mide 0 ajustes: encenderlo no aporta nada medible.
+   *
+   * Sondear no usa esa base para nada y es donde esta el unico upside medido.
+   */
+  aiAutoProbeBands: z.boolean().default(false),
   aiLastAppliedAtMs: z.coerce.number().positive().optional(),
 });
 
@@ -239,6 +251,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     maxAnalyticsSamples: config.maxAnalyticsSamples ?? 20_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: Boolean(config.aiAutoTuneAskCap ?? false),
+    aiAutoProbeBands: Boolean(config.aiAutoProbeBands ?? false),
   };
 }
 

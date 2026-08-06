@@ -882,6 +882,7 @@ function settings(): UiSettings {
     openingCaptureGraceMs: 15_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: false,
+    aiAutoProbeBands: false,
   };
 }
 
