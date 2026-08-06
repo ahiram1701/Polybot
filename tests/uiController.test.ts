@@ -78,8 +78,13 @@ describe("BotController: sondeos de banda tras reiniciar", () => {
     });
 
     await controller.start("sim");
-    // La carga es asincrona y deliberadamente no bloquea el arranque.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // La carga es asincrona y deliberadamente no bloquea el arranque, asi que hay que esperarla. Se
+    // sondea con plazo en vez de dormir un rato fijo: con la suite entera bajo carga, un sleep corto
+    // convierte esto en un test intermitente, y un test que falla a ratos es peor que no tenerlo.
+    const limite = Date.now() + 3_000;
+    while (!runner.programsReceived && Date.now() < limite) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
 
     expect(runner.programsReceived).toHaveLength(1);
     await controller.stop();
@@ -248,3 +253,27 @@ async function fixedSnapshot(): Promise<Partial<UiStatus>> {
     signal: { reason: "no_market", inEntryWindow: false },
   };
 }
+
+/**
+ * El piso de ask viajaba en settings pero `applySettings` no lo copiaba a la config del runner, asi
+ * que este caia siempre al 0.01 por defecto: el piso NUNCA ha estado activo en produccion. Existe para
+ * bloquear las entradas baratas de reversion, que el replay del ledger midio perdiendo 23 de 24 en ETH
+ * por debajo de 0.30 — su ausencia deja pasar justo las peores.
+ */
+describe("la ventana de ask llega entera al runner", () => {
+  it("el PISO configurado no se queda por el camino", async () => {
+    const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");
+    const config = await baseConfig();
+    const settings = {
+      ...settingsFromConfig(config),
+      minAskPriceByMarketOutcome: {
+        BTC: { UP: 0.7, DOWN: 0.7 },
+        ETH: { UP: 0.7, DOWN: 0.7 },
+        DOGE: { UP: 0.85, DOWN: 0.85 },
+      },
+    };
+    const runtime = applySettings(config, settings);
+    expect(runtime.minAskPriceByMarketOutcome?.DOGE.UP).toBe(0.85);
+    expect(runtime.minAskPriceByMarketOutcome?.BTC.UP).toBe(0.7);
+  });
+});

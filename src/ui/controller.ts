@@ -705,6 +705,8 @@ export class BotController {
             entryWindowSeconds: saved.entryWindowSeconds,
             entryWindowSecondsByMarket: saved.entryWindowSecondsByMarket,
             entryWindowSecondsByMarketOutcome: saved.entryWindowSecondsByMarketOutcome,
+      minAskPriceByMarketOutcome: saved.minAskPriceByMarketOutcome,
+      maxAskPriceByMarketOutcome: saved.maxAskPriceByMarketOutcome,
           });
           logger.info("Autoajuste predictivo aplico recomendaciones en tiempo real.", {
             markets: applicable.map((recommendation) => ({

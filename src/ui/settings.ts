@@ -299,6 +299,11 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
       settings.maxAskPriceByMarketOutcome,
       settings.maxAskPrice,
     ),
+    // El PISO viajaba en settings pero nunca llegaba aqui, asi que el runner caia siempre al 0.01 por
+    // defecto: el piso de ask no ha estado activo en produccion. Existe para bloquear las entradas
+    // baratas de reversion, que el replay del ledger midio perdiendo 23 de 24 en ETH por debajo de
+    // 0.30 — o sea que su ausencia deja pasar justo las peores.
+    minAskPriceByMarketOutcome: settings.minAskPriceByMarketOutcome,
     maxAskPriceCeiling: settings.maxAskPriceCeiling,
     dailySpendLimitUsd: settings.dailySpendLimitUsd,
     maxDailyLossUsd: settings.maxDailyLossUsd,
