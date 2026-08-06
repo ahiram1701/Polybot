@@ -50,6 +50,14 @@ export interface BankrollSource {
 export class OnChainBankrollSource implements BankrollSource {
   private cached?: BankrollReading;
   private inFlight?: Promise<BankrollReading | undefined>;
+  /**
+   * Cuando fallo el ultimo intento. Sin esto el fallo NO se cacheaba (solo el exito), asi que el TTL
+   * nunca frenaba y el bucle —que corre cada segundo— reintentaba una vez por segundo. El RPC
+   * respondia 6/6 en pruebas aisladas y aun asi fallaba constantemente en produccion: lo estabamos
+   * martilleando hasta que nos limitaba, y cada fallo provocaba el siguiente reintento inmediato.
+   */
+  private lastFailureAtMs = 0;
+  private consecutiveFailures = 0;
 
   constructor(
     private readonly funderAddress: `0x${string}`,
@@ -66,11 +74,21 @@ export class OnChainBankrollSource implements BankrollSource {
     if (this.cached && nowMs - this.cached.atMs < this.ttlMs) {
       return this.cached;
     }
+    // Retroceso exponencial tras un fallo (5s, 10s, 20s... hasta 5 min). Reintentar cada segundo
+    // convierte un fallo puntual en uno permanente: el RPC nos limita por exceso de peticiones y cada
+    // rechazo dispara el siguiente reintento. Devolver la ultima lectura buena mientras tanto.
+    if (this.consecutiveFailures > 0 && nowMs - this.lastFailureAtMs < this.failureBackoffMs()) {
+      return this.cached;
+    }
     // Una sola petición en vuelo: el bucle puede preguntar desde varios sitios en la misma iteración.
     this.inFlight ??= this.fetchBalance(nowMs).finally(() => {
       this.inFlight = undefined;
     });
     return this.inFlight;
+  }
+
+  private failureBackoffMs(): number {
+    return Math.min(5_000 * 2 ** (this.consecutiveFailures - 1), 300_000);
   }
 
   private async fetchBalance(nowMs: number): Promise<BankrollReading | undefined> {
@@ -87,11 +105,17 @@ export class OnChainBankrollSource implements BankrollSource {
         return undefined;
       }
       this.cached = { usd, atMs: nowMs };
+      this.consecutiveFailures = 0;
       return this.cached;
     } catch (error) {
-      logger.warn("No se pudo leer el saldo on-chain; se usa el capital declarado a mano.", {
-        error: error instanceof Error ? error.message.split("\n")[0] : String(error),
-      });
+      this.consecutiveFailures += 1;
+      this.lastFailureAtMs = nowMs;
+      // Solo el primer fallo de cada racha: repetirlo inundaba el log sin aportar informacion nueva.
+      if (this.consecutiveFailures === 1) {
+        logger.warn("No se pudo leer el saldo on-chain; se usa el capital declarado a mano.", {
+          error: error instanceof Error ? error.message.split("\n")[0] : String(error),
+        });
+      }
       // Se conserva `cached` a propósito: una lectura buena de hace un rato es mejor que nada, y el
       // TTL ya la volverá a intentar. Devolver `undefined` aquí solo significa "ahora mismo no sé".
       return this.cached;

@@ -93,3 +93,50 @@ describe("colateral de Polymarket", () => {
     expect(POLYMARKET_COLLATERAL_ADDRESS).not.toBe("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
   });
 });
+
+describe("OnChainBankrollSource: no martillear el RPC tras un fallo", () => {
+  const funder = "0x1111111111111111111111111111111111111111" as const;
+
+  it("aplica retroceso: un fallo no provoca un reintento por segundo", async () => {
+    // El bucle del bot corre cada segundo. Sin retroceso, el fallo no se cacheaba (solo el exito) y
+    // cada iteracion disparaba otra peticion — el RPC acababa limitandonos y el fallo se volvia
+    // permanente. Observado en produccion con un RPC que respondia 6/6 en pruebas aisladas.
+    const read = vi.fn(async () => {
+      throw new Error("rate limited");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const source = new OnChainBankrollSource(funder, "http://rpc.test", 60_000, { readContract: read } as never);
+
+    await source.read(1_000);
+    expect(read).toHaveBeenCalledTimes(1);
+
+    // Siguientes segundos: dentro del retroceso, ni una peticion mas.
+    for (let t = 2_000; t <= 5_000; t += 1_000) {
+      await source.read(t);
+    }
+    expect(read).toHaveBeenCalledTimes(1);
+
+    // Pasado el retroceso si vuelve a intentarlo.
+    await source.read(7_000);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("un exito posterior borra el retroceso", async () => {
+    let falla = true;
+    const read = vi.fn(async () => {
+      if (falla) {
+        throw new Error("caido");
+      }
+      return 9_000_000n;
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const source = new OnChainBankrollSource(funder, "http://rpc.test", 60_000, { readContract: read } as never);
+
+    await source.read(1_000);
+    falla = false;
+    expect((await source.read(7_000))?.usd).toBe(9);
+    // Con la racha a cero, la siguiente lectura la gobierna el TTL normal, no el retroceso.
+    await source.read(8_000);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+});
