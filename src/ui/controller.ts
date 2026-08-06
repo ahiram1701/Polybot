@@ -14,6 +14,18 @@ import {
 } from "../arbMonitor.js";
 import { summarizeAskBands, type AskBandSummary } from "../askBands.js";
 import { ASK_CAP_TUNER_LOCKS, recommendAskWindow } from "../askCapTuner.js";
+import {
+  activeProgram,
+  decideBandProgram,
+  isBandBlacklisted,
+  realizedInBand,
+  reviewConfirmedProgram,
+  startBandProgram,
+} from "../bandProbeProgram.js";
+import { BandProgramStore } from "../bandProgramStore.js";
+import type { BandProgram } from "../bandProbeProgram.js";
+import { evaluateBandsCounterfactually, proposeBandsToProbe } from "../counterfactualBands.js";
+import { windowAfterConfirmedBand } from "../probeWindow.js";
 import { ChainlinkPriceFeed } from "../chainlinkPriceFeed.js";
 import { LiveExecutionEngine, resolveTradeAmountUsd, SimulationExecutionEngine } from "../executionEngine.js";
 import {
@@ -132,6 +144,8 @@ export interface RunnerLike {
   getLoopHealth?(): { iterations: number; failed: number; failedPct: number };
   /** Capital efectivo de la guardia y su procedencia. */
   getBankroll?(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
+  /** Programas de sondeo vigentes: el runner los consulta para ensanchar la ventana de ask. */
+  setBandPrograms?(programs: readonly BandProgram[]): void;
   updateStrategySettings?(
     settings: Pick<
       BotConfig,
@@ -217,6 +231,7 @@ export class BotController {
   // 24h per-market cooldown of the ask-cap tuner (in-memory: a restart re-evaluates, which is fine
   // because the tuner is deterministic over the same ledger).
   private readonly askCapTunedAtMs = new Map<MarketSymbol, number>();
+  private bandProgramStoreCache?: BandProgramStore;
   private dailyReportTimer?: NodeJS.Timeout;
   private lastDailyReportDayKey?: string;
 
@@ -699,6 +714,9 @@ export class BotController {
 
       if (settings.aiAutoTuneAskCap) {
         await this.runAskCapTuning(settings, nowMs);
+        // El camino de ABRIR va aparte del de estrechar y con un liston mucho mas alto: estrechar se
+        // justifica con perdidas realizadas, abrir apuesta dinero contra una simulacion optimista.
+        await this.runBandProbePrograms(settings, nowMs);
       }
       return applicable;
     } catch (error) {
@@ -709,6 +727,124 @@ export class BotController {
     } finally {
       this.aiAutoApplyInFlight = false;
     }
+  }
+
+  /**
+   * El ciclo de sondeos: propone, sondea, decide y vigila.
+   *
+   * Es la parte que puede ABRIR la ventana, y por eso no se fia de una sola fuente. El contrafactual
+   * (analitica, ~20k ventanas) propone; los sondeos reales confirman; y despues sigue vigilando por si
+   * hay que deshacerlo. Cada paso puede tumbar al anterior.
+   */
+  private async runBandProbePrograms(settings: UiSettings, nowMs: number): Promise<void> {
+    // Perezoso: los campos de clase se inicializan antes que los parametros del constructor.
+    this.bandProgramStoreCache ??= new BandProgramStore(this.baseConfig.dataDir);
+    const store = this.bandProgramStoreCache;
+    await store.load();
+    const stateSummary = await this.getStateSummary(nowMs);
+    let programas = [...store.list()];
+    let cambio = false;
+
+    for (const market of SUPPORTED_MARKETS) {
+      const ventana = {
+        floor: settings.minAskPriceByMarketOutcome[market].UP,
+        cap: settings.maxAskPriceByMarketOutcome[market].UP,
+      };
+      const enCurso = activeProgram(programas, market);
+
+      // 1) Hay sondeo abierto: ¿ya hay muestra para veredicto?
+      if (enCurso) {
+        const realizado = realizedInBand(stateSummary.tradesSorted, enCurso);
+        const decidido = decideBandProgram(enCurso, realizado, nowMs);
+        if (decidido !== enCurso) {
+          programas = programas.map((p) => (p === enCurso ? decidido : p));
+          cambio = true;
+          if (decidido.status === "confirmed") {
+            const abierta = windowAfterConfirmedBand(ventana, decidido);
+            await this.applyAskWindow(settings, market, abierta, decidido.verdict ?? "sondeo confirmado");
+          }
+          await this.notifier?.notify({
+            key: `band-program:${market}:${decidido.lo}-${decidido.hi}`,
+            level: decidido.status === "confirmed" ? "info" : "warn",
+            title: decidido.status === "confirmed" ? "Banda confirmada" : "Banda descartada",
+            body: `${market} ${decidido.lo}-${decidido.hi}: ${decidido.verdict}`,
+            minIntervalMs: 60_000,
+          });
+        }
+        continue;
+      }
+
+      // 2) Vigilancia de lo ya confirmado: un cambio aplicado no queda bendecido para siempre.
+      for (const confirmado of programas.filter((p) => p.market === market && p.status === "confirmed")) {
+        const revisado = reviewConfirmedProgram(confirmado, realizedInBand(stateSummary.tradesSorted, confirmado), nowMs);
+        if (revisado !== confirmado) {
+          programas = programas.map((p) => (p === confirmado ? revisado : p));
+          cambio = true;
+          const cerrada = { floor: ventana.floor, cap: Math.min(ventana.cap, confirmado.lo) };
+          await this.applyAskWindow(settings, market, cerrada, revisado.verdict ?? "revertido");
+        }
+      }
+
+      // 3) Sin sondeo en curso: buscar candidata nueva.
+      const bandas = await evaluateBandsCounterfactually(
+        this.strategyAnalysisEngine,
+        market,
+        {
+          entryWindowSeconds: settings.entryWindowSecondsByMarketOutcome[market].UP,
+          minDistanceUsd: settings.minDistanceUsdByMarketOutcome[market].UP,
+        },
+        {
+          safetyMargin: settings.evSafetyMargin,
+          minExpectedRoi: settings.evMinExpectedRoi,
+          stakeUsd: settings.simTradeAmountUsdByMarketOutcome[market].UP,
+        },
+      );
+      const propuesta = proposeBandsToProbe(bandas, ventana).find(
+        (p) => !isBandBlacklisted(programas, market, p.lo, p.hi, nowMs),
+      );
+      if (!propuesta) {
+        continue;
+      }
+      const nuevo = startBandProgram({
+        market,
+        lo: propuesta.lo,
+        hi: propuesta.hi,
+        expectedNetPerTradeUsd: propuesta.expectedNetPerTradeUsd,
+        outOfSampleTrades: propuesta.outOfSampleTrades,
+        reason: propuesta.reason,
+        nowMs,
+      });
+      programas.push(nuevo);
+      cambio = true;
+      await this.notifier?.notify({
+        key: `band-program-start:${market}:${nuevo.lo}-${nuevo.hi}`,
+        level: "info",
+        title: "Sondeo de banda iniciado",
+        body: `${market} ${nuevo.lo}-${nuevo.hi}: promete $${nuevo.expectedNetPerTradeUsd.toFixed(3)}/trade. ${nuevo.reason}`,
+        minIntervalMs: 60_000,
+      });
+    }
+
+    if (cambio) {
+      await store.replaceAll(programas);
+      this.runner?.setBandPrograms?.(programas);
+    }
+  }
+
+  /** Escribe una ventana de ask nueva para un mercado, en ambos lados. */
+  private async applyAskWindow(
+    settings: UiSettings,
+    market: MarketSymbol,
+    ventana: { floor: number; cap: number },
+    motivo: string,
+  ): Promise<void> {
+    const caps = structuredClone(settings.maxAskPriceByMarketOutcome);
+    const floors = structuredClone(settings.minAskPriceByMarketOutcome);
+    caps[market] = { UP: ventana.cap, DOWN: ventana.cap };
+    floors[market] = { UP: ventana.floor, DOWN: ventana.floor };
+    await this.settingsStore.save({ ...settings, maxAskPriceByMarketOutcome: caps, minAskPriceByMarketOutcome: floors });
+    this.stateSummaryCache = undefined;
+    logger.info("Ventana de ask movida por el ciclo de sondeos.", { market, ...ventana, motivo });
   }
 
   /**
@@ -1077,6 +1213,7 @@ export class BotController {
       snapshotError: snapshot.snapshotError,
       loopHealth: this.runner?.getLoopHealth?.(),
       bankroll: this.runner?.getBankroll?.(),
+      bandPrograms: this.bandProgramStoreCache?.list() as never,
     };
   }
 

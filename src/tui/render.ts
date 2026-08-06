@@ -216,6 +216,25 @@ export function renderDashboard(vm: ViewModel): string[] {
     : [dim("sin mercados observados")];
   out.push(...boxed("Mercados", marketLines, width));
 
+  // Decisiones del autoajuste. Se pintan aunque se apliquen solas: eso es lo que separa "autonomo"
+  // de "opaco".
+  if (s.bandPrograms?.length) {
+    const filas = s.bandPrograms.slice(-4).map((p) => {
+      const estado =
+        p.status === "probing"
+          ? yellow("sondeando")
+          : p.status === "confirmed"
+            ? green("confirmada")
+            : red("descartada");
+      const real =
+        p.realizedNetPerTradeUsd !== undefined
+          ? ` real ${fmtUsd(p.realizedNetPerTradeUsd)}/op`
+          : dim(" sin veredicto");
+      return `${bold(padEnd(p.market, 5))} ${p.lo.toFixed(2)}-${p.hi.toFixed(2)} ${estado} ${dim("promete")} ${fmtUsd(p.expectedNetPerTradeUsd)}/op${real}`;
+    });
+    out.push(...boxed("Autoajuste: bandas en prueba", filas, width));
+  }
+
   // Por qué no opera
   const skips = Object.entries(s.recentActivity.skipReasonCounts).sort((a, b) => b[1] - a[1]);
   const skipLines = skips.length

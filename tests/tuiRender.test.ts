@@ -251,3 +251,50 @@ describe("TUI settings model", () => {
     expect(after.simTradeAmountUsdByMarketOutcome.ETH.UP).toBe(7);
   });
 });
+
+/**
+ * El auto-aplicado solo es tolerable si se ve. Sin este panel, "que aplique solo" seria exactamente
+ * "entrar sin que nadie lo vea".
+ */
+describe("TUI: decisiones del autoajuste", () => {
+  const programa = (overrides: Record<string, unknown> = {}) => ({
+    market: "ETH",
+    lo: 0.85,
+    hi: 0.9,
+    createdAtMs: 0,
+    expectedNetPerTradeUsd: 0.294,
+    outOfSampleTrades: 73,
+    reason: "gana en ambas mitades",
+    status: "probing",
+    ...overrides,
+  });
+
+  it("muestra la banda, lo que promete y su estado", () => {
+    const text = stripAnsi(
+      renderDashboard(baseVm({ status: statusFixture({ bandPrograms: [programa()] as never }) })).join(NL),
+    );
+    expect(text).toContain("0.85-0.90");
+    expect(text).toContain("sondeando");
+    expect(text).toContain("$0.29");
+  });
+
+  it("cuando hay veredicto enseña lo REALIZADO junto a lo prometido", () => {
+    // Es la comparacion que importa: no "¿gana?" sino "¿entrega lo que dijo?".
+    const text = stripAnsi(
+      renderDashboard(
+        baseVm({
+          status: statusFixture({
+            bandPrograms: [programa({ status: "rejected", realizedNetPerTradeUsd: 0.03 })] as never,
+          }),
+        }),
+      ).join(NL),
+    );
+    expect(text).toContain("descartada");
+    expect(text).toContain("real $0.03/op");
+  });
+
+  it("sin programas no pinta el panel", () => {
+    const text = stripAnsi(renderDashboard(baseVm({ status: statusFixture() })).join(NL));
+    expect(text).not.toContain("bandas en prueba");
+  });
+});

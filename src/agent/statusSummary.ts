@@ -1,3 +1,4 @@
+import type { BandProgram } from "../bandProbeProgram.js";
 import type { LogEntry } from "../logger.js";
 import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
@@ -68,6 +69,8 @@ export interface CompactStatus {
    */
   loopHealth?: { iterations: number; failed: number; failedPct: number };
   bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
+  /** Decisiones del autoajuste con su prediccion y lo realmente entregado. */
+  bandPrograms?: BandProgram[];
   recentActivity: RecentActivity;
 }
 
@@ -115,6 +118,7 @@ export function summarizeStatus(
     riskHalt: status.riskHalt,
     loopHealth: status.loopHealth,
     bankroll: status.bankroll,
+    bandPrograms: status.bandPrograms,
     recentActivity: summarizeLogs(status.logs ?? [], sampleSize),
   };
 }

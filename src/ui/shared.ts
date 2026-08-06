@@ -1,6 +1,7 @@
 import type { FiscalYearSummary } from "../fiscal.js";
 import type { LogEntry } from "../logger.js";
 import type { PnlResetAtMsByMode, PnlSummary, PnlSummaryByMode } from "../pnl.js";
+import type { BandProgram } from "../bandProbeProgram.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type {
   MarketDistanceSettings,
@@ -144,6 +145,13 @@ export interface UiStatus {
   loopHealth?: { iterations: number; failed: number; failedPct: number };
   /** Capital efectivo de la guardia de riesgo y de donde salio (on-chain vs declarado). */
   bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
+  /**
+   * Decisiones del autoajuste: que banda propuso, que prometio y que esta entregando la realidad.
+   *
+   * Se publica aunque el ajuste se aplique solo. Auto-aplicar SIN esto seria exactamente "entrar sin
+   * que nadie lo vea"; con esto, la autonomia es una comodidad y no una venda en los ojos.
+   */
+  bandPrograms?: BandProgram[];
 }
 
 export type UiEvent =
