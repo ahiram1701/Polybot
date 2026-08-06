@@ -2,6 +2,11 @@
 
 Bot TypeScript para mercados `BTC/ETH/DOGE Up or Down 5m` de Polymarket, con modo simulacion, modo live protegido e interfaz web local.
 
+- **[Manual de uso](docs/MANUAL.md)** — como operarlo: que mirar, como decidir, problemas comunes.
+- **[Arquitectura](docs/ARQUITECTURA.md)** — como funciona por dentro, invariantes y trampas conocidas.
+- **[Uso por agentes IA](AGENTS.md)** — MCP, CLI y API.
+- Este README es la **referencia de parametros** e instalacion.
+
 ## Requisitos
 
 - Node.js 20 o superior.
@@ -219,11 +224,65 @@ POLYMARKET_FUNDER_ADDRESS=0x...
 - `OLLAMA_API_KEY=`: token opcional para pedir analisis bajo demanda a Ollama Cloud.
 - `OLLAMA_HOST=https://ollama.com`: host de Ollama Cloud.
 - `OLLAMA_MODEL=gpt-oss:120b`: modelo usado por el analisis bajo demanda.
-- `POLYGON_RPC_URL=https://polygon-rpc.com`: RPC usado por el cliente live para firmar/crear credenciales Polymarket.
+- `POLYGON_RPC_URL=https://polygon.drpc.org`: RPC de Polygon. Lo usan el cliente live y la lectura del saldo de colateral.
+  **Ojo:** `polygon-rpc.com` (el valor histórico) empezó a devolver `401`; con él la lectura de saldo falla siempre.
+  Medido: `polygon.drpc.org` 6/6 a 122ms, `polygon-bor-rpc.publicnode.com` 6/6 a 134ms, `1rpc.io/matic` 6/6 a 390ms.
 - `POLYBOT_UI_HOST=127.0.0.1`: host de la UI. En VPS con Tailscale usa `0.0.0.0` y firewall.
 - `POLYBOT_UI_PORT=8787`: puerto de la UI.
 - `POLYBOT_PUBLIC_URL=`: URL Tailscale que se muestra en logs y avisos Telegram.
 - `TELEGRAM_BOT_TOKEN=` y `TELEGRAM_CHAT_ID=`: opcionales; activan avisos de UI lista, errores y arranques/detenciones.
+
+### Banda de precios (ask)
+
+La comision taker es `shares x 7% x p x (1-p)`: **maxima en 0.50** y casi nula en los extremos. Operar cerca de 0.50 paga 3.5% del importe por operacion; a 0.95, 0.35%. Ver [ARQUITECTURA.md](docs/ARQUITECTURA.md#trampas-conocidas).
+
+- `MIN_ASK_PRICE=0.01`: piso de ask. Por debajo, la entrada es una apuesta de reversion barata.
+- `MIN_ASK_PRICE_BTC_UP=`, `..._BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides por mercado y lado.
+- `MAX_ASK_PRICE_CEILING=0.85`: techo duro. Ningun autoajuste puede subir el cap por encima.
+- `MAX_ASK_PRICE_ETH_UP=`, `..._DOGE_DOWN=`, etc.: overrides de cap por mercado y lado (ademas de los `BTC` ya listados).
+- `ASK_WINDOW_BASELINE_MIN=0.01`, `ASK_WINDOW_BASELINE_MAX=0.7`: **ventana BASE** del autoajuste de ask. No es donde operar: es el limite exterior que ese tuner nunca puede rebasar. **Debe ser ancha** — solo estrecha desde aqui, y unicamente pasando bandas que hayan perdido dinero con muestra. Si falta, ese autoajuste no hace nada.
+- `LIVE_MAX_SLIPPAGE=0.02`: cuanto puede pagar de mas una orden live sobre el mejor ask observado.
+
+### Gate de valor esperado
+
+- `REQUIRE_POSITIVE_EV=true`: no opera setups con EV negativo tras comisiones.
+- `EV_MIN_EXPECTED_ROI=0.01`: ROI minimo exigido por operacion.
+- `EV_SAFETY_MARGIN=0.03`: margen que la probabilidad estimada debe superar al break-even.
+- `EV_MIN_HISTORY_TRADES=15`: operaciones historicas minimas antes de fiarse de un setup.
+- `EV_USE_SIMILARITY=true`: estima la probabilidad por k-NN de setups parecidos en vez de por conteo exacto.
+- `EV_CALIBRATION=false`: mapa empirico de calibracion. Medido fuera de muestra: **cuesta neto**.
+- `MIN_FILL_RATIO=0.5`: fraccion minima del importe que el libro debe poder llenar.
+- `MIN_DISTANCE_FLOOR_BTC=20`, `MIN_DISTANCE_FLOOR_ETH=0.1`, `MIN_DISTANCE_FLOOR_DOGE=0.00003`: suelo por mercado que ningun autoajuste puede bajar. Pensarlos en **bps**, no en USD: `bps = (usd / precio) x 10000`.
+
+### Riesgo
+
+- `MAX_DAILY_LOSS_USD=0`: perdida diaria que detiene el trading. **0 = desactivado.**
+- `MAX_CONSECUTIVE_LOSSES=0`: racha de perdidas que lo detiene. **0 = desactivado.**
+- `RISK_HALT_COOLDOWN_HOURS=2`: horas que dura el freno antes de rearmarse solo.
+- `LIVE_BANKROLL_USD=0`: capital declarado a mano. **Solo se usa si falla la lectura on-chain**, que es lo que manda.
+- `MIN_BANKROLL_FOR_DIRECTIONAL_USD=50`: por debajo de este capital, el direccional se apaga en live. El arbitraje no pasa por esta guardia. Ver el [MANUAL](docs/MANUAL.md#6-riesgo-las-guardas-y-por-qué-existen) para la aritmetica.
+
+### Arbitraje de set completo
+
+- `ARB_ENABLED=false`: compra ambos lados cuando el par cuesta menos de $1 tras comisiones. Sin riesgo direccional.
+- `ARB_MAX_USD_PER_OPPORTUNITY=25`: tope por oportunidad.
+- `ARB_MIN_NET_PER_SET=0.02`: beneficio neto minimo por set.
+
+> Cada pata es una orden independiente y **ambas** deben superar el minimo del exchange ($5). Con precios equilibrados eso exige bastante mas capital del que sugiere el neto por set.
+
+### Autoajustes
+
+- `AI_AUTO_APPLY_LIVE=`: autoajuste predictivo (ventana y distancia por mercado). Corre cada 30 min.
+- `AI_AUTO_TUNE_ASK_CAP=false`: autoajuste de la ventana de ask. Solo estrecha, y solo sobre bandas que perdieron dinero con muestra.
+
+### Otros
+
+- `MAX_ANALYTICS_SAMPLES=20000`: muestras que se conservan en `data/analytics.jsonl`.
+- `OPENING_CAPTURE_GRACE_MS=15000`: tolerancia para aceptar el tick de apertura de una ventana.
+- `POLYBOT_TIMEZONE=auto`: zona horaria del dia contable (gasto diario, cortacircuitos, fiscal).
+- `DATA_DIR=data`: carpeta de estado y logs.
+- `GAMMA_HOST=`, `CLOB_HOST=`, `RTDS_URL=`: endpoints de Polymarket. Cambiarlos solo para pruebas.
+- Overrides por mercado y lado que existen para `ETH`/`DOGE` ademas de los `BTC` listados arriba: `ENABLED_*_UP/DOWN`, `MIN_*_UP/DOWN_DISTANCE_USD`, `ENTRY_WINDOW_SECONDS_*_UP/DOWN`, `SIM_TRADE_AMOUNT_USD_*_UP/DOWN`, `LIVE_TRADE_AMOUNT_USD_*_UP/DOWN`.
 
 Los cambios hechos desde la UI se guardan en `data/ui-config.json` y se aplican al proximo arranque del bot.
 
