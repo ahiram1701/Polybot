@@ -21,6 +21,22 @@ import type {
 // where the favourite is still cheap — the main lever for more executable coverage on BTC/ETH. Only
 // affects newly captured samples; historical 60s samples are used as-is.
 export const ANALYTICS_WINDOW_SECONDS = 120;
+
+/**
+ * Duracion de una ventana up/down. Los ticks se graban entera porque el TWAP que resuelve el mercado
+ * es el promedio de todo el rango; un poco de holgura por si el tick de apertura llega adelantado.
+ */
+export const WINDOW_DURATION_SECONDS = 310;
+
+/**
+ * Fuera de los ultimos `ANALYTICS_WINDOW_SECONDS`, un tick cada tantos segundos en vez de todos.
+ *
+ * Guardar la ventana entera a un tick por segundo triplicaria el fichero (252 MB -> ~700 MB), y para
+ * un TWAP de 300 segundos esa precision no aporta: integrando por trapecios, muestrear cada 5s
+ * introduce un error muy por debajo de 1bp. Cerca del cierre SI se guarda todo, porque ahi es donde
+ * se decide la entrada y hace falta el detalle.
+ */
+export const EARLY_TICK_SAMPLE_SECONDS = 5;
 // Max time gap allowed when matching a captured quote to a signal tick. Widened from 6s to 12s to
 // recover signals whose nearest quote landed slightly outside the old window (more executable
 // coverage). Single source of truth: recommendationEngine, strategyAnalysisEngine and the EV-gate
@@ -201,8 +217,25 @@ export class AnalyticsRecorder {
       return false;
     }
     const remainingSeconds = secondsToEnd(sample.endMs, tick.timestampMs);
-    if (remainingSeconds < 0 || remainingSeconds > ANALYTICS_WINDOW_SECONDS) {
+    // Los TICKS se guardan de la ventana ENTERA, no solo de los ultimos 120s como las quotes.
+    //
+    // Desde el 2026-08-07 Polymarket resuelve estos mercados por TWAP — el promedio de TODA la
+    // ventana — contra el precio de apertura. Con el recorte anterior se descartaba el 63% de cada
+    // ventana (cobertura medida: 37%), asi que el dato que decide quien gana era, literalmente,
+    // incalculable. Y no se puede reconstruir despues: un tick que no se graba se pierde para siempre.
+    //
+    // El coste es un fichero mas grande; `maxAnalyticsSamples` lo sigue acotando por numero de
+    // muestras. Las quotes SI mantienen su ventana corta: solo hacen falta cerca del cierre.
+    if (remainingSeconds < 0 || remainingSeconds > WINDOW_DURATION_SECONDS) {
       return false;
+    }
+    // Parte temprana de la ventana: submuestreo. Se compara contra el ultimo tick GUARDADO, no contra
+    // el reloj, para que un hueco del feed no desplace toda la rejilla.
+    if (remainingSeconds > ANALYTICS_WINDOW_SECONDS) {
+      const ultimo = sample.ticks[sample.ticks.length - 1];
+      if (ultimo && (tick.timestampMs - ultimo.timestampMs) / 1000 < EARLY_TICK_SAMPLE_SECONDS) {
+        return false;
+      }
     }
 
     const point: AnalyticsTickPoint = {
