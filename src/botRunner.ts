@@ -1842,7 +1842,10 @@ export class BotRunner {
       // Judge the winner by the price AT the window close (last tick <= endMs), not the first tick
       // after it — photo-finish windows flipped otherwise.
       const closeTick = this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
-      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick);
+      // Los ticks de la ventana viven en el grabador de analitica, que ya los captura enteros para
+      // esto. Sin ellos la resolucion cae a la regla vieja (ultimo precio) y la corrige el oficial.
+      const windowTicks = this.deps.analyticsRecorder?.getActiveTicks?.(trade.slug);
+      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick, windowTicks);
       if (!resolution) {
         continue;
       }

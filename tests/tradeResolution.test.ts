@@ -5,7 +5,7 @@ import {
   resolveTradeFromTick,
   summarizeLiveOrderFill,
 } from "../src/tradeResolution.js";
-import type { BtcPriceTick, TradeAttempt } from "../src/types.js";
+import type { AnalyticsTickPoint, BtcPriceTick, TradeAttempt } from "../src/types.js";
 
 describe("trade resolution", () => {
   it("resolves simulated trades after the market end tick", () => {
@@ -143,3 +143,80 @@ function tick(overrides: Partial<BtcPriceTick> = {}): BtcPriceTick {
     receivedAtMs: overrides.receivedAtMs ?? 2_000,
   };
 }
+
+/**
+ * Desde el 2026-08-07 Polymarket resuelve por TWAP: gana "Up" si el promedio ponderado por tiempo de
+ * la ventana supera el precio de APERTURA. Comparar el ultimo precio —la regla anterior— cambia el
+ * ganador en al menos el 11% de las ventanas medidas sobre el historico.
+ */
+describe("resolucion por TWAP", () => {
+  const windowStartMs = Date.UTC(2026, 7, 7, 12, 0, 0);
+  const endMs = windowStartMs + 300_000;
+
+  function ticksDe(precios: Array<[number, number]>): AnalyticsTickPoint[] {
+    return precios.map(([seg, price]) => ({
+      timestampMs: windowStartMs + seg * 1000,
+      secondsToEnd: 300 - seg,
+      price,
+      distanceUsd: 0,
+    }));
+  }
+
+  const trade = {
+    id: "t",
+    asset: "BTC",
+    slug: "btc-updown-5m-1",
+    mode: "sim",
+    outcome: "UP",
+    tokenId: "tok",
+    amountUsd: 5,
+    maxAskPrice: 0.9,
+    bestAsk: 0.8,
+    estimatedShares: 6.25,
+    fillDetected: true,
+    openingPrice: 100,
+    entryPrice: 100,
+    distanceUsd: 0,
+    windowStartMs,
+    endMs,
+    createdAtMs: windowStartMs + 260_000,
+  } as unknown as TradeAttempt;
+
+  const tickEn = (ms: number, value: number) =>
+    ({ market: "BTC", symbol: "btc/usd", value, timestampMs: ms, receivedAtMs: ms }) as BtcPriceTick;
+
+  it("el TWAP manda sobre el precio de cierre cuando difieren", () => {
+    // Casi toda la ventana por DEBAJO de la apertura y un repunte final por encima: la regla vieja
+    // diria UP, el TWAP dice DOWN. Es exactamente el caso que el cambio de Polymarket introduce.
+    const ticks = ticksDe([
+      [0, 100], [60, 99], [120, 99], [180, 99], [240, 99], [299, 101],
+    ]);
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101), ticks)!;
+    expect(r.winningOutcome).toBe("DOWN");
+    expect(r.twapPrice).toBeLessThan(100);
+    // El precio de cierre se conserva como dato crudo aunque no sea quien juzga.
+    expect(r.finalPrice).toBe(101);
+  });
+
+  it("sin cobertura suficiente cae a la regla vieja en vez de fingir un TWAP", () => {
+    // Un promedio sobre medio rango no es el promedio del rango, y usarlo como si lo fuera es peor
+    // que la regla vieja porque parece correcto.
+    const soloElFinal = ticksDe([[280, 101], [299, 101]]);
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101), soloElFinal)!;
+    expect(r.twapPrice).toBeUndefined();
+    expect(r.winningOutcome).toBe("UP");
+  });
+
+  it("sin ticks sigue resolviendo: dejar trades colgados seria peor", () => {
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101))!;
+    expect(r.winningOutcome).toBe("UP");
+    expect(r.twapPrice).toBeUndefined();
+  });
+
+  it("deja auditable que regla se aplico", () => {
+    const ticks = ticksDe([[0, 100], [150, 101], [299, 101]]);
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101), ticks)!;
+    expect(r.twapCoverage).toBeGreaterThan(0.8);
+    expect(r.twapPrice).toBeDefined();
+  });
+});

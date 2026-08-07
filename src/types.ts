@@ -447,8 +447,17 @@ export interface TradeAttempt {
 
 export interface SimResolution {
   resolvedAtMs: number;
+  /** Precio observado al cierre. Dato crudo: NO es necesariamente el que decidio el ganador. */
   finalPrice: number;
   finalTickTimestampMs: number;
+  /**
+   * TWAP de la ventana cuando se pudo calcular con cobertura suficiente, que desde el 2026-08-07 es
+   * la regla real de Polymarket. Ausente = se resolvio por el precio de cierre (regla antigua), y
+   * entonces el veredicto depende del verificador oficial.
+   */
+  twapPrice?: number;
+  /** Fraccion de la ventana cubierta por ticks. Deja auditable por que se eligio una regla u otra. */
+  twapCoverage?: number;
   winningOutcome: Outcome;
   won: boolean;
 }
