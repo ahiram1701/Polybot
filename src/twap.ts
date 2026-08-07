@@ -112,3 +112,106 @@ export function priceNeededToFlip(args: {
   // twapFinal = (twapSoFar*elapsed + x*remaining) / total = opening  ->  despejar x
   return (args.openingPrice * total - args.twapSoFar * args.elapsedMs) / args.remainingMs;
 }
+
+/**
+ * Movimiento de precio en 40s que solo se supera el 0,5% de las veces, en bps y por mercado.
+ *
+ * Medido sobre los ticks del historico (BTC n=302.129, ETH n=93.346, DOGE n=93.995). Los maximos
+ * observados fueron 45,1 / 49,3 / 44,4 bps, asi que estos percentiles dejan mucho margen por debajo
+ * de "imposible".
+ *
+ * Es deliberadamente CONSERVADOR para lo que se usa: mide cuanto puede moverse el precio en un
+ * instante, mientras que voltear un TWAP exige SOSTENER un precio de media durante todo el tramo que
+ * queda, que es mucho mas dificil. O sea que la probabilidad real de voltear es bastante menor que la
+ * que sugiere este numero, y el veto se equivoca hacia el lado seguro.
+ */
+export const PLAUSIBLE_MOVE_BPS_40S: Record<string, number> = { BTC: 13.1, ETH: 17.8, DOGE: 17.7 };
+
+const REFERENCE_HORIZON_MS = 40_000;
+
+/**
+ * Hasta donde se puede estirar la medida de 40s antes de que deje de ser una medida.
+ *
+ * El escalado por raiz del tiempo es razonable cerca del horizonte medido y pura fe lejos de el:
+ * llevarlo a 270s seria hacerlo trabajar casi 7 veces mas alla de donde hay datos, y con eso el veto
+ * declararia "decidido" a media ventana. Mas alla de este limite no se opina — que es distinto de
+ * opinar que no esta decidido.
+ *
+ * No estorba en la practica: el bot entra a 34-42s del cierre, muy dentro del tramo medido.
+ */
+const MAX_DECIDED_REMAINING_MS = 90_000;
+
+/** Movimiento plausible en el tramo restante. Escala con la raiz del tiempo, como la volatilidad. */
+export function plausibleMoveBps(market: string, remainingMs: number): number {
+  const base = PLAUSIBLE_MOVE_BPS_40S[market] ?? 20;
+  return base * Math.sqrt(Math.max(0, remainingMs) / REFERENCE_HORIZON_MS);
+}
+
+export interface TwapVerdict {
+  /** Ganador si la ventana cerrase con el TWAP actual. */
+  leader: "UP" | "DOWN";
+  twapSoFar: number;
+  /** Cuanto tendria que apartarse el precio, en bps, para que el TWAP final cruce la apertura. */
+  requiredMoveBps: number;
+  plausibleMoveBps: number;
+  /** El movimiento necesario esta fuera de lo que este mercado hace en ese tiempo. */
+  decided: boolean;
+}
+
+/**
+ * Que dice el TWAP EN CURSO sobre como va a acabar la ventana.
+ *
+ * Es la consecuencia util del cambio de Polymarket. A 40s del cierre de una ventana de 300s ya ha
+ * transcurrido el 87% del promedio: para voltear el resultado, el tramo restante tendria que
+ * sostener un precio ~6,5 veces mas lejos que la separacion actual. Dicho de otro modo, al entrar el
+ * resultado ya suele estar decidido — y ahora se puede CALCULAR en vez de estimarlo con momentum.
+ *
+ * `undefined` cuando no hay cobertura suficiente: un TWAP sobre medio rango no es el TWAP del rango,
+ * y actuar sobre el seria peor que no mirarlo, porque parece un dato.
+ */
+export function twapVerdict(args: {
+  market: string;
+  ticks: readonly AnalyticsTickPoint[];
+  openingPrice: number;
+  windowStartMs: number;
+  endMs: number;
+  nowMs: number;
+  minCoverage: number;
+}): TwapVerdict | undefined {
+  const hastaAhora = args.ticks.filter((tick) => tick.timestampMs <= args.nowMs);
+  const medida = windowTwap(hastaAhora, args.windowStartMs, args.nowMs);
+  if (!medida || !(args.openingPrice > 0)) {
+    return undefined;
+  }
+  const elapsedMs = args.nowMs - args.windowStartMs;
+  const remainingMs = args.endMs - args.nowMs;
+  if (elapsedMs <= 0 || remainingMs <= 0) {
+    return undefined;
+  }
+  // La cobertura se mide sobre lo TRANSCURRIDO, no sobre la ventana entera: a mitad de ventana lo
+  // maximo posible es la mitad, y exigir la ventana completa apagaria el veto justo cuando sirve.
+  const cubierto = (medida.lastTickMs - medida.firstTickMs) / elapsedMs;
+  if (cubierto < args.minCoverage) {
+    return undefined;
+  }
+
+  const precioParaVoltear = priceNeededToFlip({
+    twapSoFar: medida.twap,
+    openingPrice: args.openingPrice,
+    elapsedMs,
+    remainingMs,
+  });
+  if (precioParaVoltear === undefined) {
+    return undefined;
+  }
+  const ultimoPrecio = hastaAhora[hastaAhora.length - 1]?.price ?? medida.twap;
+  const requiredMoveBps = (Math.abs(precioParaVoltear - ultimoPrecio) / ultimoPrecio) * 10_000;
+  const plausible = plausibleMoveBps(args.market, remainingMs);
+  return {
+    leader: medida.twap >= args.openingPrice ? "UP" : "DOWN",
+    twapSoFar: medida.twap,
+    requiredMoveBps,
+    plausibleMoveBps: plausible,
+    decided: remainingMs <= MAX_DECIDED_REMAINING_MS && requiredMoveBps > plausible,
+  };
+}

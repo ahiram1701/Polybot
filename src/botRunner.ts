@@ -50,7 +50,8 @@ import {
 import { StateStore } from "./stateStore.js";
 import { StrategyAnalysisEngine } from "./strategyAnalysisEngine.js";
 import { dailySpendKey, sleep } from "./time.js";
-import { resolveTradeFromTick } from "./tradeResolution.js";
+import { MIN_TWAP_COVERAGE, resolveTradeFromTick } from "./tradeResolution.js";
+import { twapVerdict } from "./twap.js";
 import type {
   BotConfig,
   BtcPriceTick,
@@ -969,6 +970,40 @@ export class BotRunner {
 
     // Piso de ask: por debajo de este precio la entrada es una apuesta de reversion barata, que el
     // replay del ledger live mostro perdedora de forma sistematica (ETH <0.30: 23 de 24 perdidas).
+    // El TWAP en curso ya sabe como acaba esto.
+    //
+    // Desde el 2026-08-07 la ventana la decide el promedio ponderado por tiempo, y al entrar ya ha
+    // transcurrido la mayor parte. Si para que gane nuestro lado el precio tuviera que sostener un
+    // nivel mas lejos de lo que este mercado se mueve en el tiempo que queda, la apuesta ya esta
+    // perdida — comprarla es pagar por un resultado conocido.
+    //
+    // Se usa SOLO para vetar, nunca para justificar una entrada. Es la misma asimetria que rige el
+    // resto del sistema: descartar con evidencia fuerte es barato y no sufre la maldicion del ganador;
+    // abrir con evidencia debil es como se pierde dinero.
+    const veredicto = this.deps.analyticsRecorder?.getActiveTicks
+      ? twapVerdict({
+          market: signal.market.asset,
+          ticks: this.deps.analyticsRecorder.getActiveTicks(signal.market.slug),
+          openingPrice: signal.opening.openingPrice,
+          windowStartMs: signal.market.windowStartMs,
+          endMs: signal.market.endMs,
+          nowMs: signal.tick.timestampMs,
+          minCoverage: MIN_TWAP_COVERAGE,
+        })
+      : undefined;
+    if (veredicto?.decided && veredicto.leader !== signal.outcome) {
+      this.logSkipOnce(signal.market.slug, "twap_already_decided", {
+        market: signal.market.asset,
+        outcome: signal.outcome,
+        lider: veredicto.leader,
+        twap: Math.round(veredicto.twapSoFar * 100) / 100,
+        apertura: signal.opening.openingPrice,
+        moverNecesarioBps: Math.round(veredicto.requiredMoveBps * 10) / 10,
+        moverPlausibleBps: Math.round(veredicto.plausibleMoveBps * 10) / 10,
+      });
+      return undefined;
+    }
+
     const minAskPrice = effectiveAskWindow(
       {
         floor: this.resolveConfiguredMinAskPrice(signal.market.asset, signal.outcome),

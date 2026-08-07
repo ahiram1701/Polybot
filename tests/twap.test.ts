@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { priceNeededToFlip, timeWeightedAveragePrice, windowTwap } from "../src/twap.js";
+import { priceNeededToFlip, timeWeightedAveragePrice, twapVerdict, windowTwap } from "../src/twap.js";
 import type { AnalyticsTickPoint } from "../src/types.js";
 
 const T0 = Date.UTC(2026, 7, 7, 0, 0, 0);
@@ -109,5 +109,83 @@ describe("priceNeededToFlip", () => {
 
   it("sin tiempo restante no hay nada que voltear", () => {
     expect(priceNeededToFlip({ twapSoFar: 100.1, openingPrice: 100, elapsedMs: 300_000, remainingMs: 0 })).toBeUndefined();
+  });
+});
+
+/**
+ * La consecuencia util del cambio a TWAP. Al entrar ya ha transcurrido la mayor parte del promedio,
+ * asi que el resultado suele estar decidido — y ahora se puede CALCULAR en vez de estimarlo con
+ * momentum, que nunca paso de t≈1,5.
+ *
+ * Se usa SOLO para vetar. Es la misma asimetria que rige el resto del sistema: descartar con evidencia
+ * fuerte es barato; abrir con evidencia debil es como se pierde dinero.
+ */
+describe("twapVerdict", () => {
+  const windowStartMs = T0;
+  const endMs = T0 + 300_000;
+
+  function serie(precios: Array<[number, number]>): AnalyticsTickPoint[] {
+    return precios.map(([seg, price]) => ({
+      timestampMs: windowStartMs + seg * 1000,
+      secondsToEnd: 300 - seg,
+      price,
+      distanceUsd: 0,
+    }));
+  }
+
+  const base = {
+    market: "BTC",
+    openingPrice: 100,
+    windowStartMs,
+    endMs,
+    nowMs: windowStartMs + 260_000,
+    minCoverage: 0.8,
+  };
+
+  it("declara decidida una ventana que exige un movimiento imposible", () => {
+    // TWAP claramente por encima de la apertura con 40s por delante: voltearlo exigiria sostener un
+    // precio muchisimo mas abajo, mas de lo que BTC se mueve en ese tiempo.
+    const ticks = serie(Array.from({ length: 27 }, (_u, i) => [i * 10, 100.5] as [number, number]));
+    const v = twapVerdict({ ...base, ticks })!;
+    expect(v.leader).toBe("UP");
+    expect(v.decided).toBe(true);
+    expect(v.requiredMoveBps).toBeGreaterThan(v.plausibleMoveBps);
+  });
+
+  it("NO la declara decidida cuando el TWAP roza la apertura", () => {
+    // A un par de bps: un movimiento normal todavia puede voltearlo, asi que vetar seria pasarse.
+    const ticks = serie(Array.from({ length: 27 }, (_u, i) => [i * 10, 100.002] as [number, number]));
+    const v = twapVerdict({ ...base, ticks })!;
+    expect(v.decided).toBe(false);
+  });
+
+  it("a media ventana NO opina, aunque el TWAP este lejos de la apertura", () => {
+    // El umbral sale de medir movimientos a 40s. Estirarlo a 270s seria hacerlo trabajar casi 7 veces
+    // mas alla de donde hay datos, y con eso el veto declararia "decidido" a media ventana apoyandose
+    // en una extrapolacion. Callar lejos del cierre es distinto de afirmar que no esta decidido.
+    const ticks = serie(Array.from({ length: 7 }, (_u, i) => [i * 5, 100.5] as [number, number]));
+    const v = twapVerdict({ ...base, ticks, nowMs: windowStartMs + 30_000 })!;
+    expect(v.decided).toBe(false);
+    // El numero se sigue calculando: sirve como feature aunque no se use para vetar.
+    expect(v.requiredMoveBps).toBeGreaterThan(0);
+  });
+
+  it("sin cobertura suficiente NO opina", () => {
+    // Un TWAP sobre medio rango no es el TWAP del rango; actuar sobre el seria peor que no mirarlo,
+    // porque parece un dato.
+    const soloElFinal = serie([[250, 100.5], [260, 100.5]]);
+    expect(twapVerdict({ ...base, ticks: soloElFinal })).toBeUndefined();
+  });
+
+  it("el umbral depende del mercado: DOGE se mueve mas que BTC", () => {
+    const ticks = serie(Array.from({ length: 27 }, (_u, i) => [i * 10, 100.5] as [number, number]));
+    const btc = twapVerdict({ ...base, ticks })!;
+    const doge = twapVerdict({ ...base, market: "DOGE", ticks })!;
+    expect(doge.plausibleMoveBps).toBeGreaterThan(btc.plausibleMoveBps);
+  });
+
+  it("un mercado desconocido no revienta: usa un umbral por defecto", () => {
+    const ticks = serie(Array.from({ length: 27 }, (_u, i) => [i * 10, 100.5] as [number, number]));
+    expect(twapVerdict({ ...base, market: "XYZ", ticks })?.plausibleMoveBps).toBeGreaterThan(0);
   });
 });
