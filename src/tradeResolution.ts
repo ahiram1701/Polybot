@@ -1,12 +1,6 @@
-import type { AnalyticsTickPoint, BtcPriceTick, Outcome, SimResolution, TradeAttempt } from "./types.js";
+import type { BtcPriceTick, Outcome, SimResolution, TradeAttempt } from "./types.js";
 import { marketSymbolFromSlug } from "./markets.js";
-import { windowTwap } from "./twap.js";
 
-/**
- * Cobertura minima de ticks para fiarse del TWAP. Por debajo se usa la regla vieja y que corrija el
- * verificador oficial: un promedio sobre medio rango no es el promedio del rango.
- */
-export const MIN_TWAP_COVERAGE = 0.8;
 
 const CLOB_AMOUNT_DECIMALS = 6;
 const RESOLVABLE_LIVE_STATUSES = new Set(["matched"]);
@@ -61,12 +55,6 @@ export function resolveTradeFromTick(
   latestTick: BtcPriceTick,
   nowMs: number,
   closeTick?: BtcPriceTick,
-  /**
-   * Ticks de la ventana, para calcular el TWAP. Sin ellos se cae al ultimo precio, que es la regla
-   * ANTIGUA — se conserva solo como red: dejar trades sin resolver seria peor, y el verificador
-   * oficial corrige lo que salga mal.
-   */
-  windowTicks?: readonly AnalyticsTickPoint[],
 ): SimResolution | undefined {
   const tradeAsset = trade.asset ?? marketSymbolFromSlug(trade.slug);
   if (
@@ -87,17 +75,12 @@ export function resolveTradeFromTick(
   // (e.g. right after a restart); the official-resolution verifier corrects live trades if needed.
   const referenceTick = closeTick && closeTick.timestampMs <= trade.endMs ? closeTick : latestTick;
 
-  // Desde el 2026-08-07 Polymarket resuelve por TWAP: gana "Up" si el promedio ponderado por tiempo
-  // de la ventana supera el precio de APERTURA. Comparar el ultimo precio, que es lo que se hacia
-  // antes, cambia el ganador en al menos el 11% de las ventanas.
-  //
-  // Se exige cobertura suficiente antes de fiarse: un TWAP calculado sobre un trozo de la ventana no
-  // es el TWAP de la ventana, y usarlo como si lo fuera es peor que la regla vieja, porque parece
-  // correcto. Sin cobertura se cae al ultimo precio y el verificador oficial lo corrige.
-  const medida = windowTicks ? windowTwap(windowTicks, trade.windowStartMs, trade.endMs) : undefined;
-  const usaTwap = medida !== undefined && medida.coverage >= MIN_TWAP_COVERAGE;
-  const precioJuez = usaTwap ? medida.twap : referenceTick.value;
-  const winningOutcome: Outcome = precioJuez >= trade.openingPrice ? "UP" : "DOWN";
+  // El precio que juzga es `referenceTick`, que en produccion YA es el valor de la serie TWAP oficial
+  // (lo elige el llamador). Aqui no se calcula ningun promedio: la documentacion de Polymarket pide
+  // expresamente no reconstruir el valor — "do not independently reproduce the value without a
+  // specification from Chainlink" — porque no publican los limites de muestreo ni el redondeo. Yo lo
+  // reconstrui una vez y me equivoque: asumi el promedio de los 300s cuando el lookback son 30.
+  const winningOutcome: Outcome = referenceTick.value >= trade.openingPrice ? "UP" : "DOWN";
   return {
     resolvedAtMs: nowMs,
     // `finalPrice` sigue siendo el precio de cierre observado: es el dato crudo, no el juicio. El
@@ -105,8 +88,6 @@ export function resolveTradeFromTick(
     // aplico a cada trade.
     finalPrice: referenceTick.value,
     finalTickTimestampMs: referenceTick.timestampMs,
-    twapPrice: usaTwap ? medida.twap : undefined,
-    twapCoverage: medida?.coverage,
     winningOutcome,
     won: winningOutcome === trade.outcome,
   };

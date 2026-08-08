@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ChainlinkPriceFeed, parseChainlinkTick, parseChainlinkTicks } from "../src/chainlinkPriceFeed.js";
+import { ChainlinkPriceFeed, parseChainlinkTick, parseChainlinkTicks, parseTwapPoint } from "../src/chainlinkPriceFeed.js";
 import type { PriceTick } from "../src/types.js";
 
 function feedWith(ticks: PriceTick[]): ChainlinkPriceFeed {
@@ -156,5 +156,51 @@ describe("el feed no puede quedarse muerto", () => {
     const feed = new ChainlinkPriceFeed("wss://ejemplo");
     // Sin ticks todavia: `undefined`, no cero. Recien arrancado no es lo mismo que ciego.
     expect(feed.msSinceLastTick()).toBeUndefined();
+  });
+});
+
+/**
+ * Desde el 2026-08-07 estos mercados resuelven por la serie TWAP, no por spot, y sus reglas lo dicen
+ * sin ambiguedad: "no segun ninguna otra fuente ni mercados spot". Son dos series que miden cosas
+ * distintas y mezclarlas corromperia a la vez el precio de apertura y la distancia — los dos terminos
+ * de la señal — sin dar la cara.
+ */
+describe("serie spot y serie TWAP, separadas", () => {
+  it("un payload con window_s NO entra en la serie spot", () => {
+    // `window_s` es la forma REAL del payload RTDS, verificada en vivo. El guardia solo miraba
+    // `windowSeconds` (la del cliente tipado), asi que la de verdad se habria colado.
+    expect(
+      parseChainlinkTicks({
+        topic: "crypto_prices_chainlink",
+        payload: { symbol: "btc/usd", value: 64000, timestamp: 1786000000000, window_s: 30 },
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("tampoco entra con windowSeconds ni con feedID", () => {
+    for (const marca of [{ windowSeconds: 30 }, { feedID: "0xabc" }]) {
+      expect(
+        parseChainlinkTicks({
+          payload: { symbol: "btc/usd", value: 64000, timestamp: 1786000000000, ...marca },
+        }),
+      ).toHaveLength(0);
+    }
+  });
+
+  it("un valor TWAP sin su marca de ventana se rechaza: sin ella no es un TWAP", () => {
+    // Aceptarlo seria colar un precio spot en la serie que decide quien gana.
+    expect(parseTwapPoint({ symbol: "btc/usd", value: 64000, timestamp: 1786000000000 })).toBeUndefined();
+  });
+
+  it("con su marca de ventana si se lee", () => {
+    const tick = parseTwapPoint({ symbol: "btc/usd", value: 64000, timestamp: 1786000000000, window_s: 30 });
+    expect(tick?.market).toBe("BTC");
+    expect(tick?.value).toBe(64000);
+  });
+
+  it("sin serie TWAP no inventa un sustituto", () => {
+    const feed = new ChainlinkPriceFeed("wss://ejemplo");
+    expect(feed.getLatestTwapTick("BTC")).toBeUndefined();
+    expect(feed.getTwapAtOrBefore("BTC", Date.now())).toBeUndefined();
   });
 });

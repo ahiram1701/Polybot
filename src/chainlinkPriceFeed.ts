@@ -6,6 +6,15 @@ import type { MarketSymbol, PriceTick } from "./types.js";
 
 type TickHandler = (tick: PriceTick) => void;
 
+/**
+ * Topic RTDS de la serie TWAP de 30 segundos, que es la que resuelve los mercados de 5 minutos.
+ *
+ * Los de 15m usan `twapLookbackSeconds: 60` y su topic seria `crypto_prices_twap_sixty`. Hoy Polybot
+ * solo opera 5m; cuando eso cambie, el lookback correcto sale de `cryptoMarketConfig` del propio
+ * mercado y no de una constante.
+ */
+export const TWAP_TOPIC = "crypto_prices_twap_thirty";
+
 export class ChainlinkPriceFeed {
   private socket?: WebSocket;
   private pingTimer?: NodeJS.Timeout;
@@ -28,6 +37,19 @@ export class ChainlinkPriceFeed {
   private reconnectAttempts = 0;
   private readonly latestTicks = new Map<MarketSymbol, PriceTick>();
   private readonly recentTicks = new Map<MarketSymbol, PriceTick[]>();
+  /**
+   * Serie TWAP, SEPARADA de la spot.
+   *
+   * Desde el 2026-08-07 estos mercados no resuelven por precio spot. Sus reglas son explicitas: "este
+   * mercado va del precio segun el data stream TWAP de Chainlink, no segun ninguna otra fuente ni
+   * mercados spot". Y la documentacion pide no reconstruir el valor — Polymarket lo publica ya
+   * calculado en `crypto_prices_twap_thirty`.
+   *
+   * Van en mapas distintos a proposito: son dos series que miden cosas distintas, y mezclarlas
+   * corromperia a la vez el precio de apertura y la distancia sin dar la cara.
+   */
+  private readonly recentTwapTicks = new Map<MarketSymbol, PriceTick[]>();
+  private readonly latestTwapTicks = new Map<MarketSymbol, PriceTick>();
   private readonly handlers = new Set<TickHandler>();
 
   constructor(
@@ -310,11 +332,18 @@ export class ChainlinkPriceFeed {
     this.socket?.send(
       JSON.stringify({
         action: "subscribe",
-        subscriptions: markets.map((market) => ({
-          topic: "crypto_prices_chainlink",
-          type: "*",
-          filters: JSON.stringify({ symbol: getMarketDefinition(market).priceFeedSymbol }),
-        })),
+        subscriptions: [
+          ...markets.map((market) => ({
+            topic: "crypto_prices_chainlink",
+            type: "*",
+            filters: JSON.stringify({ symbol: getMarketDefinition(market).priceFeedSymbol }),
+          })),
+          // La serie que RESUELVE los mercados de 5m, SIN filtro de simbolo: con filtro solo llegaba
+          // el primer mercado (probado — BTC si, ETH y DOGE no). Llegan todos los activos y los que no
+          // interesan se descartan al parsear, que es barato y no depende de como el servidor
+          // interprete los filtros.
+          { topic: TWAP_TOPIC, type: "update" },
+        ],
       }),
     );
   }
@@ -379,6 +408,10 @@ export class ChainlinkPriceFeed {
 
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     for (const message of messages) {
+      // La serie TWAP se enruta por topic ANTES del parseo spot, que la rechaza a proposito.
+      if (this.handleTwapMessage(message)) {
+        continue;
+      }
       const ticks = parseChainlinkTicks(message);
       if (ticks.length === 0) {
         this.noteUnparsedMessage(message);
@@ -427,6 +460,63 @@ export class ChainlinkPriceFeed {
     this.unparsedCount = 0;
   }
 
+  /** `true` si el mensaje era de la serie TWAP y ya se ha consumido. */
+  private handleTwapMessage(message: unknown): boolean {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+    const record = message as Record<string, unknown>;
+    if (record.topic !== TWAP_TOPIC) {
+      return false;
+    }
+    const payload = (record.payload ?? record) as Record<string, unknown>;
+    const tick = parseTwapPoint(payload);
+    if (!tick) {
+      return true; // era del topic TWAP aunque no se pudiera leer: no reintentar como spot
+    }
+    // Cuenta como señal de vida: si llega TWAP el socket esta sano aunque el spot vaya lento.
+    this.lastTickAtMs = Date.now();
+    this.reconnectAttempts = 0;
+    this.latestTwapTicks.set(tick.market, tick);
+    const serie = this.recentTwapTicks.get(tick.market) ?? [];
+    if (!serie.some((item) => item.timestampMs === tick.timestampMs)) {
+      serie.push(tick);
+    }
+    const minMs = tick.timestampMs - this.historyWindowMs;
+    this.recentTwapTicks.set(
+      tick.market,
+      serie.filter((item) => item.timestampMs >= minMs).sort((l, r) => l.timestampMs - r.timestampMs),
+    );
+    return true;
+  }
+
+  /** Ultimo valor TWAP publicado, o `undefined` si aun no ha llegado ninguno. */
+  getLatestTwapTick(market: MarketSymbol): PriceTick | undefined {
+    return this.latestTwapTicks.get(market);
+  }
+
+  /**
+   * Valor TWAP vigente en un instante: el ultimo publicado en o antes de el.
+   *
+   * Sirve tanto para la apertura (valor al inicio de la ventana) como para el cierre, que es
+   * exactamente como estan escritas las reglas del mercado.
+   */
+  getTwapAtOrBefore(market: MarketSymbol, timestampMs: number, maxAgeMs = 60_000): PriceTick | undefined {
+    const serie = this.recentTwapTicks.get(market);
+    if (!serie) {
+      return undefined;
+    }
+    let mejor: PriceTick | undefined;
+    for (const tick of serie) {
+      if (tick.timestampMs <= timestampMs) {
+        mejor = tick;
+      }
+    }
+    // Un valor de hace media hora no representa "el precio en ese instante". Antes de devolver algo
+    // viejo es mejor no devolver nada: quien llama decide, y aqui abstenerse es barato.
+    return mejor && timestampMs - mejor.timestampMs <= maxAgeMs ? mejor : undefined;
+  }
+
   private rememberTick(tick: PriceTick): void {
     const ticks = this.recentTicks.get(tick.market) ?? [];
     const existingIndex = ticks.findIndex((item) => item.timestampMs === tick.timestampMs);
@@ -473,11 +563,25 @@ export function parseChainlinkTicks(message: unknown): PriceTick[] {
   // el spot corrompe a la vez el precio de apertura y la distancia — los dos terminos de la señal —
   // sin dar la cara. Se rechazan aqui; `handleRawMessage` deja constancia de que llegó algo que no se
   // reconoce, para que sea un fallo visible y no uno mudo.
-  if (payload.windowSeconds !== undefined || payload.feedID !== undefined) {
+  // `window_s` es la forma REAL del payload RTDS (verificada en vivo); `windowSeconds` es la del
+  // cliente tipado y `feedID` la de Chainlink Data Streams. Se comprueban las tres porque la
+  // suscripcion usa comodin y basta con que una se cuele para envenenar la serie spot.
+  if (payload.windowSeconds !== undefined || payload.window_s !== undefined || payload.feedID !== undefined) {
     return [];
   }
 
   return asTickArray(parseTickPoint(payload.symbol, payload.value, payload.timestamp));
+}
+
+/**
+ * Un punto de la serie TWAP. Exige `window_s` presente: sin esa marca no es un valor TWAP, y aceptarlo
+ * seria colar un precio spot en la serie que decide quien gana.
+ */
+export function parseTwapPoint(payload: Record<string, unknown>): PriceTick | undefined {
+  if (payload.window_s === undefined && payload.windowSeconds === undefined) {
+    return undefined;
+  }
+  return parseTickPoint(payload.symbol, payload.value, payload.timestamp) ?? undefined;
 }
 
 function parseCryptoPricesTick(record: Record<string, unknown>): PriceTick[] {

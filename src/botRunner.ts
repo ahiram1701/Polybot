@@ -134,6 +134,12 @@ export interface RunnerPriceFeed {
   getTickInRange?(market: MarketSymbol, startMs: number, endMs: number): BtcPriceTick | undefined;
   getOpeningTick?(market: MarketSymbol, windowStartMs: number, graceMs: number): BtcPriceTick | undefined;
   getTickAtOrBefore?(market: MarketSymbol, timestampMs: number): BtcPriceTick | undefined;
+  /**
+   * Serie TWAP publicada, que es la que RESUELVE estos mercados desde el 2026-08-07. Opcional para no
+   * romper los dobles de test, pero en produccion es la fuente buena: las reglas del mercado dicen
+   * "no segun ninguna otra fuente ni mercados spot".
+   */
+  getTwapAtOrBefore?(market: MarketSymbol, timestampMs: number, maxAgeMs?: number): BtcPriceTick | undefined;
 }
 
 interface BotDependencies {
@@ -758,6 +764,14 @@ export class BotRunner {
 
   private getOpeningTick(market: MarketInfo, latestTick: BtcPriceTick | undefined): BtcPriceTick | undefined {
     const grace = this.config.openingCaptureGraceMs;
+    // La apertura oficial es el valor de la serie TWAP en el inicio de ventana. Las reglas del mercado
+    // son explicitas: "este mercado va del precio segun el data stream TWAP de Chainlink, NO segun
+    // ninguna otra fuente ni mercados spot". El spot queda solo como respaldo mientras la serie TWAP
+    // no haya llegado — recien arrancado, por ejemplo.
+    const twap = this.deps.priceFeed.getTwapAtOrBefore?.(market.asset, market.windowStartMs, grace);
+    if (twap) {
+      return twap;
+    }
     // Prefer the symmetric-grace opening tick (accepts the last price just before window start for
     // sparsely-updated feeds); fall back to the in-window range and finally the latest tick.
     return (
@@ -1841,11 +1855,11 @@ export class BotRunner {
       }
       // Judge the winner by the price AT the window close (last tick <= endMs), not the first tick
       // after it — photo-finish windows flipped otherwise.
-      const closeTick = this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
-      // Los ticks de la ventana viven en el grabador de analitica, que ya los captura enteros para
-      // esto. Sin ellos la resolucion cae a la regla vieja (ultimo precio) y la corrige el oficial.
-      const windowTicks = this.deps.analyticsRecorder?.getActiveTicks?.(trade.slug);
-      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick, windowTicks);
+      // Cierre por la serie TWAP, que es la que resuelve. El spot solo si aquella no esta.
+      const closeTick =
+        this.deps.priceFeed.getTwapAtOrBefore?.(market, trade.endMs) ??
+        this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
+      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick);
       if (!resolution) {
         continue;
       }
