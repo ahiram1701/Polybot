@@ -167,7 +167,8 @@ export interface BotControllerDeps {
   stateFactory?: () => StateStore;
   watcher?: Pick<MarketWatcher, "getCurrentMarket">;
   orderbook?: Pick<OrderbookService, "getQuote">;
-  priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick">;
+  priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick"> &
+    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick">>;
   strategyAnalysisEngine?: StrategyAnalysisEngine;
   recommendationEngine?: Pick<RecommendationEngine, "recommend">;
   notifier?: Notifier;
@@ -215,7 +216,8 @@ export class BotController {
   private readonly stateFactory: () => StateStore;
   private readonly watcher: Pick<MarketWatcher, "getCurrentMarket">;
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
-  private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick">;
+  private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick"> &
+    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick">>;
   private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
   private readonly recommendationEngine: Pick<RecommendationEngine, "recommend">;
   private readonly telegramStore: TelegramNotificationStore;
@@ -377,6 +379,11 @@ export class BotController {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /** Antiguedad del ultimo tick del feed, para que la salud pueda decir la verdad. */
+  feedStalenessMs(nowMs = Date.now()): number | undefined {
+    return this.priceFeed.msSinceLastTick?.(nowMs);
   }
 
   onEvent(listener: (event: UiEvent) => void): () => void {

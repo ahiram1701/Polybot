@@ -1070,4 +1070,70 @@ describe("GET /api/health", () => {
     expect(typeof response.body.uptimeSeconds).toBe("number");
     controller.dispose();
   });
+
+  /**
+   * El 2026-08-08 el feed se quedo congelado SIETE HORAS tras un corte de red. El watchdog externo
+   * sondea este endpoint y reinicia cuando falla — reiniciar era exactamente la cura — pero no movio
+   * un dedo porque aqui solo se comprobaba que el servidor respondia: un bot ciego devolvia 200.
+   */
+  it("FALLA cuando el feed lleva demasiado sin ticks", async () => {
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+      priceFeed: {
+        start: () => undefined,
+        stop: () => undefined,
+        getLatestTick: () => undefined,
+        getOpeningTick: () => undefined,
+        msSinceLastTick: () => 10 * 60_000,
+      } as never,
+    });
+    const app = createUiApp(controller);
+
+    const response = await request(app).get("/api/health").expect(503);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.reason).toBe("price_feed_stale");
+    controller.dispose();
+  });
+
+  it("con ticks frescos sigue estando sano", async () => {
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+      priceFeed: {
+        start: () => undefined,
+        stop: () => undefined,
+        getLatestTick: () => undefined,
+        getOpeningTick: () => undefined,
+        msSinceLastTick: () => 1_500,
+      } as never,
+    });
+    const app = createUiApp(controller);
+    await request(app).get("/api/health").expect(200);
+    controller.dispose();
+  });
+
+  it("recien arrancado, sin ningun tick todavia, NO se marca enfermo", async () => {
+    // Reiniciar un proceso que acaba de arrancar solo encadena reinicios.
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+      priceFeed: {
+        start: () => undefined,
+        stop: () => undefined,
+        getLatestTick: () => undefined,
+        getOpeningTick: () => undefined,
+        msSinceLastTick: () => undefined,
+      } as never,
+    });
+    const app = createUiApp(controller);
+    await request(app).get("/api/health").expect(200);
+    controller.dispose();
+  });
 });

@@ -14,6 +14,12 @@ import type { StartBotRequest, UiEvent, UiSettings } from "./shared.js";
 
 const ANALYSIS_IMPORT_LIMIT = "512mb";
 
+/**
+ * Umbral de "el feed esta muerto". Holgado a proposito: entrega ~1 tick/s, asi que dos minutos sin
+ * nada no es un hipo de red — y reiniciar por un hipo cuesta el estado en memoria.
+ */
+const MAX_FEED_STALENESS_MS = 120_000;
+
 const startRequestSchema = z.object({
   mode: z.enum(["sim", "live"]),
   confirmLive: z.boolean().optional(),
@@ -71,11 +77,28 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
    *
    * Una sonda de vida debe comprobar que el proceso responde, no que las APIs de terceros van rapidas.
    */
+  /**
+   * Salud REAL, no "el proceso contesta".
+   *
+   * Este endpoint lo sondea el watchdog externo (`scripts/watchdog.ps1`), que reinicia el proceso
+   * cuando falla. El 2026-08-08 el feed se quedo congelado SIETE HORAS tras un corte de red y el
+   * watchdog no movio un dedo, porque aqui solo se comprobaba que el servidor respondia: un bot
+   * completamente ciego devolvia 200. Reiniciar era justo la cura, y la unica razon de que no
+   * ocurriera es que la salud mentia.
+   *
+   * Un bot que no ve el mercado no esta sano aunque conteste.
+   */
   app.get("/api/health", (_req, res) => {
-    res.json({
-      ok: true,
+    const feedStalenessMs = controller.feedStalenessMs?.();
+    // `undefined` = aun no ha llegado ningun tick. No se marca enfermo: recien arrancado es lo normal,
+    // y reiniciar un proceso que acaba de arrancar solo encadena reinicios.
+    const feedOk = feedStalenessMs === undefined || feedStalenessMs <= MAX_FEED_STALENESS_MS;
+    res.status(feedOk ? 200 : 503).json({
+      ok: feedOk,
       uptimeSeconds: Math.round(process.uptime()),
       rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      feedStalenessMs,
+      ...(feedOk ? {} : { reason: "price_feed_stale" }),
     });
   });
 

@@ -11,6 +11,15 @@ export class ChainlinkPriceFeed {
   private pingTimer?: NodeJS.Timeout;
   private snapshotRefreshTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
+  /**
+   * Vigilante que vive mientras el feed este arrancado, INDEPENDIENTE del socket.
+   *
+   * El anterior colgaba del socket: se limpiaba al cerrarse y solo actuaba con `readyState === OPEN`.
+   * O sea que vigilaba un socket sano y no podia resucitar uno muerto — que es exactamente el fallo
+   * que dejo al bot 7 horas con el precio congelado el 2026-08-08, con el proceso vivo y la salud en
+   * verde. La unica vigilancia que sirve es la que no depende de aquello que vigila.
+   */
+  private supervisorTimer?: NodeJS.Timeout;
   private stopped = true;
   private latestTick?: PriceTick;
   private lastTickAtMs = 0;
@@ -44,11 +53,26 @@ export class ChainlinkPriceFeed {
     }
     this.stopped = false;
     this.reconnectAttempts = 0;
-    this.connect();
+    this.startSupervisor();
+    // El PRIMER intento tambien puede lanzar (DNS caido al arrancar), y dejarlo propagar aborta el
+    // arranque del bot entero por un fallo de red transitorio. Se programa un reintento, que es lo
+    // mismo que se hace con cualquier otra caida.
+    try {
+      this.connect();
+    } catch (error) {
+      logger.warn("Fallo al conectar el feed al arrancar; se reintenta.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.scheduleReconnect();
+    }
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.supervisorTimer) {
+      clearInterval(this.supervisorTimer);
+      this.supervisorTimer = undefined;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -56,6 +80,17 @@ export class ChainlinkPriceFeed {
     this.clearPing();
     this.clearSnapshotRefresh();
     this.cleanupSocket();
+  }
+
+  /**
+   * Milisegundos desde el ultimo tick valido, o `undefined` si nunca llego ninguno.
+   *
+   * Es la unica medida honesta de "¿ve el bot el mercado?". El proceso puede responder peticiones y
+   * el status enseñar precios con pinta normal mientras el feed lleva horas congelado — paso el
+   * 2026-08-08, siete horas.
+   */
+  msSinceLastTick(nowMs = Date.now()): number | undefined {
+    return this.lastTickAtMs > 0 ? nowMs - this.lastTickAtMs : undefined;
   }
 
   getLatestTick(market: MarketSymbol = "BTC"): PriceTick | undefined {
@@ -161,7 +196,6 @@ export class ChainlinkPriceFeed {
         return;
       }
       logger.info("Connected to Polymarket RTDS Chainlink feed.");
-      this.reconnectAttempts = 0;
       this.lastTickAtMs = Date.now();
       this.subscribe();
       this.startPing();
@@ -195,6 +229,39 @@ export class ChainlinkPriceFeed {
     });
   }
 
+  /**
+   * Comprueba periodicamente que SIGUEN LLEGANDO TICKS, sin mirar el estado del socket.
+   *
+   * Un socket abierto que no entrega nada, uno cerrado que nadie reabrio, o una cadena de reconexion
+   * rota por una excepcion: los tres se ven igual desde aqui — no hay ticks frescos — y los tres se
+   * curan igual. Por eso no distingue.
+   */
+  private startSupervisor(): void {
+    if (this.supervisorTimer) {
+      return;
+    }
+    this.supervisorTimer = setInterval(() => {
+      if (this.stopped) {
+        return;
+      }
+      const inactivoMs = this.lastTickAtMs > 0 ? Date.now() - this.lastTickAtMs : Number.POSITIVE_INFINITY;
+      if (inactivoMs <= this.noTickTimeoutMs) {
+        return;
+      }
+      // Ya hay un reintento en camino: dejarlo llegar en vez de encadenar reconexiones.
+      if (this.reconnectTimer) {
+        return;
+      }
+      logger.warn("Feed sin ticks; el supervisor fuerza reconexion.", {
+        inactivoMs: Number.isFinite(inactivoMs) ? inactivoMs : undefined,
+        socketAbierto: this.socket?.readyState === WebSocket.OPEN,
+      });
+      this.cleanupSocket();
+      this.scheduleReconnect();
+    }, 5_000);
+    this.supervisorTimer.unref?.();
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) {
       return;
@@ -207,7 +274,17 @@ export class ChainlinkPriceFeed {
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      this.connect();
+      try {
+        this.connect();
+      } catch (error) {
+        // `new WebSocket(url)` puede lanzar de forma sincrona — con el DNS caido, por ejemplo. Sin este
+        // catch la excepcion se escapaba del timer, y como `reconnectTimer` ya estaba limpio no
+        // quedaba NADA que reintentara: el feed moria en silencio para siempre. Paso de verdad.
+        logger.warn("Fallo al reconectar el feed; se reintenta.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.scheduleReconnect();
+      }
     }, delay);
   }
 
@@ -309,6 +386,10 @@ export class ChainlinkPriceFeed {
       }
       for (const tick of ticks) {
         this.lastTickAtMs = Date.now();
+        // Los intentos se reinician con un TICK, no al abrir el socket. Abrir y no recibir nada es
+        // precisamente el fallo que hay que castigar con espera creciente; darlo por bueno al abrir
+        // hacia que una conexion muda contara como exito.
+        this.reconnectAttempts = 0;
         this.rememberTick(tick);
         this.latestTick = tick;
         this.latestTicks.set(tick.market, tick);

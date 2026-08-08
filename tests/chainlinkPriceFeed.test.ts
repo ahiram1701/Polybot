@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ChainlinkPriceFeed, parseChainlinkTick, parseChainlinkTicks } from "../src/chainlinkPriceFeed.js";
 import type { PriceTick } from "../src/types.js";
@@ -119,5 +119,42 @@ describe("parseChainlinkTicks: no mezclar TWAP con spot", () => {
 
   it("rechaza un payload con feedID (feed personalizado, no la serie spot)", () => {
     expect(parseChainlinkTicks({ ...spot, payload: { ...spot.payload, feedID: "0xabc" } })).toEqual([]);
+  });
+});
+
+/**
+ * El 2026-08-08 un corte de red tiro el websocket y el feed se quedo congelado SIETE HORAS, con el
+ * proceso vivo y la salud en verde. La cadena de reconexion tenia un punto unico de fallo: si
+ * `connect()` lanzaba dentro del timer, `reconnectTimer` ya estaba limpio y `pingTimer` tambien, asi
+ * que no quedaba ningun temporizador que pudiera reintentar. Nunca mas.
+ */
+describe("el feed no puede quedarse muerto", () => {
+  it("una excepcion al conectar NO rompe la cadena de reintentos", async () => {
+    vi.useFakeTimers();
+    let intentos = 0;
+    const feed = new ChainlinkPriceFeed("wss://ejemplo-invalido");
+    // `connect` es privado a proposito; se sustituye para simular el `new WebSocket()` que lanza.
+    (feed as unknown as { connect: () => void }).connect = () => {
+      intentos += 1;
+      throw new Error("getaddrinfo ENOTFOUND");
+    };
+    try {
+      feed.start();
+      expect(intentos).toBe(1);
+      // Sin el try/catch, aqui no volveria a intentarse jamas.
+      for (let i = 0; i < 4; i += 1) {
+        await vi.advanceTimersByTimeAsync(15_000);
+      }
+      expect(intentos).toBeGreaterThan(1);
+    } finally {
+      feed.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("informa de cuanto lleva sin ticks, que es la unica medida de si ve el mercado", () => {
+    const feed = new ChainlinkPriceFeed("wss://ejemplo");
+    // Sin ticks todavia: `undefined`, no cero. Recien arrancado no es lo mismo que ciego.
+    expect(feed.msSinceLastTick()).toBeUndefined();
   });
 });
