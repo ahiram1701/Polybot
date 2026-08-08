@@ -332,16 +332,15 @@ export class ChainlinkPriceFeed {
     this.socket?.send(
       JSON.stringify({
         action: "subscribe",
+        // SIN filtros de simbolo, en ninguno de los dos topics.
+        //
+        // Mezclar suscripciones filtradas y sin filtrar rompio el feed: al añadir la del TWAP sin
+        // filtro, ETH y DOGE dejaron de recibir spot durante 11 minutos mientras BTC seguia bien. Y
+        // con filtro por simbolo en el topic TWAP pasaba lo simetrico — solo llegaba BTC. El servidor
+        // no trata la lista como yo suponia, asi que se deja de depender de eso: llegan todos los
+        // activos y los que no interesan se descartan al parsear, que es barato y no depende de nadie.
         subscriptions: [
-          ...markets.map((market) => ({
-            topic: "crypto_prices_chainlink",
-            type: "*",
-            filters: JSON.stringify({ symbol: getMarketDefinition(market).priceFeedSymbol }),
-          })),
-          // La serie que RESUELVE los mercados de 5m, SIN filtro de simbolo: con filtro solo llegaba
-          // el primer mercado (probado — BTC si, ETH y DOGE no). Llegan todos los activos y los que no
-          // interesan se descartan al parsear, que es barato y no depende de como el servidor
-          // interprete los filtros.
+          { topic: "crypto_prices_chainlink", type: "*" },
           { topic: TWAP_TOPIC, type: "update" },
         ],
       }),
