@@ -159,6 +159,18 @@ export interface TwapVerdict {
 }
 
 /**
+ * NO USAR PARA DECIDIR ENTRADAS. Se construyo sobre una lectura equivocada de las reglas y se retiro
+ * del camino de decision el 2026-08-08; se conserva solo como feature de analitica.
+ *
+ * El error: se asumio que la ventana la decide el promedio de los 300 segundos, y de ahi salia que al
+ * entrar "el 87% ya estaba decidido". Es falso. El config del mercado dice
+ * `twapLookbackSeconds: 30` (60 en los de 15m) y la documentacion lo confirma — "the 30-second and
+ * 60-second values are LOOKBACK WINDOWS, not publication cadences". La referencia es una media corta
+ * en cada extremo, asi que a 40s del cierre la ventana que decide ni siquiera ha empezado.
+ *
+ * Ademas la documentacion pide expresamente NO reconstruir el valor ("do not independently reproduce
+ * the value without a specification from Chainlink"): Polymarket publica la serie ya calculada.
+ *
  * Que dice el TWAP EN CURSO sobre como va a acabar la ventana.
  *
  * Es la consecuencia util del cambio de Polymarket. A 40s del cierre de una ventana de 300s ya ha

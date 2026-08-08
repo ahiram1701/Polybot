@@ -256,7 +256,6 @@ export const SKIP_REASON_LABELS: Record<string, string> = {
   // panel muestra cualquier motivo registrado, y sin etiqueta saldrian como codigo crudo.
   arb_opportunity_observed: "Arbitraje detectado (observado)",
   mint_opportunity_observed: "MINT-arb detectado (observado, aun sin ejecutar)",
-  twap_already_decided: "El TWAP ya decidio la ventana en contra",
   best_ask_below_floor: "Ask por debajo del piso",
   spread_too_wide: "Spread demasiado ancho",
   too_close_to_close: "Demasiado cerca del cierre",
