@@ -116,7 +116,12 @@ const settingsSchema = z.object({
   openingCaptureGraceMs: z.coerce.number().positive(),
   minDistanceFloorUsdByMarket: marketDistancesSchema.default({ BTC: 20, ETH: 0.1, DOGE: 0.00003 }),
   liveMaxSlippage: z.coerce.number().nonnegative().lt(1).default(0.02),
-  maxAnalyticsSamples: z.coerce.number().int().positive().default(20_000),
+  /**
+   * Bajado de 20.000 a 10.000. Con la muestra en ~31 KB el tope anterior proyectaba 608 MB, y podar un
+   * fichero asi congela el proceso ~17 segundos. El defecto del codigo no basta: este ajuste es el que
+   * llega al grabador, y un valor guardado de 20.000 lo pisaria.
+   */
+  maxAnalyticsSamples: z.coerce.number().int().positive().default(10_000),
   aiAutoApplyLive: z.boolean().default(false),
   aiAutoTuneAskCap: z.boolean().default(false),
   /**
@@ -250,7 +255,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     openingCaptureGraceMs: config.openingCaptureGraceMs,
     minDistanceFloorUsdByMarket: defaultMarketDistances(config.minDistanceFloorUsdByMarket),
     liveMaxSlippage: config.liveMaxSlippage ?? 0.02,
-    maxAnalyticsSamples: config.maxAnalyticsSamples ?? 20_000,
+    maxAnalyticsSamples: config.maxAnalyticsSamples ?? 10_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: Boolean(config.aiAutoTuneAskCap ?? false),
     aiAutoProbeBands: Boolean(config.aiAutoProbeBands ?? false),
