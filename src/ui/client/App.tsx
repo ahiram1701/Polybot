@@ -49,7 +49,7 @@ import {
   resolvedTradesForCharts,
   rollingWinRate,
   tradesPerDaySeries,
-  validationProgress,
+  validationProgressByKind,
   type LabeledValue,
 } from "./chartData.js";
 import { BarChart, CalibrationChart, Sparkline } from "./charts.js";
@@ -1444,16 +1444,26 @@ function PnlCharts({
   const netUsd = equity[equity.length - 1];
   const lastWin = winRate[winRate.length - 1];
   const lastRoi = roi[roi.length - 1];
-  const progress = validationProgress(series);
+  // Separado por estrategia: el total mezcla arbitraje (que paga) con direccional (que resta), y ese
+  // numero mezclado puede aprobar el paso a live por el motivo equivocado. En live el direccional
+  // esta bloqueado por la puerta de capital, asi que el avance que DECIDE es el del arbitraje.
+  const porTipo = validationProgressByKind(series);
+  const progress = porTipo.arb;
   const band = hideAmounts ? MASKED_AMOUNT : `±${formatUsd(progress.varianceBandUsd)}`;
   return (
     <>
     <p className={`validation-context ${progress.withinBand ? "" : "signal"}`}>
-      Validación: <strong>{Math.min(progress.resolvedCount, progress.target)}/{progress.target}</strong> trades
+      Validación <strong>ARBITRAJE</strong> (lo que correrá en live):{" "}
+      <strong>{Math.min(progress.resolvedCount, progress.target)}/{progress.target}</strong> trades
       {" · "}
       {progress.withinBand
         ? `P&L dentro del rango esperado por varianza (${band}) — aún no significativo`
         : `P&L FUERA del rango de varianza (${band}) — esto ya es señal, no ruido`}
+    </p>
+    <p className="validation-context">
+      Direccional, aparte: <strong>{Math.min(porTipo.dir.resolvedCount, porTipo.dir.target)}/{porTipo.dir.target}</strong>{" "}
+      trades · {hideAmounts ? MASKED_AMOUNT : formatSignedUsd(porTipo.dir.netUsd)}. Bloqueado en live
+      mientras el capital esté por debajo del mínimo, así que no cuenta para el go/no-go.
     </p>
     <div className="dashboard-charts">
       <div className="chart-card">

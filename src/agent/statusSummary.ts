@@ -292,6 +292,9 @@ export interface PnlKindSplit {
   dir: { netUsd: number; count: number };
 }
 
+/** Operaciones acordadas antes de juzgar una tanda. Mismo numero que usa la UI web. */
+export const VALIDATION_TARGET_TRADES = 50;
+
 /**
  * Neto y numero de operaciones separando arbitraje de direccional, post-reset.
  *

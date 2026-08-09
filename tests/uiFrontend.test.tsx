@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { validationProgressByKind } from "../src/ui/client/chartData.js";
 import { AnalysisChartsSection, AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable, splitPnlByKind } from "../src/ui/client/App.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
@@ -1113,5 +1114,55 @@ describe("splitPnlByKind", () => {
     const split = splitPnlByKind([trade({ id: "naked", kind: "arb", arbPairComplete: false })], "sim");
     expect(split.arb.count).toBe(0);
     expect(split.dir.count).toBe(1);
+  });
+});
+
+/**
+ * El criterio de go/no-go se calculaba sobre el total, y ese total mezcla dos estrategias de signo
+ * opuesto: medido tras el reset, arbitraje +$15,26 en 8 operaciones y direccional -$13,75 en 22.
+ * Sumados dan +$1,52, un numero que no describe ninguna de las dos y que puede aprobar el paso a live
+ * por el motivo equivocado.
+ */
+describe("validationProgressByKind", () => {
+  function op(overrides: Partial<TradeAttempt>): TradeAttempt {
+    return {
+      id: "x", asset: "ETH", slug: "eth-1", mode: "sim", outcome: "UP", tokenId: "t",
+      amountUsd: 5, maxAskPrice: 0.9, bestAsk: 0.5, estimatedShares: 10, filledShares: 10,
+      filledAmountUsd: 5, fillDetected: true, openingPrice: 100, entryPrice: 101, distanceUsd: 1,
+      windowStartMs: 1_000, endMs: 301_000, createdAtMs: 2_000,
+      resolved: {
+        resolvedAtMs: 301_000, finalPrice: 101, finalTickTimestampMs: 301_000,
+        winningOutcome: "UP", won: true,
+      },
+      ...overrides,
+    } as TradeAttempt;
+  }
+
+  it("cuenta el arbitraje y el direccional por separado", () => {
+    const trades = [
+      op({ id: "a1", kind: "arb", arbPairComplete: true }),
+      op({ id: "a2", kind: "arb", arbPairComplete: true }),
+      op({ id: "d1" }),
+    ];
+    const r = validationProgressByKind(trades);
+    expect(r.arb.resolvedCount).toBe(2);
+    expect(r.dir.resolvedCount).toBe(1);
+  });
+
+  it("una pata suelta cuenta como DIRECCIONAL: ahi quedo el riesgo", () => {
+    const r = validationProgressByKind([op({ id: "naked", kind: "arb", arbPairComplete: false })]);
+    expect(r.arb.resolvedCount).toBe(0);
+    expect(r.dir.resolvedCount).toBe(1);
+  });
+
+  it("los netos no se suman entre estrategias", () => {
+    // Es justo la mezcla que hacia el criterio anterior.
+    const trades = [
+      op({ id: "gana", kind: "arb", arbPairComplete: true }),
+      op({ id: "pierde", resolved: { resolvedAtMs: 1, finalPrice: 99, finalTickTimestampMs: 1, winningOutcome: "DOWN", won: false } as never }),
+    ];
+    const r = validationProgressByKind(trades);
+    expect(r.arb.netUsd).toBeGreaterThan(0);
+    expect(r.dir.netUsd).toBeLessThan(0);
   });
 });

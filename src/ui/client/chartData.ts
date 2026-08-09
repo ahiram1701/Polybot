@@ -1,4 +1,10 @@
-import { calculateTradePnl, filterTradesForPnlReset, isWinningTrade, type PnlResetAtMsByMode } from "../../pnl.js";
+import {
+  calculateTradePnl,
+  filterTradesForPnlReset,
+  isCompleteArbPair,
+  isWinningTrade,
+  type PnlResetAtMsByMode,
+} from "../../pnl.js";
 import { dayKeyInTimeZone, hourInTimeZone } from "../../timezone.js";
 import type { Mode, Outcome, TradeAttempt } from "../../types.js";
 
@@ -274,6 +280,36 @@ export interface ValidationProgress {
 
 /** Agreed go/no-go sample size before judging a run (anti-reactive-tinkering context). */
 export const VALIDATION_TARGET_TRADES = 50;
+
+export interface ValidationProgressByKind {
+  arb: ValidationProgress;
+  dir: ValidationProgress;
+}
+
+/**
+ * Avance hacia el go/no-go SEPARADO por estrategia.
+ *
+ * El criterio acordado —50 operaciones con neto positivo— se venia calculando sobre el total, y ese
+ * total mezcla dos estrategias de signo opuesto: medido tras el reset, el arbitraje daba +$15,26 en 8
+ * operaciones y el direccional -$13,75 en 22. Sumados quedan en +$1,52, un numero que no describe
+ * ninguna de las dos y que puede aprobar el paso a live por el motivo equivocado.
+ *
+ * Importa cual se mira: en live el direccional esta bloqueado por la puerta de capital, asi que lo que
+ * de verdad va a correr es el arbitraje. Es SU avance el que decide.
+ */
+export function validationProgressByKind(
+  trades: TradeAttempt[],
+  target = VALIDATION_TARGET_TRADES,
+): ValidationProgressByKind {
+  // Misma clasificacion que el desglose de P&L: una pata suelta NO es arbitraje, es direccional, que
+  // es donde de verdad quedo el riesgo.
+  const arb = trades.filter((trade) => isCompleteArbPair(trade));
+  const dir = trades.filter((trade) => !isCompleteArbPair(trade));
+  return {
+    arb: validationProgress(arb, target),
+    dir: validationProgress(dir, target),
+  };
+}
 
 /**
  * Progress of the post-reset run toward the agreed validation sample, with variance context: while the
