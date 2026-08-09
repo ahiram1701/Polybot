@@ -260,6 +260,53 @@ async function fixedSnapshot(): Promise<Partial<UiStatus>> {
  * bloquear las entradas baratas de reversion, que el replay del ledger midio perdiendo 23 de 24 en ETH
  * por debajo de 0.30 — su ausencia deja pasar justo las peores.
  */
+/**
+ * Guardia GENERICA contra un fallo que ya ha ocurrido DOS veces: un ajuste existe en la UI, se guarda,
+ * se muestra encendido — y el runner no se entera, porque `applySettings` no lo copia a la config con
+ * la que arranca el bot. Paso con el piso de ask (nunca estuvo activo en produccion) y otra vez con el
+ * arbitraje de 15m.
+ *
+ * Este test no comprueba un ajuste concreto: comprueba que TODOS los interruptores del esquema llegan.
+ * Cualquier bandera nueva que alguien añada sin propagarla lo rompe aqui, en vez de descubrirse mirando
+ * por que el bot no hace lo que la pantalla dice.
+ */
+describe("los interruptores de settings llegan al runner", () => {
+  it("cada bandera booleana se refleja en la config aplicada", async () => {
+    const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");
+    const config = await baseConfig();
+    const base = settingsFromConfig(config);
+
+    const banderas = (Object.keys(base) as (keyof typeof base)[]).filter(
+      (clave) => typeof base[clave] === "boolean",
+    );
+    expect(banderas.length).toBeGreaterThan(3);
+
+    // Banderas que NO consume el runner, con el motivo. Cualquier otra que no propague es un fallo.
+    // Añadir algo aqui tiene que ser un acto deliberado, no un descuido — que es justo lo que fallo
+    // las dos veces anteriores.
+    const noSonDelRunner = new Set([
+      "autoStartSimOnBoot", // la lee el proceso de la UI al arrancar
+      "watchdogEnabled", // la lee el watchdog de PowerShell via ui-config.json
+      "aiAutoApplyLive", // las tres siguientes las consume el CONTROLADOR, no el bucle del bot
+      "aiAutoTuneAskCap",
+      "aiAutoProbeBands",
+    ]);
+
+    const sinPropagar: string[] = [];
+    for (const clave of banderas) {
+      if (noSonDelRunner.has(String(clave))) {
+        continue;
+      }
+      const invertido = { ...base, [clave]: !base[clave] };
+      const aplicado = applySettings(config, invertido) as unknown as Record<string, unknown>;
+      if (aplicado[clave as string] !== !base[clave]) {
+        sinPropagar.push(String(clave));
+      }
+    }
+    expect(sinPropagar).toEqual([]);
+  });
+});
+
 describe("la ventana de ask llega entera al runner", () => {
   it("el PISO configurado no se queda por el camino", async () => {
     const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");

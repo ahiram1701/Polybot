@@ -313,6 +313,10 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     minBankrollForDirectionalUsd: settings.minBankrollForDirectionalUsd,
     riskHaltCooldownHours: settings.riskHaltCooldownHours,
     arbEnabled: settings.arbEnabled,
+    // Sin esta linea el ajuste existe en la UI, se guarda, se muestra encendido... y el runner no se
+    // entera. Es el MISMO fallo que tuvo el piso de ask: `applySettings` construye la config con la
+    // que arranca el bot, y lo que no se copie aqui simplemente no existe para el.
+    arb15mEnabled: settings.arb15mEnabled,
     arbMaxUsdPerOpportunity: settings.arbMaxUsdPerOpportunity,
     arbMinNetPerSet: settings.arbMinNetPerSet,
     timezone: settings.timezone,
