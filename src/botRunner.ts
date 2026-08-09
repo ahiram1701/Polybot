@@ -98,8 +98,18 @@ const DEFAULT_MAX_ASK_SPREAD = 0.02;
 // degrada el loop. 3s cubre el resto de la ventana sin ahogar el camino caliente.
 const ARB_SCAN_INTERVAL_MS = 3_000;
 
-/** Patas sueltas seguidas antes de dejar de intentar arbitrajes. */
-const ARB_NAKED_LEG_HALT_STREAK = 2;
+/**
+ * Patas sueltas seguidas antes de dejar de intentar arbitrajes.
+ *
+ * En 1 —no 2— porque el arbitraje en live esta sin estrenar: nunca ha ejecutado contra el exchange
+ * real, asi que el rechazo de la segunda pata es justo lo que sim no puede haber probado. Con el freno
+ * en 2 el peor caso son dos apuestas desnudas de ~$8.50, o sea practicamente los $17.80 de capital;
+ * con 1 se queda en una.
+ *
+ * El precio es real: un unico rechazo desafortunado deja el arbitraje parado hasta el siguiente
+ * reinicio. Se acepta mientras el camino no tenga historial. Subirlo a 2 es cambiar este numero.
+ */
+const ARB_NAKED_LEG_HALT_STREAK = 1;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
