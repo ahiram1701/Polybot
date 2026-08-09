@@ -74,7 +74,7 @@ export interface CompactStatus {
    * que el saldo no se estaba pudiendo leer — justo las dos cosas que explican "por que no opera"
    * cuando los motivos de skip no lo explican.
    */
-  loopHealth?: { iterations: number; failed: number; failedPct: number };
+  loopHealth?: { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   /** Decisiones del autoajuste con su prediccion y lo realmente entregado. */
   bandPrograms?: BandProgram[];

@@ -146,7 +146,7 @@ export interface UiStatus {
   logs: LogEntry[];
   snapshotError?: string;
   /** Salud del bucle: fraccion de iteraciones que acabaron lanzando (ventana movil). */
-  loopHealth?: { iterations: number; failed: number; failedPct: number };
+  loopHealth?: { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia de riesgo y de donde salio (on-chain vs declarado). */
   bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   /**

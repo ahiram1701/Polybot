@@ -163,7 +163,12 @@ export function renderDashboard(vm: ViewModel): string[] {
   }
   if (s.loopHealth && s.loopHealth.iterations > 0) {
     const pct = s.loopHealth.failedPct;
-    const texto = `${pct.toFixed(1)}% fallidas ${dim(`(${s.loopHealth.failed}/${s.loopHealth.iterations})`)}`;
+    // El bloqueo del bucle se enseña al lado del % de fallos porque es el otro modo de estar ciego:
+    // las iteraciones bloqueadas no cuentan como fallidas — acaban bien, solo tarde — asi que sin este
+    // numero un bot parado 41 segundos se veia perfectamente sano.
+    const bloqueo = s.loopHealth.lagMaxMs;
+    const aviso = bloqueo !== undefined && bloqueo >= 1000 ? ` ${red(`bloqueo ${(bloqueo / 1000).toFixed(1)}s`)}` : "";
+    const texto = `${pct.toFixed(1)}% fallidas ${dim(`(${s.loopHealth.failed}/${s.loopHealth.iterations})`)}${aviso}`;
     // Un bucle que falla llega tarde a las entradas, y eso no aparece en ningun motivo de skip.
     stateLines.push(labelValue("Loop", pct >= 5 ? red(texto) : pct > 0 ? yellow(texto) : green(texto)));
   }

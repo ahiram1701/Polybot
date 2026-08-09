@@ -24,6 +24,7 @@ import {
 } from "./liveBalance.js";
 import { activeProgram, type BandProgram } from "./bandProbeProgram.js";
 import { effectiveAskWindow, isProbeEntry, PROBE_MAX_PER_MARKET_DAY } from "./probeWindow.js";
+import { startEventLoopLagMonitor } from "./eventLoopLag.js";
 import { logger } from "./logger.js";
 import { LOOP_PHASES, PhaseTimer, unaccountedMs, type LoopPhaseMs } from "./loopPhases.js";
 import { LiveTradeReconciler, NoopTradeReconciler, type TradeReconciler } from "./liveTradeReconciler.js";
@@ -224,6 +225,13 @@ export class BotRunner {
    * direccional que nadie pidio. Dos seguidas ya no es mala suerte.
    */
   private arbNakedLegStreak = 0;
+
+  /**
+   * Retraso del bucle de eventos. Distingue "esperando a la red" de "bloqueado", que es la diferencia
+   * que hoy no se puede hacer: hay picos de captura de 41 segundos con timeouts de 2s en las
+   * peticiones, y un timeout que no salta en 41s solo se explica si nada corria.
+   */
+  private readonly eventLoopLag = startEventLoopLagMonitor();
 
   /**
    * Sondeos de banda en curso. El autoajuste no puede ver bandas donde nunca ha operado, asi que para
@@ -605,8 +613,16 @@ export class BotRunner {
       this.lastLoopStatsLogMs = nowMs;
       const sorted = [...this.loopDurationsMs].sort((left, right) => left - right);
       const failures = this.loopFailures.filter(Boolean).length;
+      const lag = this.eventLoopLag.read();
+      // Se vacia al publicar para que cada ventana sea independiente y un bloqueo viejo no siga
+      // apareciendo como maximo para siempre.
+      this.eventLoopLag.reset();
       logger.info("Latencia del loop (ventana móvil).", {
         iterations: sorted.length,
+        // Si esto sube con la latencia, el culpable es trabajo sincrono. Si no, es espera de red.
+        lagP50Ms: lag?.p50Ms,
+        lagP99Ms: lag?.p99Ms,
+        lagMaxMs: lag?.maxMs,
         p50Ms: sorted[Math.floor(sorted.length * 0.5)],
         p95Ms: sorted[Math.floor(sorted.length * 0.95)],
         maxMs: sorted[sorted.length - 1],
@@ -665,13 +681,17 @@ export class BotRunner {
   }
 
   /** Fracción de iteraciones fallidas de la ventana móvil, para la UI. */
-  getLoopHealth(): { iterations: number; failed: number; failedPct: number } {
+  getLoopHealth(): { iterations: number; failed: number; failedPct: number; lagMaxMs?: number } {
     const iterations = this.loopFailures.length;
     const failed = this.loopFailures.filter(Boolean).length;
     return {
       iterations,
       failed,
       failedPct: iterations > 0 ? Math.round((1000 * failed) / iterations) / 10 : 0,
+      // Un bot con el bucle bloqueado 41 segundos esta tan ciego como uno con el feed caido, y hasta
+      // ahora ninguna pantalla podia decirlo: las iteraciones no contaban como "fallidas" porque
+      // acababan bien, solo tarde.
+      lagMaxMs: this.eventLoopLag.read()?.maxMs,
     };
   }
 
