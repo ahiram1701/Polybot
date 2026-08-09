@@ -91,6 +91,7 @@ const settingsSchema = z.object({
   minBankrollForDirectionalUsd: z.coerce.number().nonnegative().default(50),
   riskHaltCooldownHours: z.coerce.number().nonnegative().default(2),
   arbEnabled: z.boolean().default(false),
+  arb15mEnabled: z.boolean().default(false),
   arbMaxUsdPerOpportunity: z.coerce.number().positive().default(25),
   arbMinNetPerSet: z.coerce.number().nonnegative().default(0.02),
   // IANA timezone or "auto" (system). Invalid names degrade to "auto" instead of rejecting the payload.
@@ -229,6 +230,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? 50,
     riskHaltCooldownHours: config.riskHaltCooldownHours ?? 2,
     arbEnabled: config.arbEnabled ?? false,
+    arb15mEnabled: Boolean(config.arb15mEnabled ?? false),
     arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? 25,
     arbMinNetPerSet: config.arbMinNetPerSet ?? 0.02,
     timezone: config.timezone ?? "auto",

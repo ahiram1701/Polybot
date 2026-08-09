@@ -46,6 +46,8 @@ export interface UiSettings {
   riskHaltCooldownHours: number;
   // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
   arbEnabled: boolean;
+  /** Arbitraje tambien en 15m. Solo arbitraje: el direccional se queda en 5m. */
+  arb15mEnabled: boolean;
   arbMaxUsdPerOpportunity: number;
   arbMinNetPerSet: number;
   // IANA timezone (or "auto" = system) used for display, chart bucketing, fiscal days and the daily

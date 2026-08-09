@@ -172,6 +172,7 @@ const emptySettings: UiSettings = {
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,
+  arb15mEnabled: false,
   arbMaxUsdPerOpportunity: 25,
   arbMinNetPerSet: 0.02,
   timezone: "auto",
@@ -2217,6 +2218,22 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           />
           <span>Ejecutar arbitraje (comprar ambos lados cuando el par cuesta menos de $1 tras comisiones)</span>
         </label>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.arb15mEnabled}
+            onChange={(event) => update("arb15mEnabled", event.target.checked)}
+            disabled={running || !draft.arbEnabled}
+          />
+          <span>Arbitraje también en ventanas de 15 minutos</span>
+        </label>
+        <p className="settings-hint">
+          Tres veces más ventanas donde puede aparecer un par barato, con liquidez comparable a la de
+          5m. <strong>Solo arbitraje</strong>: el direccional se queda en 5m, porque necesitaría una
+          dimensión de duración en todos los ajustes por mercado y no hay evidencia de que pague ni en
+          5m. Las guardas son las mismas —tamaño acotado por el colateral real, reserva por iteración y
+          parada por patas sueltas— porque son globales, no por mercado.
+        </p>
         <div className="settings-grid">
           <NumberField
             label="Máx USD por oportunidad"

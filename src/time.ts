@@ -4,12 +4,36 @@ import type { MarketSymbol } from "./types.js";
 
 export const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
-export function getWindowStartMs(timeMs = Date.now()): number {
-  return Math.floor(timeMs / FIVE_MINUTES_MS) * FIVE_MINUTES_MS;
+/**
+ * Duraciones de ventana que publica Polymarket para los up/down de cripto.
+ *
+ * La duracion estaba incrustada en los slugs y en el calculo de ventana, asi que el bot no podia ni
+ * mirar los mercados de 15m — el parser los rechazaba con "Unsupported crypto 5m slug". Se
+ * parametriza con 5m por defecto para no tocar ninguna llamada existente.
+ */
+export const WINDOW_DURATIONS = { "5m": FIVE_MINUTES_MS, "15m": 15 * 60 * 1000 } as const;
+
+export type WindowDuration = keyof typeof WINDOW_DURATIONS;
+
+export const DEFAULT_WINDOW_DURATION: WindowDuration = "5m";
+
+/** Duracion presente en un slug, o `undefined` si no es un slug up/down reconocible. */
+export function windowDurationFromSlug(slug: string): WindowDuration | undefined {
+  for (const duration of Object.keys(WINDOW_DURATIONS) as WindowDuration[]) {
+    if (slug.includes(`-updown-${duration}-`)) {
+      return duration;
+    }
+  }
+  return undefined;
 }
 
-export function getWindowEndMs(timeMs = Date.now()): number {
-  return getWindowStartMs(timeMs) + FIVE_MINUTES_MS;
+export function getWindowStartMs(timeMs = Date.now(), duration: WindowDuration = DEFAULT_WINDOW_DURATION): number {
+  const ms = WINDOW_DURATIONS[duration];
+  return Math.floor(timeMs / ms) * ms;
+}
+
+export function getWindowEndMs(timeMs = Date.now(), duration: WindowDuration = DEFAULT_WINDOW_DURATION): number {
+  return getWindowStartMs(timeMs, duration) + WINDOW_DURATIONS[duration];
 }
 
 export function getBtcUpDownSlugFromStartMs(windowStartMs: number): string {
@@ -20,8 +44,12 @@ export function getCurrentBtcUpDownSlug(timeMs = Date.now()): string {
   return getBtcUpDownSlugFromStartMs(getWindowStartMs(timeMs));
 }
 
-export function getUpDownSlugFromStartMs(market: MarketSymbol, windowStartMs: number): string {
-  return `${getMarketDefinition(market).slugPrefix}-updown-5m-${Math.floor(windowStartMs / 1000)}`;
+export function getUpDownSlugFromStartMs(
+  market: MarketSymbol,
+  windowStartMs: number,
+  duration: WindowDuration = DEFAULT_WINDOW_DURATION,
+): string {
+  return `${getMarketDefinition(market).slugPrefix}-updown-${duration}-${Math.floor(windowStartMs / 1000)}`;
 }
 
 export function getCurrentUpDownSlug(market: MarketSymbol, timeMs = Date.now()): string {
@@ -30,9 +58,9 @@ export function getCurrentUpDownSlug(market: MarketSymbol, timeMs = Date.now()):
 
 export function getWindowStartMsFromSlug(slug: string): number {
   const market = marketSymbolFromSlug(slug);
-  const match = /^[a-z]+-updown-5m-(\d+)$/.exec(slug);
+  const match = /^[a-z]+-updown-(?:5m|15m)-(\d+)$/.exec(slug);
   if (!market || !match) {
-    throw new Error(`Invalid crypto 5m slug: ${slug}`);
+    throw new Error(`Invalid crypto up/down slug: ${slug}`);
   }
   return Number(match[1]) * 1000;
 }

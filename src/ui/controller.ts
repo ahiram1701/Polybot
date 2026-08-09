@@ -1589,6 +1589,7 @@ export class BotController {
       minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? settings.minBankrollForDirectionalUsd,
       riskHaltCooldownHours: config.riskHaltCooldownHours ?? settings.riskHaltCooldownHours,
       arbEnabled: config.arbEnabled ?? settings.arbEnabled,
+      arb15mEnabled: config.arb15mEnabled ?? settings.arb15mEnabled,
       arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? settings.arbMaxUsdPerOpportunity,
       arbMinNetPerSet: config.arbMinNetPerSet ?? settings.arbMinNetPerSet,
       timezone: config.timezone ?? settings.timezone,

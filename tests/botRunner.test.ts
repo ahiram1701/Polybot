@@ -1310,6 +1310,133 @@ describe("BotRunner", () => {
     });
   });
 
+  /**
+   * Las ventanas de 15m son TRES veces mas oportunidades de arbitraje, la unica estrategia con ventaja
+   * estructural. Se añaden solo para eso: el direccional necesitaria una dimension de duracion en
+   * todos los ajustes por mercado, y no hay evidencia de que pague ni en 5m.
+   */
+  describe("arbitraje en ventanas de 15m", () => {
+    const montar = async (opts: { arb15mEnabled: boolean }) => {
+      const dataDir = await mkdtemp(join(tmpdir(), "polybot-15m-"));
+      arbTemps.push(dataDir);
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 200_000;
+      const m5 = { ...marketInfo("ETH", "eth", windowStartMs), orderMinSize: 5 };
+      const m15 = { ...m5, slug: "eth-updown-15m-1", orderMinSize: 5 };
+      const openings = new Map(
+        [m5, m15].map((m) => [
+          m.slug,
+          {
+            asset: m.asset,
+            slug: m.slug,
+            windowStartMs,
+            openingPrice: 100,
+            openingTickTimestampMs: windowStartMs,
+            capturedAtMs: windowStartMs,
+          },
+        ]),
+      );
+      const recorded: TradeAttempt[] = [];
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => recorded),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn((slug: string) => recorded.some((t) => t.slug === slug)),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async (t: TradeAttempt) => {
+          recorded.push(t);
+        }),
+      } as unknown as StateStore;
+      // Par a 0.80: arbitraje claro en ambas duraciones.
+      const orderbook = {
+        getQuote: vi.fn(async (_t: string, amountUsd: number) => ({
+          tokenId: "token",
+          bestAsk: 0.4,
+          bestBid: 0.39,
+          availableUsdUnderCap: 400,
+          availableUsdAllLevels: 400,
+          estimatedSharesForAmount: amountUsd / 0.4,
+          rawAskLevels: [],
+          rawBidLevels: [],
+        })),
+      } as unknown as OrderbookService;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => ({
+          id: `${input.market.slug}-${input.outcome}`,
+          asset: input.market.asset,
+          slug: input.market.slug,
+          mode: "sim" as const,
+          outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId,
+          amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice,
+          bestAsk: input.quote.bestAsk,
+          estimatedShares: input.amountUsd / 0.4,
+          fillDetected: true,
+          filledAmountUsd: input.amountUsd,
+          filledShares: input.amountUsd / 0.4,
+          openingPrice: 100,
+          entryPrice: 100.5,
+          distanceUsd: input.distanceUsd,
+          windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs,
+          createdAtMs: nowMs,
+        })),
+      } satisfies TradeExecutor;
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          dataDir,
+          arbEnabled: true,
+          arb15mEnabled: opts.arb15mEnabled,
+          arbMaxUsdPerOpportunity: 25,
+          arbMinNetPerSet: 0.02,
+        },
+        {
+          watcher: {
+            getCurrentMarket: vi.fn(async () => m5),
+            getCurrentMarketsForDuration: vi.fn(async () => [m15]),
+          } as unknown as MarketWatcher,
+          orderbook,
+          priceFeed: livePriceFeed("ETH", 100.5, nowMs),
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+          analyticsRecorder: {
+            observeMarket: vi.fn(async () => undefined),
+            recordResolvedTrade: vi.fn(async () => undefined),
+          } as unknown as AnalyticsRecorder,
+          notifier: { notify: vi.fn(async () => undefined) },
+        },
+      );
+      return { runner, executor, recorded, nowMs };
+    };
+
+    it("con el interruptor apagado no toca las ventanas de 15m", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, recorded, nowMs } = await montar({ arb15mEnabled: false });
+      await runner.runOnce(nowMs);
+      expect(recorded.some((t) => t.slug.includes("-15m-"))).toBe(false);
+    });
+
+    it("encendido, ejecuta arbitraje tambien en 15m", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, recorded, nowMs } = await montar({ arb15mEnabled: true });
+      await runner.runOnce(nowMs);
+      expect(recorded.some((t) => t.slug.includes("-15m-"))).toBe(true);
+    });
+
+    it("en 15m SOLO hace arbitraje, nunca direccional", async () => {
+      // Es la garantia del alcance: el direccional necesitaria ajustes por duracion que no existen.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, recorded, nowMs } = await montar({ arb15mEnabled: true });
+      await runner.runOnce(nowMs);
+      const de15m = recorded.filter((t) => t.slug.includes("-15m-"));
+      expect(de15m.length).toBeGreaterThan(0);
+      expect(de15m.every((t) => t.kind === "arb")).toBe(true);
+    });
+  });
+
   it("does not block simulation trades with the conservative live gate", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

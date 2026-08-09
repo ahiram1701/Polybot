@@ -218,7 +218,7 @@ export function renderDashboard(vm: ViewModel): string[] {
         const secs = m.secondsToEnd !== undefined ? `${padStart(fmtInt(m.secondsToEnd), 3)}s` : "  —";
         const side = m.outcome ? padEnd(m.outcome, 4) : "    ";
         const dist = m.distanceUsd !== undefined ? padStart(fmtUsd(m.distanceUsd), 8) : padStart("—", 8);
-        return `${bold(padEnd(m.marketSymbol, 5))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
+        return `${bold(padEnd(m.marketSymbol + (m.duration && m.duration !== "5m" ? `/${m.duration}` : ""), 9))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
       })
     : [dim("sin mercados observados")];
   out.push(...boxed("Mercados", marketLines, width));

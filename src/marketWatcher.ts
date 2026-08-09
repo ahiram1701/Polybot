@@ -2,6 +2,7 @@ import type { MarketInfo, Outcome, OutcomeToken } from "./types.js";
 import type { MarketSymbol } from "./types.js";
 import {
   getUpDownSlugFromStartMs,
+  type WindowDuration,
   getWindowEndMs,
   getWindowStartMs,
   getWindowStartMsFromSlug,
@@ -47,6 +48,26 @@ export class MarketWatcher {
    * Con `allSettled` los mercados sanos siguen operando. Los que fallan quedan fuera de la lista, que
    * es exactamente lo que el llamador ya sabe manejar (antes tambien podian faltar por un 404).
    */
+  /**
+   * Ventanas de OTRA duracion (15m), para el camino de arbitraje.
+   *
+   * Aparte de `getCurrentMarkets` a proposito: un fallo al pedir los 15m no puede tumbar el camino
+   * principal de 5m, que es el que genera señales. Aqui un apagon total devuelve lista vacia en vez
+   * de lanzar — quedarse sin arbitraje de 15m es perder una oportunidad, no perder el bot.
+   */
+  async getCurrentMarketsForDuration(
+    markets: readonly MarketSymbol[],
+    duration: WindowDuration,
+    nowMs = Date.now(),
+  ): Promise<MarketInfo[]> {
+    const results = await Promise.allSettled(
+      markets.map((market) =>
+        this.getMarketBySlug(getUpDownSlugFromStartMs(market, getWindowStartMs(nowMs, duration), duration), nowMs),
+      ),
+    );
+    return results.flatMap((result) => (result.status === "fulfilled" && result.value ? [result.value] : []));
+  }
+
   async getCurrentMarkets(markets: MarketSymbol[], nowMs = Date.now()): Promise<MarketInfo[]> {
     const results = await Promise.allSettled(
       markets.map((market) => this.getMarketByWindowStartMs(getWindowStartMs(nowMs), nowMs, market)),

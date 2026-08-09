@@ -180,7 +180,9 @@ export function marketSymbolFromPriceFeedSymbol(symbol: string): MarketSymbol | 
 }
 
 export function marketSymbolFromSlug(slug: string): MarketSymbol | undefined {
-  const prefix = slug.split("-updown-5m-")[0]?.toLowerCase();
+  // Vale para cualquier duracion: partia solo por "-updown-5m-", asi que los slugs de 15m no se
+  // reconocian y el watcher los rechazaba antes de llegar a ningun sitio.
+  const prefix = slug.split(/-updown-\d+m-/)[0]?.toLowerCase();
   return SLUG_PREFIX_TO_MARKET.get(prefix);
 }
 

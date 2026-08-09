@@ -10,6 +10,7 @@ import type {
   StrategyCandidate,
   TradeAttempt,
 } from "../types.js";
+import { windowDurationFromSlug } from "../time.js";
 import type { UiStatus } from "../ui/shared.js";
 
 const DEFAULT_STRATEGY_LIMIT = 12;
@@ -18,6 +19,12 @@ const DEFAULT_LOG_SAMPLE = 60;
 
 export interface CompactMarket {
   marketSymbol: MarketSymbol;
+  /**
+   * Duracion de la ventana ("5m" / "15m"). Sin esto, con las dos activas salen dos filas "BTC"
+   * indistinguibles en la web, en la TUI y en lo que leen los agentes — mentir por ambiguedad.
+   * Ausente en snapshots anteriores, que eran todos de 5m.
+   */
+  duration?: string;
   reason: string;
   inEntryWindow: boolean;
   secondsToEnd?: number;
@@ -99,6 +106,7 @@ export function summarizeStatus(
     dailySpendLimitUsd: status.config?.dailySpendLimitUsd,
     markets: (status.markets ?? []).map((market) => ({
       marketSymbol: market.marketSymbol,
+      duration: market.market?.slug ? windowDurationFromSlug(market.market.slug) : undefined,
       reason: market.signal.reason,
       inEntryWindow: market.signal.inEntryWindow,
       secondsToEnd: round(market.signal.secondsToEnd),

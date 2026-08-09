@@ -125,6 +125,12 @@ interface MarketWatcherLike {
   getMarketBySlug?(slug: string, nowMs?: number): Promise<MarketInfo | null>;
   /** Opcional: los dobles de test no lo implementan y el bucle funciona igual, solo con la cache fria. */
   prefetchNextWindow?(markets: readonly MarketSymbol[], nowMs?: number): void;
+  /** Ventanas de otra duracion, solo para arbitraje. Opcional: los dobles de test no lo implementan. */
+  getCurrentMarketsForDuration?(
+    markets: readonly MarketSymbol[],
+    duration: "5m" | "15m",
+    nowMs?: number,
+  ): Promise<MarketInfo[]>;
 }
 
 export interface RunnerPriceFeed {
@@ -526,7 +532,52 @@ export class BotRunner {
 
     // Fuera del camino caliente: la verificación oficial (2 HTTP a gamma cada 30s) corre al FINAL del
     // tick, después de capturar precios y decidir — su latencia ya no retrasa la lectura del mercado.
+    // Ventanas de 15m: SOLO arbitraje.
+    //
+    // El arbitraje no usa ningun ajuste por mercado — distancia, ventana de entrada y banda de ask son
+    // todos del camino direccional — asi que soportarlas cuesta esto y no una dimension de duracion en
+    // toda la configuracion. Y son tres veces mas ventanas donde puede aparecer un par barato, que es
+    // la unica estrategia con ventaja estructural.
+    //
+    // Va DESPUES del camino de 5m a proposito: la reserva de capital por iteracion ya se ha aplicado,
+    // asi que un arbitraje de 15m no puede comprometer un saldo que otro de 5m acaba de gastar.
+    if (this.config.arbEnabled === true && this.config.arb15mEnabled === true) {
+      await timer.time("capture", () => this.runArb15m(nowMs));
+    }
+
     await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
+  }
+
+  /** Observa y ejecuta arbitraje en las ventanas de 15m. Nunca genera señales direccionales. */
+  private async runArb15m(nowMs: number): Promise<void> {
+    const fetch15m = this.deps.watcher.getCurrentMarketsForDuration;
+    if (!fetch15m) {
+      return;
+    }
+    let markets: MarketInfo[];
+    try {
+      markets = await fetch15m.call(this.deps.watcher, SUPPORTED_MARKETS, "15m", nowMs);
+    } catch (error) {
+      // Perder los 15m es perder una oportunidad; tumbar la iteracion seria perder el bot.
+      this.logSkipOnce("15m", "arb_15m_fetch_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    for (const market of markets) {
+      const latestTick = this.deps.priceFeed.getLatestTick(market.asset);
+      const opening = await this.ensureOpening(market, latestTick, nowMs);
+      if (!opening || !latestTick) {
+        continue;
+      }
+      const quotes = await this.getAnalyticsQuotes(market, nowMs);
+      const opportunity = await this.observeArbOpportunity(market, quotes, nowMs);
+      if (!opportunity || this.arbNakedLegStreak >= ARB_NAKED_LEG_HALT_STREAK) {
+        continue;
+      }
+      await this.executeArbOpportunity({ market, quotes, opportunity, opening, tick: latestTick, nowMs });
+    }
   }
 
   /** Rolling loop-latency stats: slow iterations are logged with a breakdown; percentiles every 5 min. */

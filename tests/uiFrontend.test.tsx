@@ -871,6 +871,7 @@ function settings(): UiSettings {
     minFillRatio: 0.5,
     riskHaltCooldownHours: 2,
     arbEnabled: false,
+    arb15mEnabled: false,
     arbMaxUsdPerOpportunity: 25,
     arbMinNetPerSet: 0.02,
     timezone: "auto",

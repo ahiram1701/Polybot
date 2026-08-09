@@ -100,6 +100,12 @@ export interface BotConfig {
   // Complete-set arbitrage execution (default OFF): buy both sides when ask(UP)+ask(DOWN)+fees < $1.
   arbEnabled?: boolean;
   // Max USD spent per arbitrage opportunity (both legs combined).
+  /**
+   * Arbitraje tambien en las ventanas de 15m. SOLO arbitraje: el direccional sigue en 5m, porque
+   * necesitaria una dimension de duracion en todos los ajustes por mercado y no hay evidencia de que
+   * pague ni en 5m.
+   */
+  arb15mEnabled?: boolean;
   arbMaxUsdPerOpportunity?: number;
   // Minimum net profit per set (post-fee) required to execute; crumbs below this are only observed.
   arbMinNetPerSet?: number;
