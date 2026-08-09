@@ -141,7 +141,7 @@ export interface RunnerLike {
   start(options?: { once?: boolean }): Promise<void>;
   stop(): void;
   /** Fracción de iteraciones del bucle que acabaron lanzando (ventana móvil). */
-  getLoopHealth?(): { iterations: number; failed: number; failedPct: number };
+  getLoopHealth?(): { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia y su procedencia. */
   getBankroll?(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   /** Programas de sondeo vigentes: el runner los consulta para ensanchar la ventana de ask. */
@@ -379,6 +379,11 @@ export class BotController {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /** Peor bloqueo del bucle de eventos observado. Un bot congelado esta tan ciego como uno sin feed. */
+  loopBlockedMs(): number | undefined {
+    return this.runner?.getLoopHealth?.()?.lagMaxMs;
   }
 
   /** Antiguedad del ultimo tick del feed, para que la salud pueda decir la verdad. */

@@ -20,6 +20,14 @@ const ANALYSIS_IMPORT_LIMIT = "512mb";
  */
 const MAX_FEED_STALENESS_MS = 120_000;
 
+/**
+ * Bloqueo del bucle a partir del cual el proceso se considera enfermo.
+ *
+ * Holgado: una pausa de recoleccion de basura de medio segundo es normal, pero diez segundos
+ * significa que el bot no ha visto el mercado en diez segundos, y un arbitraje dura menos que eso.
+ */
+const MAX_LOOP_BLOCK_MS = 10_000;
+
 const startRequestSchema = z.object({
   mode: z.enum(["sim", "live"]),
   confirmLive: z.boolean().optional(),
@@ -90,15 +98,23 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
    */
   app.get("/api/health", (_req, res) => {
     const feedStalenessMs = controller.feedStalenessMs?.();
+    // Un bucle congelado deja al bot igual de ciego que un feed mudo, pero no se notaba: las
+    // iteraciones bloqueadas acaban BIEN, solo tarde, asi que no contaban como fallidas y la salud
+    // las daba por sanas. Medido: 7,85 segundos de bloqueo por cada arranque.
+    const loopBlockedMs = controller.loopBlockedMs?.();
     // `undefined` = aun no ha llegado ningun tick. No se marca enfermo: recien arrancado es lo normal,
     // y reiniciar un proceso que acaba de arrancar solo encadena reinicios.
     const feedOk = feedStalenessMs === undefined || feedStalenessMs <= MAX_FEED_STALENESS_MS;
-    res.status(feedOk ? 200 : 503).json({
-      ok: feedOk,
+    const loopOk = loopBlockedMs === undefined || loopBlockedMs <= MAX_LOOP_BLOCK_MS;
+    const feedOkYLoopOk = feedOk && loopOk;
+    res.status(feedOkYLoopOk ? 200 : 503).json({
+      ok: feedOkYLoopOk,
+      loopBlockedMs,
       uptimeSeconds: Math.round(process.uptime()),
       rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
       feedStalenessMs,
       ...(feedOk ? {} : { reason: "price_feed_stale" }),
+      ...(loopOk ? {} : { reason: "event_loop_blocked" }),
     });
   });
 

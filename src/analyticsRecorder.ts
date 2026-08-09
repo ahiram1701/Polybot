@@ -52,10 +52,18 @@ export const EARLY_TICK_SAMPLE_SECONDS = 5;
 export const QUOTE_MATCH_WINDOW_MS = 12_000;
 const MAX_SAMPLE_RESOLUTION_DELAY_MS = 10 * 60 * 1000;
 const ANALYTICS_RECORD_TYPE = "analytics_sample";
-// Retention: keep at most this many (most recent) resolved samples on disk so analytics.jsonl
-// cannot grow without bound. The slack is a high-water margin so we rewrite the file rarely
-// (~every ANALYTICS_PRUNE_SLACK new samples) instead of on every append.
-const MAX_ANALYTICS_SAMPLES = 20_000;
+/**
+ * Muestras que se conservan en disco.
+ *
+ * Bajado de 20.000 a 10.000. Con la muestra en ~31 KB —crecio desde 12,8 KB al empezar a grabar
+ * profundidad del libro, ticks de ventana completa y la serie TWAP— el tope anterior proyectaba un
+ * fichero de 608 MB, y podar un fichero asi congela el proceso ~17 segundos.
+ *
+ * Lo que se pierde es historial, y por una vez es facil: Polymarket cambio la regla de resolucion el
+ * 2026-08-07, asi que todo lo anterior describe un juego que ya no se juega. 10.000 muestras siguen
+ * siendo ~11 dias, muy por encima de lo que existe de la regla nueva.
+ */
+const MAX_ANALYTICS_SAMPLES = 10_000;
 const ANALYTICS_PRUNE_SLACK = 600;
 
 export interface AnalyticsObservation {
@@ -88,6 +96,8 @@ export class AnalyticsRecorder {
   private readonly activeSamples = new Map<string, AnalyticsSample>();
   private activeSamplesHydrated = false;
   private analyticsSampleCount?: number;
+  /** Guardados desde el ultimo recuento fiable. Evita releer el fichero para saber si toca podar. */
+  private appendedSinceCount = 0;
 
   constructor(
     private readonly dataDir: string,
@@ -323,19 +333,45 @@ export class AnalyticsRecorder {
   private async appendSample(sample: AnalyticsSample): Promise<void> {
     await mkdir(dirname(this.analyticsPath), { recursive: true });
     await appendFile(this.analyticsPath, `${formatAnalyticsSampleLine(sample)}\n`, "utf8");
-    await this.maybePruneAnalytics();
+    // Aqui SOLO se cuenta. La poda vive en `pruneIfNeeded`, fuera del camino caliente.
+    this.appendedSinceCount += 1;
   }
 
-  private async maybePruneAnalytics(): Promise<void> {
-    // First append after start: reconcile the count against disk and trim any legacy backlog.
-    if (this.analyticsSampleCount === undefined) {
-      this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
-      return;
+  /**
+   * Recorta el fichero si se ha pasado del tope. NUNCA debe llamarse desde `observeMarket`.
+   *
+   * Antes se podaba dentro del guardado, o sea dentro de la fase de captura del bucle — justo cuando
+   * el bot deberia estar mirando el mercado. Podar significa leer el fichero ENTERO: con 288 MB eso
+   * asigno ~587 MB de buffers y dejo el bucle de eventos bloqueado 7,85 segundos, medido. Un
+   * arbitraje dura segundos, asi que cada uno de esos parones es una oportunidad que no se ve.
+   *
+   * El problema nunca fue leer el fichero, sino leerlo MIENTRAS se opera.
+   *
+   * `force` obliga al recuento contra disco. Se usa al arrancar: es la unica forma de saber cuantas
+   * muestras hay de verdad, y a partir de ahi basta con contar los guardados nuevos.
+   */
+  /**
+   * Tamaño del fichero en MB. Es la variable que convierte esto en un problema que vuelve: si crece,
+   * los congelamientos vuelven con el, y sin verlo nadie se enteraria hasta que el bot se quedase
+   * ciego otra vez.
+   */
+  async analyticsSizeMb(): Promise<number | undefined> {
+    try {
+      return Math.round((await stat(this.analyticsPath)).size / 1048576);
+    } catch {
+      return undefined;
     }
-    this.analyticsSampleCount += 1;
-    if (this.analyticsSampleCount > this.maxSamples + this.pruneSlack) {
-      this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
+  }
+
+  async pruneIfNeeded(force = false): Promise<number | undefined> {
+    const estimadas =
+      this.analyticsSampleCount === undefined ? undefined : this.analyticsSampleCount + this.appendedSinceCount;
+    if (!force && estimadas !== undefined && estimadas <= this.maxSamples + this.pruneSlack) {
+      return estimadas;
     }
+    this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
+    this.appendedSinceCount = 0;
+    return this.analyticsSampleCount;
   }
 
   private async hydrateActiveSamples(): Promise<void> {

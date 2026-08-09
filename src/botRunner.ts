@@ -234,6 +234,14 @@ export class BotRunner {
   private readonly eventLoopLag = startEventLoopLagMonitor();
 
   /**
+   * Poda periodica, en su PROPIO temporizador y no en el bucle.
+   *
+   * Separada a proposito: podar lee el fichero entero y bloquea el proceso varios segundos. Mientras
+   * eso ocurra el bot esta ciego, asi que lo unico aceptable es que no coincida con la captura.
+   */
+  private pruneTimer?: NodeJS.Timeout;
+
+  /**
    * Sondeos de banda en curso. El autoajuste no puede ver bandas donde nunca ha operado, asi que para
    * comprobar una candidata hay que dejar entrar unas pocas operaciones a su precio — con presupuesto.
    */
@@ -326,6 +334,26 @@ export class BotRunner {
 
   async start(options: { once?: boolean } = {}): Promise<void> {
     await this.deps.state.load();
+    // Poda ANTES de que el bucle empiece. Es cara —lee el fichero entero— y por eso no puede correr
+    // mientras se opera: bloqueaba el bucle casi 8 segundos, y un arbitraje dura segundos.
+    await this.deps.analyticsRecorder?.pruneIfNeeded?.(true);
+    const tamanoMb = await this.deps.analyticsRecorder?.analyticsSizeMb?.();
+    if (tamanoMb !== undefined) {
+      logger.info("Analitica en disco.", { mb: tamanoMb, tope: "10.000 muestras" });
+    }
+    // A partir de aqui, cada media hora y solo si de verdad hace falta: el recuento ya es conocido,
+    // asi que la comprobacion es gratis y la lectura cara solo ocurre al pasarse del tope.
+    this.pruneTimer ??= setInterval(
+      () => {
+        void this.deps.analyticsRecorder?.pruneIfNeeded?.().catch((error) => {
+          logger.warn("La poda de analitica fallo; se reintenta en el proximo ciclo.", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+      30 * 60_000,
+    );
+    this.pruneTimer.unref?.();
     this.deps.priceFeed.start();
     logger.info("Bot started.", {
       mode: this.config.mode,
@@ -368,6 +396,10 @@ export class BotRunner {
 
   stop(): void {
     this.stopped = true;
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = undefined;
+    }
     this.stopPriceFeed();
   }
 

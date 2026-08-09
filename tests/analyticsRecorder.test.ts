@@ -260,7 +260,13 @@ describe("AnalyticsRecorder", () => {
     expect(await readAnalyticsSamples(analyticsPath)).toHaveLength(3);
   });
 
-  it("prunes resolved samples to the configured limit as the recorder writes", async () => {
+  /**
+   * Guardar NO poda. Es el cambio que evita el congelamiento: podar lee el fichero entero —con 288 MB
+   * eso son ~587 MB de buffers y 7,85 segundos de bucle bloqueado, medido— y hacerlo desde el guardado
+   * significaba hacerlo dentro de la fase de captura, justo cuando el bot deberia mirar el mercado. Un
+   * arbitraje dura segundos: cada parada es una oportunidad perdida.
+   */
+  it("guardar NO poda: el camino caliente no puede pagar una lectura completa", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
     temps.push(dataDir);
     const recorder = new AnalyticsRecorder(dataDir, 3, 0);
@@ -270,9 +276,38 @@ describe("AnalyticsRecorder", () => {
       await resolveSample(recorder, marketInfo("BTC", base + index * 300_000));
     }
 
+    // Se escribieron las 6 aunque el tope sea 3: nadie podo por el camino.
+    expect(await recorder.readSamples()).toHaveLength(6);
+  });
+
+  it("pruneIfNeeded si recorta, y conserva las mas recientes", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const recorder = new AnalyticsRecorder(dataDir, 3, 0);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+
+    for (let index = 0; index < 6; index += 1) {
+      await resolveSample(recorder, marketInfo("BTC", base + index * 300_000));
+    }
+    await recorder.pruneIfNeeded(true);
+
     const samples = await recorder.readSamples();
     expect(samples.length).toBeLessThanOrEqual(3);
     expect(Math.max(...samples.map((sample) => sample.windowStartMs))).toBe(base + 5 * 300_000);
+  });
+
+  it("por debajo del tope no lee el fichero: la comprobacion tiene que ser gratis", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const recorder = new AnalyticsRecorder(dataDir, 100, 10);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    await resolveSample(recorder, marketInfo("BTC", base));
+    // El primer recuento SI lee (es el del arranque, fuera del bucle).
+    await recorder.pruneIfNeeded(true);
+
+    await resolveSample(recorder, marketInfo("BTC", base + 300_000));
+    // A partir de ahi la cuenta se lleva en memoria: sin pasarse del tope, no hay lectura que pagar.
+    expect(await recorder.pruneIfNeeded()).toBe(2);
   });
 
   it("does not import analytics samples already known by slug", async () => {

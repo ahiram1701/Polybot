@@ -1117,6 +1117,60 @@ describe("GET /api/health", () => {
     controller.dispose();
   });
 
+  /**
+   * Un bucle congelado deja al bot igual de ciego que un feed mudo, pero no se notaba: las iteraciones
+   * bloqueadas acaban BIEN, solo tarde, asi que no contaban como fallidas. Medido: 7,85 segundos de
+   * bloqueo tras cada arranque, y un arbitraje dura menos que eso.
+   */
+  it("FALLA con el bucle de eventos bloqueado, aunque el feed este perfecto", async () => {
+    const runner = new FakeRunner() as FakeRunner & { getLoopHealth: () => { iterations: number; failed: number; failedPct: number; lagMaxMs?: number } };
+    runner.getLoopHealth = () => ({ iterations: 600, failed: 0, failedPct: 0, lagMaxMs: 12_000 });
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => runner,
+      priceFeed: {
+        start: () => undefined,
+        stop: () => undefined,
+        getLatestTick: () => undefined,
+        getOpeningTick: () => undefined,
+        msSinceLastTick: () => 500,
+      } as never,
+    });
+    await controller.start("sim");
+    const app = createUiApp(controller);
+
+    const response = await request(app).get("/api/health").expect(503);
+    expect(response.body.reason).toBe("event_loop_blocked");
+    expect(response.body.loopBlockedMs).toBe(12_000);
+    await controller.stop();
+    controller.dispose();
+  });
+
+  it("un bloqueo pequeño NO marca enfermo: una pausa de GC es normal", async () => {
+    const runner = new FakeRunner() as FakeRunner & { getLoopHealth: () => { iterations: number; failed: number; failedPct: number; lagMaxMs?: number } };
+    runner.getLoopHealth = () => ({ iterations: 600, failed: 0, failedPct: 0, lagMaxMs: 400 });
+    const controller = new BotController(await baseConfig(true), {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => runner,
+      priceFeed: {
+        start: () => undefined,
+        stop: () => undefined,
+        getLatestTick: () => undefined,
+        getOpeningTick: () => undefined,
+        msSinceLastTick: () => 500,
+      } as never,
+    });
+    await controller.start("sim");
+    const app = createUiApp(controller);
+    await request(app).get("/api/health").expect(200);
+    await controller.stop();
+    controller.dispose();
+  });
+
   it("recien arrancado, sin ningun tick todavia, NO se marca enfermo", async () => {
     // Reiniciar un proceso que acaba de arrancar solo encadena reinicios.
     const controller = new BotController(await baseConfig(true), {
