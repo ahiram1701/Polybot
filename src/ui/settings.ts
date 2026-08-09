@@ -98,6 +98,7 @@ const settingsSchema = z.object({
   arbMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   directionalMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   arb15mEnabled: z.boolean().default(false),
+  arbNakedLegHaltStreak: z.coerce.number().int().min(1).max(10).default(1),
   arbMaxUsdPerOpportunity: z.coerce.number().positive().default(25),
   arbMinNetPerSet: z.coerce.number().nonnegative().default(0.02),
   // IANA timezone or "auto" (system). Invalid names degrade to "auto" instead of rejecting the payload.
@@ -244,6 +245,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     arbMode: config.arbMode ?? "heredado",
     directionalMode: config.directionalMode ?? "heredado",
     arb15mEnabled: Boolean(config.arb15mEnabled ?? false),
+    arbNakedLegHaltStreak: config.arbNakedLegHaltStreak ?? 1,
     arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? 25,
     arbMinNetPerSet: config.arbMinNetPerSet ?? 0.02,
     timezone: config.timezone ?? "auto",
@@ -332,6 +334,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     arbMode: settings.arbMode === "heredado" ? undefined : settings.arbMode,
     directionalMode: settings.directionalMode === "heredado" ? undefined : settings.directionalMode,
     arb15mEnabled: settings.arb15mEnabled,
+    arbNakedLegHaltStreak: settings.arbNakedLegHaltStreak,
     arbMaxUsdPerOpportunity: settings.arbMaxUsdPerOpportunity,
     arbMinNetPerSet: settings.arbMinNetPerSet,
     timezone: settings.timezone,

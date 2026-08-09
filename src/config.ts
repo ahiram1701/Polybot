@@ -170,7 +170,9 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(false),
-  MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(20_000),
+  // 10.000, no 20.000: a ese tope la proyeccion es de 608 MB, y podar un fichero asi congelaba el
+  // bucle ~17 s. Un bot congelado no ve los arbitrajes, que duran segundos.
+  MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(10_000),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
   OPENING_CAPTURE_GRACE_MS: z.coerce.number().positive().default(15_000),

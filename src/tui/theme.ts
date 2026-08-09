@@ -63,6 +63,36 @@ export function padStart(text: string, width: number): string {
 
 /** Truncate a PLAIN string to `width`, adding an ellipsis when it overflows. Apply color afterwards so
  * we never slice through an escape code. */
+/**
+ * Parte un texto en como mucho `maxLines` lineas de `width`, sin cortar palabras. Solo la ultima se
+ * recorta si aun no cabe.
+ *
+ * Existe porque la ayuda de los ajustes no cabe en una linea, y recortarla dejaria fuera justo la
+ * parte que la hace util: el porque, que va al final de la frase.
+ */
+export function wrapText(text: string, width: number, maxLines: number): string[] {
+  if (width <= 0 || maxLines <= 0) {
+    return [];
+  }
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (let i = 0; i < words.length; i += 1) {
+    const candidate = current === "" ? words[i] : `${current} ${words[i]}`;
+    if (candidate.length <= width) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    if (lines.length === maxLines - 1) {
+      // Ultima linea disponible: entra todo lo que queda, recortado si hace falta.
+      return [...lines, truncate(words.slice(i).join(" "), width)].filter((line) => line !== "");
+    }
+    current = words[i];
+  }
+  return [...lines, current].filter((line) => line !== "");
+}
+
 export function truncate(text: string, width: number): string {
   if (width <= 0) {
     return "";

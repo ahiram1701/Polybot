@@ -11,7 +11,7 @@ import readline from "node:readline";
 import { PolybotClient, PolybotApiError } from "../agent/client.js";
 import { summarizeStatus, summarizeStrategyAnalysis, summarizeTrade } from "../agent/statusSummary.js";
 import type { UiSettings } from "../ui/shared.js";
-import { applyNumber, applyToggle, buildSettingsFields } from "./settingsModel.js";
+import { applyNumber, applyToggle, buildSettingsFields, isModeId } from "./settingsModel.js";
 import type { SettingsField } from "./settingsModel.js";
 import type { AnalysisData, Message, Tab, ViewModel } from "./render.js";
 import { renderScreen, TABS } from "./render.js";
@@ -351,7 +351,26 @@ export function startTui(client: PolybotClient): void {
       return;
     }
     if (field.kind === "toggle") {
-      void saveSettings(applyToggle(settings, field.id), `${field.label}: alternado`);
+      const next = applyToggle(settings, field.id);
+      // Entrar en LIVE pide teclear la frase. No contradice la decision de "sin confirmar al arrancar":
+      // aquello era el ARRANQUE, esto es el gesto de edicion. Los modos ciclan con la misma tecla que
+      // los interruptores, asi que sin esto un Enter de mas empieza a mover dinero real. Salir de live
+      // y el resto del ciclo siguen a una tecla: solo se pone friccion al lado que cuesta dinero.
+      if (isModeId(field.id) && entraEnLive(settings, next, field.id)) {
+        openPrompt({
+          title: `${field.label} → LIVE. Escribe «${LIVE_PHRASE}» para operar con DINERO REAL:`,
+          hint: "cualquier otra cosa cancela",
+          onSubmit: async (value) => {
+            if (value !== LIVE_PHRASE) {
+              setMessage("cambio a live cancelado", "info");
+              return;
+            }
+            await saveSettings(next, `${field.label}: LIVE — dinero real`);
+          },
+        });
+        return;
+      }
+      void saveSettings(next, `${field.label}: alternado`);
       return;
     }
     if (field.kind === "number") {
@@ -364,6 +383,12 @@ export function startTui(client: PolybotClient): void {
         },
       });
     }
+  }
+
+  /** Si el cambio mete a esa estrategia en live viniendo de otra cosa. */
+  function entraEnLive(antes: UiSettings, despues: UiSettings, id: string): boolean {
+    const clave = id as keyof UiSettings;
+    return despues[clave] === "live" && antes[clave] !== "live";
   }
 
   // ---- tab switching -------------------------------------------------------

@@ -2274,6 +2274,7 @@ describe("BotRunner", () => {
       mercados?: number;
       perdidaPreviaUsd?: number;
       fallaSegundaPata?: boolean;
+      nakedLegHaltStreak?: number;
       // Modo global del bot y modos por estrategia. Ausentes = live global, como era antes.
       modo?: "sim" | "live";
       arbMode?: "sim" | "live";
@@ -2402,6 +2403,7 @@ describe("BotRunner", () => {
           directionalMode: opciones.directionalMode,
           arbEnabled: true,
           arbMaxUsdPerOpportunity: opciones.budget,
+          arbNakedLegHaltStreak: opciones.nakedLegHaltStreak,
           arbMinNetPerSet: 0.02,
           liveBankrollUsd: opciones.liveBankrollUsd ?? 0,
           minBankrollForDirectionalUsd: 0,
@@ -2538,6 +2540,44 @@ describe("BotRunner", () => {
       });
       await runner.runOnce(nowMs);
       // Un solo mercado intentado (2 patas); el segundo y el tercero ya no se intentan.
+      expect(executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("el freno de patas sueltas sale del AJUSTE, no de la constante", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      // Hace una hora este numero solo se podia cambiar recompilando, y el usuario tuvo que pedirmelo.
+      // Con 2 debe tolerar una pata suelta e intentar el siguiente mercado; con 1 no.
+      const conDos = await montarArb({
+        liveBankrollUsd: 40,
+        budget: 25,
+        mercados: 3,
+        fallaSegundaPata: true,
+        nakedLegHaltStreak: 2,
+      });
+      await conDos.runner.runOnce(conDos.nowMs);
+      expect(conDos.executor.execute).toHaveBeenCalledTimes(4);
+
+      const conUno = await montarArb({
+        liveBankrollUsd: 40,
+        budget: 25,
+        mercados: 3,
+        fallaSegundaPata: true,
+        nakedLegHaltStreak: 1,
+      });
+      await conUno.runner.runOnce(conUno.nowMs);
+      expect(conUno.executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("un freno invalido cae al default en vez de parar el arbitraje entero", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Un 0 significaria "parar antes del primer intento", que es lo contrario de "sin freno".
+      const { runner, executor, nowMs } = await montarArb({
+        liveBankrollUsd: 12,
+        budget: 25,
+        nakedLegHaltStreak: 0,
+      });
+      await runner.runOnce(nowMs);
       expect(executor.execute).toHaveBeenCalledTimes(2);
     });
 

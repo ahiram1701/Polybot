@@ -109,6 +109,30 @@ Eso reparte el resultado por mercado, lado y día, usando el mismo cálculo que 
 
 ## 6. Riesgo: las guardas y por qué existen
 
+### La idea de fondo
+
+> **El direccional puede perder dinero teniendo razón. El arbitraje no puede perder si las dos patas
+> llenan.** De ahí sale todo lo demás: los frenos del direccional cortan rachas de pérdidas; los del
+> arbitraje existen para una sola cosa, que las dos patas lleguen a llenar.
+
+### Qué freno aplica a qué
+
+| Freno | Direccional | Arbitraje |
+|---|---|---|
+| Cortacircuitos (pérdida diaria / racha) | **Sí** | **No** — a propósito, ver abajo |
+| Capital mínimo (`minBankrollForDirectionalUsd`) | **Sí**, solo en live | No |
+| Límite de gasto diario | Sí | Sí |
+| Colateral real leído on-chain | No aplica | **Sí** |
+| Reserva por iteración | No aplica | **Sí** |
+| Mínimo del exchange por pata | Sí | **Sí**, y descarta la oportunidad entera |
+| Freno por patas sueltas | No aplica | **Sí** |
+
+Cada estrategia usa **su propio modo** para todo esto: su P&L, su contador de gasto diario y su freno
+de pérdidas van por separado. Una racha mala en papel no puede frenar dinero real, ni unas ganancias
+simuladas tapar pérdidas reales. Ver la sección 7.
+
+### Los frenos del direccional
+
 **Cortacircuitos** (`maxDailyLossUsd`, `maxConsecutiveLosses`). Detiene el trading —no el bot ni la analítica— cuando la pérdida del día o la racha de pérdidas cruza el límite. Se rearma solo tras `riskHaltCooldownHours`. **Con ambos valores a 0 nunca corta.**
 
 **Guardia de capital** (`minBankrollForDirectionalUsd`, por defecto 50). Apaga el direccional **en live** mientras el capital real esté por debajo. No es prudencia, es aritmética: el mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme y la ruina llega antes que el edge.
@@ -124,7 +148,48 @@ Simulado con el edge **real** (83% de aciertos, ROI +4,3% por operación — una
 
 Con $10 se pierde dinero **teniendo razón**. El arbitraje **no pasa por esta guardia** porque no puede arruinar: es justamente con lo que se hace crecer el capital hasta cruzar el umbral.
 
-**Límite de gasto diario** (`dailySpendLimitUsd`). Tope bruto del día. Si se agota, el bot deja de operar hasta el cambio de día. Debe dar para varias operaciones **más** al menos una oportunidad de arbitraje ($10-25 cada una).
+**Límite de gasto diario** (`dailySpendLimitUsd`). Tope bruto del día, **contado por modo**: las
+operaciones de papel no consumen el presupuesto del dinero real. Si se agota, el bot deja de operar
+hasta el cambio de día. Debe dar para varias operaciones **más** al menos una oportunidad de arbitraje
+($10-25 cada una).
+
+### Los frenos del arbitraje
+
+**Por qué queda fuera del cortacircuitos.** Sus dos disparadores —pérdida del día y racha— miden riesgo
+*direccional*. Un par completo redime $1 por set gane quien gane, así que pararlo tras un día malo
+quitaría justo la estrategia que recupera capital sin arriesgarlo. No es un olvido: está escrito así en
+el código, con su motivo.
+
+**Colateral real, leído on-chain.** En live el tamaño nunca supera el saldo que el bot lee de la cadena
+cada minuto. Es la guarda más importante del arbitraje: mandar una orden que no se puede pagar
+convierte una posición sin riesgo en una apuesta desnuda. Si **no consigue leer el saldo, no opera** —
+dimensionar a ciegas es exactamente el riesgo que esto evita. Verás `Arbitraje: no se pudo leer el
+capital`.
+
+**Reserva por iteración.** Si dos mercados dan oportunidad a la vez, el segundo solo puede usar lo que
+sobra del primero. El dinero se reserva **antes** de mandar nada, porque sale en cuanto llena la
+primera pata y sigue fuera aunque la segunda falle.
+
+**Mínimo del exchange por pata.** Las dos órdenes tienen que superar el mínimo (hoy $5). Si una no
+llega, se descarta la oportunidad **entera** — media pareja no es un arbitraje. Con capital pequeño esto
+descarta los pares muy desequilibrados, y verás `Arbitraje: patas bajo el mínimo del exchange`.
+
+**Freno por patas sueltas** (`arbNakedLegHaltStreak`). Es el riesgo propio del arbitraje: si la primera
+pata llena y la segunda es rechazada, queda una apuesta direccional que nadie pidió. Se registra y se
+notifica como tal (`arbPairComplete: false`), y este freno corta los intentos siguientes tras N patas
+sueltas seguidas.
+
+**Rearma al reiniciar el bot, no solo.** Es deliberado: si las patas se están cayendo de forma
+sistemática, seguir intentándolo cuesta dinero, y quien reinicia debería mirar antes por qué pasa.
+
+Ponlo en **1** mientras el arbitraje en live no tenga historial contra el exchange real — con capital
+pequeño, dos apuestas desnudas se lo comen entero. El precio es que un único rechazo desafortunado deja
+el arbitraje parado hasta el siguiente reinicio. Bajar el tamaño no es alternativa: el mínimo por pata
+obliga a posiciones de ~$11 como poco.
+
+**Ventanas de 15 minutos** (`arb15mEnabled`). Triplica las ventanas donde puede aparecer un par barato,
+con liquidez comparable a la de 5m. **Solo arbitraje**: el direccional sigue en 5m. Las guardas son las
+mismas, porque son globales y no por mercado.
 
 ---
 
@@ -135,7 +200,9 @@ El orden recomendado, y el motivo de cada paso:
 1. **Valida en sim.** Corre días, no horas, y mira el desglose ARB/DIR con `pnlAudit`.
 2. **Crece con arbitraje primero.** Es lo único sin riesgo direccional. La guardia de capital mantiene el direccional apagado hasta $50 automáticamente.
 3. **Comprueba el capital real.** El chip «Capital» debe decir el saldo leído de la cadena, no «(declarado)».
-4. **Arranca live explícitamente**, con `confirmLive`. Nunca ocurre solo.
+4. **Arranca live explícitamente**, con `confirmLive` — o pon solo el arbitraje en live con `arbMode`,
+   que es lo que tiene sentido con capital pequeño. Ojo con la diferencia: el arranque global pide
+   confirmación, el ajuste por estrategia **no**.
 5. **Vigila el primer día** con el cortacircuitos puesto a un valor que de verdad pueda dispararse.
 
 ### Modo por estrategia (Ajustes → «Modo por estrategia»)

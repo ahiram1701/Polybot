@@ -50,6 +50,7 @@ export interface UiSettings {
   arbMode: "heredado" | "sim" | "live";
   directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;
+  arbNakedLegHaltStreak: number;
   arbMaxUsdPerOpportunity: number;
   arbMinNetPerSet: number;
   // IANA timezone (or "auto" = system) used for display, chart bucketing, fiscal days and the daily
@@ -265,9 +266,11 @@ export const SKIP_REASON_LABELS: Record<string, string> = {
   bankroll_below_directional_minimum: "Capital por debajo del minimo para direccional",
   arb_below_min_size: "Arbitraje: patas bajo el minimo del exchange",
   arb_daily_limit: "Arbitraje: limite de gasto diario",
-  arb_bankroll_unknown: "Arbitraje: capital real desconocido",
+  arb_bankroll_unknown: "Arbitraje: no se pudo leer el capital, no opera a ciegas",
   arb_bankroll_exhausted: "Arbitraje: capital ya comprometido en otro mercado",
-  arb_naked_leg_halt: "Arbitraje detenido: dos patas sueltas seguidas",
+  // Sin el numero: el umbral es configurable, y esta etiqueta ya se quedo obsoleta una vez al
+  // cambiarlo. Rearma al reiniciar el bot.
+  arb_naked_leg_halt: "Arbitraje detenido por patas sueltas (rearma al reiniciar)",
   // No son motivos de "no opera": son avisos de que la puerta se abrio. Se listan aqui porque el
   // panel muestra cualquier motivo registrado, y sin etiqueta saldrian como codigo crudo.
   arb_opportunity_observed: "Arbitraje detectado (observado)",

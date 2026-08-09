@@ -99,7 +99,8 @@ const DEFAULT_MAX_ASK_SPREAD = 0.02;
 const ARB_SCAN_INTERVAL_MS = 3_000;
 
 /**
- * Patas sueltas seguidas antes de dejar de intentar arbitrajes.
+ * Default de patas sueltas seguidas antes de dejar de intentar arbitrajes. Configurable como
+ * `arbNakedLegHaltStreak`; esto es solo el valor de partida.
  *
  * En 1 —no 2— porque el arbitraje en live esta sin estrenar: nunca ha ejecutado contra el exchange
  * real, asi que el rechazo de la segunda pata es justo lo que sim no puede haber probado. Con el freno
@@ -109,7 +110,7 @@ const ARB_SCAN_INTERVAL_MS = 3_000;
  * El precio es real: un unico rechazo desafortunado deja el arbitraje parado hasta el siguiente
  * reinicio. Se acepta mientras el camino no tenga historial. Subirlo a 2 es cambiar este numero.
  */
-const ARB_NAKED_LEG_HALT_STREAK = 1;
+const DEFAULT_ARB_NAKED_LEG_HALT_STREAK = 1;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
@@ -563,7 +564,7 @@ export class BotRunner {
       // pararlo tras un dia malo quita justo la unica estrategia que recupera capital sin arriesgar.
       // El riesgo propio del arbitraje es otro — que se quede una pata sola — y lo cubre la racha de
       // patas sueltas, que si para.
-      const arbBloqueado = this.arbNakedLegStreak >= ARB_NAKED_LEG_HALT_STREAK;
+      const arbBloqueado = this.arbNakedLegStreak >= this.arbNakedLegHaltStreak();
       if (arbOpportunity && arbBloqueado) {
         this.logSkipOnce(market.slug, "arb_naked_leg_halt", { streak: this.arbNakedLegStreak });
       }
@@ -652,7 +653,7 @@ export class BotRunner {
       }
       const quotes = await this.getAnalyticsQuotes(market, nowMs);
       const opportunity = await this.observeArbOpportunity(market, quotes, nowMs);
-      if (!opportunity || this.arbNakedLegStreak >= ARB_NAKED_LEG_HALT_STREAK) {
+      if (!opportunity || this.arbNakedLegStreak >= this.arbNakedLegHaltStreak()) {
         continue;
       }
       await this.executeArbOpportunity({ market, quotes, opportunity, opening, tick: latestTick, nowMs });
@@ -1582,6 +1583,16 @@ export class BotRunner {
   /** Ejecutor del modo pedido. Cae al inyectado cuando no hay uno por modo (dobles de test). */
   private executorFor(mode: Mode): TradeExecutor {
     return this.deps.executorByMode?.[mode] ?? this.deps.executor;
+  }
+
+  /** Patas sueltas seguidas que paran el arbitraje. */
+  private arbNakedLegHaltStreak(): number {
+    const configured = this.config.arbNakedLegHaltStreak;
+    // `>= 1` y no `> 0`: un 0 o un negativo pararian el arbitraje ANTES del primer intento, que es lo
+    // contrario de "sin freno". Un valor invalido cae al default en vez de romper la estrategia.
+    return configured !== undefined && Number.isFinite(configured) && configured >= 1
+      ? Math.floor(configured)
+      : DEFAULT_ARB_NAKED_LEG_HALT_STREAK;
   }
 
   /** Piso de ask configurado (0.01 = sin piso). */

@@ -22,6 +22,7 @@ import {
   padStart,
   red,
   truncate,
+  wrapText,
   yellow,
 } from "./theme.js";
 import type { SettingsField } from "./settingsModel.js";
@@ -373,6 +374,17 @@ export function renderSettings(vm: ViewModel): string[] {
     const rowText = `${marker} ${label} ${value}`;
     lines.push(selected ? highlight(` ${label} ${value} `) : rowText);
   });
+  // Ayuda de la fila seleccionada, como pie. Una linea por fila duplicaria la altura de una lista que
+  // ya no cabe entera; asi cada ajuste puede explicarse sin costar sitio salvo cuando lo miras.
+  const help = fields[vm.settingsSelected]?.help;
+  if (help) {
+    lines.push("");
+    // Se envuelve en vez de recortar: cabida a una linea, la ayuda tendria que ser telegrafica y
+    // perderia justo lo que la hace util — el porque, que va al final de la frase.
+    for (const line of wrapText(help, Math.max(20, width - 4), 2)) {
+      lines.push(dim(line));
+    }
+  }
   return boxed("Settings", lines, width);
 }
 

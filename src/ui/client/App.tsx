@@ -189,6 +189,7 @@ const emptySettings: UiSettings = {
   arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,
+  arbNakedLegHaltStreak: 1,
   arbMaxUsdPerOpportunity: 25,
   arbMinNetPerSet: 0.02,
   timezone: "auto",
@@ -2074,7 +2075,8 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         </div>
         <p className="settings-hint">
           <strong>Capital real en live</strong> se lee <strong>solo, on-chain</strong>: el bot consulta el saldo de
-          colateral (USDC) de tu wallet de Polymarket en Polygon cada minuto. Es una lectura, no firma ni mueve nada.
+          colateral (<strong>pUSD</strong>, no USDC — leer el token equivocado devuelve $0 con la cuenta
+          llena) de tu wallet de Polymarket en Polygon cada minuto. Es una lectura, no firma ni mueve nada.
           El número que escribas abajo solo se usa <em>si la lectura falla</em> (RPC caído), para que un problema de
           red no se confunda con quedarse sin fondos. Un saldo leído de <strong>$0 sí cuenta como $0</strong>: taparlo
           con un valor declarado obsoleto sería justo el error que esto viene a evitar.
@@ -2091,9 +2093,14 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           crecer el capital hasta cruzar el umbral.
         </p>
         <p className="settings-hint">
-          <strong>Slippage máx live</strong> es el único ajuste que de verdad solo aplica en live, y no por política
-          sino porque en sim no se manda una orden real que pueda patinar contra el libro. Todo lo demás se comporta
-          idéntico en ambos modos.
+          <strong>Slippage máx live</strong> solo aplica en live, y no por política sino porque en sim
+          no se manda una orden real que pueda patinar contra el libro.
+          <br />
+          Hay otras dos guardas que <em>solo</em> existen en live, y conviene saberlo porque significan
+          que una corrida en sim puede ser <strong>optimista de tamaño</strong>: el <strong>capital
+          mínimo para direccional</strong> (arriba) y el <strong>tope por colateral real</strong> del
+          arbitraje, que impide mandar una orden que no se pueda pagar. En sim no hay colateral que
+          agotar, así que ninguna de las dos recorta nada. Todo lo demás sí se comporta idéntico.
         </p>
         <label className="switch-row">
           <input type="checkbox" checked={draft.autoMinLive} onChange={(event) => update("autoMinLive", event.target.checked)} disabled={running} />
@@ -2204,9 +2211,16 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           </label>
         </div>
         <p className="settings-hint">
-          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (según la zona horaria configurada) o la racha de pérdidas cruza el
-          límite, el bot deja de operar hasta el día siguiente — sigue observando para analítica. Aplica al modo en
-          ejecución. Editable con el bot detenido.
+          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (según la zona horaria
+          configurada) o la racha de pérdidas cruza el límite, el <strong>direccional</strong> deja de
+          operar y rearma solo pasado el <em>enfriamiento</em> de abajo — no espera al día siguiente.
+          Sigue observando para analítica.
+          <br />
+          <strong>No frena el arbitraje</strong>, y es deliberado: sus dos disparadores miden riesgo
+          direccional, y un par completo redime $1 por set gane quien gane. Pararlo tras un día malo
+          quitaría justo la estrategia que recupera capital sin arriesgarlo. El arbitraje tiene su
+          propio freno, abajo. Usa el modo de <em>esa</em> estrategia, así que una racha en papel no
+          puede frenar dinero real. Editable con el bot detenido.
         </p>
         <p className="settings-hint">
           <strong>Techo de ask cap</strong>: precio máximo por acción para cualquier trade y para el auto-ajuste. Más
@@ -2316,12 +2330,37 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             step={0.005}
             onChange={(value) => update("arbMinNetPerSet", value)}
           />
+          <NumberField
+            label="Patas sueltas antes de parar"
+            value={draft.arbNakedLegHaltStreak}
+            min={1}
+            max={10}
+            step={1}
+            onChange={(value) => update("arbNakedLegHaltStreak", value)}
+          />
         </div>
         <p className="settings-hint">
           Ganancia sin riesgo direccional: el par UP+DOWN siempre redime $1. Compra el lado delgado primero y
-          registra el par como UN trade (slug "#arb") que paga gane quien gane. Si solo llena una pata, la
-          posición direccional se registra y notifica. Respeta el límite de gasto diario y el circuit breaker.
-          Las oportunidades por debajo del mínimo solo se observan. Editable con el bot detenido.
+          registra el par como UN trade (slug "#arb") que paga gane quien gane. Las oportunidades por
+          debajo del mínimo solo se observan.
+          <br />
+          <strong>El arbitraje NO pasa por el circuit breaker</strong> — ver la explicación en Límites
+          de riesgo. Lo que sí lo acota: el <strong>colateral real leído on-chain</strong> (nunca se
+          manda una orden que no se pueda pagar), una <strong>reserva por iteración</strong> para que
+          dos mercados simultáneos no comprometan el mismo saldo dos veces, el <strong>mínimo del
+          exchange por pata</strong> —si una pata no llega, se descarta la oportunidad entera— y el
+          límite de gasto diario, que se cuenta por modo.
+          <br />
+          <strong>Su riesgo propio es la pata suelta:</strong> si la primera llena y la segunda es
+          rechazada, queda una apuesta direccional que nadie pidió. Se registra y se notifica como tal.
+          <br />
+          <strong>Patas sueltas antes de parar</strong> es el freno: cuántas seguidas se toleran antes
+          de dejar de intentar arbitrajes. <strong>Rearma al reiniciar el bot</strong>, no solo. En 1
+          mientras el arbitraje en live no tenga historial contra el exchange real — con capital
+          pequeño, dos apuestas desnudas se lo comen entero. El precio de tenerlo en 1 es que un único
+          rechazo desafortunado deja el arbitraje parado hasta el siguiente reinicio. Bajar el tamaño no
+          es alternativa: el mínimo por pata obliga a posiciones de ~$11 como poco.
+          Editable con el bot detenido.
         </p>
       </section>
 

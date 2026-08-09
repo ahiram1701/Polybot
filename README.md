@@ -5,7 +5,7 @@ Bot TypeScript para mercados `BTC/ETH/DOGE Up or Down 5m` de Polymarket, con mod
 - **[Manual de uso](docs/MANUAL.md)** — como operarlo: que mirar, como decidir, problemas comunes.
 - **[Arquitectura](docs/ARQUITECTURA.md)** — como funciona por dentro, invariantes y trampas conocidas.
 - **[Uso por agentes IA](AGENTS.md)** — MCP, CLI y API.
-- Este README es la **referencia de parametros** e instalacion.
+- Este README es **instalacion y arranque**. La referencia de cada ajuste vive en la propia interfaz y en el Manual.
 
 ## Requisitos
 
@@ -200,91 +200,23 @@ POLYMARKET_FUNDER_ADDRESS=0x...
 
 `POLYGON_RPC_URL` puede ser un endpoint propio si prefieres no depender del RPC publico. La UI no permite editar ni leer private keys. Solo detecta si existen.
 
-## Parametros Principales
+## Parametros
 
-- `ENABLED_MARKETS=BTC`: mercados activos por defecto para CLI/UI nueva. Usa `BTC,ETH,DOGE` para activar los tres desde `.env`.
-- `ENABLED_BTC_UP=`, `ENABLED_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales para activar/desactivar cada mercado/lado. Si quedan vacios usan `ENABLED_MARKETS`.
-- `MIN_BTC_DISTANCE_USD=20`: distancia minima BTC entre precio actual y precio inicial.
-- `MIN_ETH_DISTANCE_USD=5`: distancia minima ETH entre precio actual y precio inicial.
-- `MIN_DOGE_DISTANCE_USD=0.0005`: distancia minima DOGE entre precio actual y precio inicial.
-- `MIN_BTC_UP_DISTANCE_USD=`, `MIN_BTC_DOWN_DISTANCE_USD=` y equivalentes `ETH`/`DOGE`: overrides opcionales de distancia por mercado y lado. Si quedan vacios usan la distancia del mercado.
-- `ENTRY_WINDOW_SECONDS=20`: ventana de entrada global usada como fallback.
-- `ENTRY_WINDOW_SECONDS_BTC=`, `ENTRY_WINDOW_SECONDS_ETH=`, `ENTRY_WINDOW_SECONDS_DOGE=`: overrides opcionales de ventana por mercado. Dejalas vacias para usar `ENTRY_WINDOW_SECONDS`.
-- `ENTRY_WINDOW_SECONDS_BTC_UP=`, `ENTRY_WINDOW_SECONDS_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de ventana por mercado y lado.
-- `SIM_TRADE_AMOUNT_USD=1`: monto usado en simulacion.
-- `SIM_TRADE_AMOUNT_USD_BTC_UP=`, `SIM_TRADE_AMOUNT_USD_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de monto sim por mercado y lado.
-- `LIVE_TRADE_AMOUNT_USD=1`: monto deseado en live.
-- `LIVE_TRADE_AMOUNT_USD_BTC_UP=`, `LIVE_TRADE_AMOUNT_USD_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de monto live por mercado y lado.
-- `AUTO_MIN_LIVE=true`: en live eleva el monto al minimo del mercado si hace falta.
-- `MAX_ASK_PRICE=0.98`: no compra si el mejor ask supera este cap.
-- `MAX_ASK_PRICE_BTC_UP=`, `MAX_ASK_PRICE_BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides opcionales de ask cap por mercado y lado.
-- `DAILY_SPEND_LIMIT_USD=50`: freno diario de gasto bruto aproximado.
-- `TICK_STALE_MS=10000`: descarta ticks Chainlink viejos.
-- `POLL_INTERVAL_MS=1000`: frecuencia del loop del bot.
-- `OLLAMA_API_KEY=`: token opcional para pedir analisis bajo demanda a Ollama Cloud.
-- `OLLAMA_HOST=https://ollama.com`: host de Ollama Cloud.
-- `OLLAMA_MODEL=gpt-oss:120b`: modelo usado por el analisis bajo demanda.
-- `POLYGON_RPC_URL=https://polygon.drpc.org`: RPC de Polygon. Lo usan el cliente live y la lectura del saldo de colateral.
-  **Ojo:** `polygon-rpc.com` (el valor histórico) empezó a devolver `401`; con él la lectura de saldo falla siempre.
-  Medido: `polygon.drpc.org` 6/6 a 122ms, `polygon-bor-rpc.publicnode.com` 6/6 a 134ms, `1rpc.io/matic` 6/6 a 390ms.
-- `POLYBOT_UI_HOST=127.0.0.1`: host de la UI. En VPS con Tailscale usa `0.0.0.0` y firewall.
-- `POLYBOT_UI_PORT=8787`: puerto de la UI.
-- `POLYBOT_PUBLIC_URL=`: URL Tailscale que se muestra en logs y avisos Telegram.
-- `TELEGRAM_BOT_TOKEN=` y `TELEGRAM_CHAT_ID=`: opcionales; activan avisos de UI lista, errores y arranques/detenciones.
+**La referencia vive en un solo sitio, no aqui.** Este README tuvo durante meses una tercera copia de
+la lista de parametros, y fue exactamente donde se pudrio: llego a describir la regla de resolucion
+vieja y a contradecirse a si mismo sobre los autoajustes en diez lineas. Una copia menos es una copia
+que no puede mentir.
 
-### Banda de precios (ask)
+- **Que hace cada ajuste y como decidir su valor:** cada campo de `Settings` tiene su explicacion en
+  la propia interfaz (web y TUI), y el [Manual](docs/MANUAL.md) explica los que gobiernan riesgo.
+- **Los limites de riesgo, por estrategia:** [Manual, seccion 6](docs/MANUAL.md).
+- **Que se puede tocar por `.env`:** [`.env.example`](.env.example), comentado.
+- **La API:** [`docs/openapi.yaml`](docs/openapi.yaml) y [AGENTS.md](AGENTS.md).
+- **Lo que NO es configurable y por que:** [Arquitectura](docs/ARQUITECTURA.md).
 
-La comision taker es `shares x 7% x p x (1-p)`: **maxima en 0.50** y casi nula en los extremos. Operar cerca de 0.50 paga 3.5% del importe por operacion; a 0.95, 0.35%. Ver [ARQUITECTURA.md](docs/ARQUITECTURA.md#trampas-conocidas).
+Casi todo se edita en caliente desde la interfaz con el bot detenido; `.env` solo hace falta para
+credenciales, rutas y hosts.
 
-- `MIN_ASK_PRICE=0.01`: piso de ask. Por debajo, la entrada es una apuesta de reversion barata.
-- `MIN_ASK_PRICE_BTC_UP=`, `..._BTC_DOWN=` y equivalentes `ETH`/`DOGE`: overrides por mercado y lado.
-- `MAX_ASK_PRICE_CEILING=0.85`: techo duro. Ningun autoajuste puede subir el cap por encima.
-- `MAX_ASK_PRICE_ETH_UP=`, `..._DOGE_DOWN=`, etc.: overrides de cap por mercado y lado (ademas de los `BTC` ya listados).
-- `ASK_WINDOW_BASELINE_MIN=0.01`, `ASK_WINDOW_BASELINE_MAX=0.7`: **ventana BASE** del autoajuste de ask. No es donde operar: es el limite exterior que ese tuner nunca puede rebasar. **Debe ser ancha** — solo estrecha desde aqui, y unicamente pasando bandas que hayan perdido dinero con muestra. Si falta, ese autoajuste no hace nada.
-- `LIVE_MAX_SLIPPAGE=0.02`: cuanto puede pagar de mas una orden live sobre el mejor ask observado.
-
-### Gate de valor esperado
-
-- `REQUIRE_POSITIVE_EV=true`: no opera setups con EV negativo tras comisiones.
-- `EV_MIN_EXPECTED_ROI=0.01`: ROI minimo exigido por operacion.
-- `EV_SAFETY_MARGIN=0.03`: margen que la probabilidad estimada debe superar al break-even.
-- `EV_MIN_HISTORY_TRADES=15`: operaciones historicas minimas antes de fiarse de un setup.
-- `EV_USE_SIMILARITY=true`: estima la probabilidad por k-NN de setups parecidos en vez de por conteo exacto.
-- `EV_CALIBRATION=false`: mapa empirico de calibracion. Medido fuera de muestra: **cuesta neto**.
-- `MIN_FILL_RATIO=0.5`: fraccion minima del importe que el libro debe poder llenar.
-- `MIN_DISTANCE_FLOOR_BTC=20`, `MIN_DISTANCE_FLOOR_ETH=0.1`, `MIN_DISTANCE_FLOOR_DOGE=0.00003`: suelo por mercado que ningun autoajuste puede bajar. Pensarlos en **bps**, no en USD: `bps = (usd / precio) x 10000`.
-
-### Riesgo
-
-- `MAX_DAILY_LOSS_USD=0`: perdida diaria que detiene el trading. **0 = desactivado.**
-- `MAX_CONSECUTIVE_LOSSES=0`: racha de perdidas que lo detiene. **0 = desactivado.**
-- `RISK_HALT_COOLDOWN_HOURS=2`: horas que dura el freno antes de rearmarse solo.
-- `LIVE_BANKROLL_USD=0`: capital declarado a mano. **Solo se usa si falla la lectura on-chain**, que es lo que manda.
-- `MIN_BANKROLL_FOR_DIRECTIONAL_USD=50`: por debajo de este capital, el direccional se apaga en live. El arbitraje no pasa por esta guardia. Ver el [MANUAL](docs/MANUAL.md#6-riesgo-las-guardas-y-por-qué-existen) para la aritmetica.
-
-### Arbitraje de set completo
-
-- `ARB_ENABLED=false`: compra ambos lados cuando el par cuesta menos de $1 tras comisiones. Sin riesgo direccional.
-- `ARB_MAX_USD_PER_OPPORTUNITY=25`: tope por oportunidad.
-- `ARB_MIN_NET_PER_SET=0.02`: beneficio neto minimo por set.
-
-> Cada pata es una orden independiente y **ambas** deben superar el minimo del exchange ($5). Con precios equilibrados eso exige bastante mas capital del que sugiere el neto por set.
-
-### Autoajustes
-
-- `AI_AUTO_APPLY_LIVE=`: autoajuste predictivo (ventana y distancia por mercado). Corre cada 30 min.
-- `AI_AUTO_TUNE_ASK_CAP=false`: autoajuste de la ventana de ask. Solo estrecha, y solo sobre bandas que perdieron dinero con muestra.
-
-### Otros
-
-- `MAX_ANALYTICS_SAMPLES=20000`: muestras que se conservan en `data/analytics.jsonl`.
-- `OPENING_CAPTURE_GRACE_MS=15000`: tolerancia para aceptar el tick de apertura de una ventana.
-- `POLYBOT_TIMEZONE=auto`: zona horaria del dia contable (gasto diario, cortacircuitos, fiscal).
-- `DATA_DIR=data`: carpeta de estado y logs.
-- `GAMMA_HOST=`, `CLOB_HOST=`, `RTDS_URL=`: endpoints de Polymarket. Cambiarlos solo para pruebas.
-- Overrides por mercado y lado que existen para `ETH`/`DOGE` ademas de los `BTC` listados arriba: `ENABLED_*_UP/DOWN`, `MIN_*_UP/DOWN_DISTANCE_USD`, `ENTRY_WINDOW_SECONDS_*_UP/DOWN`, `SIM_TRADE_AMOUNT_USD_*_UP/DOWN`, `LIVE_TRADE_AMOUNT_USD_*_UP/DOWN`.
-
-Los cambios hechos desde la UI se guardan en `data/ui-config.json` y se aplican al proximo arranque del bot.
 
 ## Smoke Test
 
@@ -318,7 +250,12 @@ El bot escribe:
 
 ## Resultados De Trades
 
-Polybot marca `Gano` o `Perdio` cuando ya paso el cierre del mercado y hay un tick Chainlink posterior al cierre.
+Polybot marca `Gano` o `Perdio` cuando ya paso el cierre del mercado y tiene con que resolverlo.
+
+**Desde el 2026-08-07 estos mercados los resuelve Polymarket por el TWAP publicado de Chainlink**, no
+por el precio spot de cierre. Polybot consume esa serie y la usa como fuente de verdad; el spot queda
+solo como respaldo cuando la serie no llego. La documentacion oficial es explicita en no reproducir el
+valor por tu cuenta, asi que el bot no lo intenta.
 
 - En simulacion, resuelve todos los trades simulados.
 - En live, solo resuelve si detecta fill real.
@@ -326,7 +263,7 @@ Polybot marca `Gano` o `Perdio` cuando ya paso el cierre del mercado y hay un ti
 - Despues intenta reconciliar contra los trades autenticados del CLOB usando `tradeIDs` o `taker_order_id`.
 - Cuando la reconciliacion CLOB existe, el P&L usa shares reales, costo real, precio promedio y fee taker estimada desde `fee_rate_bps`.
 - Si una orden live FAK no llena nada, la tabla muestra `Sin fill` y no la cuenta como exposicion de P&L.
-- El resultado se calcula contra el precio Chainlink de cierre usando la misma regla local del bot: `UP` si el precio final es mayor o igual que la apertura, `DOWN` si esta debajo.
+- El resultado se calcula contra el **TWAP** de cierre frente al de apertura: `UP` si el final es mayor o igual, `DOWN` si esta debajo. Cada trade guarda con que serie se resolvio (`priceSource`), para poder auditar despues si la fuente fue la correcta.
 - En la tabla, `Gano CLOB` / `Perdio CLOB` significa P&L reconciliado; `Gano est.` / `Perdio est.` significa que todavia usa la respuesta rapida de la orden.
 
 Para que aparezca el resultado, deja la UI/bot corriendo hasta unos segundos despues del cierre de la ventana.
@@ -357,24 +294,26 @@ La pestana `Analisis` calcula EV historico de estrategias usando las muestras co
 
 La tabla muestra ranking por EV, trades simulables, win rate, cobertura de quotes y drawdown. Tambien conserva las estrategias actuales por mercado/lado como referencia.
 
-Polybot tiene **un único autoajuste**: el **predictivo en tiempo real** (motor de recomendaciones), que se
-enciende/apaga con el switch **"Autoajuste predictivo"** en `Settings`. Con él activo, un modelo estadistico local
-(backtesting walk-forward + estimacion k-NN, sin LLM ni internet) evalua las muestras de Analisis cada ~60s mientras
-el bot corre y **aplica automaticamente la mejor ventana y distancia** por mercado/lado cuando hay alta confianza y
-dentro de las guardas.
+**Hay tres autoajustes**, no uno. Todos son estadistica local (backtesting walk-forward y estimacion
+k-NN): ni LLM ni internet. Se encienden por separado en `Settings`, y el detalle de cada uno esta en el
+[Manual, seccion 4](docs/MANUAL.md):
 
-Usa **un solo juego de umbrales para sim y live** y **sin cooldown**, de modo que **corre identico en ambos modos**:
-una corrida en sim predice fielmente lo que hara en live. El autoajuste usa solo estrategias con EV positivo (ROI
-fuera de muestra > 0) y confianza suficiente; si no hay datos confiables, no cambia la configuracion.
+| Switch | Que cambia | Riesgo |
+|---|---|---|
+| `aiAutoApplyLive` — Autoajuste predictivo | Ventana y distancia por mercado/lado, en caliente | Cooldown de 30 min entre cambios |
+| `aiAutoTuneAskCap` — Ventana de ask | El techo de ask. **Solo estrecha**, nunca abre | Solo puede reducir exposicion |
+| `aiAutoProbeBands` — Sondeos de banda | Prueba bandas de ask nuevas. **Puede ABRIR la ventana** | El unico que puede aumentar el riesgo; presupuesto acotado por mercado y dia |
 
-En `Settings > Avanzado` tambien existe `Autoajuste predictivo en tiempo real` (`aiAutoApplyLive`). Es un modelo estadistico local (backtesting walk-forward + estimacion de probabilidad por k-NN; no usa LLM ni internet), no un modelo de lenguaje. Cuando esta activo y el bot corre, Polybot evalua periodicamente las muestras de `Analisis` con ese motor predictivo y, solo cuando hay alta confianza dentro de las guardas, aplica automaticamente la mejor ventana y distancia por mercado al bot en ejecucion (sim o live) sin reiniciar. Respeta un cooldown interno de 30 min entre cambios y registra cada ajuste en los logs. Actívalo antes de iniciar el bot. La pestana expone tambien `GET /api/analysis/recommendations` para inspeccionar las recomendaciones sin aplicarlas. No confundir con el analisis de Ollama Cloud (abajo), que si es un LLM y solo da texto sin tocar la configuracion.
+Ninguno toca nada sin confianza suficiente y sin pasar sus guardas; si no hay datos fiables, dejan la
+configuracion como esta. `GET /api/analysis/recommendations` deja inspeccionar las recomendaciones sin
+aplicarlas. No confundir con el analisis de Ollama Cloud (abajo), que si es un LLM y solo da texto.
 
 Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud desde la misma pestana. Polybot adjunta solo contexto agregado: P&L, trades recientes resumidos, estrategias actuales y top estrategias EV. No envia credenciales, `.env` ni respuestas crudas de ordenes.
 
 ## Regla De Entrada
 
 - Mercados: `btc-updown-5m-{epoch}`, `eth-updown-5m-{epoch}` y `doge-updown-5m-{epoch}`.
-- Precio inicial: primer tick Chainlink del simbolo (`btc/usd`, `eth/usd` o `doge/usd`) capturado al inicio de la ventana.
+- Precio inicial: el valor **TWAP** del simbolo (`btc/usd`, `eth/usd` o `doge/usd`) al inicio de la ventana — la misma serie con la que Polymarket resuelve. El tick spot se sigue capturando, pero para analitica.
 - Compra `UP` si `precioActual - precioInicial` supera la distancia configurada para ese mercado/lado.
 - Compra `DOWN` si `precioInicial - precioActual` supera la distancia configurada para ese mercado/lado.
 - Solo compra dentro de la ventana configurada para ese mercado/lado: `0 < segundosParaCierre <= ventanaDelMercadoLado`.
@@ -382,7 +321,9 @@ Si configuras `OLLAMA_API_KEY`, puedes enviar un prompt manual a Ollama Cloud de
 
 ## Problemas Comunes
 
-- `Live bloqueado`: faltan credenciales en `.env` o falta confirmacion live.
+- `Live bloqueado`: faltan credenciales en `.env` o falta confirmacion live. Ojo: los ajustes `arbMode`
+  y `directionalMode` ponen una estrategia en live **sin pedir confirmacion** — basta el ajuste, y
+  cualquier reinicio la reanuda. Ver [Manual, seccion 7](docs/MANUAL.md).
 - `Sin apertura`: el bot arranco tarde y no capturo el tick inicial Chainlink; saltara esa ventana.
 - `Tick stale`: no estan llegando ticks recientes de RTDS.
 - `Puerto ocupado`: detiene el proceso que usa `8787` o arranca con `POLYBOT_UI_PORT=8788`.

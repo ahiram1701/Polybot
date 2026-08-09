@@ -874,6 +874,7 @@ function settings(): UiSettings {
     arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,
+  arbNakedLegHaltStreak: 1,
     arbMaxUsdPerOpportunity: 25,
     arbMinNetPerSet: 0.02,
     timezone: "auto",

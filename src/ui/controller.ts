@@ -1621,6 +1621,7 @@ export class BotController {
       arbMode: config.arbMode ?? settings.arbMode,
       directionalMode: config.directionalMode ?? settings.directionalMode,
       arb15mEnabled: config.arb15mEnabled ?? settings.arb15mEnabled,
+      arbNakedLegHaltStreak: config.arbNakedLegHaltStreak ?? settings.arbNakedLegHaltStreak,
       arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? settings.arbMaxUsdPerOpportunity,
       arbMinNetPerSet: config.arbMinNetPerSet ?? settings.arbMinNetPerSet,
       timezone: config.timezone ?? settings.timezone,

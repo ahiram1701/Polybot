@@ -381,6 +381,44 @@ describe("los interruptores de settings llegan al runner", () => {
     }
     expect(sinPropagar).toEqual([]);
   });
+
+  it("cada ajuste NUMERICO tambien llega, no solo los booleanos", async () => {
+    const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");
+    const config = await baseConfig();
+    const base = settingsFromConfig(config);
+
+    // El guardia de arriba solo recorria booleanos. Por eso `arbMode` y los limites de riesgo podian
+    // añadirse sin que nada comprobara que llegan al runner — que es EXACTAMENTE el fallo que ya se
+    // cometio tres veces (piso de ask, arb15mEnabled, retencion de analitica).
+    const numericas = (Object.keys(base) as (keyof typeof base)[]).filter(
+      (clave) => typeof base[clave] === "number",
+    );
+    expect(numericas.length).toBeGreaterThan(10);
+
+    const noSonDelRunner = new Set([
+      "aiLastAppliedAtMs", // marca interna del cooldown de auto-apply, la lee el controlador
+      // Los dos siguientes son espejos LEGACY: `applySettings` los deriva del mapa por mercado
+      // (settings.ts:295 y :300), asi que la fuente de verdad es `...ByMarket.BTC` y escribir solo el
+      // escalar no debe hacer nada. Excluidos a proposito, no por comodidad.
+      "minBtcDistanceUsd",
+      "entryWindowSeconds",
+    ]);
+
+    const sinPropagar: string[] = [];
+    for (const clave of numericas) {
+      if (noSonDelRunner.has(String(clave))) {
+        continue;
+      }
+      // Un valor distinto y valido para cualquier rango del esquema: todos los numericos son
+      // no-negativos y ninguno tiene un maximo por debajo de 1.
+      const distinto = Number(base[clave]) === 1 ? 0.5 : 1;
+      const aplicado = applySettings(config, { ...base, [clave]: distinto }) as unknown as Record<string, unknown>;
+      if (aplicado[clave as string] !== distinto) {
+        sinPropagar.push(String(clave));
+      }
+    }
+    expect(sinPropagar).toEqual([]);
+  });
 });
 
 describe("el modo de cada estrategia llega al runner", () => {

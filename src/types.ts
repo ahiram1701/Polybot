@@ -117,6 +117,13 @@ export interface BotConfig {
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;
+  /**
+   * Patas sueltas seguidas antes de dejar de intentar arbitrajes. Rearma al reiniciar el bot.
+   *
+   * Es un ajuste y no una constante porque es la palanca que se toca cuando cambia la confianza en el
+   * camino de ejecucion: apretado mientras no tenga historial contra el exchange, mas holgado despues.
+   */
+  arbNakedLegHaltStreak?: number;
   arbMaxUsdPerOpportunity?: number;
   // Minimum net profit per set (post-fee) required to execute; crumbs below this are only observed.
   arbMinNetPerSet?: number;

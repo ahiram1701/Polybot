@@ -19,7 +19,8 @@ El bucle corre cada `pollIntervalMs` (1s por defecto) en `BotRunner.runIteration
       recordAnalyticsObservation    (append a analytics.jsonl)
       observeArbOpportunity
 6. FASE 2 — decisión, secuencial:
-      circuit breaker → buildTradeSignal → EV gate → ejecución
+      freno de patas sueltas → arbitraje (5m y 15m)
+      circuit breaker (solo direccional) → buildTradeSignal → EV gate → ejecución
 7. verifyOfficialResolutions        (2 fetch a gamma cada 30s)
 ```
 
@@ -31,14 +32,14 @@ Las fases 1 y 2 están separadas a propósito: capturar en paralelo mantiene los
 |---|---|---|
 | **Gamma** (`gamma-api.polymarket.com`) | Metadatos del mercado, slug, tokenIds, resolución oficial | Caché de 5s por slug, con fallback a caché rancia si falla |
 | **CLOB** (`clob.polymarket.com`) | Libro de órdenes, ejecución | `withTimeout` de 2s que **no cancela** la petición subyacente |
-| **RTDS** (`ws-live-data.polymarket.com`) | Ticks de precio de Chainlink | WebSocket persistente; no pasa por el pool HTTP |
+| **RTDS** (`ws-live-data.polymarket.com`) | Serie **TWAP** de Chainlink (la que resuelve) y ticks spot (analítica) | WebSocket persistente; no pasa por el pool HTTP. Se suscribe **sin filtros de símbolo**: filtrarlos rompió el spot de ETH y DOGE una vez |
 | **Polygon RPC** | Saldo de colateral (`balanceOf`) | Solo lectura, con caché de 60s y retroceso ante fallo |
 
 ## Ficheros de estado
 
 - **`data/state.json`** — aperturas capturadas, mercados operados, gasto diario, marcadores de reset. Escritura atómica.
 - **`data/trades.jsonl`** — log append-only de operaciones y resoluciones. Es la fuente de verdad del P&L; `state.json` puede reconstruirse desde aquí.
-- **`data/analytics.jsonl`** — ventanas observadas (ticks + quotes), operadas o no. ~250 MB con 20.000 muestras. **Lectura incremental**: solo se parsea la cola nueva.
+- **`data/analytics.jsonl`** — ventanas observadas (ticks + quotes + serie TWAP), operadas o no. La retención va en `maxAnalyticsSamples`, **hoy 10.000** (~160 MB). No la subas sin leer la trampa 6: a 20.000 la proyección es de **608 MB**, no de 250 MB. **Lectura incremental**: solo se parsea la cola nueva.
 - **`data/arb-opportunities.jsonl`** — oportunidades de arbitraje detectadas.
 
 ---
@@ -70,6 +71,23 @@ Cachear solo el éxito hace que, tras el primer fallo, el TTL no frene nada y se
 En cualquier guardia que decida sobre dinero, distinguir «no pude leer» de «leí cero». Bloquear porque el RPC está caído es un fallo de red disfrazado de política de riesgo; tratar un cero real como «no sé» deja operar sin fondos.
 
 ---
+
+## La resolución la decide el TWAP, no el spot
+
+**Cambió el 2026-08-07** y es el hecho más importante de este documento: los mercados «Up or Down» de
+cripto los resuelve Polymarket con la **serie TWAP publicada de Chainlink**
+(`cryptoMarketConfig.twapLookbackSeconds` = 30 en 5m, 60 en 15m), no con el precio spot de cierre.
+
+Dos cosas que cuestan dinero si se olvidan:
+
+1. **`twapLookbackSeconds` es la ventana de retrolectura, no el rango.** No es «el promedio de los
+   últimos 30 segundos de la ventana del mercado». Se interpretó mal dos veces.
+2. **La documentación oficial dice explícitamente que no reproduzcas el valor por tu cuenta.** Por eso
+   `src/twap.ts` marca sus helpers como **analítica, no decisión**: existen para medir, y no deben
+   volver a colarse en el camino de resolución.
+
+Cada operación guarda en `priceSource` con qué serie se resolvió. Cruzar ese campo contra
+`officialResolution.corrected` es el único juez de si la fuente es la correcta.
 
 ## Trampas conocidas
 
@@ -113,6 +131,42 @@ grep -rioE "0x[a-f0-9]{40}" node_modules/@polymarket/clob-client-v2/dist/
 `recordLoopTiming` era la última línea del cuerpo de la iteración: si ésta lanzaba, **no se registraba**. Los percentiles publicados excluían por construcción justo las iteraciones lentas que morían por timeout, y salían sanos mientras el bot perdía el 11,6% del tiempo. Ahora va en un `finally` y publica también `failedPct`.
 
 ---
+
+### 6. El autoajuste que puede ABRIR la ventana
+
+Hay **tres** autoajustes y no son intercambiables. Dos solo pueden reducir exposición; uno puede
+aumentarla:
+
+| Switch | Qué toca | Dirección |
+|---|---|---|
+| `aiAutoApplyLive` | Ventana y distancia por mercado/lado | Ambas |
+| `aiAutoTuneAskCap` | Techo de ask | **Solo estrecha** |
+| `aiAutoProbeBands` | Prueba bandas de ask nuevas | **Puede abrir** — el único que sube el riesgo |
+
+`aiAutoProbeBands` sondea con presupuesto acotado por mercado y día, y un programa de sondeo solo se
+cierra con muestra suficiente. Es también el único de los tres sin variable de entorno: se enciende
+solo desde la interfaz.
+
+El motivo de que `aiAutoTuneAskCap` esté separado de los sondeos es que el tuner tiene una **base fija**
+(`ASK_WINDOW_BASELINE_MIN`/`_MAX`) que nunca escribe: es su referencia. Unos límites mal puestos ahí
+mataron el tuner una vez.
+
+### 7. Lo que NO es configurable, y por qué
+
+El criterio es: **se expone lo que acota dinero o riesgo; el resto se queda en código.** Exponer las
+~60 constantes internas convertiría la pantalla de ajustes en ruido y no son decisiones del operador.
+
+Tres casos que parecen ajustes y no lo son a propósito:
+
+- **`DEPTH_PROBE_USD`** (`orderbookService.ts`). El tamaño de referencia con el que se mide la
+  profundidad del libro. Si dependiera de un ajuste, las muestras viejas y las nuevas medirían cosas
+  distintas y la analítica dejaría de ser comparable consigo misma.
+- **`maxAskSpread`, `minSecondsToEndForEntry`, `evMaxClaimedEdge`.** Los tres bloquean caminos que el
+  ledger midió como perdedores (spread ancho, últimos segundos, ventaja declarada > 0.20). Hacerlos
+  editables sería dar un mando para aflojar protecciones que hoy sujetan al direccional.
+- **`CRYPTO_TAKER_FEE_RATE_BPS`** (`fees.ts`). Es un hecho del exchange, no una preferencia. Si
+  Polymarket lo cambia, hay que cambiarlo aquí — pero entonces cambia también todo el cálculo de EV y
+  de arbitraje, y eso merece una revisión, no un campo de texto.
 
 ## Herramientas de diagnóstico
 

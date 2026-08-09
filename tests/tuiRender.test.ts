@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import type { CompactStatus, CompactTrade } from "../src/agent/statusSummary.js";
 import type { UiSettings } from "../src/ui/shared.js";
-import { applyNumber, applyToggle, buildSettingsFields } from "../src/tui/settingsModel.js";
+import { applyNumber, applyToggle, buildSettingsFields, isModeId, TUI_RISK_KEYS } from "../src/tui/settingsModel.js";
 import {
   renderDashboard,
   renderSettings,
@@ -28,6 +28,15 @@ function testSettings(): UiSettings {
   return {
     arbMode: "heredado",
     directionalMode: "heredado",
+    maxDailyLossUsd: 15,
+    maxConsecutiveLosses: 6,
+    riskHaltCooldownHours: 1,
+    minBankrollForDirectionalUsd: 50,
+    liveBankrollUsd: 17,
+    liveMaxSlippage: 0.02,
+    arbMaxUsdPerOpportunity: 17,
+    arbMinNetPerSet: 0.01,
+    arbNakedLegHaltStreak: 1,
     requirePositiveEv: true,
     evUseSimilarity: false,
     evCalibration: false,
@@ -255,6 +264,51 @@ describe("TUI settings model", () => {
     // Una sola insignia diria "SIM" con el arbitraje moviendo dinero real.
     expect(text).toContain("arb LIVE");
     expect(text).toContain("dir SIM");
+  });
+
+  it("todo ajuste que acota dinero tiene fila en la TUI", () => {
+    // La TUI vivio siendo un subconjunto de la web: 25 ajustes solo estaban alli, incluido el
+    // cortacircuitos entero. Este test convierte "acota dinero" en una lista y exige la fila.
+    const ids = new Set(buildSettingsFields(testSettings()).map((f) => f.id));
+    const sinFila = TUI_RISK_KEYS.filter((key) => !ids.has(key));
+    expect(sinFila).toEqual([]);
+    expect(TUI_RISK_KEYS).toContain("maxDailyLossUsd");
+    expect(TUI_RISK_KEYS).toContain("arbNakedLegHaltStreak");
+  });
+
+  it("cada limite de riesgo se explica: la TUI no tiene tooltips", () => {
+    const fields = buildSettingsFields(testSettings());
+    const sinAyuda = TUI_RISK_KEYS.filter((key) => !fields.find((f) => f.id === key)?.help);
+    expect(sinAyuda).toEqual([]);
+  });
+
+  it("la ayuda se pinta solo para la fila seleccionada", () => {
+    const fields = buildSettingsFields(testSettings());
+    const idx = fields.findIndex((f) => f.id === "maxDailyLossUsd");
+    const vm = baseVm({ settingsFields: fields, settingsSelected: idx, settingsScroll: idx });
+    // Sin espacios ni saltos: la ayuda se envuelve en dos lineas y el corte cae donde quepa, asi que
+    // afirmar la frase literal ataria el test a la anchura del terminal.
+    // Fuera espacios Y bordes: la ayuda se envuelve en dos lineas y el marco mete un "|" entre ellas.
+    const plano = stripAnsi(renderSettings(vm).join(NL)).replace(/[\s│]+/g, "");
+    expect(plano).toContain("Nofrenaelarbitraje");
+    // Y NO se pinta la de otra fila, o serian 9 bloques de ayuda a la vez.
+    expect(plano).not.toContain("Rearmaalreiniciarelbot");
+  });
+
+  it("los limites de riesgo se acotan al rango del esquema antes de mandarlos", () => {
+    const base = testSettings();
+    // El esquema exige entero entre 1 y 10. Sin recorte, el PUT falla despues con un error opaco.
+    expect(applyNumber(base, "arbNakedLegHaltStreak", 0).arbNakedLegHaltStreak).toBe(1);
+    expect(applyNumber(base, "arbNakedLegHaltStreak", 99).arbNakedLegHaltStreak).toBe(10);
+    expect(applyNumber(base, "arbNakedLegHaltStreak", 2.7).arbNakedLegHaltStreak).toBe(3);
+    // Y el limite diario exige POSITIVO, no solo no-negativo.
+    expect(applyNumber(base, "dailySpendLimitUsd", 0).dailySpendLimitUsd).toBeGreaterThan(0);
+  });
+
+  it("solo los modos ciclan a live; el resto de interruptores no", () => {
+    expect(isModeId("arbMode")).toBe(true);
+    expect(isModeId("directionalMode")).toBe(true);
+    expect(isModeId("arbEnabled")).toBe(false);
   });
 
   it("toggles a top-level flag on a fresh clone", () => {

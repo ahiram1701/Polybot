@@ -355,6 +355,49 @@ components:
           type: string
           enum: [heredado, sim, live]
           description: Modo del direccional, independiente del arbitraje. Mismas advertencias que arbMode.
+        # --- Limites de riesgo. Cual aplica a que estrategia esta en docs/MANUAL.md seccion 6. ---
+        maxDailyLossUsd:
+          type: number
+          description: Perdida realizada del dia que detiene el DIRECCIONAL. 0 = desactivado. NO frena el arbitraje.
+        maxConsecutiveLosses:
+          type: integer
+          description: Mismo freno por racha en vez de por importe. 0 = desactivado. NO frena el arbitraje.
+        riskHaltCooldownHours:
+          type: number
+          description: Tras saltar el freno, horas hasta rearmarse. No espera al cambio de dia.
+        minBankrollForDirectionalUsd:
+          type: number
+          description: Capital minimo para que el direccional opere en live. El arbitraje no pasa por esta puerta.
+        liveBankrollUsd:
+          type: number
+          description: Capital declarado. Solo se usa si falla la lectura on-chain, para no confundir un RPC caido con quedarse sin fondos.
+        dailySpendLimitUsd:
+          type: number
+          description: Tope bruto de gasto del dia, contado POR MODO (las operaciones de papel no consumen el presupuesto real).
+        liveMaxSlippage:
+          type: number
+          description: Cuanto puede alejarse el precio de la orden del mejor ask observado.
+        maxAskPriceCeiling:
+          type: number
+          description: Techo duro de ask para cualquier trade y para el autoajuste.
+        # --- Arbitraje ---
+        arbEnabled: { type: boolean }
+        arb15mEnabled:
+          type: boolean
+          description: Arbitraje tambien en ventanas de 15m. SOLO arbitraje; el direccional sigue en 5m.
+        arbMaxUsdPerOpportunity:
+          type: number
+          description: Presupuesto de las dos patas juntas. En live el colateral leido on-chain lo acota ademas por debajo.
+        arbMinNetPerSet:
+          type: number
+          description: Margen minimo por set tras comisiones para mandar el par.
+        arbNakedLegHaltStreak:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: >-
+            Patas sueltas seguidas antes de dejar de intentar arbitrajes. Una pata suelta es una apuesta
+            direccional que nadie pidio. Rearma al reiniciar el bot, no solo.
         minBtcDistanceUsd: { type: number }
         enabledMarkets:
           type: array

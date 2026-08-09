@@ -15,6 +15,12 @@ export interface SettingsField {
   kind: FieldKind;
   /** Display value for toggle/number rows; undefined for headers. */
   value?: string;
+  /**
+   * Explicacion de una linea. La TUI no tiene tooltips, asi que hasta ahora no habia NINGUN sitio
+   * donde poner ayuda — por eso el aviso de LIVE va metido dentro del propio valor. `renderSettings`
+   * la pinta solo para la fila seleccionada: una linea por fila duplicaria una lista que ya no cabe.
+   */
+  help?: string;
   /** Headers are shown but skipped during navigation/editing. */
   editable: boolean;
 }
@@ -50,6 +56,100 @@ const MODE_LABELS: Record<(typeof MODE_KEYS)[number], string> = {
   directionalMode: "Modo del direccional",
 };
 const MODE_CYCLE = ["heredado", "sim", "live"] as const;
+
+/**
+ * Los ajustes que acotan DINERO. Se listan en una tabla y no a mano porque el test de paridad recorre
+ * esta misma lista: añadir aqui un limite obliga a que exista su fila, y no se puede quedar solo en la
+ * web como paso con los nueve anteriores.
+ *
+ * Los rangos replican los del esquema zod (`src/ui/settings.ts`). Validar aqui tambien evita mandar un
+ * PUT que el servidor va a rechazar despues.
+ */
+interface RiskFieldSpec {
+  key: keyof UiSettings;
+  label: string;
+  help: string;
+  min: number;
+  max?: number;
+  integer?: boolean;
+  format: (value: number) => string;
+}
+
+const RISK_FIELDS: readonly RiskFieldSpec[] = [
+  {
+    key: "maxDailyLossUsd",
+    label: "Pérdida diaria máx",
+    help: "Para el DIRECCIONAL si la pérdida realizada del día lo cruza. 0 = desactivado. No frena el arbitraje.",
+    min: 0,
+    format: fmtUsd,
+  },
+  {
+    key: "maxConsecutiveLosses",
+    label: "Pérdidas seguidas máx",
+    help: "Mismo freno que el anterior pero por racha en vez de por importe. 0 = desactivado.",
+    min: 0,
+    integer: true,
+    format: (v) => String(v),
+  },
+  {
+    key: "riskHaltCooldownHours",
+    label: "Enfriamiento (horas)",
+    help: "Tras saltar el freno, cuánto espera antes de rearmarse. No espera al día siguiente.",
+    min: 0,
+    format: (v) => `${v} h`,
+  },
+  {
+    key: "minBankrollForDirectionalUsd",
+    label: "Capital mín direccional",
+    help: "Por debajo de esto el direccional NO opera en live. El arbitraje sí: es con lo que se crece.",
+    min: 0,
+    format: fmtUsd,
+  },
+  {
+    key: "liveBankrollUsd",
+    label: "Capital declarado",
+    help: "Solo se usa si falla la lectura on-chain, para no confundir un RPC caído con quedarse sin fondos.",
+    min: 0,
+    format: fmtUsd,
+  },
+  {
+    key: "liveMaxSlippage",
+    label: "Deslizamiento máx",
+    help: "Cuánto puede alejarse el precio de la orden del mejor ask observado.",
+    min: 0,
+    max: 0.99,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "arbMaxUsdPerOpportunity",
+    label: "Arb — máx por oportunidad",
+    help: "Presupuesto de las dos patas juntas. El colateral real leído on-chain lo acota además por debajo.",
+    min: 0.01,
+    format: fmtUsd,
+  },
+  {
+    key: "arbMinNetPerSet",
+    label: "Arb — ganancia mín por set",
+    help: "Margen mínimo tras comisiones para mandar el par. Por debajo, solo se observa.",
+    min: 0,
+    max: 0.5,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "arbNakedLegHaltStreak",
+    label: "Arb — patas sueltas antes de parar",
+    help: "Si una pata llena y la otra no, queda una apuesta desnuda. Rearma al reiniciar el bot.",
+    min: 1,
+    max: 10,
+    integer: true,
+    format: (v) => String(v),
+  },
+];
+
+const RISK_FIELD_BY_ID = new Map(RISK_FIELDS.map((field) => [String(field.key), field]));
+
+/** Claves que acotan dinero. La usa el test de paridad entre la web y la TUI. */
+export const TUI_RISK_KEYS: readonly string[] = RISK_FIELDS.map((field) => String(field.key));
 
 function modeValueLabel(value: string): string {
   // El aviso va en el propio valor porque en la TUI no hay tooltip donde esconderlo.
@@ -100,6 +200,18 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   fields.push({ id: "askFloorAll", label: "Ask piso (todos)", kind: "number", value: floor === undefined ? "mixto" : floor.toFixed(2), editable: true });
   fields.push({ id: "askCapAll", label: "Ask techo (todos)", kind: "number", value: cap === undefined ? "mixto" : cap.toFixed(2), editable: true });
 
+  header("Límites de riesgo");
+  for (const field of RISK_FIELDS) {
+    fields.push({
+      id: String(field.key),
+      label: field.label,
+      kind: "number",
+      value: field.format(Number(settings[field.key])),
+      help: field.help,
+      editable: true,
+    });
+  }
+
   header("Mercados — activar / monto por trade");
   for (const m of MARKETS) {
     for (const o of OUTCOMES) {
@@ -116,6 +228,11 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   }
 
   return fields;
+}
+
+/** Si el campo es el modo de una estrategia. Esos ciclan en vez de alternar, y pueden entrar en live. */
+export function isModeId(id: string): boolean {
+  return (MODE_KEYS as readonly string[]).includes(id);
 }
 
 export function isToggleId(id: string): boolean {
@@ -155,7 +272,18 @@ export function applyNumber(settings: UiSettings, id: string, value: number): Ui
   const next = structuredClone(settings);
 
   if (id === "dailySpendLimitUsd") {
-    next.dailySpendLimitUsd = Math.max(0, value);
+    // El esquema exige POSITIVO: con `Math.max(0, ...)` un 0 pasaba el cliente y el PUT fallaba
+    // despues con un error de validacion que no explicaba nada.
+    next.dailySpendLimitUsd = Math.max(0.01, value);
+    return next;
+  }
+  const risk = RISK_FIELD_BY_ID.get(id);
+  if (risk) {
+    let clamped = Math.max(risk.min, risk.max === undefined ? value : Math.min(risk.max, value));
+    if (risk.integer) {
+      clamped = Math.round(clamped);
+    }
+    (next as unknown as Record<string, unknown>)[id] = clamped;
     return next;
   }
   if (id === "askCapAll") {
