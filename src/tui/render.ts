@@ -118,8 +118,16 @@ function runningBadge(status: CompactStatus): string {
   if (!status.running) {
     return gray("○ detenido");
   }
-  const mode = status.mode === "live" ? red(bold("LIVE")) : green(bold("SIM"));
-  return `${green("●")} corriendo ${mode}`;
+  const badge = (label: string, mode: string | undefined) =>
+    mode === "live" ? red(bold(`${label} LIVE`)) : green(bold(`${label} SIM`));
+  // Una insignia por estrategia. Una sola no vale desde que pueden correr en modos distintos: diria
+  // "SIM" con el arbitraje moviendo dinero real.
+  const arb = status.effectiveModes?.arb ?? status.mode;
+  const dir = status.effectiveModes?.directional ?? status.mode;
+  if (arb !== dir) {
+    return `${green("●")} corriendo ${badge("arb", arb)} ${badge("dir", dir)}`;
+  }
+  return `${green("●")} corriendo ${arb === "live" ? red(bold("LIVE")) : green(bold("SIM"))}`;
 }
 
 function pnlLines(title: string, pnl: CompactStatus["pnlByMode"]["sim"], active: boolean): string[] {

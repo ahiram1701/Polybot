@@ -319,7 +319,15 @@ components:
       type: object
       properties:
         running: { type: boolean }
-        mode: { type: string, enum: [sim, live] }
+        mode: { type: string, enum: [sim, live], description: Modo de ARRANQUE. Puede no reflejar si hay dinero en juego, ver effectiveModes. }
+        effectiveModes:
+          type: object
+          description: >-
+            Modo ya resuelto de cada estrategia. Es la fuente de verdad sobre si se mueve dinero real:
+            un bot arrancado en sim puede tener el arbitraje en live.
+          properties:
+            arb: { type: string, enum: [sim, live] }
+            directional: { type: string, enum: [sim, live] }
         startedAtMs: { type: number }
         lastError: { type: string }
         settings: { $ref: "#/components/schemas/Settings" }
@@ -337,6 +345,16 @@ components:
       type: object
       description: Settings del bot (todas las claves opcionales en PATCH).
       properties:
+        arbMode:
+          type: string
+          enum: [heredado, sim, live]
+          description: >-
+            Modo del arbitraje, independiente del direccional. "heredado" usa el modo de arranque.
+            Ponerlo en "live" NO pide confirmacion y cualquier reinicio lo reanuda; exige clave en .env.
+        directionalMode:
+          type: string
+          enum: [heredado, sim, live]
+          description: Modo del direccional, independiente del arbitraje. Mismas advertencias que arbMode.
         minBtcDistanceUsd: { type: number }
         enabledMarkets:
           type: array

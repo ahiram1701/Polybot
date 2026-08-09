@@ -105,6 +105,17 @@ export interface BotConfig {
    * necesitaria una dimension de duracion en todos los ajustes por mercado y no hay evidencia de que
    * pague ni en 5m.
    */
+  /**
+   * Modo de cada estrategia, por separado.
+   *
+   * Permite lo que de verdad hace falta aqui: arbitraje con dinero real —es lo unico que gana— y
+   * direccional en papel, aprendiendo sin costar nada. Sin esto el modo era global y las dos
+   * compartian destino, aunque su rentabilidad medida sea opuesta.
+   *
+   * Ausente = se hereda el modo global, asi que una configuracion antigua se comporta igual que antes.
+   */
+  arbMode?: Mode;
+  directionalMode?: Mode;
   arb15mEnabled?: boolean;
   arbMaxUsdPerOpportunity?: number;
   // Minimum net profit per set (post-fee) required to execute; crumbs below this are only observed.

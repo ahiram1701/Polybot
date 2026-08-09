@@ -91,6 +91,12 @@ const settingsSchema = z.object({
   minBankrollForDirectionalUsd: z.coerce.number().nonnegative().default(50),
   riskHaltCooldownHours: z.coerce.number().nonnegative().default(2),
   arbEnabled: z.boolean().default(false),
+  /**
+   * Modo de cada estrategia. "heredado" = usa el modo con el que arranco el bot, que es como se
+   * comportaba antes de existir estos ajustes.
+   */
+  arbMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
+  directionalMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   arb15mEnabled: z.boolean().default(false),
   arbMaxUsdPerOpportunity: z.coerce.number().positive().default(25),
   arbMinNetPerSet: z.coerce.number().nonnegative().default(0.02),
@@ -235,6 +241,8 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? 50,
     riskHaltCooldownHours: config.riskHaltCooldownHours ?? 2,
     arbEnabled: config.arbEnabled ?? false,
+    arbMode: config.arbMode ?? "heredado",
+    directionalMode: config.directionalMode ?? "heredado",
     arb15mEnabled: Boolean(config.arb15mEnabled ?? false),
     arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? 25,
     arbMinNetPerSet: config.arbMinNetPerSet ?? 0.02,
@@ -321,6 +329,8 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     // Sin esta linea el ajuste existe en la UI, se guarda, se muestra encendido... y el runner no se
     // entera. Es el MISMO fallo que tuvo el piso de ask: `applySettings` construye la config con la
     // que arranca el bot, y lo que no se copie aqui simplemente no existe para el.
+    arbMode: settings.arbMode === "heredado" ? undefined : settings.arbMode,
+    directionalMode: settings.directionalMode === "heredado" ? undefined : settings.directionalMode,
     arb15mEnabled: settings.arb15mEnabled,
     arbMaxUsdPerOpportunity: settings.arbMaxUsdPerOpportunity,
     arbMinNetPerSet: settings.arbMinNetPerSet,

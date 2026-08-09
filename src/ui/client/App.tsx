@@ -111,6 +111,20 @@ const hideAmountsStorageKey = "polybot-hide-amounts";
 const MASKED_AMOUNT = "$ ••••";
 const analysisAutoRefreshMs = 60_000;
 
+/**
+ * Etiqueta del modo en marcha. Muestra las dos estrategias por separado en cuanto difieren: una sola
+ * insignia diria "SIM" con el arbitraje moviendo dinero real, que es justo la confusion que hay que
+ * evitar.
+ */
+function runningModeLabel(status: UiStatus): string {
+  const arb = status.effectiveModes?.arb ?? status.mode;
+  const dir = status.effectiveModes?.directional ?? status.mode;
+  if (arb !== dir) {
+    return `arb ${String(arb).toUpperCase()} · dir ${String(dir).toUpperCase()}`;
+  }
+  return String(arb).toUpperCase();
+}
+
 const emptySettings: UiSettings = {
   minBtcDistanceUsd: 20,
   enabledMarkets: ["BTC"],
@@ -172,6 +186,8 @@ const emptySettings: UiSettings = {
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,
+  arbMode: "heredado",
+  directionalMode: "heredado",
   arb15mEnabled: false,
   arbMaxUsdPerOpportunity: 25,
   arbMinNetPerSet: 0.02,
@@ -742,7 +758,7 @@ export function Dashboard({
         <section className="panel hero-panel markets-panel">
           <div className="status-line">
             <span className={`status-dot ${status?.running ? "on" : "off"}`} />
-            {status?.running ? `Corriendo ${status.mode?.toUpperCase()}` : "Detenido"}
+            {status?.running ? `Corriendo ${runningModeLabel(status)}` : "Detenido"}
           </div>
           <div className="market-card-grid">
             {marketSnapshots.map((market) => (
@@ -2202,6 +2218,56 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           cierre. Solo se opera cuando el mejor ask cae dentro de esa ventana. Puedes afinar cada lado abajo; si
           difieren, el campo muestra "mixto".
         </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <DollarSign size={18} />
+          <h2>Modo por estrategia</h2>
+        </div>
+        <p className="settings-hint">
+          Cada estrategia elige si opera con dinero real o en papel, sin arrastrar a la otra. Es lo que
+          permite lo único que tiene sentido con los números de hoy: <strong>arbitraje en live</strong>,
+          que es lo que gana, y <strong>direccional en sim</strong>, que sigue aprendiendo sin costar
+          nada. Su P&amp;L, su límite de gasto diario y su freno de pérdidas van por separado, así que
+          una racha mala en papel no puede parar el dinero real.
+        </p>
+        <div className="settings-grid">
+          <label className="field">
+            <span>Arbitraje</span>
+            <select
+              value={draft.arbMode}
+              onChange={(event) => update("arbMode", event.target.value as UiSettings["arbMode"])}
+              disabled={running}
+            >
+              <option value="heredado">Heredado (el modo con el que arranca el bot)</option>
+              <option value="sim">Simulación (papel)</option>
+              <option value="live">LIVE — dinero real</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Direccional</span>
+            <select
+              value={draft.directionalMode}
+              onChange={(event) =>
+                update("directionalMode", event.target.value as UiSettings["directionalMode"])
+              }
+              disabled={running}
+            >
+              <option value="heredado">Heredado (el modo con el que arranca el bot)</option>
+              <option value="sim">Simulación (papel)</option>
+              <option value="live">LIVE — dinero real</option>
+            </select>
+          </label>
+        </div>
+        {(draft.arbMode === "live" || draft.directionalMode === "live") && (
+          <p className="settings-hint settings-hint-warn">
+            <strong>Ojo:</strong> el ajuste basta por sí solo, no hay confirmación al arrancar. Eso
+            significa que cualquier reinicio —incluido el automático del watchdog— reanuda esa
+            estrategia con dinero real sin que nadie lo apruebe. Sigue haciendo falta la clave privada
+            configurada en <code>.env</code>.
+          </p>
+        )}
       </section>
 
       <section className="settings-advanced">

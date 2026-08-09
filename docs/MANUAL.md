@@ -138,6 +138,29 @@ El orden recomendado, y el motivo de cada paso:
 4. **Arranca live explícitamente**, con `confirmLive`. Nunca ocurre solo.
 5. **Vigila el primer día** con el cortacircuitos puesto a un valor que de verdad pueda dispararse.
 
+### Modo por estrategia (Ajustes → «Modo por estrategia»)
+
+`arbMode` y `directionalMode` eligen, cada uno por su cuenta, si esa estrategia opera con dinero real o
+en papel. `heredado` = usa el modo con el que arrancó el bot, que es como se comportaba antes de existir
+estos ajustes.
+
+El reparto que sugieren los números de hoy es **arbitraje en `live` y direccional en `sim`**: el
+arbitraje es lo único que gana, y el direccional sigue generando muestras sin costar nada.
+
+Van de verdad por separado. Cada estrategia tiene su propio P&L (se agrupa por el modo que estampa el
+motor que la ejecutó), su propio contador de gasto diario y su propio freno de pérdidas — así una racha
+mala en papel no puede parar el dinero real. El arbitraje además nunca pasa por el cortacircuitos, por
+la razón de siempre: un par completo redime $1/set gane quien gane.
+
+**Lo que hay que tener claro antes de ponerlo en `live`:** aquí el ajuste basta por sí solo, no hay
+confirmación al arrancar. Eso es deliberado —permite que el watchdog reinicie sin intervención—, pero
+significa que **cualquier reinicio reanuda esa estrategia con dinero real** sin que nadie lo apruebe. Lo
+único que sigue siendo obligatorio es la clave privada en `.env`: sin ella el arranque falla en el acto,
+en vez de fallar oportunidad a oportunidad.
+
+En la cabecera (web y TUI) las dos estrategias aparecen por separado en cuanto sus modos difieren
+(`arb LIVE · dir SIM`). Una sola insignia diría «SIM» con el arbitraje moviendo dinero real.
+
 ---
 
 ## 8. Problemas comunes

@@ -114,6 +114,47 @@ describe("BotController", () => {
     controller.dispose();
   });
 
+  it("el runner viejo no borra el estado del nuevo tras un stop seguido de start", async () => {
+    // Como el bucle real: `stop()` pide parar, pero la promesa de `start()` no se resuelve hasta que
+    // termina la iteracion en curso — o sea, despues de que el siguiente runner ya se registro.
+    class RunnerQueTardaEnParar implements RunnerLike {
+      private resolver?: () => void;
+      async start(): Promise<void> {
+        return new Promise<void>((resolve) => {
+          this.resolver = resolve;
+        });
+      }
+      stop(): void {
+        // 25ms: lo bastante para llegar DESPUES de que el siguiente start se haya registrado, que es
+        // cuando el fallo aparece. Con 0ms el `finally` se adelanta al nuevo runner y no reproduce nada.
+        setTimeout(() => this.resolver?.(), 25);
+      }
+    }
+    const creados: RunnerQueTardaEnParar[] = [];
+    const controller = new BotController(await baseConfig(), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => {
+        const runner = new RunnerQueTardaEnParar();
+        creados.push(runner);
+        return runner;
+      },
+    });
+
+    await controller.start("sim");
+    await controller.stop();
+    await controller.start("sim");
+    // Tiempo de sobra para que el `finally` del primero llegue tarde.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(creados.length).toBe(2);
+    // Sin la guardia esto daba false: el bucle nuevo seguia corriendo pero el controlador lo daba por
+    // detenido, y con `runner` a undefined el boton de parar ya no lo alcanzaba.
+    expect((await controller.getStatus()).running).toBe(true);
+    await controller.stop();
+    controller.dispose();
+  });
+
   it("prevents two runners from starting at once", async () => {
     const controller = new BotController(await baseConfig(), {
       startPriceFeed: false,
@@ -123,6 +164,40 @@ describe("BotController", () => {
 
     await controller.start("sim");
     await expect(controller.start("sim")).rejects.toMatchObject({ statusCode: 409 });
+    controller.dispose();
+  });
+
+  it("una estrategia en live dentro de un arranque en sim exige credenciales", async () => {
+    // El usuario decidio que el ajuste baste y no haya confirmacion al arrancar, para que el watchdog
+    // pueda reiniciar solo. Lo que no se salta es la clave: sin ella cada oportunidad de arbitraje
+    // fallaria al ejecutar, y enterarse asi es la peor forma posible.
+    const controller = new BotController(await baseConfig({ extra: { arbMode: "live" } }), {
+      env: {},
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await expect(controller.start("sim")).rejects.toBeInstanceOf(ControllerError);
+    controller.dispose();
+  });
+
+  it("con credenciales, arranca en sim con el arbitraje en live y lo dice sin confirmacion", async () => {
+    const controller = new BotController(
+      await baseConfig({ withSecrets: true, extra: { arbMode: "live", directionalMode: "sim" } }),
+      {
+        env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+        startPriceFeed: false,
+        snapshotProvider: fixedSnapshot,
+        runnerFactory: () => new FakeRunner(),
+      },
+    );
+
+    const status = await controller.start("sim");
+    expect(status.running).toBe(true);
+    // La insignia tiene que decir la verdad: hay dinero real en juego aunque el arranque sea "sim".
+    expect(status.effectiveModes).toEqual({ arb: "live", directional: "sim" });
+    await controller.stop();
     controller.dispose();
   });
 
@@ -216,7 +291,7 @@ function simTrade(slug: string): TradeAttempt {
   };
 }
 
-async function baseConfig(options: { withSecrets?: boolean } = {}): Promise<BotConfig> {
+async function baseConfig(options: { withSecrets?: boolean; extra?: Partial<BotConfig> } = {}): Promise<BotConfig> {
   const dataDir = await mkdtemp(join(tmpdir(), "polybot-ui-"));
   temps.push(dataDir);
   return {
@@ -243,6 +318,7 @@ async function baseConfig(options: { withSecrets?: boolean } = {}): Promise<BotC
     signatureType: 0,
     privateKey: options.withSecrets ? (`0x${"1".repeat(64)}` as `0x${string}`) : undefined,
     funderAddress: options.withSecrets ? (`0x${"2".repeat(40)}` as `0x${string}`) : undefined,
+    ...options.extra,
   };
 }
 
@@ -304,6 +380,30 @@ describe("los interruptores de settings llegan al runner", () => {
       }
     }
     expect(sinPropagar).toEqual([]);
+  });
+});
+
+describe("el modo de cada estrategia llega al runner", () => {
+  it("arbMode y directionalMode se copian a la config aplicada", async () => {
+    const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");
+    const config = await baseConfig();
+    const base = settingsFromConfig(config);
+
+    // El guardia generico de arriba solo recorre booleanos, asi que estos dos ajustes —los unicos que
+    // deciden si se mueve dinero real— se quedarian fuera de el. Aqui se comprueban a mano.
+    const aplicado = applySettings(config, { ...base, arbMode: "live", directionalMode: "sim" });
+    expect(aplicado.arbMode).toBe("live");
+    expect(aplicado.directionalMode).toBe("sim");
+  });
+
+  it('"heredado" no fija modo, para que mande el de arranque', async () => {
+    const { applySettings, settingsFromConfig } = await import("../src/ui/settings.js");
+    const config = await baseConfig();
+    const base = settingsFromConfig(config);
+
+    const aplicado = applySettings(config, { ...base, arbMode: "heredado", directionalMode: "heredado" });
+    expect(aplicado.arbMode).toBeUndefined();
+    expect(aplicado.directionalMode).toBeUndefined();
   });
 });
 

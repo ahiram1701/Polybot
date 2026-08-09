@@ -47,6 +47,8 @@ export interface UiSettings {
   // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
   arbEnabled: boolean;
   /** Arbitraje tambien en 15m. Solo arbitraje: el direccional se queda en 5m. */
+  arbMode: "heredado" | "sim" | "live";
+  directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;
   arbMaxUsdPerOpportunity: number;
   arbMinNetPerSet: number;
@@ -121,9 +123,21 @@ export interface MarketStatusSnapshot {
   signal: SignalSnapshot;
 }
 
+/**
+ * Modo ya resuelto de cada estrategia: lo que de verdad va a pasar, no lo que dice el ajuste.
+ *
+ * Se publica resuelto —y no se deja que cada pantalla lo deduzca de `settings` y del modo global— para
+ * que ninguna pueda poner una insignia "SIM" sobre una estrategia que esta moviendo dinero real.
+ */
+export interface EffectiveModes {
+  arb: Mode;
+  directional: Mode;
+}
+
 export interface UiStatus {
   running: boolean;
   mode?: Mode;
+  effectiveModes: EffectiveModes;
   startedAtMs?: number;
   lastError?: string;
   config: SanitizedConfig;

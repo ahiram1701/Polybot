@@ -409,14 +409,21 @@ export class BotController {
     const config = this.buildRuntimeConfig(mode, confirmLive, settings);
     if (mode === "live") {
       this.assertLiveAllowed(confirmLive);
+    } else if (config.arbMode === "live" || config.directionalMode === "live") {
+      // Una estrategia en live dentro de un arranque en sim. Por decision explicita del usuario el
+      // ajuste basta y NO se pide confirmacion aqui: asi el watchdog puede reiniciar solo. Lo que no se
+      // salta es la comprobacion de credenciales — sin ellas cada oportunidad fallaria al ejecutar, que
+      // es la peor forma de enterarse.
+      this.assertLiveReady();
     }
 
-    this.runner = this.runnerFactory(config);
+    const runner = this.runnerFactory(config);
+    this.runner = runner;
     this.mode = mode;
     this.startedAtMs = Date.now();
     this.lastError = undefined;
 
-    this.runnerPromise = this.runner
+    this.runnerPromise = runner
       .start()
       .catch((error) => {
         this.lastError = error instanceof Error ? error.message : String(error);
@@ -430,6 +437,17 @@ export class BotController {
         });
       })
       .finally(() => {
+        // Solo limpia si este runner SIGUE siendo el vigente.
+        //
+        // `stop()` borra las referencias en el acto, pero el runner viejo tarda en terminar su
+        // iteracion. En un stop -> start seguido, su `finally` llegaba despues de que el nuevo ya se
+        // hubiera registrado y le borraba el estado: el bucle nuevo seguia operando mientras la UI
+        // decia "detenido" y `this.runner` estaba a undefined, o sea que el boton de parar ya no lo
+        // alcanzaba. Un runner huerfano. Con modos por estrategia eso puede ser dinero real operando
+        // detras de una insignia que dice lo contrario.
+        if (this.runner !== runner) {
+          return;
+        }
         this.runnerPromise = undefined;
         this.runner = undefined;
         this.startedAtMs = undefined;
@@ -1229,6 +1247,12 @@ export class BotController {
     return {
       running: this.runnerPromise !== undefined,
       mode: this.mode,
+      effectiveModes: {
+        // Con el bot parado `this.mode` no existe todavia; el heredado es entonces el de la config.
+        arb: settings.arbMode === "heredado" ? this.mode ?? config.mode : settings.arbMode,
+        directional:
+          settings.directionalMode === "heredado" ? this.mode ?? config.mode : settings.directionalMode,
+      },
       startedAtMs: this.startedAtMs,
       lastError: this.lastError,
       config: this.sanitizeConfig(config, settings),
@@ -1594,6 +1618,8 @@ export class BotController {
       minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? settings.minBankrollForDirectionalUsd,
       riskHaltCooldownHours: config.riskHaltCooldownHours ?? settings.riskHaltCooldownHours,
       arbEnabled: config.arbEnabled ?? settings.arbEnabled,
+      arbMode: config.arbMode ?? settings.arbMode,
+      directionalMode: config.directionalMode ?? settings.directionalMode,
       arb15mEnabled: config.arb15mEnabled ?? settings.arb15mEnabled,
       arbMaxUsdPerOpportunity: config.arbMaxUsdPerOpportunity ?? settings.arbMaxUsdPerOpportunity,
       arbMinNetPerSet: config.arbMinNetPerSet ?? settings.arbMinNetPerSet,
@@ -1643,6 +1669,10 @@ export class BotController {
     if (!confirmLive) {
       throw new ControllerError("Live mode requires explicit confirmation.", 400);
     }
+    this.assertLiveReady();
+  }
+
+  private assertLiveReady(): void {
     const live = this.getLiveReadiness();
     if (!live.ready) {
       throw new ControllerError("Live mode requires private key, funder address, and signature type in .env.", 400);

@@ -151,6 +151,13 @@ export interface RunnerPriceFeed {
 
 interface BotDependencies {
   watcher: MarketWatcherLike;
+  /**
+   * Ejecutores por modo. Con estrategias en modos distintos hacen falta los DOS a la vez: el de
+   * simulacion para la que aprende y el real para la que gana. Opcional para no romper los dobles de
+   * test, que inyectan uno solo.
+   */
+  executorByMode?: Partial<Record<Mode, TradeExecutor>>;
+  reconcilerByMode?: Partial<Record<Mode, TradeReconciler>>;
   orderbook: OrderbookService;
   priceFeed: RunnerPriceFeed;
   /** When false the price feed is shared/owned externally and must not be stopped by the runner. */
@@ -179,6 +186,11 @@ interface TradeSignal {
 }
 
 interface TradeCandidate extends TradeSignal {
+  /**
+   * Que estrategia lo genero. Decide con que modo se ejecuta —y por tanto si mueve dinero real—, asi
+   * que no es una etiqueta informativa. Ausente = direccional, que es de donde vienen casi todos.
+   */
+  strategy?: "arb" | "dir";
   quote: OrderbookQuote;
   expectedValue?: ExpectedValueSnapshot;
   // True when this trade only cleared the gate via the bounded cold-start exploration path (short
@@ -273,6 +285,16 @@ export class BotRunner {
       state: new StateStore(config.dataDir, config.timezone),
       executor: config.mode === "live" ? new LiveExecutionEngine(config) : new SimulationExecutionEngine(config),
       reconciler: config.mode === "live" ? new LiveTradeReconciler(config) : new NoopTradeReconciler(),
+      // Los dos disponibles a la vez: con arbitraje en live y direccional en sim hacen falta ambos en la
+      // misma iteracion. El motor live se construye siempre, pero solo lo usa quien tenga modo live.
+      executorByMode: {
+        sim: new SimulationExecutionEngine(config),
+        live: new LiveExecutionEngine(config),
+      },
+      reconcilerByMode: {
+        sim: new NoopTradeReconciler(),
+        live: new LiveTradeReconciler(config),
+      },
       analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
       strategyAnalysisEngine: new StrategyAnalysisEngine(config.dataDir),
       notifier: createDynamicNotifier(config),
@@ -473,11 +495,18 @@ export class BotRunner {
     const tradeSignals: TradeSignal[] = [];
     this.arbCommittedUsdThisIteration = 0;
     const analyticsQuotesBySlug = new Map<string, Partial<Record<Outcome, OrderbookQuote>>>();
-    const dailySpendUsd = this.deps.state.getDailySpend(nowMs);
+    const directionalMode = this.modeFor("dir");
+    const dailySpendUsd = this.deps.state.getDailySpend(nowMs, undefined, directionalMode);
     let reservedSpendUsd = 0;
+    // Cortacircuitos SOLO del direccional, con el modo del direccional y sus propias operaciones.
+    //
+    // Las dos exclusiones son deliberadas. El arbitraje queda fuera porque un par completo redime $1/set
+    // gane quien gane: pararlo por una racha ajena seria dejar de recoger dinero sin riesgo. Y el modo es
+    // el suyo, no el global, porque si no una racha de perdidas en papel podria frenar dinero real —o al
+    // reves, y eso es peor: unas ganancias simuladas tapando perdidas reales.
     const riskHalt = evaluateRiskCircuitBreaker(
-      this.deps.state.listTrades(),
-      this.config.mode,
+      this.deps.state.listTrades().filter((trade) => trade.kind !== "arb"),
+      directionalMode,
       {
         maxDailyLossUsd: this.config.maxDailyLossUsd,
         maxConsecutiveLosses: this.config.maxConsecutiveLosses,
@@ -485,7 +514,7 @@ export class BotRunner {
         timeZone: this.config.timezone,
       },
       nowMs,
-      this.deps.state.getRiskHaltResetAtMs?.()?.[this.config.mode] ?? 0,
+      this.deps.state.getRiskHaltResetAtMs?.()?.[directionalMode] ?? 0,
     );
     if (riskHalt.tripped) {
       this.notifyRiskHalt(riskHalt, nowMs);
@@ -767,7 +796,9 @@ export class BotRunner {
 
     for (const trade of trades) {
       try {
-        const reconciled = await this.deps.reconciler.reconcile(trade, nowMs);
+        const reconciled = await (
+          this.deps.reconcilerByMode?.[trade.mode] ?? this.deps.reconciler
+        ).reconcile(trade, nowMs);
         if (reconciled) {
           await this.deps.state.recordTradeReconciliation(reconciled);
         }
@@ -891,7 +922,7 @@ export class BotRunner {
     nowMs: number;
     reservedDailySpendUsd: number;
   }): TradeSignal | undefined {
-    if (this.deps.state.hasTraded(args.market.slug, this.config.mode)) {
+    if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"))) {
       this.logSkipOnce(args.market.slug, "market_already_traded");
       return undefined;
     }
@@ -903,7 +934,7 @@ export class BotRunner {
     // justamente con lo que se hace crecer el capital hasta cruzar el umbral. Sim sigue operando todo
     // para no dejar de generar muestras.
     const minBankrollUsd = this.config.minBankrollForDirectionalUsd ?? 0;
-    if (this.config.mode === "live" && minBankrollUsd > 0) {
+    if (this.modeFor("dir") === "live" && minBankrollUsd > 0) {
       // `source: "unknown"` = ni se pudo leer on-chain ni hay valor declarado. No se bloquea por no
       // saber: bloquear por un RPC caido seria un fallo de red disfrazado de politica de riesgo.
       const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
@@ -1465,7 +1496,7 @@ export class BotRunner {
 
   private async executeTradeCandidate(candidate: TradeCandidate): Promise<TradeExecutionResult> {
     try {
-      const trade = await this.deps.executor.execute({
+      const trade = await this.executorFor(this.modeFor(candidate.strategy ?? "dir")).execute({
         market: candidate.market,
         outcome: candidate.outcome,
         amountUsd: candidate.amountUsd,
@@ -1524,6 +1555,23 @@ export class BotRunner {
   private noteProbeUsed(market: MarketSymbol, nowMs: number): void {
     const key = `${dailySpendKey(nowMs, this.config.timezone)}:${market}`;
     this.probeCountByDayMarket.set(key, (this.probeCountByDayMarket.get(key) ?? 0) + 1);
+  }
+
+  /**
+   * Modo de una estrategia concreta. Ausente en config = se hereda el global, asi que nada cambia
+   * para quien no lo configure.
+   *
+   * Todo lo que dependa del modo —el ejecutor, el ledger, el limite de gasto, el cortacircuitos— debe
+   * pasar por aqui y no por `config.mode`. Si una estrategia opera en live y su P&L se anota en sim,
+   * el dinero real desaparece de las cuentas.
+   */
+  private modeFor(strategy: "arb" | "dir"): Mode {
+    return (strategy === "arb" ? this.config.arbMode : this.config.directionalMode) ?? this.config.mode;
+  }
+
+  /** Ejecutor del modo pedido. Cae al inyectado cuando no hay uno por modo (dobles de test). */
+  private executorFor(mode: Mode): TradeExecutor {
+    return this.deps.executorByMode?.[mode] ?? this.deps.executor;
   }
 
   /** Piso de ask configurado (0.01 = sin piso). */
@@ -1731,7 +1779,7 @@ export class BotRunner {
     if (opportunity.netPerSet < minNetPerSet || this.postOnlySlugs.has(market.slug)) {
       return;
     }
-    if (this.deps.state.hasTraded(arbSlug, this.config.mode)) {
+    if (this.deps.state.hasTraded(arbSlug, this.modeFor("arb"))) {
       return;
     }
     if (!market.active || market.closed || !market.acceptingOrders) {
@@ -1748,7 +1796,10 @@ export class BotRunner {
     // El tope diario ACOTA el tamaño en vez de rechazar la oportunidad entera: antes se dimensionaba
     // solo por presupuesto y luego se descartaba si no cabía, tirando arbitrajes que sí cabían más
     // pequeños. Un arbitraje es rentable por set, así que uno pequeño sigue siendo dinero.
-    const dailyRoomUsd = Math.max(0, this.config.dailySpendLimitUsd - this.deps.state.getDailySpend(nowMs));
+    const dailyRoomUsd = Math.max(
+      0,
+      this.config.dailySpendLimitUsd - this.deps.state.getDailySpend(nowMs, undefined, this.modeFor("arb")),
+    );
     let affordableUsd = Math.min(budgetUsd, dailyRoomUsd);
 
     // En LIVE el tamaño no puede superar el colateral REAL. Intentar un arbitraje que no se puede
@@ -1756,7 +1807,7 @@ export class BotRunner {
     // queda sin fondos, y lo que iba a ser una posicion sin riesgo direccional se convierte en una
     // apuesta desnuda. Con $10 de saldo y un presupuesto de $25, eso pasaria en CADA oportunidad.
     // En sim no aplica: no hay colateral que agotar.
-    if (this.config.mode === "live") {
+    if (this.modeFor("arb") === "live") {
       const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
       if (bankroll.source === "unknown") {
         // Nunca se pudo leer el saldo NI hay valor declarado: dimensionar a ciegas arriesga
@@ -1906,6 +1957,7 @@ export class BotRunner {
     nowMs: number;
   }): Promise<TradeExecutionResult> {
     const candidate: TradeCandidate = {
+      strategy: "arb",
       market: args.market,
       outcome: args.outcome,
       amountUsd: Math.round(args.sets * args.quote.bestAsk! * 100) / 100,

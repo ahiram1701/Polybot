@@ -85,7 +85,10 @@ export class SimulationExecutionEngine implements TradeExecutor {
   constructor(private readonly config: BotConfig) {}
 
   async execute(input: ExecutionInput): Promise<TradeAttempt> {
-    return buildBaseTrade(input, this.config.mode);
+    // "sim" fijo, no `config.mode`. El modo de una operacion lo define el motor que la ejecuto, no el
+    // ajuste global: desde que cada estrategia elige el suyo, ambos motores existen a la vez y leer el
+    // global aqui etiquetaria de live operaciones de papel. El P&L se agrupa por este campo.
+    return buildBaseTrade(input, "sim");
   }
 }
 
@@ -130,7 +133,8 @@ export class LiveExecutionEngine implements TradeExecutor {
     const fill = summarizeLiveOrderFill(response);
 
     return {
-      ...buildBaseTrade(input, this.config.mode),
+      // "live" fijo, por la misma razon que en el motor de simulacion: lo define el motor.
+      ...buildBaseTrade(input, "live"),
       orderId: response.orderID,
       status: response.status,
       fillDetected: fill.fillDetected,

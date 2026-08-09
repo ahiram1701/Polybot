@@ -75,3 +75,42 @@ describe("live order pricing (anti-slippage)", () => {
     expect(resolveLiveOrderPrice({ bestAsk: 0.795, maxAskPrice: 0.8, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.8);
   });
 });
+
+describe("cada motor etiqueta la operacion con SU modo", () => {
+  it("el de simulacion marca sim aunque la config global diga live", async () => {
+    const { SimulationExecutionEngine } = await import("../src/executionEngine.js");
+    // Desde que cada estrategia elige su modo, los dos motores existen a la vez. Si el de simulacion
+    // leyera `config.mode`, con el bot arrancado en live etiquetaria de LIVE operaciones de papel: el
+    // P&L se agrupa por este campo, asi que serian ganancias o perdidas inventadas sobre dinero real.
+    const engine = new SimulationExecutionEngine({
+      mode: "live",
+      simTradeAmountUsd: 1,
+      liveTradeAmountUsd: 1,
+      autoMinLive: false,
+    } as never);
+    const trade = await engine.execute(executionInput());
+    expect(trade.mode).toBe("sim");
+  });
+});
+
+function executionInput() {
+  return {
+    market: {
+      asset: "ETH",
+      slug: "eth-up-or-down",
+      windowStartMs: 1_000,
+      endMs: 301_000,
+      orderMinSize: 5,
+      tickSize: "0.01",
+      outcomes: { UP: { tokenId: "up" }, DOWN: { tokenId: "down" } },
+    },
+    outcome: "UP",
+    amountUsd: 5,
+    maxAskPrice: 0.9,
+    quote: { tokenId: "up", bestAsk: 0.8, bestBid: 0.79, estimatedSharesForAmount: 6.25 },
+    opening: { asset: "ETH", slug: "eth-up-or-down", windowStartMs: 1_000, openingPrice: 100 },
+    tick: { asset: "ETH", price: 100.5, timestampMs: 2_000 },
+    distanceUsd: 0.5,
+    entryWindowSeconds: 20,
+  } as never;
+}

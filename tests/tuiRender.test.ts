@@ -26,6 +26,8 @@ function boolMap(v: boolean) {
 // Only the fields the pure Settings model actually reads/writes — enough for these unit tests.
 function testSettings(): UiSettings {
   return {
+    arbMode: "heredado",
+    directionalMode: "heredado",
     requirePositiveEv: true,
     evUseSimilarity: false,
     evCalibration: false,
@@ -196,7 +198,16 @@ describe("TUI render", () => {
     );
     expect(text).toContain("detén el bot para editar");
     expect(text).toContain("Estrategia");
-    expect(text).toContain("Mercados");
+    // "Mercados" ya no cabe en la primera pantalla desde que hay un grupo mas, asi que se comprueba
+    // donde vive de verdad —la lista de campos— y ademas que se ve al desplazarse hasta el.
+    const mercados = fields.findIndex((f) => f.label.startsWith("Mercados"));
+    expect(mercados).toBeGreaterThan(0);
+    const desplazado = stripAnsi(
+      renderSettings(
+        baseVm({ status: statusFixture({ running: true }), settingsFields: fields, settingsScroll: mercados }),
+      ).join(NL),
+    );
+    expect(desplazado).toContain("Mercados");
   });
 
   it("renders the LIVE confirmation prompt with the exact phrase", () => {
@@ -220,6 +231,30 @@ describe("TUI settings model", () => {
     expect(fields.find((f) => f.id === "arbEnabled")?.value).toBe("OFF");
     expect(fields.find((f) => f.id === "amount:ETH:UP")?.value).toBe("$5.00");
     expect(fields.find((f) => f.id === "enabled:BTC:UP")?.value).toBe("ON");
+  });
+
+  it("el modo de cada estrategia cicla por los tres valores y avisa del dinero real", () => {
+    const base = testSettings();
+    expect(buildSettingsFields(base).find((f) => f.id === "arbMode")?.value).toBe("heredado");
+
+    const aSim = applyToggle(base, "arbMode");
+    expect(aSim.arbMode).toBe("sim");
+    const aLive = applyToggle(aSim, "arbMode");
+    expect(aLive.arbMode).toBe("live");
+    // La TUI no tiene donde esconder el aviso, asi que va en el propio valor de la fila.
+    expect(buildSettingsFields(aLive).find((f) => f.id === "arbMode")?.value).toContain("DINERO REAL");
+    // Y vuelve al principio, sin quedarse atascado en live.
+    expect(applyToggle(aLive, "arbMode").arbMode).toBe("heredado");
+    // El direccional no se mueve: son independientes.
+    expect(aLive.directionalMode).toBe("heredado");
+  });
+
+  it("la cabecera separa las dos estrategias cuando sus modos difieren", () => {
+    const status = statusFixture({ effectiveModes: { arb: "live", directional: "sim" } });
+    const text = stripAnsi(renderDashboard(baseVm({ status })).join(NL));
+    // Una sola insignia diria "SIM" con el arbitraje moviendo dinero real.
+    expect(text).toContain("arb LIVE");
+    expect(text).toContain("dir SIM");
   });
 
   it("toggles a top-level flag on a fresh clone", () => {

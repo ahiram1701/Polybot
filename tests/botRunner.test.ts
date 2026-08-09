@@ -2274,6 +2274,12 @@ describe("BotRunner", () => {
       mercados?: number;
       perdidaPreviaUsd?: number;
       fallaSegundaPata?: boolean;
+      // Modo global del bot y modos por estrategia. Ausentes = live global, como era antes.
+      modo?: "sim" | "live";
+      arbMode?: "sim" | "live";
+      directionalMode?: "sim" | "live";
+      // Inyecta un ejecutor por modo para poder ver CUAL de los dos recibio cada orden.
+      porModo?: boolean;
     }) => {
       const dataDir = await mkdtemp(join(tmpdir(), "polybot-arb-live-"));
       arbTemps.push(dataDir);
@@ -2381,12 +2387,19 @@ describe("BotRunner", () => {
           };
         }),
       } satisfies TradeExecutor;
+      // La lambda no sobra: `vi.fn(unMock)` devuelve ESE mock, asi que los dos espias serian el mismo
+      // objeto y el test pasaria mirase donde mirase.
+      const espiar = (): TradeExecutor => ({ execute: vi.fn((input: ExecutionInput) => executor.execute(input)) });
+      const executorSim = espiar();
+      const executorLive = espiar();
       const runner = new BotRunner(
         {
           ...baseConfig(),
           dataDir,
-          mode: "live",
+          mode: opciones.modo ?? "live",
           confirmLive: true,
+          arbMode: opciones.arbMode,
+          directionalMode: opciones.directionalMode,
           arbEnabled: true,
           arbMaxUsdPerOpportunity: opciones.budget,
           arbMinNetPerSet: 0.02,
@@ -2403,6 +2416,7 @@ describe("BotRunner", () => {
           priceFeed: livePriceFeed("ETH", 100.5, nowMs),
           state,
           executor,
+          executorByMode: opciones.porModo ? { sim: executorSim, live: executorLive } : undefined,
           reconciler: fakeReconciler(),
           analyticsRecorder: {
             observeMarket: vi.fn(async () => undefined),
@@ -2411,8 +2425,64 @@ describe("BotRunner", () => {
           notifier: { notify: vi.fn(async () => undefined) },
         },
       );
-      return { runner, executor, nowMs };
+      return { runner, executor, executorSim, executorLive, state, nowMs };
     };
+
+    describe("modo independiente por estrategia", () => {
+      const llamadas = (executor: TradeExecutor) =>
+        (executor.execute as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      it("con el bot en sim pero el arbitraje en live, las patas van al motor REAL", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        // Es el reparto que piden los numeros: arbitraje con dinero real, direccional en papel.
+        const { runner, executorSim, executorLive, nowMs } = await montarArb({
+          liveBankrollUsd: 12,
+          budget: 25,
+          porModo: true,
+          modo: "sim",
+          arbMode: "live",
+          directionalMode: "sim",
+        });
+        await runner.runOnce(nowMs);
+        expect(llamadas(executorLive)).toBe(2);
+        expect(llamadas(executorSim)).toBe(0);
+      });
+
+      it("con el bot en live pero el arbitraje en sim, las patas NO tocan el motor real", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        // El reverso importa igual: leer el modo global aqui mandaria dinero real sin permiso.
+        const { runner, executorSim, executorLive, nowMs } = await montarArb({
+          liveBankrollUsd: 12,
+          budget: 25,
+          porModo: true,
+          modo: "live",
+          arbMode: "sim",
+        });
+        await runner.runOnce(nowMs);
+        expect(llamadas(executorSim)).toBe(2);
+        expect(llamadas(executorLive)).toBe(0);
+      });
+
+      it("cada estrategia consulta el gasto diario y lo ya operado con SU modo", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const { runner, state, nowMs } = await montarArb({
+          liveBankrollUsd: 12,
+          budget: 25,
+          porModo: true,
+          modo: "sim",
+          arbMode: "live",
+          directionalMode: "sim",
+        });
+        await runner.runOnce(nowMs);
+        // Si el papel gastara del contador del dinero real, unas operaciones ficticias agotarian el
+        // presupuesto de lo unico que gana.
+        const modosGasto = (state.getDailySpend as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[2]);
+        expect(modosGasto).toContain("live");
+        expect(modosGasto).toContain("sim");
+        const modosOperado = (state.hasTraded as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1]);
+        expect(modosOperado).toContain("live");
+      });
+    });
 
     it("acota el tamaño al capital declarado en vez de gastar el presupuesto entero", async () => {
       vi.spyOn(console, "log").mockImplementation(() => undefined);

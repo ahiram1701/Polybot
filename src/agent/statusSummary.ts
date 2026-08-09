@@ -2,6 +2,7 @@ import type { BandProgram } from "../bandProbeProgram.js";
 import type { LogEntry } from "../logger.js";
 import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
+import type { EffectiveModes } from "../ui/shared.js";
 import type {
   MarketSymbol,
   Mode,
@@ -53,6 +54,7 @@ export interface RecentActivity {
 export interface CompactStatus {
   running: boolean;
   mode?: Mode;
+  effectiveModes?: EffectiveModes;
   startedAtMs?: number;
   uptimeSeconds?: number;
   lastError?: string;
@@ -96,6 +98,10 @@ export function summarizeStatus(
   return {
     running: status.running,
     mode: status.mode,
+    // Modo REAL de cada estrategia. `mode` a secas es solo el de arranque y puede mentir: con el
+    // arbitraje en live y el bot arrancado en sim, un agente que lea `mode` creeria que no hay dinero
+    // en juego.
+    effectiveModes: status.effectiveModes,
     startedAtMs: status.startedAtMs,
     uptimeSeconds:
       status.startedAtMs !== undefined ? Math.max(0, Math.round((nowMs - status.startedAtMs) / 1000)) : undefined,

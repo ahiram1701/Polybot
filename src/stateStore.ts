@@ -6,6 +6,13 @@ import { writeFileAtomic } from "./atomicWrite.js";
 import type { BotState, Mode, TradeAttempt, TradeEvent, WindowOpening } from "./types.js";
 import { dailySpendKey } from "./time.js";
 
+const MODES: readonly Mode[] = ["sim", "live"];
+
+/** Clave del contador de gasto separada por modo. Prefijo delante para que nunca choque con la vieja. */
+function modeDailySpendKey(mode: Mode, day: string): string {
+  return `${mode}|${day}`;
+}
+
 const EMPTY_STATE: BotState = {
   version: 1,
   openings: {},
@@ -158,9 +165,29 @@ export class StateStore {
     return Object.values(this.state.tradedMarkets);
   }
 
-  getDailySpend(nowMs = Date.now(), timeZone?: string): number {
+  /**
+   * Gasto de hoy. Con `mode`, solo el de ese modo; sin el, el total.
+   *
+   * El desglose por modo importa desde que cada estrategia puede correr en un modo distinto: si el
+   * direccional en papel gastara del mismo contador que el arbitraje real, unas operaciones ficticias
+   * agotarian el presupuesto del dinero de verdad y frenarian lo unico que gana.
+   *
+   * Las entradas viejas se guardaron solo por dia, sin modo. Se siguen leyendo como respaldo para no
+   * perder el gasto ya acumulado hoy al actualizar; el dia del cambio ambos modos ven ese resto, que
+   * sobreestima el gasto y por tanto se equivoca del lado prudente.
+   */
+  getDailySpend(nowMs = Date.now(), timeZone?: string, mode?: Mode): number {
     this.assertLoaded();
-    return this.state.dailySpendUsd[dailySpendKey(nowMs, timeZone ?? this.timeZone)] ?? 0;
+    const day = dailySpendKey(nowMs, timeZone ?? this.timeZone);
+    const legacy = this.state.dailySpendUsd[day] ?? 0;
+    if (mode) {
+      return (this.state.dailySpendUsd[modeDailySpendKey(mode, day)] ?? 0) + legacy;
+    }
+    let total = legacy;
+    for (const mode of MODES) {
+      total += this.state.dailySpendUsd[modeDailySpendKey(mode, day)] ?? 0;
+    }
+    return total;
   }
 
   getPnlResetAtMs(): Partial<Record<Mode, number>> {
@@ -225,7 +252,7 @@ export class StateStore {
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
     this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug)] = trade;
-    const key = dailySpendKey(trade.createdAtMs, this.timeZone);
+    const key = modeDailySpendKey(trade.mode, dailySpendKey(trade.createdAtMs, this.timeZone));
     this.state.dailySpendUsd[key] = (this.state.dailySpendUsd[key] ?? 0) + trade.amountUsd;
     await this.save();
     await this.appendTradeEvent({ type: "trade_attempt", trade });

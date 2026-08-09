@@ -39,6 +39,23 @@ const TOGGLE_LABELS: Record<string, string> = {
 
 const TOGGLE_KEYS = Object.keys(TOGGLE_LABELS) as (keyof UiSettings)[];
 
+/**
+ * Modos por estrategia. No son booleanos, asi que en vez de alternar CICLAN por los tres valores. Se
+ * reaprovecha la fila de tipo "toggle" para no inventar un tipo de campo nuevo con su navegacion y sus
+ * teclas: lo que importa es que la fila muestre siempre el valor actual, y lo hace.
+ */
+const MODE_KEYS = ["arbMode", "directionalMode"] as const;
+const MODE_LABELS: Record<(typeof MODE_KEYS)[number], string> = {
+  arbMode: "Modo del arbitraje",
+  directionalMode: "Modo del direccional",
+};
+const MODE_CYCLE = ["heredado", "sim", "live"] as const;
+
+function modeValueLabel(value: string): string {
+  // El aviso va en el propio valor porque en la TUI no hay tooltip donde esconderlo.
+  return value === "live" ? "LIVE ⚠ DINERO REAL" : value === "sim" ? "SIM (papel)" : "heredado";
+}
+
 function commonValue(settings: UiSettings, pick: (m: MarketSymbol, o: Outcome) => number): number | undefined {
   const values = MARKETS.flatMap((m) => OUTCOMES.map((o) => pick(m, o)));
   return values.every((v) => v === values[0]) ? values[0] : undefined;
@@ -61,6 +78,17 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
 
   header("Estrategia");
   (["requirePositiveEv", "explorationEnabled", "autoStartSimOnBoot", "watchdogEnabled", "evUseSimilarity", "evCalibration", "autoMinLive", "arbEnabled"] as (keyof UiSettings)[]).forEach(toggle);
+
+  header("Modo por estrategia");
+  for (const key of MODE_KEYS) {
+    fields.push({
+      id: String(key),
+      label: MODE_LABELS[key],
+      kind: "toggle",
+      value: modeValueLabel(String(settings[key])),
+      editable: true,
+    });
+  }
 
   header("Autoajuste");
   (["aiAutoApplyLive", "aiAutoTuneAskCap", "aiAutoProbeBands", "arb15mEnabled"] as (keyof UiSettings)[]).forEach(toggle);
@@ -103,6 +131,12 @@ export function applyToggle(settings: UiSettings, id: string): UiSettings {
     // Keep enabledMarkets consistent with the outcomes the user just changed (the server recomputes it
     // too, but sending a coherent object avoids any merge ambiguity).
     next.enabledMarkets = MARKETS.filter((m) => OUTCOMES.some((o) => next.enabledMarketOutcomes[m][o]));
+    return next;
+  }
+  if ((MODE_KEYS as readonly string[]).includes(id)) {
+    const actual = String(settings[id as keyof UiSettings]);
+    const siguiente = MODE_CYCLE[(MODE_CYCLE.indexOf(actual as (typeof MODE_CYCLE)[number]) + 1) % MODE_CYCLE.length];
+    (next as unknown as Record<string, unknown>)[id] = siguiente;
     return next;
   }
   if (TOGGLE_KEYS.includes(id as keyof UiSettings)) {

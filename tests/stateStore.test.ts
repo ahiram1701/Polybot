@@ -157,6 +157,35 @@ function opening(slug: string, windowStartMs: number) {
   };
 }
 
+describe("el gasto diario se cuenta por modo", () => {
+  it("el papel no consume el presupuesto del dinero real", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-spend-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    // Importa desde que cada estrategia elige su modo: con el direccional en sim y el arbitraje en
+    // live, un contador comun dejaria que unas operaciones ficticias frenaran las de verdad.
+    // El fixture nace en 1970; el contador es por dia, asi que hay que fecharlas hoy.
+    const nowMs = Date.now();
+    await store.recordTradeAttempt({
+      ...trade({ slug: "a", mode: "sim", id: "1" }),
+      amountUsd: 40,
+      createdAtMs: nowMs,
+    });
+    await store.recordTradeAttempt({
+      ...trade({ slug: "b", mode: "live", id: "2" }),
+      amountUsd: 7,
+      createdAtMs: nowMs,
+    });
+
+    expect(store.getDailySpend(nowMs, undefined, "sim")).toBe(40);
+    expect(store.getDailySpend(nowMs, undefined, "live")).toBe(7);
+    // Sin modo sigue siendo el total, que es lo que muestran las pantallas.
+    expect(store.getDailySpend(nowMs)).toBe(47);
+  });
+});
+
 function trade(args: { slug: string; mode: TradeAttempt["mode"]; id: string; outcome?: TradeAttempt["outcome"] }): TradeAttempt {
   return {
     id: args.id,

@@ -871,7 +871,9 @@ function settings(): UiSettings {
     minFillRatio: 0.5,
     riskHaltCooldownHours: 2,
     arbEnabled: false,
-    arb15mEnabled: false,
+    arbMode: "heredado",
+  directionalMode: "heredado",
+  arb15mEnabled: false,
     arbMaxUsdPerOpportunity: 25,
     arbMinNetPerSet: 0.02,
     timezone: "auto",
@@ -902,6 +904,7 @@ function getBodyRows(): HTMLElement[] {
 function status(args: { liveReady: boolean }): UiStatus {
   return {
     running: false,
+  effectiveModes: { arb: "sim", directional: "sim" },
     settings: settings(),
     config: {
       ...settings(),

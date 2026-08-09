@@ -5,6 +5,12 @@ Polybot es un bot de trading de Polymarket (mercados cripto Up/Down 5m). Este do
 ## ⚠️ Seguridad primero
 
 - **`mode: "live"` mueve dinero real.** Requiere `confirmLive: true` y llaves en `.env` (`POLYMARKET_PRIVATE_KEY`, `POLYMARKET_SIGNATURE_TYPE`, `POLYMARKET_FUNDER_ADDRESS`). `mode: "sim"` es paper-trading, seguro.
+- **El modo de arranque no basta para saber si hay dinero en juego.** Los ajustes `arbMode` y
+  `directionalMode` (`heredado` | `sim` | `live`) dan a cada estrategia su propio modo, así que un bot
+  arrancado en `sim` puede estar arbitrando con dinero real. Lee **`effectiveModes`** de
+  `polybot_get_status` (`{arb, directional}`), no `mode` a secas. Poner cualquiera de los dos en `live`
+  **no pide confirmación**: el ajuste basta, y cualquier reinicio lo reanuda. No lo cambies a `live` sin
+  que el usuario lo pida de forma explícita.
 - **Un solo runner.** No levantes un segundo proceso que tradee; controla siempre el servidor en marcha. MCP y CLI son clientes de ese servidor (no arrancan su propio bot).
 - **Detén el bot antes de cambiar settings o importar muestras.** Con el bot corriendo, `PATCH /api/settings` y el import responden `409`.
 - Acceso **local** (`127.0.0.1`), sin autenticación. No lo expongas a redes no confiables.
