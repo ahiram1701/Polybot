@@ -23,8 +23,16 @@ import type {
 export const ANALYTICS_WINDOW_SECONDS = 120;
 
 /**
- * Duracion de una ventana up/down. Los ticks se graban entera porque el TWAP que resuelve el mercado
- * es el promedio de todo el rango; un poco de holgura por si el tick de apertura llega adelantado.
+ * Duracion de una ventana up/down, con holgura por si el tick de apertura llega adelantado.
+ *
+ * Los ticks se graban de la ventana ENTERA. La primera justificacion que escribi para esto era falsa
+ * —decia que el TWAP que resuelve es el promedio de todo el rango— y la documentacion la desmintio:
+ * la referencia es una media movil de 30s (60s en los de 15m), publicada por Polymarket y que NO hay
+ * que reconstruir.
+ *
+ * La captura completa sigue siendo correcta, pero por otro motivo: los features de analitica y la
+ * distancia se miden sobre la ventana entera, y sin sus primeros minutos no se pueden calcular. Se
+ * deja dicho para que nadie la revierta creyendola inutil ni la mantenga por una razon que no existe.
  */
 export const WINDOW_DURATION_SECONDS = 310;
 
@@ -54,6 +62,8 @@ export interface AnalyticsObservation {
   market: MarketInfo;
   opening?: WindowOpening;
   tick?: PriceTick;
+  /** Valor de la serie TWAP en este instante: la que resuelve. Ausente hasta que el feed la entregue. */
+  twapTick?: PriceTick;
   quotes?: Partial<Record<Outcome, OrderbookQuote>>;
   nowMs: number;
 }
@@ -124,7 +134,7 @@ export class AnalyticsRecorder {
     const { sample, created } = this.getOrCreateSample(observation.market, observation.opening);
     changed = created || changed;
     if (observation.tick) {
-      changed = this.recordTick(sample, observation.tick) || changed;
+      changed = this.recordTick(sample, observation.tick, observation.twapTick) || changed;
     }
     if (observation.quotes) {
       changed = this.recordQuote(sample, observation.quotes, observation.nowMs) || changed;
@@ -212,17 +222,16 @@ export class AnalyticsRecorder {
     return { sample, created: true };
   }
 
-  private recordTick(sample: AnalyticsSample, tick: PriceTick): boolean {
+  private recordTick(sample: AnalyticsSample, tick: PriceTick, twapTick?: PriceTick): boolean {
     if (tick.market !== sample.market) {
       return false;
     }
     const remainingSeconds = secondsToEnd(sample.endMs, tick.timestampMs);
     // Los TICKS se guardan de la ventana ENTERA, no solo de los ultimos 120s como las quotes.
     //
-    // Desde el 2026-08-07 Polymarket resuelve estos mercados por TWAP — el promedio de TODA la
-    // ventana — contra el precio de apertura. Con el recorte anterior se descartaba el 63% de cada
-    // ventana (cobertura medida: 37%), asi que el dato que decide quien gana era, literalmente,
-    // incalculable. Y no se puede reconstruir despues: un tick que no se graba se pierde para siempre.
+    // Con el recorte anterior se descartaba el 63% de cada ventana (cobertura medida: 37%), asi que
+    // los features y la distancia solo podian calcularse sobre el ultimo tercio. Y no se reconstruye
+    // despues: un tick que no se graba se pierde para siempre.
     //
     // El coste es un fichero mas grande; `maxAnalyticsSamples` lo sigue acotando por numero de
     // muestras. Las quotes SI mantienen su ventana corta: solo hacen falta cerca del cierre.
@@ -243,6 +252,10 @@ export class AnalyticsRecorder {
       secondsToEnd: remainingSeconds,
       price: tick.value,
       distanceUsd: tick.value - sample.openingPrice,
+      // `openingPrice` ya sale de la serie TWAP, asi que `distanceUsd` mezcla spot con apertura TWAP.
+      // Se conserva por continuidad con el historico, pero la distancia coherente es esta.
+      twapPrice: twapTick?.value,
+      twapDistanceUsd: twapTick ? twapTick.value - sample.openingPrice : undefined,
     };
     return upsertByTimestamp(sample.ticks, point);
   }
@@ -591,7 +604,11 @@ function isAnalyticsTickPoint(value: unknown): value is AnalyticsTickPoint {
     isFiniteNumber(value.timestampMs) &&
     isFiniteNumber(value.secondsToEnd) &&
     isFiniteNumber(value.price) &&
-    isFiniteNumber(value.distanceUsd)
+    isFiniteNumber(value.distanceUsd) &&
+    // Ausentes en las muestras anteriores a 2026-08-08, que deben seguir leyendose. Presentes, tienen
+    // que ser numeros: un valor corrupto en la serie que decide envenena en silencio todo el analisis.
+    (value.twapPrice === undefined || isFiniteNumber(value.twapPrice)) &&
+    (value.twapDistanceUsd === undefined || isFiniteNumber(value.twapDistanceUsd))
   );
 }
 

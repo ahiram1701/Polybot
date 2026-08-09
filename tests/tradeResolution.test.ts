@@ -199,3 +199,30 @@ describe("resolucion por el precio de referencia recibido", () => {
     expect(r.winningOutcome).toBe("UP");
   });
 });
+
+/**
+ * La tasa de correccion oficial es el unico juez de si la fuente nueva acierta, y sin saber que serie
+ * resolvio cada operacion las de TWAP y las de respaldo se mezclan, y el numero no dice nada.
+ */
+describe("queda registrado que serie resolvio", () => {
+  const windowStartMs = Date.UTC(2026, 7, 8, 12, 0, 0);
+  const endMs = windowStartMs + 300_000;
+  const trade = {
+    id: "t", asset: "BTC", slug: "btc-updown-5m-2", mode: "sim", outcome: "UP", tokenId: "tok",
+    amountUsd: 5, maxAskPrice: 0.9, bestAsk: 0.8, estimatedShares: 6.25, fillDetected: true,
+    openingPrice: 100, entryPrice: 100, distanceUsd: 0, windowStartMs, endMs,
+    createdAtMs: windowStartMs + 260_000,
+  } as unknown as TradeAttempt;
+  const tickEn = (ms: number, value: number) =>
+    ({ market: "BTC", symbol: "btc/usd", value, timestampMs: ms, receivedAtMs: ms }) as BtcPriceTick;
+
+  it("marca las resueltas con la serie TWAP", () => {
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101), "twap")!;
+    expect(r.priceSource).toBe("twap");
+  });
+
+  it("marca las de respaldo por spot, que son las sospechosas", () => {
+    const r = resolveTradeFromTick(trade, tickEn(endMs + 1000, 101), endMs + 2000, tickEn(endMs - 1000, 101), "spot")!;
+    expect(r.priceSource).toBe("spot");
+  });
+});

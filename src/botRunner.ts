@@ -1833,6 +1833,11 @@ export class BotRunner {
         market: args.market,
         opening: args.opening,
         tick: args.latestTick,
+        // La serie que RESUELVE. Se graba junto al spot porque solo vive 10 minutos en memoria del
+        // feed, y sin esto todo analisis futuro seguiria midiendo sobre la serie equivocada.
+        twapTick: args.latestTick
+          ? this.deps.priceFeed.getTwapAtOrBefore?.(args.market.asset, args.latestTick.timestampMs)
+          : undefined,
         quotes: args.quotes,
         nowMs: args.nowMs,
       });
@@ -1856,10 +1861,15 @@ export class BotRunner {
       // Judge the winner by the price AT the window close (last tick <= endMs), not the first tick
       // after it — photo-finish windows flipped otherwise.
       // Cierre por la serie TWAP, que es la que resuelve. El spot solo si aquella no esta.
-      const closeTick =
-        this.deps.priceFeed.getTwapAtOrBefore?.(market, trade.endMs) ??
-        this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
-      const resolution = resolveTradeFromTick(trade, latestTick, nowMs, closeTick);
+      const twapClose = this.deps.priceFeed.getTwapAtOrBefore?.(market, trade.endMs);
+      const closeTick = twapClose ?? this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
+      const resolution = resolveTradeFromTick(
+        trade,
+        latestTick,
+        nowMs,
+        closeTick,
+        twapClose ? "twap" : "spot",
+      );
       if (!resolution) {
         continue;
       }

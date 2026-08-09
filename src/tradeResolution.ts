@@ -55,6 +55,8 @@ export function resolveTradeFromTick(
   latestTick: BtcPriceTick,
   nowMs: number,
   closeTick?: BtcPriceTick,
+  /** De donde salio `closeTick`. Lo sabe el llamador, que es quien elige la serie. */
+  priceSource?: "twap" | "spot",
 ): SimResolution | undefined {
   const tradeAsset = trade.asset ?? marketSymbolFromSlug(trade.slug);
   if (
@@ -82,6 +84,7 @@ export function resolveTradeFromTick(
   // reconstrui una vez y me equivoque: asumi el promedio de los 300s cuando el lookback son 30.
   const winningOutcome: Outcome = referenceTick.value >= trade.openingPrice ? "UP" : "DOWN";
   return {
+    priceSource,
     resolvedAtMs: nowMs,
     // `finalPrice` sigue siendo el precio de cierre observado: es el dato crudo, no el juicio. El
     // veredicto va en `winningOutcome`, y mezclarlos haria irreproducible cual de las dos reglas se

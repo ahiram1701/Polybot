@@ -1,10 +1,13 @@
 /**
- * Precio medio ponderado por TIEMPO de una serie de ticks.
+ * Precio medio ponderado por TIEMPO de una serie de ticks. Utilidad de ANALITICA, no de resolucion.
  *
- * Desde el 2026-08-07 Polymarket resuelve los up/down de cripto asi: la ventana gana "Up" si el TWAP
- * del rango es mayor o igual que el precio al INICIO del rango. Antes se comparaba el ultimo precio
- * contra la apertura, que es una regla completamente distinta — medido sobre el historico, cambia el
- * ganador en al menos el 11% de las ventanas.
+ * AVISO: esto NO reproduce la regla de Polymarket, y no debe intentarlo. Sus mercados resuelven con la
+ * serie TWAP que publica Chainlink — una media movil de 30s en los de 5m y 60s en los de 15m — y la
+ * documentacion pide expresamente no reconstruir el valor: no publican los limites de muestreo, la
+ * ponderacion ni el redondeo. Polybot la LEE de `crypto_prices_twap_thirty`.
+ *
+ * Lo escribi creyendo que la regla era el promedio de todo el rango. No lo es, y sobre esa premisa
+ * llegue a construir un veto de entradas que hubo que retirar.
  *
  * Ponderar por tiempo y no por numero de ticks es el punto entero. Los ticks no llegan a intervalos
  * regulares (el feed tiene huecos, y ademas la parte temprana de la ventana se submuestrea a
@@ -89,12 +92,14 @@ export function windowTwap(
 }
 
 /**
- * Cuanto tendria que apartarse el precio, de aqui al cierre, para que el TWAP final cruce la apertura.
+ * Cuanto tendria que apartarse el precio para que un promedio de ventana completa cruce la apertura.
  *
- * Es EL numero que hace util la regla nueva. A 40s del cierre de una ventana de 300s ya ha transcurrido
- * el 87% del promedio: para voltear el resultado, lo que queda tendria que moverse varias veces la
- * separacion actual y en sentido contrario. Dicho de otro modo, al entrar el resultado ya esta casi
- * decidido — y se puede calcular en vez de adivinar.
+ * NO describe la regla de Polymarket. Se escribio bajo la idea de que al entrar "el 87% ya estaba
+ * decidido", que era consecuencia de leer mal las reglas: la referencia es una media movil corta en
+ * cada extremo, asi que a 40s del cierre la ventana que decide ni siquiera ha empezado.
+ *
+ * Se conserva como utilidad de analitica sobre ventanas completas. Cualquier uso para decidir entradas
+ * seria repetir el error.
  *
  * Devuelve el precio que habria que mantener durante el tramo restante para dejar el TWAP final
  * exactamente en la apertura. `undefined` si no queda tiempo (ya no hay nada que mover).

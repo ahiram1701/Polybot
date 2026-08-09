@@ -198,8 +198,23 @@ export interface OrderbookQuote {
 export interface AnalyticsTickPoint {
   timestampMs: number;
   secondsToEnd: number;
+  /** Precio SPOT del oraculo. Util como feature, pero NO es el que resuelve el mercado. */
   price: number;
   distanceUsd: number;
+  /**
+   * Valor de la serie TWAP publicada por Polymarket en ese instante: la que DECIDE quien gana desde
+   * el 2026-08-07.
+   *
+   * Se graba porque solo vive 10 minutos en memoria del feed, y sin esto cualquier analisis futuro
+   * seguiria midiendo sobre spot mientras el dinero se decide con otra serie. Es la tercera vez que
+   * aparece el mismo patron: la profundidad del libro y los ticks del arranque de ventana tambien
+   * llegaban y se tiraban. El dato que no se graba no se reconstruye.
+   *
+   * Opcional: las muestras anteriores a 2026-08-08 no lo tienen y deben seguir leyendose.
+   */
+  twapPrice?: number;
+  /** Distancia medida sobre la serie que resuelve, en vez de mezclar spot con apertura TWAP. */
+  twapDistanceUsd?: number;
 }
 
 export interface AnalyticsQuotePoint {
@@ -451,13 +466,17 @@ export interface SimResolution {
   finalPrice: number;
   finalTickTimestampMs: number;
   /**
-   * TWAP de la ventana cuando se pudo calcular con cobertura suficiente, que desde el 2026-08-07 es
-   * la regla real de Polymarket. Ausente = se resolvio por el precio de cierre (regla antigua), y
-   * entonces el veredicto depende del verificador oficial.
+   * De que serie salio el precio que decidio: la TWAP publicada (la buena) o el spot de respaldo.
+   *
+   * Sustituye a `twapPrice`/`twapCoverage`, que quedaron muertos al dejar de calcular el TWAP a mano.
+   * Un campo llamado `twapPrice` que nunca se rellena es peor que no tenerlo: se lee como "aqui esta
+   * el TWAP" cuando no hay nada.
+   *
+   * No es cosmetico. La tasa de correccion oficial es el unico juez de si la fuente nueva acierta, y
+   * sin esto no se pueden separar las operaciones resueltas por TWAP de las de respaldo — que es
+   * justo la comparacion que lo demuestra.
    */
-  twapPrice?: number;
-  /** Fraccion de la ventana cubierta por ticks. Deja auditable por que se eligio una regla u otra. */
-  twapCoverage?: number;
+  priceSource?: "twap" | "spot";
   winningOutcome: Outcome;
   won: boolean;
 }
