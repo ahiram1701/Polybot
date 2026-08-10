@@ -2278,6 +2278,8 @@ describe("BotRunner", () => {
       nakedLegHaltStreak?: number;
       /** Falla la PRIMERA pata como lo hace el exchange de verdad, con contexto adjunto. */
       fallaPrimeraPataConDetalle?: boolean;
+      /** Ask que devuelve el libro A PARTIR de la recotizacion (las 2 primeras llamadas son la deteccion). */
+      askTrasRecotizar?: number;
       // Modo global del bot y modos por estrategia. Ausentes = live global, como era antes.
       modo?: "sim" | "live";
       arbMode?: "sim" | "live";
@@ -2351,16 +2353,23 @@ describe("BotRunner", () => {
         }),
       } as unknown as StateStore;
       // Par a 0.80 con profundidad de sobra: net/set ~0.166, muy por encima del minimo.
+      let llamadasQuote = 0;
       const orderbook = {
-        getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => ({
+        getQuote: vi.fn(async (_tokenId: string, amountUsd: number) => {
+          llamadasQuote += 1;
+          // Las dos primeras son la deteccion; de la tercera en adelante, la recotizacion.
+          const bestAsk =
+            opciones.askTrasRecotizar !== undefined && llamadasQuote > 2 ? opciones.askTrasRecotizar : 0.4;
+          return {
           tokenId: "token",
-          bestAsk: 0.4,
+          bestAsk,
           bestBid: 0.39,
           availableUsdUnderCap: 400,
           availableUsdAllLevels: 400,
-          estimatedSharesForAmount: amountUsd / 0.4,
+          estimatedSharesForAmount: amountUsd / bestAsk,
           rawAskLevels: [],
-        })),
+          };
+        }),
       } as unknown as OrderbookService;
       const executor = {
         execute: vi.fn(async (input: ExecutionInput) => {
@@ -2443,7 +2452,7 @@ describe("BotRunner", () => {
           notifier: { notify: vi.fn(async () => undefined) },
         },
       );
-      return { runner, executor, executorSim, executorLive, state, nowMs };
+      return { runner, executor, executorSim, executorLive, state, orderbook, nowMs };
     };
 
     describe("modo independiente por estrategia", () => {
@@ -2557,6 +2566,44 @@ describe("BotRunner", () => {
       await runner.runOnce(nowMs);
       // Un solo mercado intentado (2 patas); el segundo y el tercero ya no se intentan.
       expect(executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("recotiza justo antes de mandar, no reutiliza la cotizacion de la captura", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, orderbook, executor, nowMs } = await montarArb({ liveBankrollUsd: 12, budget: 25 });
+      await runner.runOnce(nowMs);
+      // 2 llamadas de la deteccion + 2 de la recotizacion.
+      expect((orderbook.getQuote as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("si el arbitraje se evaporo entre la cotizacion y la orden, NO manda nada", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // El par pasa de 0.80 a 1.10: ya no hay arbitraje. Antes se mandaba igual, contra un libro que ya
+      // no ofrecia nada — que es como murieron los dos primeros intentos en live.
+      const { runner, executor, nowMs } = await montarArb({
+        liveBankrollUsd: 12,
+        budget: 25,
+        askTrasRecotizar: 0.55,
+      });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("dimensiona con el ask RECOTIZADO, no con el que vio en la captura", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Sigue siendo arbitraje (0.45+0.45=0.90) pero mas caro que lo visto (0.80).
+      const { runner, executor, nowMs } = await montarArb({
+        liveBankrollUsd: 40,
+        budget: 20,
+        askTrasRecotizar: 0.45,
+      });
+      await runner.runOnce(nowMs);
+      const llamadas = (executor.execute as ReturnType<typeof vi.fn>).mock.calls;
+      expect(llamadas.length).toBe(2);
+      for (const [input] of llamadas) {
+        expect(input.quote.bestAsk).toBe(0.45);
+      }
     });
 
     it("un rechazo del exchange registra QUE se mando, no solo que fallo", async () => {

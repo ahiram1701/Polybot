@@ -274,6 +274,8 @@ export const SKIP_REASON_LABELS: Record<string, string> = {
   arb_daily_limit: "Arbitraje: limite de gasto diario",
   arb_bankroll_unknown: "Arbitraje: no se pudo leer el capital, no opera a ciegas",
   arb_bankroll_exhausted: "Arbitraje: capital ya comprometido en otro mercado",
+  arb_requote_failed: "Arbitraje: no se pudo recotizar antes de mandar",
+  arb_gone_before_order: "Arbitraje evaporado entre la cotizacion y la orden",
   // Sin el numero: el umbral es configurable, y esta etiqueta ya se quedo obsoleta una vez al
   // cambiarlo. Rearma al reiniciar el bot.
   arb_naked_leg_halt: "Arbitraje detenido por patas sueltas (rearma al reiniciar)",

@@ -1592,6 +1592,33 @@ export class BotRunner {
     return this.deps.executorByMode?.[mode] ?? this.deps.executor;
   }
 
+  /**
+   * Cotiza las dos patas a la vez. Mismo tamaño y tope que la deteccion, para que lo recotizado sea
+   * comparable con lo que disparo la oportunidad.
+   */
+  private async quoteArbLegs(market: MarketInfo): Promise<Partial<Record<Outcome, OrderbookQuote>>> {
+    const pedir = (outcome: Outcome): Promise<OrderbookQuote> =>
+      this.deps.orderbook.getQuote(
+        market.outcomes[outcome].tokenId,
+        resolveTradeAmountUsd({
+          mode: this.config.mode,
+          requestedUsd: this.resolveConfiguredTradeAmountUsd(market.asset, outcome),
+          orderMinSize: market.orderMinSize,
+          autoMinLive: this.config.autoMinLive,
+        }),
+        this.resolveConfiguredMaxAskPrice(market.asset, outcome),
+      );
+    const [up, down] = await Promise.allSettled([pedir("UP"), pedir("DOWN")]);
+    const quotes: Partial<Record<Outcome, OrderbookQuote>> = {};
+    if (up.status === "fulfilled") {
+      quotes.UP = up.value;
+    }
+    if (down.status === "fulfilled") {
+      quotes.DOWN = down.value;
+    }
+    return quotes;
+  }
+
   /** Patas sueltas seguidas que paran el arbitraje. */
   private arbNakedLegHaltStreak(): number {
     const configured = this.config.arbNakedLegHaltStreak;
@@ -1813,9 +1840,44 @@ export class BotRunner {
     if (!market.active || market.closed || !market.acceptingOrders) {
       return;
     }
-    const up = quotes.UP;
-    const down = quotes.DOWN;
+
+    // Se RECOTIZA justo antes de mandar, y se decide con lo recotizado.
+    //
+    // Las cotizaciones de `args.quotes` vienen de la fase de captura, con trabajo de por medio. El 81%
+    // de los arbitrajes aparecen en los ultimos 2 minutos de la ventana, que es cuando el libro se
+    // mueve mas: para cuando llega la orden, el nivel que se vio puede haber desaparecido. Los dos
+    // primeros arbitrajes en live murieron asi ("no orders found to match").
+    //
+    // Recotizar hace DOS cosas, y la segunda importa mas que la primera: manda el precio que de verdad
+    // hay, y ABORTA si el arbitraje ya se esfumo, en vez de lanzar una orden contra un libro que ya no
+    // ofrece nada. Es mejor incluso si la hipotesis de la latencia resulta falsa.
+    const frescas = await this.quoteArbLegs(market);
+    const up = frescas.UP;
+    const down = frescas.DOWN;
     if (!up?.bestAsk || !down?.bestAsk) {
+      this.logSkipOnce(market.slug, "arb_requote_failed", {});
+      return;
+    }
+    // Se reevalua con el MISMO detector que la detecto, no con una cuenta a mano que pueda derivar.
+    const vigente = detectCompleteSetArb({
+      market: market.asset,
+      slug: market.slug,
+      endMs: market.endMs,
+      nowMs,
+      quotes: frescas,
+    });
+    if (!vigente || vigente.netPerSet < minNetPerSet) {
+      logger.info("Arbitraje evaporado entre la cotizacion y la orden.", {
+        slug: market.slug,
+        netPerSetVisto: opportunity.netPerSet,
+        netPerSetAhora: vigente?.netPerSet ?? 0,
+        askUpVisto: opportunity.upAsk,
+        askUpAhora: up.bestAsk,
+        askDownVisto: opportunity.downAsk,
+        askDownAhora: down.bestAsk,
+        edadCotizacionMs: quotes.UP?.quotedAtMs === undefined ? undefined : nowMs - quotes.UP.quotedAtMs,
+      });
+      this.logSkipOnce(market.slug, "arb_gone_before_order", {});
       return;
     }
 
