@@ -28,9 +28,14 @@ export interface SettingsField {
 const MARKETS: MarketSymbol[] = ["BTC", "ETH", "DOGE"];
 const OUTCOMES: Outcome[] = ["UP", "DOWN"];
 
+/**
+ * Etiquetas de los interruptores. Maximo 30 caracteres: es el ancho de la columna en `renderSettings`,
+ * y pasarse desalinea la fila entera. El detalle largo va en TOGGLE_HELP, que existe desde que las
+ * filas pueden explicarse.
+ */
 const TOGGLE_LABELS: Record<string, string> = {
   requirePositiveEv: "Gate de EV positivo",
-  explorationEnabled: "Exploración de arranque en frío",
+  explorationEnabled: "Exploración en frío",
   autoStartSimOnBoot: "Reanudar sim al reiniciar",
   watchdogEnabled: "Watchdog (auto-reinicio)",
   evUseSimilarity: "Estimador por similitud (k-NN)",
@@ -38,9 +43,24 @@ const TOGGLE_LABELS: Record<string, string> = {
   autoMinLive: "Operar al mínimo del exchange",
   arbEnabled: "Arbitraje de set completo",
   aiAutoApplyLive: "Autoajuste predictivo",
-  arb15mEnabled: "Arbitraje tambien en 15m (solo arbitraje)",
-  aiAutoTuneAskCap: "Autoajuste de la ventana de ask (solo estrecha)",
-  aiAutoProbeBands: "Sondeos de banda (puede abrir)",
+  arb15mEnabled: "Arbitraje también en 15m",
+  aiAutoTuneAskCap: "Autoajuste ventana de ask",
+  aiAutoProbeBands: "Sondeos de banda",
+};
+
+const TOGGLE_HELP: Record<string, string> = {
+  requirePositiveEv: "Solo opera setups con valor esperado positivo tras comisiones.",
+  explorationEnabled: "Deja probar setups sin historial suficiente, con presupuesto acotado por mercado y día.",
+  autoStartSimOnBoot: "Al arrancar el proceso, empieza a operar en simulación sin que nadie lo pida.",
+  watchdogEnabled: "Relanza la UI si el proceso muere. No arranca el bot; lo lee la tarea de Windows.",
+  evUseSimilarity: "Estima la probabilidad con los k vecinos más parecidos en vez del agregado simple.",
+  evCalibration: "Corrige la probabilidad estimada contra lo que de verdad pasó, por mercado.",
+  autoMinLive: "Dimensiona al mínimo del exchange ($5) en vez del monto pedido. Igual en sim y en live.",
+  arbEnabled: "Compra ambos lados cuando el par cuesta menos de $1 tras comisiones.",
+  arb15mEnabled: "Triplica las ventanas donde puede aparecer un par barato. SOLO arbitraje: el direccional sigue en 5m.",
+  aiAutoApplyLive: "Ajusta ventana y distancia por mercado en caliente, con 30 min de enfriamiento entre cambios.",
+  aiAutoTuneAskCap: "Mueve el techo de ask. Solo ESTRECHA: nunca abre, así que solo puede reducir exposición.",
+  aiAutoProbeBands: "Prueba bandas de ask nuevas. El único autoajuste que puede ABRIR la ventana y subir el riesgo.",
 };
 
 const TOGGLE_KEYS = Object.keys(TOGGLE_LABELS) as (keyof UiSettings)[];
@@ -137,7 +157,7 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
   },
   {
     key: "arbNakedLegHaltStreak",
-    label: "Arb — patas sueltas antes de parar",
+    label: "Arb — patas sueltas máx",
     help: "Si una pata llena y la otra no, queda una apuesta desnuda. Rearma al reiniciar el bot.",
     min: 1,
     max: 10,
@@ -173,7 +193,14 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
     fields.push({ id: `header:${label}`, label, kind: "header", editable: false });
   };
   const toggle = (key: keyof UiSettings): void => {
-    fields.push({ id: String(key), label: TOGGLE_LABELS[key as string], kind: "toggle", value: onOff(Boolean(settings[key])), editable: true });
+    fields.push({
+      id: String(key),
+      label: TOGGLE_LABELS[key as string],
+      kind: "toggle",
+      value: onOff(Boolean(settings[key])),
+      help: TOGGLE_HELP[key as string],
+      editable: true,
+    });
   };
 
   header("Estrategia");

@@ -266,6 +266,24 @@ describe("TUI settings model", () => {
     expect(text).toContain("dir SIM");
   });
 
+  it("ninguna etiqueta se pasa de la columna, o desalinea la fila entera", () => {
+    // `renderSettings` hace padEnd(label, 30). Tres etiquetas llevaban tiempo pasandose y rompian la
+    // alineacion en silencio; ahora el detalle largo vive en la ayuda, que antes no tenia donde ir.
+    const largas = buildSettingsFields(testSettings())
+      .filter((f) => f.kind !== "header" && f.label.length > 30)
+      .map((f) => `${f.id} (${f.label.length})`);
+    expect(largas).toEqual([]);
+  });
+
+  it("cada interruptor se explica, no solo los limites de riesgo", () => {
+    const fields = buildSettingsFields(testSettings());
+    const interruptores = fields.filter((f) => f.kind === "toggle" && !f.id.startsWith("enabled:"));
+    expect(interruptores.length).toBeGreaterThan(10);
+    // Los modos llevan el aviso dentro del valor ("LIVE DINERO REAL"), no necesitan ayuda aparte.
+    const sinAyuda = interruptores.filter((f) => !f.help && !isModeId(f.id)).map((f) => f.id);
+    expect(sinAyuda).toEqual([]);
+  });
+
   it("todo ajuste que acota dinero tiene fila en la TUI", () => {
     // La TUI vivio siendo un subconjunto de la web: 25 ajustes solo estaban alli, incluido el
     // cortacircuitos entero. Este test convierte "acota dinero" en una lista y exige la fila.
