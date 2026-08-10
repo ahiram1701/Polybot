@@ -17,13 +17,21 @@ describe("monitor de retraso del bucle de eventos", () => {
   });
 
   it("una espera ASINCRONA no cuenta como bloqueo", async () => {
+    const ESPERA_MS = 300;
     const monitor = startEventLoopLagMonitor(20);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, ESPERA_MS));
     const lectura = monitor.read();
     monitor.stop();
     // El bucle estuvo libre todo el rato, aunque el reloj de pared avanzara.
     expect(lectura).toBeDefined();
-    expect(lectura!.p50Ms).toBeLessThan(50);
+    // El umbral va atado a la ESPERA, no a un 50 fijo.
+    //
+    // Este monitor mide el bucle del PROCESO entero, que comparte CPU con los demas workers de vitest.
+    // Con dos baterias completas a la vez el p50 llegaba a 59-70 ms y el test fallaba — sin que nada
+    // estuviera mal en el codigo. Lo que la prueba afirma es que dormir no bloquea: si el bucle
+    // hubiera estado parado durante la espera, el p50 rondaria los 300 ms, no los 70. La mitad
+    // discrimina eso de sobra y deja el doble de margen sobre lo peor observado bajo carga.
+    expect(lectura!.p50Ms).toBeLessThan(ESPERA_MS / 2);
   });
 
   it("un bloqueo SINCRONO si aparece", async () => {
