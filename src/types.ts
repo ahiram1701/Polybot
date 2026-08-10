@@ -200,6 +200,13 @@ export interface WindowOpening {
 
 export interface OrderbookQuote {
   tokenId: string;
+  /**
+   * Cuando se leyo este libro. Sirve para saber cuanto habia envejecido la cotizacion al mandar la
+   * orden: sin este dato, un rechazo del exchange no distingue "el libro se movio mientras tanto" de
+   * "el precio estaba mal calculado", y eso es exactamente lo que dejo sin explicar los dos primeros
+   * arbitrajes en live.
+   */
+  quotedAtMs?: number;
   bestAsk?: number;
   bestBid?: number;
   /** Profundidad hasta el tope de ask. Para el camino DIRECCIONAL. */

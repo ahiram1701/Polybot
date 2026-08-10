@@ -99,6 +99,7 @@ export function summarizeOrderBook(
 
   return {
     tokenId: book.asset_id,
+    quotedAtMs: Date.now(),
     bestAsk: asks[0]?.price,
     bestBid: bids[0]?.price,
     availableUsdUnderCap,

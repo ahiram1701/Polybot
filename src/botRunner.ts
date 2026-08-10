@@ -12,8 +12,10 @@ import { defaultTakerFeeRateBps } from "./fees.js";
 import { evaluateRiskCircuitBreaker, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
+  LiveOrderError,
   resolveTradeAmountUsd,
   SimulationExecutionEngine,
+  type LiveOrderFailureDetails,
   type TradeExecutor,
 } from "./executionEngine.js";
 import {
@@ -1894,6 +1896,33 @@ export class BotRunner {
         if (isPostOnlyRejection(message)) {
           this.postOnlySlugs.add(market.slug);
         }
+        // Contexto de lo que se mando de verdad. Los dos primeros arbitrajes en live murieron con un
+        // "no orders found to match" y el log no permitia distinguir si el libro se habia movido, si el
+        // precio iba bajo o si la cotizacion llegaba vieja. Sin esto solo quedan hipotesis.
+        const detalle: LiveOrderFailureDetails | undefined =
+          result.error instanceof LiveOrderError ? result.error.details : undefined;
+        const contexto = {
+          leg: outcome,
+          error: message,
+          sets,
+          secondsToEnd: Math.round((market.endMs - nowMs) / 100) / 10,
+          ...(detalle
+            ? {
+                precioEnviado: detalle.orderPrice,
+                askCotizado: detalle.quotedBestAsk,
+                // Cuanto se movio el techo por encima del ask que vimos. Si el rechazo llega igual, el
+                // libro se fue mas alla de esto.
+                margenSobreAsk:
+                  detalle.quotedBestAsk === undefined
+                    ? undefined
+                    : Math.round((detalle.orderPrice - detalle.quotedBestAsk) * 1000) / 1000,
+                profundidadCotizadaUsd: Math.round(detalle.quotedDepthUsd),
+                importeUsd: detalle.amountUsd,
+                // La sospecha numero uno: la cotizacion llego vieja a la orden.
+                edadCotizacionMs: detalle.quoteAgeMs,
+              }
+            : {}),
+        };
         const nakedLeg = legs[thinFirst[0]];
         if (nakedLeg) {
           // Second leg failed: hold the first honestly as a directional position.
@@ -1907,9 +1936,8 @@ export class BotRunner {
           this.arbNakedLegStreak += 1;
           logger.warn("Arbitraje incompleto: solo una pata llenó; posición direccional registrada.", {
             slug: market.slug,
-            leg: thinFirst[0],
-            sets,
-            error: message,
+            ...contexto,
+            legLlenada: thinFirst[0],
           });
           await this.deps.notifier?.notify({
             key: `arb-naked:${arbSlug}`,
@@ -1919,7 +1947,13 @@ export class BotRunner {
             minIntervalMs: 60_000,
           });
         } else {
-          this.logSkipOnce(market.slug, "arb_execution_failed", { leg: outcome, error: message });
+          // `logSkipOnce` colapsa por slug, asi que un rechazo se veria una sola vez por ventana. Este
+          // es el suceso que hay que diagnosticar: se registra entero, cada vez.
+          logger.warn("Arbitraje rechazado por el exchange en la primera pata.", {
+            slug: market.slug,
+            ...contexto,
+          });
+          this.logSkipOnce(market.slug, "arb_execution_failed", contexto);
         }
         return;
       }

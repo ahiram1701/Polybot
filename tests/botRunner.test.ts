@@ -9,6 +9,7 @@ import { startBandProgram } from "../src/bandProbeProgram.js";
 import { PROBE_MAX_PER_MARKET_DAY } from "../src/probeWindow.js";
 import { BotRunner } from "../src/botRunner.js";
 import type { ChainlinkPriceFeed } from "../src/chainlinkPriceFeed.js";
+import { LiveOrderError } from "../src/executionEngine.js";
 import type { ExecutionInput, TradeExecutor } from "../src/executionEngine.js";
 import type { TradeReconciler } from "../src/liveTradeReconciler.js";
 import type { MarketWatcher } from "../src/marketWatcher.js";
@@ -2275,6 +2276,8 @@ describe("BotRunner", () => {
       perdidaPreviaUsd?: number;
       fallaSegundaPata?: boolean;
       nakedLegHaltStreak?: number;
+      /** Falla la PRIMERA pata como lo hace el exchange de verdad, con contexto adjunto. */
+      fallaPrimeraPataConDetalle?: boolean;
       // Modo global del bot y modos por estrategia. Ausentes = live global, como era antes.
       modo?: "sim" | "live";
       arbMode?: "sim" | "live";
@@ -2361,6 +2364,19 @@ describe("BotRunner", () => {
       } as unknown as OrderbookService;
       const executor = {
         execute: vi.fn(async (input: ExecutionInput) => {
+          if (opciones.fallaPrimeraPataConDetalle && input.outcome === "UP") {
+            throw new LiveOrderError(
+              "no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.",
+              {
+                orderPrice: 0.42,
+                quotedBestAsk: 0.4,
+                quotedDepthUsd: 485.59,
+                amountUsd: input.amountUsd,
+                quoteAgeMs: 742,
+                tokenId: "token",
+              },
+            );
+          }
           // La primera pata es UP (profundidad igual en ambos lados): fallar DOWN deja pata suelta.
           if (opciones.fallaSegundaPata && input.outcome === "DOWN") {
             throw new Error("no funds");
@@ -2541,6 +2557,35 @@ describe("BotRunner", () => {
       await runner.runOnce(nowMs);
       // Un solo mercado intentado (2 patas); el segundo y el tercero ya no se intentan.
       expect(executor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("un rechazo del exchange registra QUE se mando, no solo que fallo", async () => {
+      // El logger escribe TODO por console.log, incluidos los warn.
+      const lineas: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+        lineas.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+      });
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      // Los dos primeros arbitrajes en live murieron con "no orders found to match" y el log no dejaba
+      // distinguir si el libro se habia movido, si el precio iba bajo o si la cotizacion llegaba vieja.
+      const { runner, nowMs } = await montarArb({
+        liveBankrollUsd: 12,
+        budget: 25,
+        fallaPrimeraPataConDetalle: true,
+      });
+      await runner.runOnce(nowMs);
+
+      const aviso = lineas.find((linea) => linea.includes("rechazado por el exchange"));
+      expect(aviso).toBeDefined();
+      expect(aviso).toContain("precioEnviado");
+      expect(aviso).toContain("0.42");
+      expect(aviso).toContain("askCotizado");
+      // El margen que llevaba sobre el ask: si el rechazo llega igual, el libro se fue mas alla.
+      expect(aviso).toContain("margenSobreAsk");
+      // La sospecha numero uno tiene que ser medible, no deducible.
+      expect(aviso).toContain("edadCotizacionMs");
+      expect(aviso).toContain("742");
+      expect(aviso).toContain("profundidadCotizadaUsd");
     });
 
     it("el freno de patas sueltas sale del AJUSTE, no de la constante", async () => {

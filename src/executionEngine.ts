@@ -92,6 +92,38 @@ export class SimulationExecutionEngine implements TradeExecutor {
   }
 }
 
+/**
+ * Lo que se mando de verdad al exchange cuando la orden fallo.
+ *
+ * Se adjunta al error en vez de recalcularse en quien lo registra: una reconstruccion puede derivar del
+ * codigo real y entonces el diagnostico miente justo cuando mas falta hace. Aqui el precio es, por
+ * construccion, el que viajo.
+ */
+export interface LiveOrderFailureDetails {
+  /** Precio limite enviado. */
+  orderPrice: number;
+  /** Mejor ask de la cotizacion en la que se baso la decision. */
+  quotedBestAsk?: number;
+  /** Profundidad que tenia esa cotizacion, para distinguir "libro fino" de "libro que se movio". */
+  quotedDepthUsd: number;
+  amountUsd: number;
+  /** Cuanto habia envejecido la cotizacion al mandar la orden. La sospecha numero uno. */
+  quoteAgeMs?: number;
+  tokenId: string;
+}
+
+/** Error de una orden live con el contexto de lo enviado. */
+export class LiveOrderError extends Error {
+  constructor(
+    message: string,
+    readonly details: LiveOrderFailureDetails,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = "LiveOrderError";
+  }
+}
+
 export class LiveExecutionEngine implements TradeExecutor {
   private readonly clientProvider: LiveClobClientProvider;
 
@@ -110,20 +142,34 @@ export class LiveExecutionEngine implements TradeExecutor {
       maxSlippage: this.config.liveMaxSlippage ?? DEFAULT_LIVE_MAX_SLIPPAGE,
       tickSize: Number(input.market.tickSize),
     });
-    const response = (await client.createAndPostMarketOrder(
-      {
-        tokenID: tokenId,
-        side: Side.BUY,
-        amount: input.amountUsd,
-        price: orderPrice,
-        orderType: OrderType.FAK,
-      },
-      {
-        tickSize: input.market.tickSize as TickSize,
-        negRisk: input.market.negRisk,
-      },
-      OrderType.FAK,
-    )) as Partial<OrderResponse> & Record<string, unknown>;
+    let response: Partial<OrderResponse> & Record<string, unknown>;
+    try {
+      response = (await client.createAndPostMarketOrder(
+        {
+          tokenID: tokenId,
+          side: Side.BUY,
+          amount: input.amountUsd,
+          price: orderPrice,
+          orderType: OrderType.FAK,
+        },
+        {
+          tickSize: input.market.tickSize as TickSize,
+          negRisk: input.market.negRisk,
+        },
+        OrderType.FAK,
+      )) as Partial<OrderResponse> & Record<string, unknown>;
+    } catch (error) {
+      // Se re-lanza con el contexto pegado. El mensaje del exchange solo dice QUE fallo; sin el precio
+      // enviado, el ask que vimos y la edad de la cotizacion, no se puede saber POR QUE.
+      throw new LiveOrderError(error instanceof Error ? error.message : String(error), {
+        orderPrice,
+        quotedBestAsk: input.quote.bestAsk,
+        quotedDepthUsd: input.quote.availableUsdAllLevels,
+        amountUsd: input.amountUsd,
+        quoteAgeMs: input.quote.quotedAtMs === undefined ? undefined : Date.now() - input.quote.quotedAtMs,
+        tokenId,
+      }, error);
+    }
 
     let finalResponse: unknown = response;
     if (response.status === "live" && response.orderID) {
