@@ -42,7 +42,13 @@ describe("monitor de retraso del bucle de eventos", () => {
 
   it("reset vacia el histograma para que cada ventana sea independiente", async () => {
     const monitor = startEventLoopLagMonitor(20);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Espera ACTIVA con fecha limite, no un sleep fijo. Con toda la bateria corriendo en paralelo, 60 ms
+    // no bastan siempre para que el histograma tome su primera muestra, y el test fallaba solo bajo
+    // carga — es decir, contaba mentiras sobre el codigo en vez de sobre el reloj.
+    const limite = Date.now() + 5_000;
+    while (monitor.read() === undefined && Date.now() < limite) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     expect(monitor.read()).toBeDefined();
     monitor.reset();
     // Sin esto, un bloqueo viejo seguiria apareciendo como maximo para siempre.

@@ -143,7 +143,12 @@ export interface RunnerLike {
   /** Fracción de iteraciones del bucle que acabaron lanzando (ventana móvil). */
   getLoopHealth?(): { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia y su procedencia. */
-  getBankroll?(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
+  getBankroll?(): {
+    usd: number;
+    source: "onchain" | "declared" | "unknown";
+    atMs?: number;
+    staleReadingMs?: number;
+  };
   /** Programas de sondeo vigentes: el runner los consulta para ensanchar la ventana de ask. */
   setBandPrograms?(programs: readonly BandProgram[]): void;
   updateStrategySettings?(

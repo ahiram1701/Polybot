@@ -747,8 +747,13 @@ export class BotRunner {
   }
 
   /** Capital efectivo que usa la guardia, y de donde salio. Para que la UI no mienta. */
-  getBankroll(): { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number } {
-    const resolved = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+  getBankroll(): {
+    usd: number;
+    source: "onchain" | "declared" | "unknown";
+    atMs?: number;
+    staleReadingMs?: number;
+  } {
+    const resolved = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, Date.now());
     return { ...resolved, atMs: this.lastBankrollReading?.atMs };
   }
 
@@ -948,7 +953,7 @@ export class BotRunner {
     if (this.modeFor("dir") === "live" && minBankrollUsd > 0) {
       // `source: "unknown"` = ni se pudo leer on-chain ni hay valor declarado. No se bloquea por no
       // saber: bloquear por un RPC caido seria un fallo de red disfrazado de politica de riesgo.
-      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, args.nowMs);
       if (bankroll.source !== "unknown" && bankroll.usd < minBankrollUsd) {
         this.logSkipOnce(args.market.slug, "bankroll_below_directional_minimum", {
           bankrollUsd: Math.round(bankroll.usd * 100) / 100,
@@ -1829,7 +1834,7 @@ export class BotRunner {
     // apuesta desnuda. Con $10 de saldo y un presupuesto de $25, eso pasaria en CADA oportunidad.
     // En sim no aplica: no hay colateral que agotar.
     if (this.modeFor("arb") === "live") {
-      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd);
+      const bankroll = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, nowMs);
       if (bankroll.source === "unknown") {
         // Nunca se pudo leer el saldo NI hay valor declarado: dimensionar a ciegas arriesga
         // exactamente la pata desnuda que esto evita. Mejor perder la oportunidad.

@@ -112,6 +112,26 @@ const MASKED_AMOUNT = "$ ••••";
 const analysisAutoRefreshMs = 60_000;
 
 /**
+ * Explicacion del chip de capital. Distingue los tres casos porque significan cosas distintas para el
+ * dinero: leido, declarado porque nunca se pudo leer, y declarado porque la lectura CADUCO — este
+ * ultimo no existia y se confundia con el anterior.
+ */
+function bankrollChipTitle(bankroll: NonNullable<UiStatus["bankroll"]>): string {
+  const caducada =
+    bankroll.staleReadingMs === undefined
+      ? ""
+      : ` La ultima lectura on-chain es de hace ${Math.round(bankroll.staleReadingMs / 60_000)} min y ya no se considera valida.`;
+  if (bankroll.source === "onchain") {
+    // pUSD, no USDC: leer el token equivocado devuelve $0 con la cuenta llena.
+    return "Colateral pUSD leido on-chain de tu wallet de Polymarket";
+  }
+  if (bankroll.source === "declared") {
+    return `Se esta usando el capital declarado a mano.${caducada || " Nunca se pudo leer on-chain."}`;
+  }
+  return `Ni lectura on-chain ni capital declarado: el arbitraje NO opera, porque dimensionar a ciegas arriesga justo la pata suelta que la guardia evita.${caducada}`;
+}
+
+/**
  * Etiqueta del modo en marcha. Muestra las dos estrategias por separado en cuanto difieren: una sola
  * insignia diria "SIM" con el arbitraje moviendo dinero real, que es justo la confusion que hay que
  * evitar.
@@ -928,17 +948,14 @@ function HealthChips({ status, health }: { status: UiStatus | null; health: BotH
       <span className="chip chip-neutral" title="Tiempo corriendo">
         Uptime {formatDuration(health.uptimeSec)}
       </span>
-      {status?.bankroll && status.bankroll.source !== "unknown" ? (
+      {status?.bankroll ? (
         <span
           className={`chip ${status.bankroll.source === "onchain" ? "chip-neutral" : "chip-warn"}`}
-          title={
-            status.bankroll.source === "onchain"
-              ? "Colateral USDC leido on-chain de tu wallet de Polymarket"
-              : "No se pudo leer on-chain: se esta usando el capital declarado a mano"
-          }
+          title={bankrollChipTitle(status.bankroll)}
         >
-          Capital {formatUsd(status.bankroll.usd)}
-          {status.bankroll.source === "declared" ? " (declarado)" : ""}
+          {status.bankroll.source === "unknown"
+            ? "Capital desconocido — el arbitraje no opera"
+            : `Capital ${formatUsd(status.bankroll.usd)}${status.bankroll.source === "declared" ? " (declarado)" : ""}`}
         </span>
       ) : null}
       {status?.loopHealth && status.loopHealth.iterations > 0 ? (

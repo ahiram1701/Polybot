@@ -10,24 +10,24 @@ const client = (impl: () => Promise<unknown>) => ({ readContract: vi.fn(impl) })
 
 describe("resolveEffectiveBankrollUsd", () => {
   it("prefiere el saldo leido on-chain sobre el declarado a mano", () => {
-    expect(resolveEffectiveBankrollUsd({ usd: 137.5, atMs: 1 }, 10)).toEqual({ usd: 137.5, source: "onchain" });
+    expect(resolveEffectiveBankrollUsd({ usd: 137.5, atMs: 1 }, 10, 1)).toEqual({ usd: 137.5, source: "onchain" });
   });
 
   it("un CERO leido es autoritativo: no se tapa con el valor declarado", () => {
     // Es la mitad del sentido de esta guardia. Si la wallet esta vacia hay que bloquear, y dejar que
     // un numero declarado obsoleto diga lo contrario seria justo el fallo que se viene a corregir.
-    expect(resolveEffectiveBankrollUsd({ usd: 0, atMs: 1 }, 500)).toEqual({ usd: 0, source: "onchain" });
+    expect(resolveEffectiveBankrollUsd({ usd: 0, atMs: 1 }, 500, 1)).toEqual({ usd: 0, source: "onchain" });
   });
 
   it("si no se pudo leer, cae al declarado", () => {
-    expect(resolveEffectiveBankrollUsd(undefined, 20)).toEqual({ usd: 20, source: "declared" });
+    expect(resolveEffectiveBankrollUsd(undefined, 20, 1)).toEqual({ usd: 20, source: "declared" });
   });
 
   it("sin lectura ni valor declarado el resultado es 'unknown', no cero", () => {
     // Quien llama debe poder distinguir "no hay fondos" de "no lo se", para no bloquear por un RPC
     // caido: eso seria un fallo de red disfrazado de politica de riesgo.
-    expect(resolveEffectiveBankrollUsd(undefined, 0).source).toBe("unknown");
-    expect(resolveEffectiveBankrollUsd(undefined, undefined).source).toBe("unknown");
+    expect(resolveEffectiveBankrollUsd(undefined, 0, 1).source).toBe("unknown");
+    expect(resolveEffectiveBankrollUsd(undefined, undefined, 1).source).toBe("unknown");
   });
 });
 
@@ -138,5 +138,41 @@ describe("OnChainBankrollSource: no martillear el RPC tras un fallo", () => {
     // Con la racha a cero, la siguiente lectura la gobierna el TTL normal, no el retroceso.
     await source.read(8_000);
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("una lectura on-chain caduca", () => {
+  it("pasada la edad maxima cae al declarado, y dice cuanto hace que no lee", async () => {
+    const { BANKROLL_READING_MAX_AGE_MS, resolveEffectiveBankrollUsd } = await import("../src/liveBalance.js");
+    const atMs = 1_000_000;
+    // `read()` conserva la ultima lectura buena a proposito y nadie la borra nunca. Sin este tope, un
+    // RPC caido horas seguiria dimensionando el arbitraje contra un saldo que ya no existe — y si bajo
+    // mientras tanto, eso produce justo la pata suelta que la guardia evita.
+    const fresca = resolveEffectiveBankrollUsd({ usd: 137.5, atMs }, 20, atMs + BANKROLL_READING_MAX_AGE_MS);
+    expect(fresca).toEqual({ usd: 137.5, source: "onchain" });
+
+    const caducada = resolveEffectiveBankrollUsd({ usd: 137.5, atMs }, 20, atMs + BANKROLL_READING_MAX_AGE_MS + 1);
+    expect(caducada.source).toBe("declared");
+    expect(caducada.usd).toBe(20);
+    // La UI necesita distinguir "nunca hubo lectura" de "el RPC lleva media hora muerto".
+    expect(caducada.staleReadingMs).toBeGreaterThan(BANKROLL_READING_MAX_AGE_MS);
+  });
+
+  it("caducada y SIN declarado no opera: dimensionar a ciegas es peor que perder la oportunidad", async () => {
+    const { BANKROLL_READING_MAX_AGE_MS, resolveEffectiveBankrollUsd } = await import("../src/liveBalance.js");
+    const atMs = 1_000_000;
+    const sinRespaldo = resolveEffectiveBankrollUsd(
+      { usd: 137.5, atMs },
+      0,
+      atMs + BANKROLL_READING_MAX_AGE_MS + 1,
+    );
+    expect(sinRespaldo.source).toBe("unknown");
+    expect(sinRespaldo.usd).toBe(0);
+  });
+
+  it("un cero LEIDO y fresco sigue mandando sobre el declarado", async () => {
+    const { resolveEffectiveBankrollUsd } = await import("../src/liveBalance.js");
+    // Taparlo con un declarado obsoleto es el fallo original que este modulo vino a corregir.
+    expect(resolveEffectiveBankrollUsd({ usd: 0, atMs: 1_000 }, 500, 1_000)).toEqual({ usd: 0, source: "onchain" });
   });
 });

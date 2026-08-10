@@ -163,7 +163,13 @@ export interface UiStatus {
   /** Salud del bucle: fraccion de iteraciones que acabaron lanzando (ventana movil). */
   loopHealth?: { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia de riesgo y de donde salio (on-chain vs declarado). */
-  bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
+  bankroll?: {
+    usd: number;
+    source: "onchain" | "declared" | "unknown";
+    atMs?: number;
+    /** Presente solo si habia lectura on-chain pero caduco. Distingue "nunca leyo" de "el RPC murio". */
+    staleReadingMs?: number;
+  };
   /**
    * Decisiones del autoajuste: que banda propuso, que prometio y que esta entregando la realidad.
    *

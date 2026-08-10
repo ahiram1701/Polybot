@@ -124,17 +124,43 @@ export class OnChainBankrollSource implements BankrollSource {
 }
 
 /**
- * Capital efectivo para la guardia: el saldo leído si se pudo leer, y si no el declarado a mano.
+ * Cuánto puede envejecer una lectura on-chain antes de dejar de valerse por sí sola.
+ *
+ * El TTL de refresco es 1 min, así que 5 min son unos cinco intentos fallidos: un hipo de red no llega,
+ * una caída sí. La distinción importa porque `read()` conserva la última lectura buena a propósito y
+ * nadie la borra nunca — sin este tope, una lectura de hace horas seguiría dimensionando el arbitraje.
+ * Si el saldo real bajó mientras tanto, eso produce exactamente la pata suelta que la guardia evita.
+ */
+export const BANKROLL_READING_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * Capital efectivo para la guardia: el saldo leído si se pudo leer y sigue fresco, y si no el declarado
+ * a mano.
  *
  * Un 0 LEÍDO es autoritativo y bloquea — no se puede operar sin fondos, y taparlo con un valor
  * declarado obsoleto sería justo el fallo que este módulo viene a corregir.
+ *
+ * `nowMs` es obligatorio a propósito: es lo que obliga a cada sitio que dimensiona con dinero real a
+ * decir contra qué momento compara. Un default silencioso dejaría que un llamador nuevo se saltara la
+ * caducidad sin enterarse.
  */
 export function resolveEffectiveBankrollUsd(
   reading: BankrollReading | undefined,
   declaredUsd: number | undefined,
-): { usd: number; source: "onchain" | "declared" | "unknown" } {
+  nowMs: number,
+  maxAgeMs: number = BANKROLL_READING_MAX_AGE_MS,
+): { usd: number; source: "onchain" | "declared" | "unknown"; staleReadingMs?: number } {
   if (reading) {
-    return { usd: reading.usd, source: "onchain" };
+    const ageMs = nowMs - reading.atMs;
+    if (ageMs <= maxAgeMs) {
+      return { usd: reading.usd, source: "onchain" };
+    }
+    // Caducada: cae al declarado, pero se dice CUÁNTO hace que no se lee. Sin eso, la UI mostraría
+    // "(declarado)" sin distinguir "nunca hubo lectura" de "el RPC lleva media hora muerto".
+    if (declaredUsd !== undefined && declaredUsd > 0) {
+      return { usd: declaredUsd, source: "declared", staleReadingMs: ageMs };
+    }
+    return { usd: 0, source: "unknown", staleReadingMs: ageMs };
   }
   if (declaredUsd !== undefined && declaredUsd > 0) {
     return { usd: declaredUsd, source: "declared" };
