@@ -54,6 +54,7 @@ import { StateStore } from "./stateStore.js";
 import { StrategyAnalysisEngine } from "./strategyAnalysisEngine.js";
 import { dailySpendKey, sleep } from "./time.js";
 import { resolveTradeFromTick } from "./tradeResolution.js";
+import type { SkipReason } from "./ui/shared.js";
 import type {
   BotConfig,
   BtcPriceTick,
@@ -2310,7 +2311,12 @@ export class BotRunner {
     });
   }
 
-  private logSkipOnce(slug: string, reason: string, meta?: unknown): void {
+  /**
+   * `SkipReason` y no `string`: el tipo se deriva del mapa de etiquetas, asi que registrar un motivo
+   * sin texto no compila. Es lo que fallo con `arb_execution_failed`, que llevaba dias saliendo como
+   * codigo crudo en las tres pantallas.
+   */
+  private logSkipOnce(slug: string, reason: SkipReason, meta?: unknown): void {
     const market = marketSymbolFromSlug(slug);
     const key = `${market ?? slug}:${slug}:${reason}`;
     if (this.skipLogKeys.has(key)) {

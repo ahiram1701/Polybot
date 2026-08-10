@@ -60,12 +60,18 @@ La lista de motivos por los que el bot decidió no entrar, con su frecuencia. Es
 | `Historia insuficiente (EV)` | El gate aún no tiene muestras de ese setup. |
 | `Capital por debajo del mínimo para direccional` | La guardia de capital está bloqueando live (ver §6). |
 | `Arbitraje: patas bajo el mínimo del exchange` | La oportunidad existía pero el capital no daba para que ambas órdenes superaran $5. |
+| `Arbitraje evaporado entre la cotizacion y la orden` | Se recotizó justo antes de mandar y el par ya no daba margen. **Esto es el bot protegiéndote**, no un fallo. |
+| `Arbitraje: el exchange rechazo la orden` | Se mandó y el CLOB no encontró contraparte. El log lleva precio, ask, profundidad y edad de la cotización. |
+| `Arbitraje: no se pudo leer el capital, no opera a ciegas` | Ni lectura on-chain válida ni capital declarado. Prefiere perder la oportunidad a dimensionar a ciegas. |
+| `Arbitraje: capital ya comprometido en otro mercado` | Otro arbitraje de la misma iteración ya reservó el saldo. |
+| `Arbitraje detenido por patas sueltas` | Saltó el freno. **Rearma al reiniciar el bot** (ver §6). |
+| `El mercado ya no acepta ordenes taker (ultimos segundos)` | Fin de ventana; no se reintenta hasta la siguiente. |
 
 ### Chips de salud
 
 - **Feed** — estado del feed de precios de Chainlink.
 - **Loop % fallos** — porcentaje de iteraciones del bucle que murieron. **Debe estar cerca de 0.** Si sube, el bot está perdiendo ventanas de entrada.
-- **Capital** — saldo real leído de la cadena. Si pone «(declarado)», es que no se pudo leer y está usando el valor de respaldo.
+- **Capital** — saldo real leído de la cadena. Si pone **«(declarado)»** está usando el valor de respaldo, y hay **dos causas distintas**: nunca se pudo leer, o la lectura funcionó pero **caducó** (más de 5 min sin refrescar). Pasa el ratón por encima: el aviso las distingue. Si pone **«Capital desconocido»**, el arbitraje no está operando.
 
 ### Oportunidades de arbitraje
 
@@ -160,11 +166,40 @@ hasta el cambio de día. Debe dar para varias operaciones **más** al menos una 
 quitaría justo la estrategia que recupera capital sin arriesgarlo. No es un olvido: está escrito así en
 el código, con su motivo.
 
-**Colateral real, leído on-chain.** En live el tamaño nunca supera el saldo que el bot lee de la cadena
+**Colateral real, leído on-chain.** En live el tamaño no supera el saldo que el bot lee de la cadena
 cada minuto. Es la guarda más importante del arbitraje: mandar una orden que no se puede pagar
-convierte una posición sin riesgo en una apuesta desnuda. Si **no consigue leer el saldo, no opera** —
-dimensionar a ciegas es exactamente el riesgo que esto evita. Verás `Arbitraje: no se pudo leer el
-capital`.
+convierte una posición sin riesgo en una apuesta desnuda.
+
+Si la lectura falla, se conserva la última buena — pero **solo 5 minutos**. Pasado ese plazo se usa el
+`liveBankrollUsd` que hayas declarado, y por eso ese número debe estar puesto y **algo por debajo** de
+tu saldo real: es el que dimensionará si el RPC se cae. Solo si **tampoco** hay declarado el bot deja de
+operar (`Arbitraje: no se pudo leer el capital, no opera a ciegas`).
+
+**Cuánto compra: el mínimo de cuatro cosas.**
+
+```
+tamaño = min( arbMaxUsdPerOpportunity ,  hueco del límite diario ,
+              colateral libre (solo live) ,  profundidad del libro )
+```
+
+**De aquí sale la trampa que más cuesta:** si añades capital y **no** subes
+`arbMaxUsdPerOpportunity`, no cambia nada. El presupuesto es el techo, y el dinero nuevo se queda
+parado. Los dos números tienen que subir juntos.
+
+**Cuánto capital hace falta para una oportunidad concreta:**
+
+```
+capital necesario = $5 × (precio del par) ÷ (el lado más barato)
+```
+
+Porque un set completo necesita el **mismo número** de participaciones de los dos lados, y las dos
+órdenes tienen que superar el mínimo del exchange. Ejemplo real: UP a 0,96 y DOWN a 0,02 — el par
+cuesta 0,98 y ganas $0,02 por set, pero para que la pata de DOWN llegue a $5 harían falta 250 sets, o
+sea **$245**. Con $17,80 esa pata sale a $0,36 y la oportunidad se descarta entera.
+
+La consecuencia es contraintuitiva: **cuanto más barato el lado perdedor, más capital hace falta.** Y
+un arbitraje aparece justo cuando un lado se encarece — la situación que lo crea es la misma que lo
+hace impagable.
 
 **Reserva por iteración.** Si dos mercados dan oportunidad a la vez, el segundo solo puede usar lo que
 sobra del primero. El dinero se reserva **antes** de mandar nada, porque sale en cuanto llena la
@@ -236,7 +271,7 @@ En la cabecera (web y TUI) las dos estrategias aparecen por separado en cuanto s
 
 **«Loop % fallos» alto.** El bot está perdiendo ventanas. Casi nunca es la red aunque el log diga «timeout»: revisa primero si algo está bloqueando el bucle (ver [ARQUITECTURA.md](ARQUITECTURA.md#el-bucle-es-de-un-solo-hilo)).
 
-**El capital sale «(declarado)» y no el real.** No se pudo leer la cadena. Comprueba `POLYGON_RPC_URL`; algunos RPC públicos empezaron a exigir registro y devuelven `401`.
+**El capital sale «(declarado)» y no el real.** O nunca se pudo leer la cadena, o la última lectura **caducó** (más de 5 min). El aviso del chip distingue las dos. Comprueba `POLYGON_RPC_URL`; algunos RPC públicos empezaron a exigir registro y devuelven `401`.
 
 **El saldo sale 0 teniendo fondos.** El colateral de Polymarket es **pUSD**, no USDC. Ver [ARQUITECTURA.md](ARQUITECTURA.md#trampas-conocidas).
 

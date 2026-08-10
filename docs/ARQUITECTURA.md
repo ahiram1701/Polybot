@@ -19,8 +19,12 @@ El bucle corre cada `pollIntervalMs` (1s por defecto) en `BotRunner.runIteration
       recordAnalyticsObservation    (append a analytics.jsonl)
       observeArbOpportunity
 6. FASE 2 — decisión, secuencial:
-      freno de patas sueltas → arbitraje (5m y 15m)
+      freno de patas sueltas → arbitraje 5m:
+          quoteArbLegs              RECOTIZA las dos patas (2 getQuote)
+          detectCompleteSetArb      reevalúa; si se evaporó, NO manda nada
+          executeArbLeg × 2         libro más fino primero
       circuit breaker (solo direccional) → buildTradeSignal → EV gate → ejecución
+      runArb15m                     después del direccional, con la reserva ya aplicada
 7. verifyOfficialResolutions        (2 fetch a gamma cada 30s)
 ```
 
@@ -33,7 +37,7 @@ Las fases 1 y 2 están separadas a propósito: capturar en paralelo mantiene los
 | **Gamma** (`gamma-api.polymarket.com`) | Metadatos del mercado, slug, tokenIds, resolución oficial | Caché de 5s por slug, con fallback a caché rancia si falla |
 | **CLOB** (`clob.polymarket.com`) | Libro de órdenes, ejecución | `withTimeout` de 2s que **no cancela** la petición subyacente |
 | **RTDS** (`ws-live-data.polymarket.com`) | Serie **TWAP** de Chainlink (la que resuelve) y ticks spot (analítica) | WebSocket persistente; no pasa por el pool HTTP. Se suscribe **sin filtros de símbolo**: filtrarlos rompió el spot de ETH y DOGE una vez |
-| **Polygon RPC** | Saldo de colateral (`balanceOf`) | Solo lectura, con caché de 60s y retroceso ante fallo |
+| **Polygon RPC** | Saldo de colateral (`balanceOf`) | Solo lectura, caché de 60s. Ante fallo conserva la última lectura buena, pero **caduca a los 5 min** (`BANKROLL_READING_MAX_AGE_MS`) y entonces cae al declarado |
 
 ## Ficheros de estado
 
@@ -70,6 +74,12 @@ Cachear solo el éxito hace que, tras el primer fallo, el TTL no frene nada y se
 
 En cualquier guardia que decida sobre dinero, distinguir «no pude leer» de «leí cero». Bloquear porque el RPC está caído es un fallo de red disfrazado de política de riesgo; tratar un cero real como «no sé» deja operar sin fondos.
 
+### Y una lectura vieja tampoco es una lectura
+
+El gemelo del anterior, y se descubrió tarde. `LiveBalanceReader` conserva la última lectura buena a propósito, y `lastBankrollReading` no se borra nunca: una vez que **una** lectura funcionaba, el declarado no volvía a usarse jamás. Con el RPC caído horas, el arbitraje seguía dimensionando contra un saldo que podía ya no existir — y si había bajado, eso produce exactamente la pata suelta que la guardia evita.
+
+Arreglado con un tope de edad: 5 minutos, o sea cinco refrescos fallidos. Un hipo de red no llega; una caída sí. `resolveEffectiveBankrollUsd` exige `nowMs` **obligatorio**, no con default: un llamador nuevo no puede saltarse la caducidad sin que el compilador lo pare.
+
 ---
 
 ## La resolución la decide el TWAP, no el spot
@@ -91,7 +101,7 @@ Cada operación guarda en `priceSource` con qué serie se resolvió. Cruzar ese 
 
 ## Trampas conocidas
 
-Cinco cosas que ya costaron caro. Todas comparten patrón: **un valor creíble pero falso**.
+Cosas que ya costaron caro. Todas comparten patrón: **un valor creíble pero falso**.
 
 ### 1. El backtest que se puntuaba a sí mismo
 
@@ -132,7 +142,32 @@ grep -rioE "0x[a-f0-9]{40}" node_modules/@polymarket/clob-client-v2/dist/
 
 ---
 
-### 6. El autoajuste que puede ABRIR la ventana
+### 6. La cotización llega vieja a la orden
+
+Los dos primeros arbitrajes en live murieron con `no orders found to match with FAK order`. Tentador
+culpar al libro fino — y falso: había **$248 y $485** de profundidad frente a los ~$7-12 que hacían
+falta, y el precio enviado era `mejor ask + 0.02`, no al ras.
+
+Lo que fallaba era el hueco temporal. Las cotizaciones venían de la FASE 1 (captura) y la orden salía
+en la FASE 2, con trabajo de por medio. Y **el 81% de los arbitrajes aparecen en los últimos 2 minutos
+de la ventana**, que es cuando el libro converge hacia 0/1 y más se mueve: para cuando llegaba la
+orden, el nivel visto podía no existir.
+
+Dos cambios, y el segundo importa más que el primero:
+
+1. **Recotizar** justo antes de mandar (`quoteArbLegs`), y dimensionar con lo recotizado.
+2. **Reevaluar y abortar** si el arbitraje ya se esfumó, en vez de lanzar una orden contra un libro que
+   ya no ofrece nada. Esto vale aunque la hipótesis de la latencia resulte falsa: no se pierde dinero
+   por *no* mandar una orden sin margen. La reevaluación usa `detectCompleteSetArb`, el mismo detector
+   que disparó la oportunidad, no una cuenta paralela que pueda derivar de él.
+
+La lección general: **un rechazo del exchange sin contexto no es diagnosticable.** El mensaje dice QUÉ
+falló, nunca POR QUÉ. Por eso `LiveOrderError` lleva pegados precio enviado, ask cotizado, profundidad,
+importe y **edad de la cotización** (`OrderbookQuote.quotedAtMs`), y el contexto viaja con el error en
+lugar de recalcularse en quien lo registra — una reconstrucción puede derivar del código real y
+entonces el diagnóstico miente justo cuando más falta hace.
+
+### 7. El autoajuste que puede ABRIR la ventana
 
 Hay **tres** autoajustes y no son intercambiables. Dos solo pueden reducir exposición; uno puede
 aumentarla:
@@ -151,7 +186,7 @@ El motivo de que `aiAutoTuneAskCap` esté separado de los sondeos es que el tune
 (`ASK_WINDOW_BASELINE_MIN`/`_MAX`) que nunca escribe: es su referencia. Unos límites mal puestos ahí
 mataron el tuner una vez.
 
-### 7. Lo que NO es configurable, y por qué
+### 8. Lo que NO es configurable, y por qué
 
 El criterio es: **se expone lo que acota dinero o riesgo; el resto se queda en código.** Exponer las
 ~60 constantes internas convertiría la pantalla de ajustes en ruido y no son decisiones del operador.

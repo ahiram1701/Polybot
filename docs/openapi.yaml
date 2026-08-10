@@ -334,6 +334,26 @@ components:
         markets: { type: array, items: { type: object } }
         signal: { type: object }
         dailySpendUsd: { type: number }
+        bankroll:
+          type: object
+          description: Capital efectivo que usa la guardia del arbitraje, y de donde salio.
+          properties:
+            usd: { type: number }
+            source:
+              type: string
+              enum: [onchain, declared, unknown]
+              description: "unknown = ni lectura ni declarado: el arbitraje NO opera."
+            atMs: { type: number, description: Cuando se leyo on-chain por ultima vez. }
+            staleReadingMs:
+              type: number
+              description: Presente solo si habia lectura on-chain y caduco. Distingue "nunca leyo" de "el RPC murio".
+        loopHealth:
+          type: object
+          properties:
+            iterations: { type: integer }
+            failed: { type: integer }
+            failedPct: { type: number }
+            lagMaxMs: { type: number, description: Peor bloqueo del bucle de eventos en la ventana. }
         pnl: { type: object, description: P&L post-reset (desde el ultimo reset) agregado. }
         pnlByMode: { type: object, description: P&L post-reset por modo (sim/live). }
         pnlHistoricalByMode: { type: object, description: P&L de por vida por modo (todos los trades, ignora el reset). }
@@ -370,7 +390,10 @@ components:
           description: Capital minimo para que el direccional opere en live. El arbitraje no pasa por esta puerta.
         liveBankrollUsd:
           type: number
-          description: Capital declarado. Solo se usa si falla la lectura on-chain, para no confundir un RPC caido con quedarse sin fondos.
+          description: >-
+            Capital declarado, respaldo de la lectura on-chain. Entra en dos casos: si nunca se pudo
+            leer, y si la ultima lectura CADUCO (5 min sin refrescar). Ponlo algo por debajo del saldo
+            real: es el que dimensiona si el RPC se cae. Sin el, el arbitraje deja de operar.
         dailySpendLimitUsd:
           type: number
           description: Tope bruto de gasto del dia, contado POR MODO (las operaciones de papel no consumen el presupuesto real).
@@ -387,7 +410,10 @@ components:
           description: Arbitraje tambien en ventanas de 15m. SOLO arbitraje; el direccional sigue en 5m.
         arbMaxUsdPerOpportunity:
           type: number
-          description: Presupuesto de las dos patas juntas. En live el colateral leido on-chain lo acota ademas por debajo.
+          description: >-
+            Presupuesto de las dos patas juntas, y TECHO del tamano. El tamano real es
+            min(este presupuesto, hueco del limite diario, colateral libre en live, profundidad del
+            libro). Subir el capital sin subir este numero NO cambia nada.
         arbMinNetPerSet:
           type: number
           description: Margen minimo por set tras comisiones para mandar el par.
@@ -409,10 +435,43 @@ components:
         liveTradeAmountUsd: { type: number }
         autoMinLive: { type: boolean }
         maxAskPrice: { type: number }
-        dailySpendLimitUsd: { type: number }
         tickStaleMs: { type: number }
         pollIntervalMs: { type: number }
-        aiAutoApplyLive: { type: boolean }
+        openingCaptureGraceMs: { type: number }
+        timezone: { type: string }
+        maxAnalyticsSamples:
+          type: integer
+          description: Retencion de muestras de analitica. Subirlo tiene coste real, ver docs/ARQUITECTURA.md.
+        # --- Los TRES autoajustes. El spec solo documentaba el primero. ---
+        aiAutoApplyLive:
+          type: boolean
+          description: Ajusta ventana y distancia por mercado en caliente, con 30 min de enfriamiento.
+        aiAutoTuneAskCap:
+          type: boolean
+          description: Mueve el techo de ask. Solo ESTRECHA, nunca abre, asi que solo reduce exposicion.
+        aiAutoProbeBands:
+          type: boolean
+          description: >-
+            Prueba bandas de ask nuevas. El UNICO autoajuste que puede ABRIR la ventana y por tanto
+            aumentar el riesgo. Presupuesto de sondeo acotado por mercado y dia.
+        # --- Gate de EV: decide si el direccional entra. ---
+        requirePositiveEv:
+          type: boolean
+          description: Apaga el gate de valor esperado entero.
+        evSafetyMargin: { type: number }
+        evMinExpectedRoi: { type: number }
+        evMinHistoryTrades: { type: integer }
+        evUseSimilarity: { type: boolean }
+        evCalibration: { type: boolean }
+        explorationEnabled: { type: boolean }
+        minFillRatio: { type: number }
+        # --- Banda de ask real, por mercado y lado. Las variantes ByMarket son las antiguas. ---
+        minAskPriceByMarketOutcome: { type: object }
+        maxAskPriceByMarketOutcome: { type: object }
+        minDistanceFloorUsdByMarket: { type: object }
+        enabledMarketOutcomes: { type: object }
+        minDistanceUsdByMarketOutcome: { type: object }
+        entryWindowSecondsByMarketOutcome: { type: object }
     Recommendations:
       type: object
       properties:

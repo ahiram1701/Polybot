@@ -253,7 +253,7 @@ export interface FiscalFxPatch {
  * enseñan — web, TUI y el status compacto que leen los agentes — y con el mapa en el cliente las otras
  * dos pintaban el codigo crudo (`arb_bankroll_exhausted`), que no le dice nada a nadie.
  */
-export const SKIP_REASON_LABELS: Record<string, string> = {
+export const SKIP_REASON_LABELS = {
   btc_distance_below_threshold: "Distancia insuficiente",
   no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",
   best_ask_above_cap: "Ask por encima del cap",
@@ -287,9 +287,25 @@ export const SKIP_REASON_LABELS: Record<string, string> = {
   spread_too_wide: "Spread demasiado ancho",
   too_close_to_close: "Demasiado cerca del cierre",
   exploration_budget_exhausted: "Presupuesto de exploracion agotado",
-};
+  // Los siete siguientes salian como codigo crudo en las tres pantallas hasta que el tipo los delato.
+  market_not_found: "No se encontro ningun mercado abierto",
+  arb_15m_fetch_failed: "Arbitraje 15m: fallo al consultar los mercados",
+  arb_execution_failed: "Arbitraje: el exchange rechazo la orden",
+  fillable_below_min_ratio: "Poca liquidez para el monto pedido",
+  post_only_mode: "El mercado ya no acepta ordenes taker (ultimos segundos)",
+  expected_value_analysis_unavailable: "Gate de EV: motor de analisis no disponible",
+  expected_value_analysis_failed: "Gate de EV: el analisis fallo",
+} as const;
 
+/**
+ * Los motivos que el bot sabe explicar.
+ *
+ * Se deriva del mapa de etiquetas —y no al reves— para que registrar un motivo sin texto sea un error
+ * de COMPILACION. Antes `logSkipOnce` aceptaba cualquier cadena y `arb_execution_failed` llevaba dias
+ * saliendo como codigo crudo en la web, la TUI y el MCP sin que nada avisara.
+ */
+export type SkipReason = keyof typeof SKIP_REASON_LABELS;
 
 export function humanSkipReason(reason: string): string {
-  return SKIP_REASON_LABELS[reason] ?? reason;
+  return (SKIP_REASON_LABELS as Record<string, string>)[reason] ?? reason;
 }
