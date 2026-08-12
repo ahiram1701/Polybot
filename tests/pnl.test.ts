@@ -219,6 +219,49 @@ describe("P&L calculations", () => {
   });
 });
 
+describe("el coste es lo que se paga, no el mejor ask", () => {
+  // Libro: $2 a 0,60 y $8 a 0,70. Importe $10.
+  //   participaciones = 2/0,60 + 8/0,70 = 14,7619   (la caminata por el libro, que ya se hacia bien)
+  //   precio medio    = 10 / 14,7619   = 0,67742
+  // El coste apuntado era 14,7619 x 0,60 = $8,86: se compraba profundidad y se pagaba la superficie.
+  const PARTICIPACIONES = 2 / 0.6 + 8 / 0.7;
+  const libro = (won: boolean): TradeAttempt => ({
+    ...trade({ won, amountUsd: 10, estimatedShares: PARTICIPACIONES }),
+    bestAsk: 0.6,
+    estimatedAveragePrice: 10 / PARTICIPACIONES,
+  });
+
+  it("cobra los $10 que se pagan, no los $8,86 del mejor ask", () => {
+    const perdida = calculateTradePnl(libro(false));
+    // Perder cuesta el importe entero.
+    expect(perdida.netUsd).toBeCloseTo(-10, 2);
+  });
+
+  it("el ROI de una ganadora sale del precio medio, no del mejor ask", () => {
+    const ganada = calculateTradePnl(libro(true));
+    // Pagas $10, recibes 14,7619 -> +$4,76 (ROI 47,6%), no +$5,90 (ROI 66,6%).
+    expect(ganada.payoutUsd).toBeCloseTo(PARTICIPACIONES, 3);
+    expect(ganada.netUsd).toBeCloseTo(PARTICIPACIONES - 10, 2);
+  });
+});
+
+describe("la simulacion tambien paga comision", () => {
+  it("una direccional simulada a 0,50 paga comision, no cero", () => {
+    // El comentario de `getFeeUsd` ya afirmaba que se cobra en AMBOS modos. No era cierto para el
+    // direccional: 574 operaciones simuladas no pagaron un centimo, y la comision es MAXIMA en 0,50.
+    const t: TradeAttempt = {
+      ...trade({ won: true, amountUsd: 10, estimatedShares: 20 }),
+      // `asset` hace falta: la tarifa sale de el, y sin el `defaultTakerFeeRateBps` devuelve 0.
+      asset: "BTC",
+      bestAsk: 0.5,
+      estimatedAveragePrice: 0.5,
+    };
+    const conComision = calculateTradePnl(t);
+    // 20 participaciones a 0,50 con 700 bps: 20 x 0,07 x 0,5 x 0,5 = $0,35.
+    expect(conComision.netUsd).toBeCloseTo(20 - 10 - 0.35, 4);
+  });
+});
+
 function trade(args: { won?: boolean; amountUsd: number; estimatedShares: number }): TradeAttempt {
   return {
     id: `trade-${args.won ?? "pending"}`,

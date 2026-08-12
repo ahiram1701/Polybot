@@ -399,7 +399,9 @@ describe("UI frontend components", () => {
     expect(screen.getAllByText("35s").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("columnheader", { name: "Reclamado" })).toBeInTheDocument();
     expect(screen.getAllByText("$2.00").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/\+.*1\.00/).length).toBeGreaterThanOrEqual(1);
+    // +$0,96 y no +$1,00: la simulacion ya paga comision. 2 participaciones a 0,50 con 700 bps son
+    // $0,035, y la comision es MAXIMA justo en 0,50. Antes salia redondo porque no se cobraba nada.
+    expect(screen.getAllByText(/\+.*0\.9\d/).length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders averages above numeric trade columns", () => {
@@ -416,8 +418,10 @@ describe("UI frontend components", () => {
     expect(averageRow).not.toBeNull();
     expect(within(averageRow as HTMLElement).getAllByText("Prom.")).toHaveLength(6);
     expect(within(averageRow as HTMLElement).getByText("35s")).toBeInTheDocument();
-    expect(within(averageRow as HTMLElement).getAllByText("$1.00").length).toBeGreaterThanOrEqual(2);
-    expect(within(averageRow as HTMLElement).getByText("$0.00")).toBeInTheDocument();
+    expect(within(averageRow as HTMLElement).getAllByText("$1.00").length).toBeGreaterThanOrEqual(1);
+    // El P&L medio ya no se cancela a cero exacto: la ganadora cobra comision y la perdedora tambien,
+    // asi que una ganadora y una perdedora del mismo tamano dejan un neto ligeramente negativo.
+    expect(within(averageRow as HTMLElement).getAllByText(/\$-?0\.\d\d/).length).toBeGreaterThanOrEqual(1);
   });
 
   it("filters trades by market", () => {
@@ -455,7 +459,8 @@ describe("UI frontend components", () => {
     let rows = getBodyRows();
     expect(rows).toHaveLength(1);
     expect(within(rows[0]).getByText("ETH")).toBeInTheDocument();
-    expect(within(rows[0]).getByText(/\-.*1\.00/)).toBeInTheDocument();
+    // Perder cuesta el importe MAS la comision, asi que ya no es -$1,00 exacto.
+    expect(within(rows[0]).getByText(/\-.*1\.0\d/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Positivo" }));
 

@@ -218,6 +218,9 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     availableUsdUnderCap: input.quote.availableUsdUnderCap,
     expectedValue: input.expectedValue,
     estimatedShares: input.quote.estimatedSharesForAmount,
+    // El precio MEDIO de la caminata por el libro. Se calculaba en `summarizeOrderBook` y se tiraba, y
+    // por eso el P&L cobraba las participaciones de la caminata al precio del primer nivel.
+    estimatedAveragePrice: input.quote.estimatedAveragePrice,
     openingPrice: input.opening.openingPrice,
     entryPrice: input.tick.value,
     distanceUsd: input.distanceUsd,

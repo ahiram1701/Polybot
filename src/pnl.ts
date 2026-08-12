@@ -104,9 +104,32 @@ function getStakeUsd(trade: TradeAttempt): number {
   // payout uses those same shares, so using the requested amountUsd here would score a partially
   // filled WIN as a loss (e.g. 0.93 shares bought for ~$0.69 but staked as $10 -> shows -$9.07).
   const shares = getFilledShares(trade) ?? trade.estimatedShares;
-  const cost =
-    isPositiveFinite(shares) && isPositiveFinite(trade.bestAsk) ? shares * trade.bestAsk : trade.amountUsd;
+  const price = getEntryPriceUsd(trade);
+  const cost = isPositiveFinite(shares) && isPositiveFinite(price) ? shares * price : trade.amountUsd;
   return sanitizeUsd(cost) + getFeeUsd(trade);
+}
+
+/**
+ * Precio al que se entro de verdad, por orden de fiabilidad.
+ *
+ * `bestAsk` es el ULTIMO recurso, no el primero: solo vale la superficie del libro cuando el importe
+ * cabe entero en el primer nivel. `estimatedShares` se calcula bajando por niveles, asi que cobrarlas
+ * al mejor ask apuntaba un coste menor que el dinero realmente gastado — y el error crece cuanto mas
+ * fino este el libro, que es exactamente al cierre, que es cuando entra el bot.
+ */
+function getEntryPriceUsd(trade: TradeAttempt): number | undefined {
+  const filledShares = getFilledShares(trade);
+  const filledAmountUsd = getFilledAmountUsd(trade);
+  if (isPositiveFinite(trade.averageFillPrice)) {
+    return trade.averageFillPrice;
+  }
+  if (isPositiveFinite(filledShares) && isPositiveFinite(filledAmountUsd)) {
+    return filledAmountUsd / filledShares;
+  }
+  if (isPositiveFinite(trade.estimatedAveragePrice)) {
+    return trade.estimatedAveragePrice;
+  }
+  return isPositiveFinite(trade.bestAsk) ? trade.bestAsk : undefined;
 }
 
 function getPayoutUsd(trade: TradeAttempt): number {
@@ -140,18 +163,17 @@ function getFeeUsd(trade: TradeAttempt): number {
   // La fee se estima en AMBOS modos. Antes sim devolvia 0, asi que su P&L era libre de comisiones
   // (~3.7% del stake) y toda validacion en sim salia optimista frente al live que pretendia predecir:
   // un sim ligeramente positivo podia ser un live negativo. Un sim honesto exige cobrar lo mismo.
-  const filledShares = getFilledShares(trade);
-  const filledAmountUsd = getFilledAmountUsd(trade);
-  const price = trade.averageFillPrice ?? (
-    isPositiveFinite(filledShares) && isPositiveFinite(filledAmountUsd)
-      ? filledAmountUsd / filledShares
-      : undefined
-  );
-  if (!isPositiveFinite(filledShares) || !isPositiveFinite(price)) {
+  // Se cae a las participaciones ESTIMADAS y al precio de entrada estimado. Antes se exigia un llenado
+  // registrado, que en sim direccional nunca existe: por eso 574 operaciones simuladas pagaron cero
+  // pese a que este mismo comentario afirmaba lo contrario. Y la comision es MAXIMA en 0,50, asi que
+  // no era un descuento plano: perdonaba mas justo la banda central, la que el tuner tiende a proponer.
+  const shares = getFilledShares(trade) ?? trade.estimatedShares;
+  const price = getEntryPriceUsd(trade);
+  if (!isPositiveFinite(shares) || !isPositiveFinite(price)) {
     return 0;
   }
   return calculateTradeFeeUsd({
-    shares: filledShares,
+    shares,
     price,
     feeRateBps: defaultTakerFeeRateBps(trade.asset),
   });

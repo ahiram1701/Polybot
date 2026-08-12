@@ -460,6 +460,14 @@ export interface TradeAttempt {
   availableUsdUnderCap?: number;
   expectedValue?: ExpectedValueSnapshot;
   estimatedShares: number;
+  /**
+   * Precio MEDIO de bajar por el libro hasta cubrir el importe, no el mejor ask.
+   *
+   * `estimatedShares` ya se calcula recorriendo niveles, pero el coste se apuntaba multiplicando esas
+   * participaciones por el mejor ask — o sea, se compraba profundidad y se pagaba la superficie. El
+   * error crece con lo fino que este el libro, que es justo al cierre, que es cuando entra el bot.
+   */
+  estimatedAveragePrice?: number;
   openingPrice: number;
   entryPrice: number;
   distanceUsd: number;
