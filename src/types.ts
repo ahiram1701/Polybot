@@ -198,6 +198,13 @@ export interface MarketInfo {
 }
 
 export interface WindowOpening {
+  /**
+   * De que serie salio la apertura. El mercado resuelve por TWAP, pero si esa serie aun no habia
+   * llegado se cae al spot — y hasta ahora las dos quedaban indistinguibles dentro del mismo numero.
+   * Una apertura spot comparada contra un cierre TWAP es una etiqueta corrupta que nadie puede
+   * detectar despues.
+   */
+  priceSource?: "twap" | "spot";
   asset?: MarketSymbol;
   slug: string;
   windowStartMs: number;
@@ -274,6 +281,11 @@ export interface AnalyticsQuotePoint {
    */
   upAskAvgFill?: number;
   downAskAvgFill?: number;
+  /** Profundidad del lado COMPRADOR, para medir salidas y el coste de deshacer. */
+  upBidDepthUsd?: number;
+  downBidDepthUsd?: number;
+  /** Cuando se leyo el libro, frente a `timestampMs` que es cuando lo proceso el bucle. */
+  quotedAtMs?: number;
   upAskDepthUsd?: number;
   downAskDepthUsd?: number;
 }
@@ -282,6 +294,10 @@ export interface AnalyticsSample {
   version: 1;
   /** Ventana de la serie TWAP que resolvio esta ventana de mercado, en segundos. */
   twapWindowSeconds?: number;
+  /** De que serie salio `openingPrice`. Una apertura spot contra un cierre TWAP no es comparable. */
+  openingPriceSource?: "twap" | "spot";
+  /** Valor de la serie que RESUELVE en el cierre. Es el que decide, no `finalPrice` (spot). */
+  finalTwapPrice?: number;
   market: MarketSymbol;
   slug: string;
   windowStartMs: number;

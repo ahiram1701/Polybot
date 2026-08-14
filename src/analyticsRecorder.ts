@@ -227,6 +227,10 @@ export class AnalyticsRecorder {
       endMs: market.endMs,
       openingPrice: opening.openingPrice,
       openingTickTimestampMs: opening.openingTickTimestampMs,
+      // Las dos marcas que hacen la muestra reinterpretable si Polymarket vuelve a cambiar la regla:
+      // de que serie salio la apertura, y cual es la ventana que resuelve.
+      openingPriceSource: opening.priceSource,
+      twapWindowSeconds: market.twapLookbackSeconds,
       ticks: [],
       quotes: [],
     };
@@ -278,7 +282,13 @@ export class AnalyticsRecorder {
     nowMs: number,
   ): boolean {
     const remainingSeconds = secondsToEnd(sample.endMs, nowMs);
-    if (remainingSeconds <= 0 || remainingSeconds > ANALYTICS_WINDOW_SECONDS) {
+    // Se graba la ventana ENTERA, no solo los ultimos 120 s.
+    //
+    // El bot ya cotizaba en toda la ventana y `recordQuote` tiraba lo de fuera de ese tramo. Resultado:
+    // no habia precio de mercado de los primeros 180 segundos de NINGUNA ventana, jamas, asi que
+    // ninguna estrategia de entrada temprana era backtesteable. Era dato que pasaba por RAM y se
+    // descartaba.
+    if (remainingSeconds <= 0) {
       return false;
     }
 
@@ -294,6 +304,13 @@ export class AnalyticsRecorder {
       downAskAvgFill: quotes.DOWN ? averageFillPrice(quotes.DOWN.rawAskLevels) : undefined,
       upAskDepthUsd: quotes.UP?.availableUsdAllLevels,
       downAskDepthUsd: quotes.DOWN?.availableUsdAllLevels,
+      // Lado COMPRADOR. Sin el no se puede medir ni una salida ni el coste real de deshacer, y el bot
+      // ya lo tenia en la mano: `rawBidLevels` se obtenia y no se escribia.
+      upBidDepthUsd: quotes.UP?.availableBidUsdAllLevels,
+      downBidDepthUsd: quotes.DOWN?.availableBidUsdAllLevels,
+      // Cuando se leyo el libro DE VERDAD, no cuando lo proceso el bucle. La diferencia es la que
+      // explica un rechazo del exchange, y hasta ahora se guardaba la hora del bucle.
+      quotedAtMs: quotes.UP?.quotedAtMs ?? quotes.DOWN?.quotedAtMs,
     };
     return upsertByTimestamp(sample.quotes, point);
   }
@@ -318,11 +335,26 @@ export class AnalyticsRecorder {
       return true;
     }
 
+    // El cierre de la serie que RESUELVE: el ultimo valor TWAP publicado en o antes del cierre. Sale de
+    // los propios ticks de la muestra, donde ya se venia grabando `twapPrice`.
+    const cierreTwap = [...sample.ticks]
+      .filter((t) => t.twapPrice !== undefined && t.timestampMs <= sample.endMs)
+      .sort((l, r) => l.timestampMs - r.timestampMs)
+      .pop()?.twapPrice;
+
+    // La etiqueta sale del TWAP cuando lo hay, y SOLO si la apertura tambien salio de esa serie:
+    // comparar una apertura spot contra un cierre TWAP es mezclar dos reglas y produce una etiqueta
+    // corrupta que despues nadie puede distinguir de una buena. Con spot en cualquiera de los dos
+    // extremos se sigue etiquetando por spot, pero la muestra lleva marcado de donde salio cada cosa.
+    const etiquetaPorTwap = cierreTwap !== undefined && sample.openingPriceSource === "twap";
+    const precioQueDecide = etiquetaPorTwap ? cierreTwap : tick.value;
+
     const resolved: AnalyticsSample = {
       ...sample,
       finalPrice: tick.value,
+      finalTwapPrice: cierreTwap,
       finalTickTimestampMs: tick.timestampMs,
-      winningOutcome: tick.value >= sample.openingPrice ? "UP" : "DOWN",
+      winningOutcome: precioQueDecide >= sample.openingPrice ? "UP" : "DOWN",
       resolvedAtMs: nowMs,
       ticks: sortByTimestamp(sample.ticks),
       quotes: sortByTimestamp(sample.quotes),

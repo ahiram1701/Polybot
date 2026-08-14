@@ -471,3 +471,103 @@ function tradeAttempt(market: MarketInfo, outcome: Outcome): TradeAttempt {
     createdAtMs: market.endMs - 30_000,
   };
 }
+
+describe("la muestra mide la serie que RESUELVE, no el spot", () => {
+  const base = Date.UTC(2026, 7, 12, 12, 0, 0);
+
+  /** Observa una ventana entera y la cierra, con control de spot y TWAP. */
+  async function ventana(args: {
+    dataDir: string;
+    aperturaTwap: boolean;
+    spotCierre: number;
+    twapCierre?: number;
+    apertura: number;
+  }) {
+    const recorder = new AnalyticsRecorder(args.dataDir, 100, 0);
+    const market = { ...marketInfo("BTC", base), twapLookbackSeconds: 60 };
+    const opening = {
+      asset: "BTC" as const,
+      slug: market.slug,
+      windowStartMs: base,
+      openingPrice: args.apertura,
+      openingTickTimestampMs: base,
+      priceSource: args.aperturaTwap ? ("twap" as const) : ("spot" as const),
+      capturedAtMs: base,
+    };
+    // Un tick a mitad de ventana que lleva el valor TWAP, y el tick de cierre (spot) que la resuelve.
+    await recorder.observeMarket({
+      market,
+      opening,
+      tick: { market: "BTC", symbol: "btc/usd", value: args.spotCierre, timestampMs: base + 250_000, receivedAtMs: base + 250_000 },
+      twapTick:
+        args.twapCierre === undefined
+          ? undefined
+          : { market: "BTC", symbol: "btc/usd", value: args.twapCierre, timestampMs: base + 250_000, receivedAtMs: base + 250_000 },
+      twapWindowSeconds: 60,
+      nowMs: base + 250_000,
+    });
+    await recorder.observeMarket({
+      market,
+      opening,
+      tick: { market: "BTC", symbol: "btc/usd", value: args.spotCierre, timestampMs: base + 300_001, receivedAtMs: base + 300_001 },
+      nowMs: base + 300_001,
+    });
+    return (await recorder.readSamples()).find((s) => s.slug === market.slug);
+  }
+
+  it("con apertura y cierre TWAP, gana el TWAP aunque el spot diga lo contrario", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    // Spot cierra POR DEBAJO de la apertura (diria DOWN); el TWAP cierra por encima (dice UP).
+    // El mercado paga por el TWAP, asi que la etiqueta tiene que ser UP.
+    const s = await ventana({ dataDir, aperturaTwap: true, apertura: 100, spotCierre: 99, twapCierre: 101 });
+    expect(s?.winningOutcome).toBe("UP");
+    expect(s?.finalTwapPrice).toBe(101);
+    expect(s?.finalPrice).toBe(99);
+    expect(s?.twapWindowSeconds).toBe(60);
+  });
+
+  it("con apertura SPOT no se mezcla: no compara peras con manzanas", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    // Misma situacion pero la apertura salio del spot. Comparar apertura spot contra cierre TWAP es
+    // mezclar dos reglas y produce una etiqueta corrupta que despues nadie puede distinguir.
+    const s = await ventana({ dataDir, aperturaTwap: false, apertura: 100, spotCierre: 99, twapCierre: 101 });
+    expect(s?.winningOutcome).toBe("DOWN");
+    expect(s?.openingPriceSource).toBe("spot");
+  });
+
+  it("graba quotes de TODA la ventana, no solo de los ultimos 120 s", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const recorder = new AnalyticsRecorder(dataDir, 100, 0);
+    const market = { ...marketInfo("BTC", base), twapLookbackSeconds: 60 };
+    const opening = {
+      asset: "BTC" as const, slug: market.slug, windowStartMs: base,
+      openingPrice: 100, openingTickTimestampMs: base, priceSource: "twap" as const, capturedAtMs: base,
+    };
+    const quote = (bid: number, ask: number) => ({
+      tokenId: "t", bestAsk: ask, bestBid: bid, quotedAtMs: base + 1_000,
+      availableUsdUnderCap: 100, availableUsdAllLevels: 100, availableBidUsdAllLevels: 77,
+      estimatedSharesForAmount: 10, rawAskLevels: [], rawBidLevels: [],
+    });
+    // A 280 s del cierre: fuera de los 120 s que se guardaban antes.
+    await recorder.observeMarket({
+      market, opening,
+      tick: { market: "BTC", symbol: "btc/usd", value: 100, timestampMs: base + 20_000, receivedAtMs: base + 20_000 },
+      quotes: { UP: quote(0.48, 0.5), DOWN: quote(0.48, 0.5) },
+      nowMs: base + 20_000,
+    });
+    await recorder.observeMarket({
+      market, opening,
+      tick: { market: "BTC", symbol: "btc/usd", value: 101, timestampMs: base + 300_001, receivedAtMs: base + 300_001 },
+      nowMs: base + 300_001,
+    });
+    const s = (await recorder.readSamples()).find((x) => x.slug === market.slug);
+    const temprana = s?.quotes.find((q) => q.secondsToEnd > 200);
+    expect(temprana).toBeDefined();
+    // Y con el lado comprador, que hasta ahora se obtenia y se tiraba.
+    expect(temprana?.upBidDepthUsd).toBe(77);
+    expect(temprana?.quotedAtMs).toBe(base + 1_000);
+  });
+});

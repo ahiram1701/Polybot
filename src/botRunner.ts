@@ -262,6 +262,8 @@ export class BotRunner {
    * direccional que nadie pidio. Dos seguidas ya no es mala suerte.
    */
   private arbNakedLegStreak = 0;
+  /** Slugs cuya apertura salio de la serie TWAP y no del spot, entre la lectura y el guardado. */
+  private readonly aperturasPorTwap = new Set<string>();
 
   /**
    * Retraso del bucle de eventos. Distingue "esperando a la red" de "bloqueado", que es la diferencia
@@ -915,8 +917,10 @@ export class BotRunner {
       windowStartMs: market.windowStartMs,
       openingPrice: openingTick.value,
       openingTickTimestampMs: openingTick.timestampMs,
+      priceSource: this.aperturasPorTwap.has(market.slug) ? "twap" : "spot",
       capturedAtMs: nowMs,
     };
+    this.aperturasPorTwap.delete(market.slug);
     await this.deps.state.saveOpening(opening);
     logger.info("Captured Chainlink opening tick.", {
       slug: market.slug,
@@ -937,6 +941,7 @@ export class BotRunner {
       ? this.deps.priceFeed.getTwapAtOrBefore?.(market.asset, market.windowStartMs, ventanaTwap, grace)
       : undefined;
     if (twap) {
+      this.aperturasPorTwap.add(market.slug);
       return twap;
     }
     // Prefer the symmetric-grace opening tick (accepts the last price just before window start for
