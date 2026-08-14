@@ -160,7 +160,18 @@ export interface RunnerPriceFeed {
    * romper los dobles de test, pero en produccion es la fuente buena: las reglas del mercado dicen
    * "no segun ninguna otra fuente ni mercados spot".
    */
-  getTwapAtOrBefore?(market: MarketSymbol, timestampMs: number, maxAgeMs?: number): BtcPriceTick | undefined;
+  /**
+   * `windowSeconds` es obligatorio: identifica QUE serie TWAP se pide. Cuando esta interfaz lo tenia
+   * como `maxAgeMs` opcional, el runner pasaba una gracia en milisegundos donde ahora va la ventana en
+   * segundos y TypeScript no se quejaba — es un tipo estructural. Un fallo asi no lo ve nadie hasta
+   * que el bot lleva dias leyendo la serie que no resuelve.
+   */
+  getTwapAtOrBefore?(
+    market: MarketSymbol,
+    timestampMs: number,
+    windowSeconds: number,
+    maxAgeMs?: number,
+  ): BtcPriceTick | undefined;
 }
 
 interface BotDependencies {
@@ -921,7 +932,10 @@ export class BotRunner {
     // son explicitas: "este mercado va del precio segun el data stream TWAP de Chainlink, NO segun
     // ninguna otra fuente ni mercados spot". El spot queda solo como respaldo mientras la serie TWAP
     // no haya llegado — recien arrancado, por ejemplo.
-    const twap = this.deps.priceFeed.getTwapAtOrBefore?.(market.asset, market.windowStartMs, grace);
+    const ventanaTwap = market.twapLookbackSeconds;
+    const twap = ventanaTwap
+      ? this.deps.priceFeed.getTwapAtOrBefore?.(market.asset, market.windowStartMs, ventanaTwap, grace)
+      : undefined;
     if (twap) {
       return twap;
     }
@@ -2113,9 +2127,17 @@ export class BotRunner {
         tick: args.latestTick,
         // La serie que RESUELVE. Se graba junto al spot porque solo vive 10 minutos en memoria del
         // feed, y sin esto todo analisis futuro seguiria midiendo sobre la serie equivocada.
-        twapTick: args.latestTick
-          ? this.deps.priceFeed.getTwapAtOrBefore?.(args.market.asset, args.latestTick.timestampMs)
-          : undefined,
+        twapTick:
+          args.latestTick && args.market.twapLookbackSeconds
+            ? this.deps.priceFeed.getTwapAtOrBefore?.(
+                args.market.asset,
+                args.latestTick.timestampMs,
+                args.market.twapLookbackSeconds,
+              )
+            : undefined,
+        // La ventana que resuelve, junto al dato. Sin ella una muestra vieja no se puede reinterpretar
+        // cuando Polymarket vuelva a cambiarla — y ya la ha cambiado de 30 a 60.
+        twapWindowSeconds: args.market.twapLookbackSeconds,
         quotes: args.quotes,
         nowMs: args.nowMs,
       });
@@ -2139,7 +2161,10 @@ export class BotRunner {
       // Judge the winner by the price AT the window close (last tick <= endMs), not the first tick
       // after it — photo-finish windows flipped otherwise.
       // Cierre por la serie TWAP, que es la que resuelve. El spot solo si aquella no esta.
-      const twapClose = this.deps.priceFeed.getTwapAtOrBefore?.(market, trade.endMs);
+      const ventanaCierre = trade.twapWindowSeconds;
+      const twapClose = ventanaCierre
+        ? this.deps.priceFeed.getTwapAtOrBefore?.(market, trade.endMs, ventanaCierre)
+        : undefined;
       const closeTick = twapClose ?? this.deps.priceFeed.getTickAtOrBefore?.(market, trade.endMs);
       const resolution = resolveTradeFromTick(
         trade,

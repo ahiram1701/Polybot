@@ -72,6 +72,8 @@ export interface AnalyticsObservation {
   tick?: PriceTick;
   /** Valor de la serie TWAP en este instante: la que resuelve. Ausente hasta que el feed la entregue. */
   twapTick?: PriceTick;
+  /** Ventana en segundos de esa serie. Sin ella la muestra no se puede reinterpretar mas adelante. */
+  twapWindowSeconds?: number;
   quotes?: Partial<Record<Outcome, OrderbookQuote>>;
   nowMs: number;
 }

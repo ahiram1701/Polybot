@@ -192,15 +192,50 @@ describe("serie spot y serie TWAP, separadas", () => {
     expect(parseTwapPoint({ symbol: "btc/usd", value: 64000, timestamp: 1786000000000 })).toBeUndefined();
   });
 
-  it("con su marca de ventana si se lee", () => {
-    const tick = parseTwapPoint({ symbol: "btc/usd", value: 64000, timestamp: 1786000000000, window_s: 30 });
-    expect(tick?.market).toBe("BTC");
-    expect(tick?.value).toBe(64000);
+  it("con su marca de ventana si se lee, y dice de que ventana es", () => {
+    const punto = parseTwapPoint({ symbol: "btc/usd", value: 64000, timestamp: 1786000000000, window_s: 30 });
+    expect(punto?.tick.market).toBe("BTC");
+    expect(punto?.tick.value).toBe(64000);
+    // La VENTANA viaja con el dato. Sin ella no se sabe si esa serie resuelve el mercado o no.
+    expect(punto?.windowSeconds).toBe(30);
   });
 
   it("sin serie TWAP no inventa un sustituto", () => {
     const feed = new ChainlinkPriceFeed("wss://ejemplo");
-    expect(feed.getLatestTwapTick("BTC")).toBeUndefined();
-    expect(feed.getTwapAtOrBefore("BTC", Date.now())).toBeUndefined();
+    expect(feed.getLatestTwapTick("BTC", 60)).toBeUndefined();
+    expect(feed.getTwapAtOrBefore("BTC", Date.now(), 60)).toBeUndefined();
+  });
+
+  it("las series de 30 s y 60 s conviven sin pisarse", () => {
+    // Polymarket paso los mercados de 5 minutos de 30 a 60 segundos. Guardar "el TWAP" sin distinguir
+    // la ventana significaba que el ultimo mensaje en llegar machacaba al otro, y el bot leia una
+    // mezcla de dos series distintas creyendo que era una.
+    const feed = new ChainlinkPriceFeed("wss://ejemplo") as unknown as {
+      handleTwapMessage(m: unknown): boolean;
+      getLatestTwapTick(market: string, windowSeconds: number): { value: number } | undefined;
+    };
+    const mensaje = (topic: string, ventana: number, valor: number) => ({
+      topic,
+      payload: { symbol: "btc/usd", value: valor, timestamp: 1786000000000, window_s: ventana },
+    });
+    expect(feed.handleTwapMessage(mensaje("crypto_prices_twap_thirty", 30, 64000))).toBe(true);
+    expect(feed.handleTwapMessage(mensaje("crypto_prices_twap_sixty", 60, 65000))).toBe(true);
+
+    expect(feed.getLatestTwapTick("BTC", 30)?.value).toBe(64000);
+    expect(feed.getLatestTwapTick("BTC", 60)?.value).toBe(65000);
+  });
+
+  it("la ventana sale del PAYLOAD, no del nombre del topic", () => {
+    // Asi un topic renombrado, o uno tercero, no rompe la indexacion: manda el dato.
+    const feed = new ChainlinkPriceFeed("wss://ejemplo") as unknown as {
+      handleTwapMessage(m: unknown): boolean;
+      getLatestTwapTick(market: string, windowSeconds: number): { value: number } | undefined;
+    };
+    feed.handleTwapMessage({
+      topic: "crypto_prices_twap_thirty",
+      payload: { symbol: "btc/usd", value: 70000, timestamp: 1786000000001, window_s: 60 },
+    });
+    expect(feed.getLatestTwapTick("BTC", 60)?.value).toBe(70000);
+    expect(feed.getLatestTwapTick("BTC", 30)).toBeUndefined();
   });
 });

@@ -12,6 +12,22 @@ import { marketSymbolFromSlug } from "./markets.js";
 type FetchLike = typeof fetch;
 
 /** Duracion de una ventana Up/Down. */
+/**
+ * Ventana TWAP que resuelve el mercado, leida de `cryptoMarketConfig`.
+ *
+ * Se lee del mercado y no de una constante porque Polymarket ya la ha cambiado: los de 5 minutos
+ * pasaron de 30 a 60 segundos. `twapEnabled: false` o el campo ausente significa que ese mercado no
+ * resuelve por TWAP, y entonces no hay ventana que devolver.
+ */
+export function twapLookbackSecondsFrom(rawMarket: Record<string, unknown>): number | undefined {
+  const config = rawMarket.cryptoMarketConfig as Record<string, unknown> | undefined;
+  if (!config || config.twapEnabled === false) {
+    return undefined;
+  }
+  const segundos = Number(config.twapLookbackSeconds);
+  return Number.isFinite(segundos) && segundos > 0 ? segundos : undefined;
+}
+
 const WINDOW_MS = 300_000;
 
 /** Margen a cada lado de la ventana donde el estado del mercado SI cambia (apertura y cierre). */
@@ -241,6 +257,7 @@ export function parseGammaEvent(raw: unknown, slug: string): MarketInfo {
     tickSize: String(rawMarket.orderPriceMinTickSize ?? rawMarket.minimum_tick_size ?? "0.01"),
     negRisk: Boolean(rawMarket.negRisk),
     orderMinSize: Number(rawMarket.orderMinSize ?? 5),
+    twapLookbackSeconds: twapLookbackSecondsFrom(rawMarket),
     outcomes: outcomeTokens,
   };
 }

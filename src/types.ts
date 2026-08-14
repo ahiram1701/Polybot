@@ -186,6 +186,14 @@ export interface MarketInfo {
   tickSize: string;
   negRisk: boolean;
   orderMinSize: number;
+  /**
+   * Ventana de la serie TWAP que RESUELVE este mercado, en segundos. De `cryptoMarketConfig` de Gamma.
+   *
+   * No es un detalle: Polymarket la cambio de 30 a 60 s en los mercados de 5 minutos, y un bot que la
+   * tenga fijada en el codigo se queda leyendo una serie que ya no decide nada — con el proceso vivo y
+   * la salud en verde. Ausente = el mercado no resuelve por TWAP.
+   */
+  twapLookbackSeconds?: number;
   outcomes: Record<Outcome, OutcomeToken>;
 }
 
@@ -272,6 +280,8 @@ export interface AnalyticsQuotePoint {
 
 export interface AnalyticsSample {
   version: 1;
+  /** Ventana de la serie TWAP que resolvio esta ventana de mercado, en segundos. */
+  twapWindowSeconds?: number;
   market: MarketSymbol;
   slug: string;
   windowStartMs: number;
@@ -460,6 +470,12 @@ export interface TradeAttempt {
   availableUsdUnderCap?: number;
   expectedValue?: ExpectedValueSnapshot;
   estimatedShares: number;
+  /**
+   * Ventana de la serie TWAP que resolvio este mercado, en segundos. Se guarda CON la operacion porque
+   * Polymarket la cambia —de 30 a 60 s en los de 5 minutos—: sin ella, una operacion vieja no se puede
+   * auditar contra la serie correcta.
+   */
+  twapWindowSeconds?: number;
   /**
    * Precio MEDIO de bajar por el libro hasta cubrir el importe, no el mejor ask.
    *

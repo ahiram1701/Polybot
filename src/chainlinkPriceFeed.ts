@@ -7,13 +7,25 @@ import type { MarketSymbol, PriceTick } from "./types.js";
 type TickHandler = (tick: PriceTick) => void;
 
 /**
- * Topic RTDS de la serie TWAP de 30 segundos, que es la que resuelve los mercados de 5 minutos.
+ * Los DOS topics de serie TWAP de la RTDS. Se escuchan ambos, siempre.
  *
- * Los de 15m usan `twapLookbackSeconds: 60` y su topic seria `crypto_prices_twap_sixty`. Hoy Polybot
- * solo opera 5m; cuando eso cambie, el lookback correcto sale de `cryptoMarketConfig` del propio
- * mercado y no de una constante.
+ * El 2026-08-14 a las 00:00 UTC los mercados de 5 minutos pasaron de resolver por la ventana de 30 s a
+ * la de 60 s. Escuchar solo uno significaba quedarse ciego el dia que Polymarket cambiara de opinion —
+ * y ya lo ha hecho dos veces en una semana. Escuchar los dos cuesta un mensaje mas por segundo y hace
+ * el bot inmune al proximo cambio.
+ *
+ * Cual RESUELVE cada mercado no se decide aqui: sale de `twapLookbackSeconds` de la configuracion del
+ * propio mercado, y las series se guardan indexadas por la ventana que trae el mensaje.
  */
-export const TWAP_TOPIC = "crypto_prices_twap_thirty";
+export const TWAP_TOPICS = ["crypto_prices_twap_thirty", "crypto_prices_twap_sixty"] as const;
+
+/** Compatibilidad: el topic de 30 s. Nuevo codigo debe usar `TWAP_TOPICS`. */
+export const TWAP_TOPIC = TWAP_TOPICS[0];
+
+/** Clave de una serie TWAP: el activo y la ventana en segundos que la define. */
+function twapKey(market: MarketSymbol, windowSeconds: number): string {
+  return `${market}:${windowSeconds}`;
+}
 
 export class ChainlinkPriceFeed {
   private socket?: WebSocket;
@@ -48,8 +60,9 @@ export class ChainlinkPriceFeed {
    * Van en mapas distintos a proposito: son dos series que miden cosas distintas, y mezclarlas
    * corromperia a la vez el precio de apertura y la distancia sin dar la cara.
    */
-  private readonly recentTwapTicks = new Map<MarketSymbol, PriceTick[]>();
-  private readonly latestTwapTicks = new Map<MarketSymbol, PriceTick>();
+  /** Series TWAP indexadas por `activo:ventanaEnSegundos`. Conviven las de 30 s y las de 60 s. */
+  private readonly recentTwapTicks = new Map<string, PriceTick[]>();
+  private readonly latestTwapTicks = new Map<string, PriceTick>();
   private readonly handlers = new Set<TickHandler>();
 
   constructor(
@@ -341,7 +354,7 @@ export class ChainlinkPriceFeed {
         // activos y los que no interesan se descartan al parsear, que es barato y no depende de nadie.
         subscriptions: [
           { topic: "crypto_prices_chainlink", type: "*" },
-          { topic: TWAP_TOPIC, type: "update" },
+          ...TWAP_TOPICS.map((topic) => ({ topic, type: "update" })),
         ],
       }),
     );
@@ -465,33 +478,55 @@ export class ChainlinkPriceFeed {
       return false;
     }
     const record = message as Record<string, unknown>;
-    if (record.topic !== TWAP_TOPIC) {
+    if (!TWAP_TOPICS.includes(record.topic as (typeof TWAP_TOPICS)[number])) {
       return false;
     }
     const payload = (record.payload ?? record) as Record<string, unknown>;
-    const tick = parseTwapPoint(payload);
-    if (!tick) {
-      return true; // era del topic TWAP aunque no se pudiera leer: no reintentar como spot
+    const punto = parseTwapPoint(payload);
+    if (!punto) {
+      return true; // era de un topic TWAP aunque no se pudiera leer: no reintentar como spot
     }
+    const { tick, windowSeconds } = punto;
     // Cuenta como señal de vida: si llega TWAP el socket esta sano aunque el spot vaya lento.
     this.lastTickAtMs = Date.now();
     this.reconnectAttempts = 0;
-    this.latestTwapTicks.set(tick.market, tick);
-    const serie = this.recentTwapTicks.get(tick.market) ?? [];
+    // La ventana viene del PAYLOAD, no del topic: es el propio dato el que dice a que serie pertenece,
+    // asi que un topic renombrado o un tercer topic nuevo no rompen la indexacion.
+    const clave = twapKey(tick.market, windowSeconds);
+    this.latestTwapTicks.set(clave, tick);
+    const serie = this.recentTwapTicks.get(clave) ?? [];
     if (!serie.some((item) => item.timestampMs === tick.timestampMs)) {
       serie.push(tick);
     }
     const minMs = tick.timestampMs - this.historyWindowMs;
     this.recentTwapTicks.set(
-      tick.market,
+      clave,
       serie.filter((item) => item.timestampMs >= minMs).sort((l, r) => l.timestampMs - r.timestampMs),
     );
     return true;
   }
 
-  /** Ultimo valor TWAP publicado, o `undefined` si aun no ha llegado ninguno. */
-  getLatestTwapTick(market: MarketSymbol): PriceTick | undefined {
-    return this.latestTwapTicks.get(market);
+  /**
+   * Ultimo valor publicado de la serie TWAP de esa ventana, o `undefined` si aun no ha llegado ninguno.
+   *
+   * `windowSeconds` es OBLIGATORIO a proposito: pedir "el TWAP" sin decir cual es la pregunta que dejo
+   * a Polybot leyendo la serie equivocada cuando cambio la regla. Quien llama tiene que saber que
+   * ventana resuelve su mercado, y ese dato sale de `twapLookbackSeconds`.
+   */
+  getLatestTwapTick(market: MarketSymbol, windowSeconds: number): PriceTick | undefined {
+    return this.latestTwapTicks.get(twapKey(market, windowSeconds));
+  }
+
+  /** Ventanas TWAP de las que hay datos para ese activo. Para diagnostico y para la analitica. */
+  getTwapWindowsSeconds(market: MarketSymbol): number[] {
+    const ventanas = new Set<number>();
+    for (const clave of this.recentTwapTicks.keys()) {
+      const [activo, ventana] = clave.split(":");
+      if (activo === market && ventana) {
+        ventanas.add(Number(ventana));
+      }
+    }
+    return [...ventanas].sort((l, r) => l - r);
   }
 
   /**
@@ -500,8 +535,13 @@ export class ChainlinkPriceFeed {
    * Sirve tanto para la apertura (valor al inicio de la ventana) como para el cierre, que es
    * exactamente como estan escritas las reglas del mercado.
    */
-  getTwapAtOrBefore(market: MarketSymbol, timestampMs: number, maxAgeMs = 60_000): PriceTick | undefined {
-    const serie = this.recentTwapTicks.get(market);
+  getTwapAtOrBefore(
+    market: MarketSymbol,
+    timestampMs: number,
+    windowSeconds: number,
+    maxAgeMs = 60_000,
+  ): PriceTick | undefined {
+    const serie = this.recentTwapTicks.get(twapKey(market, windowSeconds));
     if (!serie) {
       return undefined;
     }
@@ -576,11 +616,16 @@ export function parseChainlinkTicks(message: unknown): PriceTick[] {
  * Un punto de la serie TWAP. Exige `window_s` presente: sin esa marca no es un valor TWAP, y aceptarlo
  * seria colar un precio spot en la serie que decide quien gana.
  */
-export function parseTwapPoint(payload: Record<string, unknown>): PriceTick | undefined {
-  if (payload.window_s === undefined && payload.windowSeconds === undefined) {
+export function parseTwapPoint(
+  payload: Record<string, unknown>,
+): { tick: PriceTick; windowSeconds: number } | undefined {
+  const bruto = payload.window_s ?? payload.windowSeconds;
+  const windowSeconds = Number(bruto);
+  if (bruto === undefined || !Number.isFinite(windowSeconds) || windowSeconds <= 0) {
     return undefined;
   }
-  return parseTickPoint(payload.symbol, payload.value, payload.timestamp) ?? undefined;
+  const tick = parseTickPoint(payload.symbol, payload.value, payload.timestamp);
+  return tick ? { tick, windowSeconds } : undefined;
 }
 
 function parseCryptoPricesTick(record: Record<string, unknown>): PriceTick[] {
