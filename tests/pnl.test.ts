@@ -291,3 +291,23 @@ function trade(args: { won?: boolean; amountUsd: number; estimatedShares: number
         },
   };
 }
+
+describe("la comision cuadra con el ejemplo publicado", () => {
+  it("100 participaciones al 50% cuestan exactamente $1,75", async () => {
+    // Es el unico ancla verificable que hay: la doc publica ese numero, asi que si la formula o la tasa
+    // se tocan y este test sigue verde, es que se tocaron de forma compatible. Y si alguien "corrige"
+    // la tasa a 1000 bps leyendo `taker_base_fee` del CLOB —cosa que ya estuve a punto de hacer— este
+    // test lo para en seco.
+    const { calculateTradeFeeUsd, defaultTakerFeeRateBps } = await import("../src/fees.js");
+    const fee = calculateTradeFeeUsd({ shares: 100, price: 0.5, feeRateBps: defaultTakerFeeRateBps("BTC") });
+    expect(fee).toBeCloseTo(1.75, 6);
+  });
+
+  it("y es minima en los extremos, no plana", async () => {
+    // Por eso la banda 0,85-0,95 sale favorecida y la central penalizada.
+    const { calculateTradeFeeUsd } = await import("../src/fees.js");
+    const centro = calculateTradeFeeUsd({ shares: 100, price: 0.5, feeRateBps: 700 });
+    const extremo = calculateTradeFeeUsd({ shares: 100, price: 0.95, feeRateBps: 700 });
+    expect(extremo).toBeLessThan(centro / 5);
+  });
+});
