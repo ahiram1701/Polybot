@@ -203,6 +203,30 @@ Tres casos que parecen ajustes y no lo son a propósito:
   Polymarket lo cambia, hay que cambiarlo aquí — pero entonces cambia también todo el cálculo de EV y
   de arbitraje, y eso merece una revisión, no un campo de texto.
 
+## La retención recicla datos, no los acumula
+
+`data/analytics.jsonl` está acotado a `maxAnalyticsSamples` (10.000). Cuando se llena, **cada muestra
+nueva borra la más vieja** — así que a partir de ese punto esperar más tiempo no acumula más historia,
+la recicla. Con ~730 muestras al día son unas dos semanas de memoria, y validar una estrategia fuera de
+muestra necesita más que eso.
+
+Por eso existe `src/archiveAnalytics.ts`, que copia lo nuevo a `data/archive/analytics-archive.jsonl`,
+sin tope. Tres decisiones que no son arbitrarias:
+
+- **Lee el fichero, no la API.** Funciona con el bot parado, que es justo cuando más urge no perder lo
+  que ya hay.
+- **Es incremental**: solo escribe ventanas más nuevas que la última archivada. Volcar las 10.000 cada
+  pasada serían 326 MB de los que el 90% ya estaría dentro.
+- **Busca el corte en la cola del archivo**, no releyéndolo entero: el archivo crece sin límite por
+  diseño, y releerlo completo convertiría al archivador en el problema que viene a evitar.
+
+Usa el mismo serializador que la exportación de la UI, así que el archivo se puede reimportar con
+`POST /api/analysis/samples/import` sin conversiones.
+
+**Programado** cada 12 h con `scripts/install-analytics-archive.ps1` (tarea `PolybotArchivoAnalitica`,
+mismo patrón que el watchdog: sin ventana, sin permisos de administrador). Deja rastro en
+`data/archive/archive.log` para poder auditar si alguna pasada falló.
+
 ## Herramientas de diagnóstico
 
 Todas en `src/smoke/`, todas de solo lectura:
