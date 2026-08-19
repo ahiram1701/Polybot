@@ -273,6 +273,8 @@ export class BotRunner {
   /** Slugs cuya apertura salio de la serie TWAP y no del spot, entre la lectura y el guardado. */
   private readonly aperturasPorTwap = new Set<string>();
   private makerLoopCache?: MakerLoop;
+  /** Ultimos mercados vistos, para poder retirar ordenes al parar sin volver a consultarlos. */
+  private ultimosMercados: MarketInfo[] = [];
   private ultimaPasadaMaker?: ResumenPasada;
 
   /**
@@ -460,6 +462,20 @@ export class BotRunner {
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = undefined;
+    }
+    // Retirar las ordenes maker ANTES de soltar el feed.
+    //
+    // Sin esto, parar el bot dejaba ordenes reales descansando en el libro sin nadie mirandolas. No es
+    // un caso raro: el watchdog reinicia el proceso a diario y la maquina se apaga sin avisar. `stop()`
+    // es sincrono por contrato, asi que la retirada se lanza y se deja correr — y si falla, se dice.
+    const loop = this.makerLoopCache;
+    const mercados = this.ultimosMercados;
+    if (loop && mercados.length > 0) {
+      void loop.retirarTodo(mercados).catch((error) => {
+        logger.error("No se pudieron retirar las ordenes maker al parar. PUEDE HABER ORDENES VIVAS.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
     this.stopPriceFeed();
   }
@@ -657,6 +673,7 @@ export class BotRunner {
     // porque no compite por el mismo capital que el resto — tiene su propio tope — y porque no debe
     // retrasar ninguna decision de entrada.
     if (this.config.makerEnabled === true) {
+      this.ultimosMercados = markets;
       await timer.time("maker", () => this.runMaker(markets, nowMs));
     }
 

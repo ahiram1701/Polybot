@@ -147,3 +147,84 @@ describe("no martillear al exchange", () => {
     expect(tercera.colocadas).toBe(1);
   });
 });
+
+describe("lo que pasa cuando algo va mal", () => {
+  it("al parar, retira TODAS las ordenes vivas", async () => {
+    // Sin esto, parar el bot dejaba ordenes reales en el libro sin nadie mirandolas — y el watchdog
+    // reinicia el proceso a diario.
+    const engine = new SimulationMakerEngine();
+    const m1 = market("BTC");
+    const m2 = market("ETH");
+    await engine.colocar(m1, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    await engine.colocar(m2, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await loop.retirarTodo([m1, m2])).toBe(2);
+    expect(await engine.ordenesVivas(m1)).toHaveLength(0);
+    expect(await engine.ordenesVivas(m2)).toHaveLength(0);
+  });
+
+  it("si un mercado falla al retirar, sigue con los demas", async () => {
+    // Dejar ordenes vivas en UNO es malo; en TODOS es peor.
+    const engine = new SimulationMakerEngine();
+    const m1 = market("BTC");
+    const m2 = market("ETH");
+    await engine.colocar(m2, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const roto = {
+      ordenesVivas: vi.fn(async (mk: MarketInfo) => {
+        if (mk.asset === "BTC") throw new Error("red caida");
+        return engine.ordenesVivas(mk);
+      }),
+      colocar: engine.colocar.bind(engine),
+      cancelar: engine.cancelar.bind(engine),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: roto as never },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await loop.retirarTodo([m1, m2])).toBe(1);
+    expect(await engine.ordenesVivas(m2)).toHaveLength(0);
+  });
+
+  it("detecta que una orden se ha LLENADO", async () => {
+    // Un llenado era invisible: el maker solo miraba si la orden seguia puntuando. Te enterarias
+    // mirando tu cuenta de Polymarket.
+    const m = market("BTC");
+    let tamano = 50;
+    const engine = {
+      ordenesVivas: vi.fn(async () => [{ id: "o1", outcome: "UP" as const, side: "BUY" as const, price: 0.49, size: tamano }]),
+      colocar: vi.fn(async () => "nueva"),
+      cancelar: vi.fn(async () => 0),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await loop.runOnce([m], AHORA);
+    tamano = 30; // se llenaron 20 participaciones
+    const segunda = await loop.runOnce([m], AHORA + 20_000);
+    expect(segunda.llenadas).toBe(20);
+  });
+});
+
+describe("mensajes que no mienten", () => {
+  it("si NO se financia ninguno, dice que falta capital y cuanto", async () => {
+    // Antes los tres decian "capital_dedicado_a_otro_mercado" aunque no se hubiera financiado ninguno,
+    // lo que manda a mirar donde no es.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 12, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // 50 participaciones a ~0,495 son ~$24,75: no caben en $12.
+    const r = await loop.runOnce([market("BTC")], AHORA);
+    expect(r.colocadas).toBe(0);
+    expect(r.mercados[0].motivo).toMatch(/^capital_insuficiente_necesita_/);
+  });
+});

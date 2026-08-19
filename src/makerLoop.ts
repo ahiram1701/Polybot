@@ -49,6 +49,8 @@ export interface ResumenPasada {
   colocadas: number;
   canceladas: number;
   comprometidoUsd: number;
+  /** Participaciones que se llenaron desde la pasada anterior. Cada una es posicion direccional. */
+  llenadas?: number;
   mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
 }
 
@@ -58,6 +60,9 @@ const VENTANAS_POR_DIA = 288;
 const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
 
 export class MakerLoop {
+  /** Tamano que quedaba vivo la ultima vez que se vio cada orden, para detectar llenados. */
+  private readonly tamanoConocido = new Map<string, number>();
+
   /** Cuando se recoloco por ultima vez en cada mercado, para no martillear al exchange. */
   private readonly ultimaRecolocacion = new Map<string, number>();
 
@@ -66,6 +71,61 @@ export class MakerLoop {
     private readonly config: MakerLoopConfig,
   ) {}
 
+  /**
+   * Retira TODAS las ordenes vivas. Se llama al detener el bot.
+   *
+   * Sin esto, parar el bot dejaba ordenes reales descansando en el libro sin nadie mirandolas: se
+   * pueden llenar en cualquier momento y la posicion resultante resuelve sola. Y no es un caso raro —
+   * el watchdog reinicia el proceso a diario y la maquina se apaga sin avisar.
+   */
+  async retirarTodo(markets: MarketInfo[]): Promise<number> {
+    let canceladas = 0;
+    for (const market of markets) {
+      try {
+        const vivas = await this.deps.engine.ordenesVivas(market);
+        canceladas += await this.deps.engine.cancelar(vivas.map((o) => o.id));
+      } catch (error) {
+        // Se sigue con los demas mercados: dejar ordenes vivas en UNO es malo, en TODOS es peor.
+        logger.warn("No se pudieron retirar las ordenes de un mercado.", {
+          slug: market.slug,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (canceladas > 0) {
+      logger.info("Maker: ordenes retiradas al parar.", { canceladas });
+    }
+    return canceladas;
+  }
+
+  /**
+   * Un llenado hoy seria INVISIBLE: el maker solo mira si la orden sigue puntuando, y una orden que
+   * desaparece del libro por haberse llenado se parece a una que ya no existe. Sin esto te enterarias
+   * mirando tu cuenta de Polymarket.
+   */
+  private detectarLlenados(market: MarketInfo, vivas: OrdenViva[], resumen: ResumenPasada): void {
+    const porId = new Map(vivas.map((o) => [o.id, o.size]));
+    for (const [id, tamanoPrevio] of this.tamanoConocido) {
+      if (!id.startsWith(`${market.slug}|`)) {
+        continue;
+      }
+      const idOrden = id.slice(market.slug.length + 1);
+      const ahora = porId.get(idOrden);
+      if (ahora !== undefined && ahora < tamanoPrevio) {
+        const llenado = tamanoPrevio - ahora;
+        resumen.llenadas = (resumen.llenadas ?? 0) + llenado;
+        logger.warn("Maker: orden LLENADA — hay posicion direccional abierta.", {
+          slug: market.slug,
+          orden: idOrden,
+          participaciones: llenado,
+        });
+      }
+    }
+    for (const o of vivas) {
+      this.tamanoConocido.set(`${market.slug}|${o.id}`, o.size);
+    }
+  }
+
   async runOnce(markets: MarketInfo[], nowMs: number): Promise<ResumenPasada> {
     const resumen: ResumenPasada = { colocadas: 0, canceladas: 0, comprometidoUsd: 0, mercados: [] };
     const candidatos: Array<CandidatoMercado & { market: MarketInfo; vivas: OrdenViva[] }> = [];
@@ -73,6 +133,7 @@ export class MakerLoop {
     for (const market of markets) {
       const restantes = secondsToEnd(market.endMs, nowMs);
       const vivas = await this.deps.engine.ordenesVivas(market);
+      this.detectarLlenados(market, vivas, resumen);
 
       // Cerca del cierre no se cotiza y se retira lo que haya: una orden llena aqui deja una posicion
       // que resuelve en segundos y no da tiempo a deshacerla.
@@ -121,7 +182,18 @@ export class MakerLoop {
       // dinero que otro mercado esta rindiendo mejor.
       if (!elegidosPorSlug.has(candidato.slug)) {
         resumen.canceladas += await this.deps.engine.cancelar(candidato.vivas.map((o) => o.id));
-        resumen.mercados.push({ slug: candidato.slug, motivo: "capital_dedicado_a_otro_mercado" });
+        // Se distinguen dos situaciones que antes compartian mensaje, y esa ambiguedad me tuvo
+        // persiguiendo un fantasma: si NO se financio ninguno, el problema es que el tope no da para
+        // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
+        // manda a mirar donde no es.
+        const coste = candidato.params.minSize * candidato.mid;
+        resumen.mercados.push({
+          slug: candidato.slug,
+          motivo:
+            elegidos.length === 0
+              ? `capital_insuficiente_necesita_${coste.toFixed(2)}`
+              : "capital_dedicado_a_otro_mercado",
+        });
         continue;
       }
 
