@@ -68,8 +68,15 @@ export function planificarMaker(args: {
   capitalUsd: number;
   params: ParametrosRecompensa;
   vivas: OrdenViva[];
+  /** Cuando se recoloco por ultima vez en ESTE mercado. Ausente = nunca. */
+  ultimaRecolocacionMs?: number;
+  /** Intervalo minimo entre recolocaciones. 0 = sin limite. */
+  minMsEntreRecolocaciones?: number;
+  nowMs?: number;
 }): PlanMaker {
-  const { outcome, mid, tickSize, capitalUsd, params, vivas } = args;
+  const { outcome, mid, tickSize, capitalUsd, params, vivas, ultimaRecolocacionMs } = args;
+  const minMsEntreRecolocaciones = args.minMsEntreRecolocaciones ?? 0;
+  const nowMs = args.nowMs ?? 0;
   const mias = vivas.filter((o) => o.outcome === outcome);
 
   if (mid === undefined || !Number.isFinite(mid) || mid <= 0 || mid >= 1) {
@@ -87,9 +94,27 @@ export function planificarMaker(args: {
     };
   }
 
-  // Las que siguen valiendo se dejan quietas: cancelar y recolocar cuesta latencia y puede perder el
-  // turno en la cola del libro, que es justo lo que da valor a una orden en reposo.
-  const buenas = mias.filter((o) => siguePuntuando(o, mid, params) && o.price === price);
+  // Se deja quieta mientras SIGA PUNTUANDO, y ademas no se recoloca antes de `minMsEntreRecolocaciones`.
+  //
+  // Las dos condiciones hacen falta y por motivos distintos.
+  //
+  // La primera: exigir `o.price === price` recolocaba en casi cada iteracion, porque el medio se mueve
+  // un tick constantemente. La banda es la tolerancia natural.
+  //
+  // La segunda salio de medir, no de razonar. Con solo la primera, el ritmo seguia en ~1.400
+  // recolocaciones/hora: la banda de 1,5 centavos es MAS ESTRECHA que lo que se mueve el precio en
+  // estos mercados —medido: el medio pasa de 0,57 a 0,78 en segundos cerca del cierre—, asi que la
+  // orden se sale de banda una y otra vez por mucho que se afine el criterio.
+  //
+  // Y ojo con el motivo: para RECOMPENSAS el turno en la cola no importa —se puntua por tamano y
+  // distancia, no por llenarse—, asi que el coste real del churn no es perder posicion sino los
+  // limites de peticiones del exchange. Por eso la solucion es un intervalo minimo y no un umbral de
+  // precio mas fino.
+  const puedeRecolocar =
+    minMsEntreRecolocaciones <= 0 ||
+    ultimaRecolocacionMs === undefined ||
+    nowMs - ultimaRecolocacionMs >= minMsEntreRecolocaciones;
+  const buenas = mias.filter((o) => siguePuntuando(o, mid, params) || !puedeRecolocar);
   const cancelar = mias.filter((o) => !buenas.includes(o));
   if (buenas.length > 0) {
     return { colocar: [], cancelar };

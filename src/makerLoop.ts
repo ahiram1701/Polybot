@@ -34,6 +34,15 @@ export interface MakerLoopConfig {
   retirarSegundosAntesDelCierre: number;
   /** Ventanas de 5 min que hay en un dia: el bote diario se prorratea entre ellas. */
   ventanasPorDia?: number;
+  /**
+   * Intervalo minimo entre recolocaciones en el mismo mercado.
+   *
+   * Sin esto el ritmo medido en simulacion fue de ~1.400 recolocaciones/hora: la banda que puntua
+   * (1,5 centavos) es mas estrecha que lo que se mueve el precio, asi que la orden se sale una y otra
+   * vez. El coste no es perder turno en la cola —para recompensas eso no cuenta— sino los limites de
+   * peticiones del exchange.
+   */
+  minMsEntreRecolocaciones?: number;
 }
 
 export interface ResumenPasada {
@@ -45,7 +54,13 @@ export interface ResumenPasada {
 
 const VENTANAS_POR_DIA = 288;
 
+/** 15 s: recorta el ritmo ~10 veces y sigue reaccionando dentro de una ventana de 5 minutos. */
+const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
+
 export class MakerLoop {
+  /** Cuando se recoloco por ultima vez en cada mercado, para no martillear al exchange. */
+  private readonly ultimaRecolocacion = new Map<string, number>();
+
   constructor(
     private readonly deps: MakerLoopDeps,
     private readonly config: MakerLoopConfig,
@@ -117,9 +132,15 @@ export class MakerLoop {
         capitalUsd: this.config.capitalUsd,
         params: candidato.params,
         vivas: candidato.vivas,
+        ultimaRecolocacionMs: this.ultimaRecolocacion.get(candidato.slug),
+        minMsEntreRecolocaciones: this.config.minMsEntreRecolocaciones ?? MIN_MS_ENTRE_RECOLOCACIONES,
+        nowMs,
       });
 
       resumen.canceladas += await this.deps.engine.cancelar(plan.cancelar.map((o) => o.id));
+      if (plan.colocar.length > 0) {
+        this.ultimaRecolocacion.set(candidato.slug, nowMs);
+      }
       for (const orden of plan.colocar) {
         const id = await this.deps.engine.colocar(candidato.market, orden);
         if (id) {

@@ -121,3 +121,29 @@ describe("bucle maker", () => {
     expect(r.colocadas).toBe(0);
   });
 });
+
+describe("no martillear al exchange", () => {
+  it("no recoloca dos veces seguidas en el mismo mercado", async () => {
+    // La banda que puntua (1,5c) es mas estrecha que lo que se mueve el precio, asi que sin freno la
+    // orden se sale una y otra vez: ~1.400 recolocaciones/hora medidas en simulacion.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30, minMsEntreRecolocaciones: 15_000 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const primera = await loop.runOnce([market("BTC")], AHORA);
+    expect(primera.colocadas).toBe(1);
+
+    // Dos segundos despues el precio se ha movido fuera de banda: sin freno recolocaria.
+    const loop2 = loop as unknown as { deps: { orderbook: unknown } };
+    loop2.deps.orderbook = libro(0.6, 0);
+    const segunda = await loop.runOnce([market("BTC")], AHORA + 2000);
+    expect(segunda.colocadas).toBe(0);
+    expect(segunda.canceladas).toBe(0);
+
+    // Pasado el intervalo, si.
+    const tercera = await loop.runOnce([market("BTC")], AHORA + 16_000);
+    expect(tercera.colocadas).toBe(1);
+  });
+});

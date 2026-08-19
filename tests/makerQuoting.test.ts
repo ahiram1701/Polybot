@@ -121,3 +121,35 @@ describe("a que mercados dedicar un capital escaso", () => {
     expect(elegirMercados([{ ...base, slug: "sin-pool", poolVentanaUsd: 0, competencia: 0 }], 100)).toEqual([]);
   });
 });
+
+describe("no recolocar por un tick de nada", () => {
+  it("mantiene la orden mientras siga puntuando, aunque el medio se mueva", async () => {
+    const { planificarMaker } = await import("../src/makerQuoting.js");
+    // Orden a 0,49; el medio pasa de 0,50 a 0,502. Sigue dentro de la banda de 1,5c -> no se toca.
+    const vivas = [{ id: "1", outcome: "UP" as const, side: "BUY" as const, price: 0.49, size: 50 }];
+    const plan = planificarMaker({ outcome: "UP", mid: 0.502, tickSize: 0.01, capitalUsd: 41, params: PARAMS, vivas });
+    expect(plan.colocar).toEqual([]);
+    expect(plan.cancelar).toEqual([]);
+  });
+
+  it("recoloca solo cuando se sale de la banda", async () => {
+    const { planificarMaker } = await import("../src/makerQuoting.js");
+    // 0,49 con el medio en 0,51 son 2c: fuera de la banda de 1,5c, ya no cobra.
+    const vivas = [{ id: "1", outcome: "UP" as const, side: "BUY" as const, price: 0.49, size: 50 }];
+    const plan = planificarMaker({ outcome: "UP", mid: 0.51, tickSize: 0.01, capitalUsd: 41, params: PARAMS, vivas });
+    expect(plan.cancelar.map((o) => o.id)).toEqual(["1"]);
+    expect(plan.colocar).toHaveLength(1);
+  });
+
+  it("el umbral NO puede ser mas estricto que la colocacion ideal", async () => {
+    // La orden ideal se pone a un tick del medio (1c). Si el criterio para mantenerla fuera mas
+    // estricto que eso, se recolocaria a un precio que al instante se considera insuficiente: churn
+    // infinito. Este test fija que la orden recien colocada se considera buena.
+    const { planificarMaker, precioObjetivo } = await import("../src/makerQuoting.js");
+    const price = precioObjetivo(0.5, "BUY", 0.01);
+    const vivas = [{ id: "1", outcome: "UP" as const, side: "BUY" as const, price, size: 50 }];
+    const plan = planificarMaker({ outcome: "UP", mid: 0.5, tickSize: 0.01, capitalUsd: 41, params: PARAMS, vivas });
+    expect(plan.colocar).toEqual([]);
+    expect(plan.cancelar).toEqual([]);
+  });
+});
