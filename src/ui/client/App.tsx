@@ -136,6 +136,15 @@ function bankrollChipTitle(bankroll: NonNullable<UiStatus["bankroll"]>): string 
  * insignia diria "SIM" con el arbitraje moviendo dinero real, que es justo la confusion que hay que
  * evitar.
  */
+/** Si alguna estrategia esta en LIVE, o sea si arrancar mueve dinero real. */
+export function enVivo(status: UiStatus | null): boolean {
+  if (!status) {
+    return false;
+  }
+  const modos = status.effectiveModes;
+  return modos?.arb === "live" || modos?.directional === "live" || status.settings?.makerMode === "live";
+}
+
 function runningModeLabel(status: UiStatus): string {
   const arb = status.effectiveModes?.arb ?? status.mode;
   const dir = status.effectiveModes?.directional ?? status.mode;
@@ -277,7 +286,6 @@ export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [liveModal, setLiveModal] = useState(false);
   const [resetModal, setResetModal] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
   const [hideAmounts, setHideAmounts] = useState<boolean>(() => {
@@ -407,7 +415,6 @@ export function App() {
     setError(null);
     try {
       setStatus(await api<UiStatus>("/api/bot/start", { method: "POST", body: JSON.stringify(request) }));
-      setLiveModal(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -593,8 +600,7 @@ export function App() {
             <ControlBar
               status={status}
               busy={busy}
-              onStartSim={() => startBot({ mode: "sim" })}
-              onOpenLive={() => setLiveModal(true)}
+              onStart={() => startBot({ mode: "sim" })}
               onStop={stopBot}
               onRefresh={() => refreshCore()}
             />
@@ -641,16 +647,6 @@ export function App() {
         {tab === "logs" && <LogsPanel logs={status?.logs ?? []} timeZone={status?.settings.timezone} />}
       </main>
 
-      {liveModal && (
-        <LiveConfirmModal
-          ready={Boolean(status?.liveReadiness.ready)}
-          reason={status?.liveReadiness.reason}
-          busy={busy}
-          onCancel={() => setLiveModal(false)}
-          onConfirm={() => startBot({ mode: "live", confirmLive: true })}
-        />
-      )}
-
       {resetModal && (
         <ResetConfirmModal
           running={Boolean(status?.running)}
@@ -684,27 +680,35 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
 export function ControlBar(props: {
   status: UiStatus | null;
   busy: boolean;
-  onStartSim: () => void;
-  onOpenLive: () => void;
+  onStart: () => void;
   onStop: () => void;
   onRefresh: () => void;
 }) {
   const running = Boolean(props.status?.running);
-  const liveReady = Boolean(props.status?.liveReadiness.ready);
+  // Un SOLO boton de arranque.
+  //
+  // Habia dos, "Sim" y "Live", de cuando el modo era global. Desde que cada estrategia tiene el suyo,
+  // el modo de arranque solo es el valor por defecto de las que estan en "heredado" — o sea que se
+  // podia arrancar en "Sim" y estar moviendo dinero real igualmente. Dos botones que sugerian decidir
+  // algo que en realidad se decide en Ajustes.
+  //
+  // Ahora el arranque es siempre el modo seguro y el dinero se decide en UN solo sitio. Que hay en
+  // juego lo dice la insignia de la cabecera, que lee `effectiveModes`.
+  const conDineroReal = enVivo(props.status);
   return (
     <div className="controlbar">
       <button className="icon-button" title="Actualizar" onClick={props.onRefresh} disabled={props.busy}>
         <RefreshCw size={18} />
       </button>
       {!running ? (
-        <>
-          <button className="command primary" onClick={props.onStartSim} disabled={props.busy}>
-            <Play size={18} /> Sim
-          </button>
-          <button className="command danger" onClick={props.onOpenLive} disabled={props.busy || !liveReady} title={liveReady ? "Live" : "Live bloqueado"}>
-            <ShieldAlert size={18} /> Live
-          </button>
-        </>
+        <button
+          className={`command ${conDineroReal ? "danger" : "primary"}`}
+          onClick={props.onStart}
+          disabled={props.busy}
+          title={conDineroReal ? "Hay estrategias en LIVE: arrancar mueve dinero real" : "Arrancar"}
+        >
+          {conDineroReal ? <ShieldAlert size={18} /> : <Play size={18} />} Arrancar
+        </button>
       ) : (
         <button className="command stop" onClick={props.onStop} disabled={props.busy}>
           <Square size={18} /> Detener
@@ -3310,28 +3314,6 @@ function LogsPanel({ logs, timeZone }: { logs: LogEntry[]; timeZone?: string }) 
   );
 }
 
-function LiveConfirmModal({ ready, reason, busy, onCancel, onConfirm }: {
-  ready: boolean;
-  reason?: string;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="live-title">
-      <div className="modal">
-        <h2 id="live-title">Confirmar live</h2>
-        {!ready && <div className="notice error"><AlertTriangle size={18} />{reasonLabel(reason)}</div>}
-        <div className="modal-actions">
-          <button className="command" onClick={onCancel}>Cancelar</button>
-          <button className="command danger" disabled={!ready || busy} onClick={onConfirm}>
-            <ShieldAlert size={18} /> Iniciar live
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ResetConfirmModal({ running, busy, onCancel, onConfirm }: {
   running: boolean;

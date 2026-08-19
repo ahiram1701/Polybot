@@ -112,7 +112,7 @@ describe("UI frontend components", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /An/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Análisis" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input))).toContain("/api/analysis/recommendations"));
   });
@@ -162,22 +162,29 @@ describe("UI frontend components", () => {
     expect(screen.getByText(/no constituye\s+asesoría fiscal/)).toBeInTheDocument();
   });
 
-  it("disables live control when live is not ready", () => {
+  it("un solo boton de arranque: el modo se decide en Ajustes", () => {
+    // Habia dos, "Sim" y "Live", de cuando el modo era global. Sugerian decidir algo que en realidad
+    // se decide por estrategia en Ajustes — se podia pulsar "Sim" y estar moviendo dinero real.
     render(
-      <ControlBar
-        status={status({ liveReady: false })}
-        busy={false}
-        onStartSim={vi.fn()}
-        onOpenLive={vi.fn()}
-        onStop={vi.fn()}
-        onRefresh={vi.fn()}
-      />,
+      <ControlBar status={status({ liveReady: false })} busy={false} onStart={vi.fn()} onStop={vi.fn()} onRefresh={vi.fn()} />,
     );
 
-    expect(screen.getByRole("button", { name: /live/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /sim/i })).toBeEnabled();
-    // The destructive reset now lives only in Settings, never in the top bar.
+    expect(screen.getByRole("button", { name: /arrancar/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /^live$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^sim$/i })).not.toBeInTheDocument();
+    // El reset destructivo sigue viviendo solo en Ajustes.
     expect(screen.queryByRole("button", { name: /reset/i })).not.toBeInTheDocument();
+  });
+
+  it("el boton avisa cuando arrancar mueve dinero real", async () => {
+    const { enVivo } = await import("../src/ui/client/App.js");
+    const base = status({ liveReady: true });
+    expect(enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim" } })).toBe(false);
+    // Cualquier estrategia en live basta: el peligro no depende del modo de arranque.
+    expect(enVivo({ ...base, effectiveModes: { arb: "live", directional: "sim" } })).toBe(true);
+    expect(
+      enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim" }, settings: { ...base.settings, makerMode: "live" } }),
+    ).toBe(true);
   });
 
   it("offers the local-state reset only from the Settings danger zone", () => {

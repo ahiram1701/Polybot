@@ -23,17 +23,19 @@ El arbitraje solo funciona si **llenan las dos patas**. Si una llena y la otra n
 
 ## 2. Arrancar y parar
 
-**Arrancar:** doble clic en `INICIAR-POLYBOT.cmd`. Abre el navegador en `http://127.0.0.1:8787` y, si `autoStartSimOnBoot` está activo, arranca solo en simulación.
+**Un solo botón: «Arrancar».** El bot siempre arranca en el modo seguro; **el dinero se decide en
+Ajustes**, estrategia por estrategia.
 
-**Parar el bot** (sin cerrar la interfaz): botón de stop en la UI. Necesario antes de cambiar cualquier ajuste — la API responde `409` si el bot corre.
+Antes había dos botones, «Sim» y «Live», de cuando el modo era global. Confundían: desde que cada
+estrategia tiene su propio modo, se podía pulsar «Sim» y estar moviendo dinero real igualmente, porque
+`arbMode` o `makerMode` mandan por encima del arranque.
 
-**Modos:**
-- **`sim`** — dinero de mentira, mismo código, mismos precios reales. Es donde se valida todo.
-- **`live`** — dinero real. Requiere `confirmLive` y llaves en `.env`. **Nunca se arranca solo.**
+Ahora hay un solo sitio donde se decide arriesgar dinero, y la interfaz lo avisa: **si alguna estrategia
+está en LIVE, el botón se pone rojo** y su descripción lo dice antes de que lo pulses. La insignia de la
+cabecera muestra qué está en juego (`arb LIVE · dir SIM`).
 
-> Sim usa el mismo tamaño de orden que live (`autoMinLive`) a propósito: si sim operase con importes distintos, dejaría de predecir lo que hará live.
-
----
+Para detenerlo, el mismo botón cambia a «Detener». Los ajustes solo se pueden cambiar con el bot
+parado.
 
 ## 3. Leer la pantalla
 
