@@ -95,6 +95,10 @@ const settingsSchema = z.object({
    * Modo de cada estrategia. "heredado" = usa el modo con el que arranco el bot, que es como se
    * comportaba antes de existir estos ajustes.
    */
+  makerEnabled: z.boolean().default(false),
+  makerMode: z.enum(["heredado", "sim", "live"]).default("sim"),
+  makerCapitalUsd: z.coerce.number().nonnegative().default(40),
+  makerRetireSecondsBeforeClose: z.coerce.number().int().nonnegative().default(30),
   arbMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   directionalMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   arb15mEnabled: z.boolean().default(false),
@@ -242,6 +246,10 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? 50,
     riskHaltCooldownHours: config.riskHaltCooldownHours ?? 2,
     arbEnabled: config.arbEnabled ?? false,
+    makerEnabled: Boolean(config.makerEnabled ?? false),
+    makerMode: config.makerMode ?? "sim",
+    makerCapitalUsd: config.makerCapitalUsd ?? 40,
+    makerRetireSecondsBeforeClose: config.makerRetireSecondsBeforeClose ?? 30,
     arbMode: config.arbMode ?? "heredado",
     directionalMode: config.directionalMode ?? "heredado",
     arb15mEnabled: Boolean(config.arb15mEnabled ?? false),
@@ -331,6 +339,10 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     // Sin esta linea el ajuste existe en la UI, se guarda, se muestra encendido... y el runner no se
     // entera. Es el MISMO fallo que tuvo el piso de ask: `applySettings` construye la config con la
     // que arranca el bot, y lo que no se copie aqui simplemente no existe para el.
+    makerEnabled: settings.makerEnabled,
+    makerMode: settings.makerMode === "heredado" ? undefined : settings.makerMode,
+    makerCapitalUsd: settings.makerCapitalUsd,
+    makerRetireSecondsBeforeClose: settings.makerRetireSecondsBeforeClose,
     arbMode: settings.arbMode === "heredado" ? undefined : settings.arbMode,
     directionalMode: settings.directionalMode === "heredado" ? undefined : settings.directionalMode,
     arb15mEnabled: settings.arb15mEnabled,

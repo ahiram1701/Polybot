@@ -47,6 +47,10 @@ export interface UiSettings {
   // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
   arbEnabled: boolean;
   /** Arbitraje tambien en 15m. Solo arbitraje: el direccional se queda en 5m. */
+  makerEnabled: boolean;
+  makerMode: "heredado" | "sim" | "live";
+  makerCapitalUsd: number;
+  makerRetireSecondsBeforeClose: number;
   arbMode: "heredado" | "sim" | "live";
   directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;

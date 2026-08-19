@@ -11,14 +11,14 @@
  * cronometrarlo ya no lo esconde: lo empuja a ese contador, que se publica en el log junto al resto.
  */
 
-export const LOOP_PHASES = ["fetch", "reconcile", "resolve", "capture", "decide", "verify"] as const;
+export const LOOP_PHASES = ["fetch", "reconcile", "resolve", "capture", "decide", "verify", "maker"] as const;
 
 export type LoopPhase = (typeof LOOP_PHASES)[number];
 
 export type LoopPhaseMs = Record<LoopPhase, number>;
 
 export function emptyPhases(): LoopPhaseMs {
-  return { fetch: 0, reconcile: 0, resolve: 0, capture: 0, decide: 0, verify: 0 };
+  return { fetch: 0, reconcile: 0, resolve: 0, capture: 0, decide: 0, verify: 0, maker: 0 };
 }
 
 export class PhaseTimer {

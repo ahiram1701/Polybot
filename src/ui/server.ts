@@ -223,6 +223,23 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.stop());
   }));
 
+  /**
+   * Termina el proceso para que el watchdog lo levante con el codigo nuevo.
+   *
+   * Existe porque el watchdog corre como tarea S4U, o sea en la SESION 0, y sus procesos hijo tambien.
+   * Un terminal normal vive en la sesion 1 y Windows no le deja matar procesos de la 0: sin esto, la
+   * unica forma de desplegar un cambio era abrir PowerShell como administrador. El proceso ya esta
+   * supervisado, asi que pedirle que salga es la forma limpia de reiniciarlo.
+   *
+   * Primero detiene el bot: asi no se corta una iteracion a media escritura del estado.
+   */
+  app.post("/api/system/restart", asyncHandler(async (_req, res) => {
+    await controller.stop();
+    res.json({ ok: true, mensaje: "Saliendo; el watchdog relanzara en <=5 min con el codigo actual." });
+    // Se responde ANTES de salir: si no, quien llama ve una conexion cortada y no sabe si funciono.
+    setTimeout(() => process.exit(0), 250).unref?.();
+  }));
+
   app.post("/api/bot/reset", asyncHandler(async (_req, res) => {
     res.json(await controller.reset());
   }));

@@ -206,6 +206,10 @@ const emptySettings: UiSettings = {
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,
+  makerEnabled: false,
+  makerMode: "sim",
+  makerCapitalUsd: 40,
+  makerRetireSecondsBeforeClose: 30,
   arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,
@@ -2248,6 +2252,66 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           mercado/lado a la vez — el cap se limita al Techo y el piso al cap de cada lado, para que la ventana nunca se
           cierre. Solo se opera cuando el mejor ask cae dentro de esa ventana. Puedes afinar cada lado abajo; si
           difieren, el campo muestra "mixto".
+        </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <DollarSign size={18} />
+          <h2>Maker — cobrar por dar liquidez</h2>
+        </div>
+        <p className="settings-hint">
+          La única estrategia que <strong>no exige acertar la dirección</strong>. Polymarket paga por
+          dejar órdenes límite en reposo cerca del punto medio, <strong>se llenen o no</strong>: medido
+          contra el exchange, estos mercados reparten $10.000/día (BTC), $1.666 (ETH) y $833 (DOGE).
+          El tamaño mínimo y la banda que puntúa los lee Polybot del propio mercado, porque Polymarket
+          los cambia.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.makerEnabled}
+            onChange={(event) => update("makerEnabled", event.target.checked)}
+            disabled={running}
+          />
+          <span>Mantener órdenes en reposo para cobrar recompensas</span>
+        </label>
+        <div className="settings-grid">
+          <label className="field">
+            <span>Modo</span>
+            <select
+              value={draft.makerMode}
+              onChange={(event) => update("makerMode", event.target.value as UiSettings["makerMode"])}
+              disabled={running}
+            >
+              <option value="sim">Simulación (papel)</option>
+              <option value="live">LIVE — dinero real</option>
+              <option value="heredado">Heredado</option>
+            </select>
+          </label>
+          <NumberField
+            label="Capital máx inmovilizado (USD)"
+            value={draft.makerCapitalUsd}
+            min={0}
+            step={5}
+            onChange={(value) => update("makerCapitalUsd", value)}
+          />
+          <NumberField
+            label="Retirar N segundos antes del cierre"
+            value={draft.makerRetireSecondsBeforeClose}
+            min={0}
+            step={5}
+            onChange={(value) => update("makerRetireSecondsBeforeClose", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          Una orden de compra <strong>inmoviliza</strong> precio × tamaño hasta que se llena o se
+          cancela; el tope es común a todos los mercados para que dos no comprometan el mismo dinero.
+          Y se retira antes del cierre porque una orden llena en los últimos segundos deja una posición
+          que resuelve sin margen para deshacerla.
+          <br />
+          <strong>El riesgo real es que te llenen:</strong> entonces tienes una posición direccional. La
+          recompensa es la compensación por ese riesgo, no un regalo.
         </p>
       </section>
 

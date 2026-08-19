@@ -114,6 +114,16 @@ export interface BotConfig {
    *
    * Ausente = se hereda el modo global, asi que una configuracion antigua se comporta igual que antes.
    */
+  /**
+   * Maker de recompensas de liquidez: deja ordenes limite en reposo para cobrar el reparto que paga
+   * Polymarket, se llenen o no. Es la unica estrategia del proyecto que no exige acertar la direccion.
+   */
+  makerEnabled?: boolean;
+  makerMode?: Mode;
+  /** Tope duro de dolares inmovilizados a la vez en ordenes maker, sumando TODOS los mercados. */
+  makerCapitalUsd?: number;
+  /** Segundos antes del cierre en que se retira todo: una orden llena ahi resuelve sin margen. */
+  makerRetireSecondsBeforeClose?: number;
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;

@@ -42,6 +42,7 @@ const TOGGLE_LABELS: Record<string, string> = {
   evCalibration: "Calibración empírica",
   autoMinLive: "Operar al mínimo del exchange",
   arbEnabled: "Arbitraje de set completo",
+  makerEnabled: "Maker: cobrar por dar liquidez",
   aiAutoApplyLive: "Autoajuste predictivo",
   arb15mEnabled: "Arbitraje también en 15m",
   aiAutoTuneAskCap: "Autoajuste ventana de ask",
@@ -57,6 +58,7 @@ const TOGGLE_HELP: Record<string, string> = {
   evCalibration: "Corrige la probabilidad estimada contra lo que de verdad pasó, por mercado.",
   autoMinLive: "Dimensiona al mínimo del exchange ($5) en vez del monto pedido. Igual en sim y en live.",
   arbEnabled: "Compra ambos lados cuando el par cuesta menos de $1 tras comisiones.",
+  makerEnabled: "Deja órdenes límite en reposo para cobrar el reparto de liquidez. No exige acertar la dirección.",
   arb15mEnabled: "Triplica las ventanas donde puede aparecer un par barato. SOLO arbitraje: el direccional sigue en 5m.",
   aiAutoApplyLive: "Ajusta ventana y distancia por mercado en caliente, con 30 min de enfriamiento entre cambios.",
   aiAutoTuneAskCap: "Mueve el techo de ask. Solo ESTRECHA: nunca abre, así que solo puede reducir exposición.",
@@ -70,10 +72,11 @@ const TOGGLE_KEYS = Object.keys(TOGGLE_LABELS) as (keyof UiSettings)[];
  * reaprovecha la fila de tipo "toggle" para no inventar un tipo de campo nuevo con su navegacion y sus
  * teclas: lo que importa es que la fila muestre siempre el valor actual, y lo hace.
  */
-const MODE_KEYS = ["arbMode", "directionalMode"] as const;
+const MODE_KEYS = ["arbMode", "directionalMode", "makerMode"] as const;
 const MODE_LABELS: Record<(typeof MODE_KEYS)[number], string> = {
   arbMode: "Modo del arbitraje",
   directionalMode: "Modo del direccional",
+  makerMode: "Modo del maker",
 };
 const MODE_CYCLE = ["heredado", "sim", "live"] as const;
 
@@ -154,6 +157,21 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
     min: 0,
     max: 0.5,
     format: (v) => v.toFixed(3),
+  },
+  {
+    key: "makerCapitalUsd",
+    label: "Maker — capital máx",
+    help: "Tope de dólares inmovilizados a la vez en órdenes en reposo, sumando todos los mercados.",
+    min: 0,
+    format: fmtUsd,
+  },
+  {
+    key: "makerRetireSecondsBeforeClose",
+    label: "Maker — retirar a los N s",
+    help: "Segundos antes del cierre en que se retira todo: una orden llena ahí resuelve sin margen.",
+    min: 0,
+    integer: true,
+    format: (v) => `${v} s`,
   },
   {
     key: "arbNakedLegHaltStreak",

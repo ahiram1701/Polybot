@@ -53,6 +53,11 @@ import {
 import { StateStore } from "./stateStore.js";
 import { StrategyAnalysisEngine } from "./strategyAnalysisEngine.js";
 import { dailySpendKey, sleep } from "./time.js";
+import { LiveMakerEngine, SimulationMakerEngine } from "./makerEngine.js";
+import type { MakerEngine } from "./makerEngine.js";
+import { MakerLoop } from "./makerLoop.js";
+import type { ResumenPasada } from "./makerLoop.js";
+import { RewardParamsReader } from "./rewardParams.js";
 import { resolveTradeFromTick } from "./tradeResolution.js";
 import type { SkipReason } from "./ui/shared.js";
 import type {
@@ -182,6 +187,9 @@ interface BotDependencies {
    * test, que inyectan uno solo.
    */
   executorByMode?: Partial<Record<Mode, TradeExecutor>>;
+  /** Lector de parametros de recompensa. Ausente = el maker no corre. */
+  rewardParams?: Pick<RewardParamsReader, "paraMercado">;
+  makerEngineByMode?: Partial<Record<Mode, MakerEngine>>;
   reconcilerByMode?: Partial<Record<Mode, TradeReconciler>>;
   orderbook: OrderbookService;
   priceFeed: RunnerPriceFeed;
@@ -264,6 +272,8 @@ export class BotRunner {
   private arbNakedLegStreak = 0;
   /** Slugs cuya apertura salio de la serie TWAP y no del spot, entre la lectura y el guardado. */
   private readonly aperturasPorTwap = new Set<string>();
+  private makerLoopCache?: MakerLoop;
+  private ultimaPasadaMaker?: ResumenPasada;
 
   /**
    * Retraso del bucle de eventos. Distingue "esperando a la red" de "bloqueado", que es la diferencia
@@ -314,6 +324,8 @@ export class BotRunner {
       reconciler: config.mode === "live" ? new LiveTradeReconciler(config) : new NoopTradeReconciler(),
       // Los dos disponibles a la vez: con arbitraje en live y direccional en sim hacen falta ambos en la
       // misma iteracion. El motor live se construye siempre, pero solo lo usa quien tenga modo live.
+      rewardParams: new RewardParamsReader(config.clobHost),
+      makerEngineByMode: { sim: new SimulationMakerEngine(), live: new LiveMakerEngine(config) },
       executorByMode: {
         sim: new SimulationExecutionEngine(config),
         live: new LiveExecutionEngine(config),
@@ -641,7 +653,59 @@ export class BotRunner {
       await timer.time("capture", () => this.runArb15m(nowMs));
     }
 
+    // Maker de recompensas: mantiene ordenes en reposo cobrando el reparto de liquidez. Va al final
+    // porque no compite por el mismo capital que el resto — tiene su propio tope — y porque no debe
+    // retrasar ninguna decision de entrada.
+    if (this.config.makerEnabled === true) {
+      await timer.time("maker", () => this.runMaker(markets, nowMs));
+    }
+
     await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
+  }
+
+  /** Una pasada del maker. Nunca tumba la iteracion: perder una pasada cuesta una ventana, no el bot. */
+  private async runMaker(markets: MarketInfo[], nowMs: number): Promise<void> {
+    const loop = this.makerLoop();
+    if (!loop) {
+      return;
+    }
+    try {
+      this.ultimaPasadaMaker = await loop.runOnce(markets, nowMs);
+    } catch (error) {
+      logger.warn("Pasada del maker fallida.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * El bucle maker, construido perezosamente porque el motor LIVE necesita credenciales y no debe
+   * exigirlas a quien corre en sim.
+   */
+  private makerLoop(): MakerLoop | undefined {
+    if (!this.deps.orderbook || !this.deps.rewardParams) {
+      return undefined;
+    }
+    this.makerLoopCache ??= new MakerLoop(
+      {
+        orderbook: this.deps.orderbook,
+        rewards: this.deps.rewardParams,
+        engine:
+          this.modeFor("maker") === "live"
+            ? (this.deps.makerEngineByMode?.live ?? new LiveMakerEngine(this.config))
+            : (this.deps.makerEngineByMode?.sim ?? new SimulationMakerEngine()),
+      },
+      {
+        capitalUsd: this.config.makerCapitalUsd ?? 40,
+        retirarSegundosAntesDelCierre: this.config.makerRetireSecondsBeforeClose ?? 30,
+      },
+    );
+    return this.makerLoopCache;
+  }
+
+  /** Ultimo resumen del maker, para que la UI pueda mostrar que esta pasando. */
+  getMakerSummary(): ResumenPasada | undefined {
+    return this.ultimaPasadaMaker;
   }
 
   /** Observa y ejecuta arbitraje en las ventanas de 15m. Nunca genera señales direccionales. */
@@ -1603,7 +1667,13 @@ export class BotRunner {
    * pasar por aqui y no por `config.mode`. Si una estrategia opera en live y su P&L se anota en sim,
    * el dinero real desaparece de las cuentas.
    */
-  private modeFor(strategy: "arb" | "dir"): Mode {
+  private modeFor(strategy: "arb" | "dir" | "maker"): Mode {
+    if (strategy === "maker") {
+      // El maker cae a "sim" y NO al modo global: es la estrategia mas nueva y la unica que deja
+      // ordenes vivas en el libro, asi que heredar un arranque en live seria empezar a inmovilizar
+      // dinero real sin que nadie lo haya pedido.
+      return this.config.makerMode ?? "sim";
+    }
     return (strategy === "arb" ? this.config.arbMode : this.config.directionalMode) ?? this.config.mode;
   }
 

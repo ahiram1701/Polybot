@@ -429,9 +429,16 @@ describe("el modo de cada estrategia llega al runner", () => {
 
     // El guardia generico de arriba solo recorre booleanos, asi que estos dos ajustes —los unicos que
     // deciden si se mueve dinero real— se quedarian fuera de el. Aqui se comprueban a mano.
-    const aplicado = applySettings(config, { ...base, arbMode: "live", directionalMode: "sim" });
+    const aplicado = applySettings(config, {
+      ...base,
+      arbMode: "live",
+      directionalMode: "sim",
+      makerMode: "live",
+    });
     expect(aplicado.arbMode).toBe("live");
     expect(aplicado.directionalMode).toBe("sim");
+    // El maker tambien: es enum, asi que el guardia generico (booleanos y numeros) no lo cubre.
+    expect(aplicado.makerMode).toBe("live");
   });
 
   it('"heredado" no fija modo, para que mande el de arranque', async () => {
