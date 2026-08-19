@@ -167,6 +167,16 @@ export interface UiStatus {
   /** Salud del bucle: fraccion de iteraciones que acabaron lanzando (ventana movil). */
   loopHealth?: { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia de riesgo y de donde salio (on-chain vs declarado). */
+  /**
+   * Que decidio el maker en su ultima pasada. Sin esto, un maker que no coloca es indistinguible de
+   * un maker que no se esta ejecutando — y esa ambiguedad ya costo media hora de diagnostico.
+   */
+  makerSummary?: {
+    colocadas: number;
+    canceladas: number;
+    comprometidoUsd: number;
+    mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+  };
   bankroll?: {
     usd: number;
     source: "onchain" | "declared" | "unknown";

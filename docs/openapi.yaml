@@ -268,6 +268,25 @@ paths:
         "200":
           description: Estado tras detener
           content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } }
+  /api/system/restart:
+    post:
+      tags: [estado]
+      summary: Termina el proceso para que el watchdog lo relance con el codigo actual
+      description: >-
+        El watchdog corre como tarea S4U, o sea en la SESION 0, y sus procesos hijo tambien. Un terminal
+        normal vive en la sesion 1 y Windows no le deja matarlos, asi que sin este endpoint desplegar un
+        cambio exige PowerShell como administrador. Detiene el bot antes de salir y responde ANTES de
+        terminar. El watchdog levanta el proceso en <=5 min.
+      responses:
+        "200":
+          description: Saliendo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  mensaje: { type: string }
   /api/bot/reset:
     post:
       tags: [control]
@@ -334,6 +353,30 @@ components:
         markets: { type: array, items: { type: object } }
         signal: { type: object }
         dailySpendUsd: { type: number }
+        makerSummary:
+          type: object
+          description: >-
+            Que decidio el maker en su ultima pasada. Sin esto, un maker que no coloca es
+            indistinguible de uno que no se esta ejecutando.
+          properties:
+            colocadas: { type: integer }
+            canceladas: { type: integer }
+            comprometidoUsd: { type: number }
+            mercados:
+              type: array
+              items:
+                type: object
+                properties:
+                  slug: { type: string }
+                  motivo:
+                    type: string
+                    description: >-
+                      Por que no se coloco. capital_dedicado_a_otro_mercado y cerca_del_cierre son
+                      normales; capital_insuficiente_para_el_minimo significa que el tope no da para
+                      50 participaciones a ese precio.
+                  esperadoUsd:
+                    type: number
+                    description: Estimacion OPTIMISTA (reparto lineal; el real es cuadratico). Sirve para ordenar, no para prever ingresos.
         bankroll:
           type: object
           description: Capital efectivo que usa la guardia del arbitraje, y de donde salio.
@@ -375,6 +418,27 @@ components:
           type: string
           enum: [heredado, sim, live]
           description: Modo del direccional, independiente del arbitraje. Mismas advertencias que arbMode.
+        # --- Maker: cobrar por dar liquidez. La unica estrategia que no exige acertar la direccion. ---
+        makerEnabled:
+          type: boolean
+          description: Mantiene ordenes limite en reposo para cobrar el reparto de liquidez de Polymarket.
+        makerMode:
+          type: string
+          enum: [heredado, sim, live]
+          description: >-
+            Modo del maker. Por defecto "sim" y NO hereda el modo de arranque, a diferencia de arbMode y
+            directionalMode: es la unica estrategia que deja ordenes VIVAS en el libro, asi que heredar
+            un live empezaria a inmovilizar dinero real sin que nadie lo pidiera.
+        makerCapitalUsd:
+          type: number
+          description: >-
+            Tope de dolares inmovilizados a la vez, sumando TODOS los mercados. Una orden de compra
+            inmoviliza precio x tamano hasta que se llena o se cancela.
+        makerRetireSecondsBeforeClose:
+          type: integer
+          description: >-
+            Segundos antes del cierre en que se retiran las ordenes. Una orden llena en los ultimos
+            segundos deja una posicion direccional que resuelve sin margen para deshacerla.
         # --- Limites de riesgo. Cual aplica a que estrategia esta en docs/MANUAL.md seccion 6. ---
         maxDailyLossUsd:
           type: number

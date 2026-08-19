@@ -56,3 +56,34 @@ describe("de donde sale cuanto paga", () => {
     expect(p?.maxSpreadCents).toBe(1.5);
   });
 });
+
+describe("cada ventana es un mercado nuevo", () => {
+  it("la familia sale del slug quitando el epoch", async () => {
+    const { familiaDeSlug } = await import("../src/rewardParams.js");
+    expect(familiaDeSlug("btc-updown-5m-1787134500")).toBe("btc-updown-5m");
+    expect(familiaDeSlug("eth-updown-15m-1787134500")).toBe("eth-updown-15m");
+    // Si el formato cambia, mejor usar el slug entero que fallar.
+    expect(familiaDeSlug("formato-raro")).toBe("formato-raro");
+    expect(familiaDeSlug(undefined)).toBeUndefined();
+  });
+
+  it("una ventana que aun no figura NO borra lo que ya sabemos de su familia", async () => {
+    // El endpoint devuelve {"data":[],"count":0} para ventanas recien creadas. Tratarlo como "aqui no
+    // pagan" hacia que el maker no cotizara nunca: cada 5 minutos hay un mercado nuevo.
+    let vacio = false;
+    const fetchMock = vi.fn(async () => ({
+      json: async () => (vacio ? { data: [] } : { data: [{ rewards_min_size: 50, rewards_max_spread: 1.5, rewards_config: [{ rate_per_day: 10000 }] }] }),
+    })) as never;
+    const { RewardParamsReader } = await import("../src/rewardParams.js");
+    const lector = new RewardParamsReader("https://clob", fetchMock);
+
+    const primera = await lector.paraMercado("0xVENTANA1", "btc-updown-5m-100");
+    expect(primera?.ratePerDay).toBe(10000);
+
+    // Ventana siguiente, misma familia, y el endpoint aun no la lista.
+    vacio = true;
+    (lector as unknown as { cache: Map<string, { leidoEnMs: number }> }).cache.get("btc-updown-5m")!.leidoEnMs = 0;
+    const segunda = await lector.paraMercado("0xVENTANA2", "btc-updown-5m-200");
+    expect(segunda?.ratePerDay).toBe(10000);
+  });
+});

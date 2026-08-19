@@ -143,6 +143,12 @@ export interface RunnerLike {
   /** Fracción de iteraciones del bucle que acabaron lanzando (ventana móvil). */
   getLoopHealth?(): { iterations: number; failed: number; failedPct: number; lagMaxMs?: number };
   /** Capital efectivo de la guardia y su procedencia. */
+  getMakerSummary?(): {
+    colocadas: number;
+    canceladas: number;
+    comprometidoUsd: number;
+    mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+  } | undefined;
   getBankroll?(): {
     usd: number;
     source: "onchain" | "declared" | "unknown";
@@ -1278,6 +1284,7 @@ export class BotController {
       quotes: primaryMarket?.quotes ?? snapshot.quotes,
       snapshotError: snapshot.snapshotError,
       loopHealth: this.runner?.getLoopHealth?.(),
+      makerSummary: this.runner?.getMakerSummary?.(),
       bankroll: this.runner?.getBankroll?.(),
       bandPrograms: this.bandProgramStoreCache?.list() as never,
     };

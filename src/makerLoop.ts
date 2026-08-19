@@ -67,7 +67,7 @@ export class MakerLoop {
         continue;
       }
 
-      const params = await this.deps.rewards.paraMercado(market.conditionId);
+      const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
       if (!params) {
         resumen.canceladas += await this.deps.engine.cancelar(vivas.map((o) => o.id));
         resumen.mercados.push({ slug: market.slug, motivo: "sin_programa_de_recompensas" });

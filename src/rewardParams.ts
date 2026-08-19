@@ -42,8 +42,16 @@ export class RewardParamsReader {
    * si una orden cobra o no, porque el reparto cae con el cuadrado de la distancia al medio. Ademas es
    * el unico que trae `rate_per_day`, sin el cual no se puede saber si merece la pena.
    */
-  async paraMercado(conditionId: string): Promise<RecompensaMercado | undefined> {
-    const cacheado = this.cache.get(conditionId);
+  async paraMercado(conditionId: string, slug?: string): Promise<RecompensaMercado | undefined> {
+    // Se cachea por FAMILIA (btc-updown-5m), no por mercado.
+    //
+    // Cada ventana de 5 minutos es un mercado NUEVO, y el endpoint de recompensas tarda en incluirlo:
+    // devuelve `{"data":[],"count":0}` para ventanas recien creadas. Consultando por conditionId, el
+    // maker veia "aqui no pagan" en casi todas las ventanas y no cotizaba nunca. La configuracion es
+    // identica en todas las ventanas del mismo activo y duracion —Polymarket la identifica como
+    // `btc-5m-twap-60`—, asi que una lectura buena vale para las siguientes.
+    const familia = familiaDeSlug(slug) ?? conditionId;
+    const cacheado = this.cache.get(familia);
     if (cacheado && Date.now() - cacheado.leidoEnMs < TTL_MS) {
       return cacheado.valor;
     }
@@ -61,9 +69,26 @@ export class RewardParamsReader {
       // Se conserva lo ultimo bueno si lo habia: un fallo de red no es "aqui no pagan".
       return cacheado?.valor;
     }
-    this.cache.set(conditionId, { valor, leidoEnMs: Date.now() });
-    return valor;
+    // Un vacio NO borra lo ultimo bueno de la familia: significa "esta ventana aun no figura", no
+    // "este mercado dejo de pagar". Solo se cachea el vacio si nunca hubo nada.
+    if (valor || !cacheado?.valor) {
+      this.cache.set(familia, { valor, leidoEnMs: Date.now() });
+    }
+    return valor ?? cacheado?.valor;
   }
+}
+
+/**
+ * `btc-updown-5m-1787134500` -> `btc-updown-5m`. Es la clave estable: todas las ventanas de ese activo
+ * y duracion comparten configuracion de recompensas.
+ */
+export function familiaDeSlug(slug: string | undefined): string | undefined {
+  if (!slug) {
+    return undefined;
+  }
+  const partes = slug.split("-");
+  // Se quita el epoch final si lo hay; si el formato cambia, se usa el slug entero antes que fallar.
+  return /^\d+$/.test(partes[partes.length - 1] ?? "") ? partes.slice(0, -1).join("-") : slug;
 }
 
 export function normalizar(rewards: Record<string, unknown> | undefined): RecompensaMercado | undefined {

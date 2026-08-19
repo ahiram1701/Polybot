@@ -228,6 +228,61 @@ mismas, porque son globales y no por mercado.
 
 ---
 
+## 6 bis. El maker: cobrar por dar liquidez
+
+Es lo único que Polybot tiene ahora encendido, y funciona al revés que todo lo anterior: **no intenta
+acertar la dirección**. Polymarket paga por dejar órdenes límite en reposo cerca del punto medio, **se
+llenen o no**.
+
+Los mercados que sigue Polybot reparten **$10.000 al día** (BTC 5m), $1.666 (ETH) y $833 (DOGE). Cada
+ventana de 5 minutos se lleva su parte: $34,72, $5,79 y $2,89.
+
+### Los ajustes
+
+En **Ajustes → «Maker — cobrar por dar liquidez»**:
+
+| Ajuste | Qué hace |
+|---|---|
+| Interruptor | Enciende y apaga el maker |
+| Modo | `sim` (papel) o `live` (dinero real). **No hereda el modo de arranque**, a diferencia de las otras estrategias |
+| Capital máx inmovilizado | Tope de dólares comprometidos **a la vez, en todos los mercados juntos** |
+| Retirar N segundos antes del cierre | Margen para no quedarte con una posición que resuelve sin darte tiempo |
+
+El tamaño mínimo y la banda que puntúa **los lee del propio mercado**, porque Polymarket los cambia.
+
+### Qué esperar al mirarlo
+
+Una colocación y una retirada por ventana. Entre medias la orden se queda quieta a propósito:
+recolocarla perdería el turno en la cola, y el reparto premia el **tiempo** en reposo.
+
+En el estado (y en el chip de la web) verás `makerSummary` con lo que decidió en la última pasada y
+**por qué descartó cada mercado**. Los motivos habituales:
+
+| Motivo | Significa |
+|---|---|
+| `capital_dedicado_a_otro_mercado` | El presupuesto se fue a un mercado que rendía más por dólar. Normal. |
+| `cerca_del_cierre` | Retirada preventiva. Normal. |
+| `capital_insuficiente_para_el_minimo` | 50 participaciones a este precio no caben en tu tope. **Sube el capital o espera precios más bajos.** |
+| `sin_punto_medio` | El libro no tiene los dos lados; suele pasar al final, con el resultado ya decidido. |
+| `sin_programa_de_recompensas` | Ese mercado no paga. No se ponen órdenes ahí. |
+
+### El riesgo, sin adornos
+
+**Que te llenen.** Si tu orden se ejecuta, tienes una posición direccional que resuelve en minutos. La
+recompensa es el pago por asumir ese riesgo, **no un regalo**. Con $12 comprometidos, el peor caso es
+perder $12.
+
+### Cuánto se cobra de verdad
+
+**No lo sabemos.** El número que muestra Polybot es una estimación **optimista**: calcula el reparto de
+forma lineal cuando en realidad cae con el cuadrado de la distancia al centro. Sirve para decidir qué
+mercado financiar, no para prever ingresos.
+
+Lo único que lo zanja es poner una orden real y mirar el pago a las 24 horas. Empieza por **DOGE**: el
+bote más pequeño, el capital más bajo y la menor competencia.
+
+---
+
 ## 7. Pasar a live
 
 El orden recomendado, y el motivo de cada paso:

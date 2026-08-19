@@ -227,6 +227,82 @@ Usa el mismo serializador que la exportación de la UI, así que el archivo se p
 mismo patrón que el watchdog: sin ventana, sin permisos de administrador). Deja rastro en
 `data/archive/archive.log` para poder auditar si alguna pasada falló.
 
+## El maker: cobrar por dar liquidez
+
+Es el cambio de modelo de negocio del 2026-08-19, y la primera estrategia del proyecto **que no exige
+acertar la dirección**. Polymarket paga por dejar órdenes límite en reposo cerca del punto medio, se
+llenen o no.
+
+Medido contra el exchange, no contra la documentación:
+
+| Mercado | Reparte | Por ventana de 5 min |
+|---|---|---|
+| BTC 5m | $10.000/día | $34,72 |
+| ETH 5m | $1.666/día | $5,79 |
+| DOGE 5m | $833/día | $2,89 |
+
+`min_size: 50` participaciones, banda de `±1,5` centavos. **Los lee del mercado, no del código**: el
+objeto del mercado publica `max_spread: 4.5` y el endpoint de recompensas `1.5` *para el mismo
+mercado*, y esos tres centavos deciden si una orden cobra o no.
+
+### Tres piezas, separadas a propósito
+
+| Módulo | Qué hace | Por qué así |
+|---|---|---|
+| `makerQuoting.ts` | Decide qué órdenes debería haber | **Puro**: la política entera se prueba sin red ni claves |
+| `makerEngine.ts` | Coloca, lista y cancela | Dos implementaciones, sim y live |
+| `rewardParams.ts` | Lee `min_size`, banda y tasa | Cacheado 10 min; ante fallo conserva lo último bueno |
+| `makerLoop.ts` | Ata las tres y reparte el capital | Ordena por rendimiento **por dólar**, no por tamaño del bote |
+
+### Decisiones que no son obvias
+
+- **`postOnly` en todas las órdenes.** Si una carrera del libro fuera a cruzarlas, el exchange las
+  RECHAZA en vez de ejecutarlas como taker pagando el 7%. Sin eso el motor haría lo contrario de lo
+  que pretende.
+- **No recolocar si el libro no se movió.** El reparto premia el tiempo en reposo; cancelar y volver a
+  poner pierde el turno en la cola.
+- **Colocar a un tick del centro.** El reparto cae con el **cuadrado** de la distancia al medio, así
+  que un centavo de más cuesta mucho más que proporcionalmente.
+- **El tamaño vivo descuenta lo ya casado.** Una orden medio llenada puede haber caído por debajo del
+  mínimo y dejado de puntuar sin que nadie lo note.
+- **El capital es compartido entre mercados.** Una orden de compra inmoviliza `precio × tamaño` hasta
+  que se llena o se cancela; sin un tope común, tres mercados comprometerían el mismo dinero tres
+  veces.
+- **`makerMode` cae a `sim`, no al modo global.** Es la única estrategia que deja órdenes VIVAS en el
+  libro: heredar un arranque en live sería empezar a inmovilizar dinero real sin que nadie lo pidiera.
+
+### El riesgo real
+
+**Que te llenen.** Entonces tienes una posición direccional que resuelve en minutos. La recompensa es
+la compensación por ese riesgo, no un regalo. Por eso se retira antes del cierre: una orden llena en
+los últimos segundos no da margen para deshacerla.
+
+### Lo que NO está medido
+
+El rendimiento. La estimación de `elegirMercados` es **lineal** y por tanto optimista —el reparto real
+es cuadrático— y sirve para *ordenar* mercados, no para prometer cuánto se cobrará. Eso solo lo dice
+una orden real y su pago a 24 h.
+
+## Las tareas programadas viven en la sesión 0
+
+`PolybotWatchdog` y `PolybotArchivoAnalitica` se registran con **`LogonType: S4U`**, que las hace correr
+haya o no sesión iniciada. Antes eran `Interactive` y eso costó **45 horas de datos en 10 días**: el
+2026-08-17 Windows arrancó a las 00:17 tras un apagado inesperado, nadie inició sesión, y el watchdog
+no se ejecutó ni una vez hasta las 03:00.
+
+**Consecuencia que hay que conocer:** S4U ejecuta la tarea en la **sesión 0**, y sus procesos hijo
+también. Un terminal normal vive en la sesión 1 y Windows no le deja matar procesos de la 0 — así que
+`Stop-Process` sobre el bot devuelve *Acceso denegado* aunque seas el mismo usuario.
+
+Por eso existe **`POST /api/system/restart`**: el proceso ya está supervisado, así que se le pide salir
+y el watchdog lo levanta con el código actual (≤5 min). Es la forma de desplegar sin administrador.
+Detiene el bot antes de salir para no cortar una iteración a media escritura, y responde ANTES de
+terminar — si no, quien llama ve la conexión cortada y no sabe si funcionó.
+
+S4U y el disparador de arranque **exigen administrador** para registrarse. Los instaladores lo intentan
+y, si Windows lo deniega, caen al modo de siempre con un aviso que dice qué se pierde: fallar del todo
+dejaría la máquina sin ninguna tarea.
+
 ## Herramientas de diagnóstico
 
 Todas en `src/smoke/`, todas de solo lectura:
