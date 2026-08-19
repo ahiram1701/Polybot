@@ -76,3 +76,48 @@ describe("plan de ordenes", () => {
     expect(plan.colocar).toHaveLength(1);
   });
 });
+
+describe("a que mercados dedicar un capital escaso", () => {
+  const base = { params: PARAMS, mid: 0.5 };
+
+  it("ordena por rendimiento POR DOLAR, no por tamano del bote", async () => {
+    const { elegirMercados } = await import("../src/makerQuoting.js");
+    // BTC reparte 12 veces mas que DOGE, pero con 40 compitiendo. En DOGE no compite nadie.
+    const elegidos = elegirMercados(
+      [
+        { ...base, slug: "btc", poolVentanaUsd: 34.72, competencia: 40 },
+        { ...base, slug: "doge", poolVentanaUsd: 2.89, competencia: 0 },
+      ],
+      1000,
+    );
+    // Con capital de sobra entran los dos, pero BTC rinde mas por dolar aun con competencia.
+    expect(elegidos.map((e) => e.slug)).toEqual(["btc", "doge"]);
+    expect(elegidos[0].esperadoUsd).toBeGreaterThan(elegidos[1].esperadoUsd);
+  });
+
+  it("con capital para uno solo, financia el mejor y NO el mas caro", async () => {
+    const { elegirMercados } = await import("../src/makerQuoting.js");
+    const elegidos = elegirMercados(
+      [
+        { ...base, slug: "caro", mid: 0.9, poolVentanaUsd: 10, competencia: 500 },
+        { ...base, slug: "bueno", mid: 0.2, poolVentanaUsd: 5, competencia: 0 },
+      ],
+      41,
+    );
+    // "caro" cuesta $45 (no cabe en $41) y ademas rinde peor. "bueno" cuesta $10.
+    expect(elegidos.map((e) => e.slug)).toEqual(["bueno"]);
+  });
+
+  it("no compromete el mismo dolar dos veces", async () => {
+    const { elegirMercados } = await import("../src/makerQuoting.js");
+    const tres = ["a", "b", "c"].map((slug) => ({ ...base, slug, poolVentanaUsd: 10, competencia: 0 }));
+    const elegidos = elegirMercados(tres, 30); // cada uno cuesta $25
+    expect(elegidos).toHaveLength(1);
+    expect(elegidos.reduce((s, e) => s + e.costeUsd, 0)).toBeLessThanOrEqual(30);
+  });
+
+  it("descarta mercados sin bote: poner ordenes donde no pagan es inmovilizar dinero a cambio de nada", async () => {
+    const { elegirMercados } = await import("../src/makerQuoting.js");
+    expect(elegirMercados([{ ...base, slug: "sin-pool", poolVentanaUsd: 0, competencia: 0 }], 100)).toEqual([]);
+  });
+});

@@ -99,3 +99,53 @@ export function planificarMaker(args: {
     cancelar,
   };
 }
+
+export interface CandidatoMercado {
+  slug: string;
+  /** Dolares que reparte este mercado en la ventana actual. */
+  poolVentanaUsd: number;
+  /** Participaciones ajenas ya en reposo dentro de la banda que puntua. */
+  competencia: number;
+  mid: number;
+  params: ParametrosRecompensa;
+}
+
+export interface MercadoElegido extends CandidatoMercado {
+  costeUsd: number;
+  /** Recompensa esperada de la ventana, con el reparto aproximado por tamano. */
+  esperadoUsd: number;
+}
+
+/**
+ * A que mercados dedicar el capital, de mejor a peor, hasta agotarlo.
+ *
+ * Con poco capital esto NO es un detalle: una orden de 50 participaciones cuesta entre $2,50 y $47,50
+ * segun el precio, asi que financiar el mercado equivocado puede dejar fuera dos que rendian mas. Se
+ * ordena por recompensa esperada POR DOLAR inmovilizado, no por tamano del bote: un bote enorme con
+ * mucha competencia rinde menos que uno pequeno donde no compite nadie.
+ *
+ * La estimacion del reparto es LINEAL por tamano y por tanto OPTIMISTA: el reparto real cae con el
+ * cuadrado de la distancia al medio. Sirve para ordenar —el sesgo afecta a todos por igual— pero no
+ * para prometer cuanto se cobrara.
+ */
+export function elegirMercados(candidatos: CandidatoMercado[], capitalUsd: number): MercadoElegido[] {
+  const evaluados = candidatos
+    .filter((c) => c.mid > 0 && c.mid < 1 && c.poolVentanaUsd > 0)
+    .map((c) => {
+      const costeUsd = c.params.minSize * c.mid;
+      const cuota = c.params.minSize / (c.competencia + c.params.minSize);
+      return { ...c, costeUsd, esperadoUsd: cuota * c.poolVentanaUsd };
+    })
+    .filter((c) => c.costeUsd > 0)
+    .sort((izq, der) => der.esperadoUsd / der.costeUsd - izq.esperadoUsd / izq.costeUsd);
+
+  const elegidos: MercadoElegido[] = [];
+  let restante = capitalUsd;
+  for (const c of evaluados) {
+    if (c.costeUsd <= restante) {
+      elegidos.push(c);
+      restante -= c.costeUsd;
+    }
+  }
+  return elegidos;
+}

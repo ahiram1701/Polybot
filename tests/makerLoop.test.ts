@@ -1,0 +1,123 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { MakerLoop } from "../src/makerLoop.js";
+import { SimulationMakerEngine } from "../src/makerEngine.js";
+import type { MarketInfo } from "../src/types.js";
+
+const AHORA = Date.UTC(2026, 7, 19, 12, 0, 0);
+
+function market(asset: string, segundosAlCierre = 200): MarketInfo {
+  return {
+    asset,
+    slug: `${asset.toLowerCase()}-updown-5m-1`,
+    conditionId: `0x${asset}`,
+    endMs: AHORA + segundosAlCierre * 1000,
+    tickSize: "0.01",
+    negRisk: false,
+    outcomes: { UP: { tokenId: `${asset}-up` }, DOWN: { tokenId: `${asset}-down` } },
+  } as unknown as MarketInfo;
+}
+
+function libro(mid: number, competencia: number) {
+  return {
+    getQuote: vi.fn(async () => ({
+      tokenId: "t",
+      bestAsk: mid + 0.005,
+      bestBid: mid - 0.005,
+      availableUsdUnderCap: 100,
+      availableUsdAllLevels: 100,
+      availableBidUsdAllLevels: 100,
+      estimatedSharesForAmount: 10,
+      rawAskLevels: [{ price: mid + 0.005, size: competencia / 2 }],
+      rawBidLevels: [{ price: mid - 0.005, size: competencia / 2 }],
+    })),
+  } as never;
+}
+
+const recompensas = (ratePerDay: number) => ({
+  paraMercado: vi.fn(async () => (ratePerDay > 0 ? { minSize: 50, maxSpreadCents: 1.5, ratePerDay } : undefined)),
+});
+
+describe("bucle maker", () => {
+  it("coloca una orden en el mercado que paga", async () => {
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 40), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const r = await loop.runOnce([market("BTC")], AHORA);
+    expect(r.colocadas).toBe(1);
+    // 50 participaciones a 0,49 = $24,50 inmovilizados.
+    expect(r.comprometidoUsd).toBeCloseTo(24.5, 2);
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(1);
+  });
+
+  it("NO compromete el mismo dolar en dos mercados", async () => {
+    // Es la guarda que evita que el exchange rechace la segunda orden — o peor, que la acepte.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const r = await loop.runOnce([market("BTC"), market("ETH"), market("DOGE")], AHORA);
+    expect(r.colocadas).toBe(1);
+    expect(r.comprometidoUsd).toBeLessThanOrEqual(41);
+  });
+
+  it("cerca del cierre retira todo: una orden llena ahi resuelve en segundos", async () => {
+    const engine = new SimulationMakerEngine();
+    const m = market("BTC", 10);
+    await engine.colocar(m, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const r = await loop.runOnce([m], AHORA);
+    expect(r.colocadas).toBe(0);
+    expect(r.canceladas).toBe(1);
+    expect(r.mercados[0].motivo).toBe("cerca_del_cierre");
+  });
+
+  it("en un mercado sin programa retira y no coloca", async () => {
+    const engine = new SimulationMakerEngine();
+    const m = market("BTC");
+    await engine.colocar(m, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(0) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const r = await loop.runOnce([m], AHORA);
+    expect(r.colocadas).toBe(0);
+    expect(r.canceladas).toBe(1);
+    expect(r.mercados[0].motivo).toBe("sin_programa_de_recompensas");
+  });
+
+  it("con el libro quieto no recoloca en la segunda pasada", async () => {
+    // Recolocar pierde el turno en la cola, que es justo lo que da valor a estar en reposo.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 41, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await loop.runOnce([market("BTC")], AHORA);
+    const segunda = await loop.runOnce([market("BTC")], AHORA + 1000);
+    expect(segunda.colocadas).toBe(0);
+    expect(segunda.canceladas).toBe(0);
+  });
+
+  it("si no cabe el minimo, no coloca y lo dice", async () => {
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.9, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: 20, retirarSegundosAntesDelCierre: 30 },
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const r = await loop.runOnce([market("BTC")], AHORA);
+    expect(r.colocadas).toBe(0);
+  });
+});
