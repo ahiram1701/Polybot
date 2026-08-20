@@ -229,6 +229,40 @@ describe("el libro fusionado de los dos tokens", () => {
     expect(segunda.vivoUsd).toBeCloseTo(49, 2);
   });
 
+  it("un par COMPLETO cuenta como patrimonio; una participacion suelta, como cero", async () => {
+    // Es lo que evita que un suelo de saldo salte en operacion normal. Al llenarse un par el efectivo
+    // baja, pero el par redime $1 gane quien gane: el dinero no se ha perdido, ha cambiado de forma.
+    // Y al reves: el lado suelto es justo lo que puede irse a cero, asi que se valora a cero.
+    const m = market("BTC");
+    let ordenes = [
+      { id: "o1", outcome: "UP" as const, side: "BUY" as const, price: 0.49, size: 50 },
+      { id: "o2", outcome: "DOWN" as const, side: "BUY" as const, price: 0.49, size: 50 },
+    ];
+    const engine = {
+      ordenesVivas: vi.fn(async () => [...ordenes]),
+      colocar: vi.fn(async () => "nueva"),
+      cancelar: vi.fn(async (ids: string[]) => ids),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([m], AHORA);
+
+    // Se llena SOLO el lado UP: 50 sueltas, ningun par -> patrimonio en posiciones = 0.
+    ordenes = [{ id: "o2", outcome: "DOWN", side: "BUY", price: 0.49, size: 50 }];
+    const suelto = await loop.runOnce([m], AHORA + 20_000);
+    expect(loop.estadoDe(m.slug)?.inventario).toEqual({ UP: 50, DOWN: 0 });
+    expect(suelto.paresUsd).toBe(0);
+
+    // Ahora se llena el DOWN: 50 pares completos -> $50 garantizados.
+    ordenes = [];
+    const emparejado = await loop.runOnce([m], AHORA + 40_000);
+    expect(loop.estadoDe(m.slug)?.inventario).toEqual({ UP: 50, DOWN: 50 });
+    expect(emparejado.paresUsd).toBe(50);
+  });
+
   it("no se cuenta a si mismo como competencia", async () => {
     // Si las ordenes propias contaran como rivales, la cuota estimada caeria sola en cada pasada.
     const engine = new SimulationMakerEngine();

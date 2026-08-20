@@ -209,9 +209,18 @@ export class RewardMarketScanner {
         break;
       }
       const mercado = await this.resolver(String(c.fila.condition_id));
-      if (mercado) {
-        resueltos.push({ mercado, params: c.params, costeEntradaUsd: c.costeEntradaUsd });
+      if (!mercado) {
+        continue;
       }
+      // Sin repetir slug. TODO el estado del maker —gasto, inventario, rastro de ordenes— esta indexado
+      // por slug, asi que dos mercados distintos con el mismo slug se mezclarian: el gasto de uno
+      // contaria contra el otro y el inventario de uno decidiria las ordenes del otro. No se ha
+      // observado en el registro, pero el coste de blindarlo es esta linea y el de no hacerlo es un
+      // fallo silencioso con dinero real. Se conserva el primero, que es el mejor clasificado.
+      if (resueltos.some((r) => r.mercado.slug === mercado.slug)) {
+        continue;
+      }
+      resueltos.push({ mercado, params: c.params, costeEntradaUsd: c.costeEntradaUsd });
     }
     this.candidatos = { capitalUsd, valor: resueltos, enMs: Date.now() };
     return resueltos;

@@ -196,6 +196,22 @@ describe("buscar mercados de recompensa que quepan en el capital", () => {
     expect(llamadas.mock.calls.filter((c) => String(c[0]).includes("/rewards/markets/current"))).toHaveLength(1);
   });
 
+  it("nunca devuelve dos mercados con el MISMO slug", async () => {
+    // Todo el estado del maker —gasto, inventario, rastro de ordenes— se indexa por slug: dos mercados
+    // distintos con el mismo slug mezclarian su contabilidad y su inventario decidiria las ordenes del
+    // otro. Se conserva el mejor clasificado.
+    callar();
+    const { fetchImpl } = servidor([fila("a", 20, 4.5, 200), fila("b", 20, 4.5, 100)], {
+      a: mercado("a", { market_slug: "mismo-slug" }),
+      b: mercado("b", { market_slug: "mismo-slug" }),
+    });
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl);
+    await scanner.precargar();
+    const r = await scanner.mejores(1000);
+    expect(r).toHaveLength(1);
+    expect(r[0]!.mercado.conditionId).toBe("a"); // el que mas paga
+  });
+
   it("los dos tokens salen del mercado, sin suponer cual es cual", async () => {
     // En un mercado de Si/No no hay UP ni DOWN: son simplemente los dos complementarios.
     callar();

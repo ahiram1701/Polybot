@@ -291,6 +291,9 @@ export class BotRunner {
   private mercadosMaker: MercadoMaker[] = [];
 
   private readonly paramsMaker = new Map<string, RecompensaMercado>();
+
+  /** Si el suelo de saldo ya esta disparado, para avisar UNA vez y no cada tres segundos. */
+  private makerBajoSuelo = false;
   private ultimaPasadaMaker?: ResumenPasada;
 
   /**
@@ -748,27 +751,51 @@ export class BotRunner {
       const suelo = this.config.makerStopBelowUsd ?? 0;
       if (suelo > 0 && this.modeFor("maker") === "live") {
         const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, nowMs);
-        // Se suma lo inmovilizado en ordenes PROPIAS: una orden en reposo baja el saldo del exchange
-        // sin ser una perdida —el dinero sigue siendo nuestro—, asi que mirar el saldo desnudo haria
-        // saltar el suelo en operacion normal, que es peor que no tener suelo.
-        const nuestro = saldo.usd + (this.ultimaPasadaMaker?.vivoUsd ?? 0);
+        // El patrimonio no es solo el efectivo. Se suma:
+        //  - lo inmovilizado en ordenes PROPIAS: una orden en reposo baja el saldo del exchange sin ser
+        //    una perdida, el dinero sigue siendo nuestro;
+        //  - los PARES COMPLETOS, a $1 el par: redimen esa cantidad gane quien gane.
+        // Las participaciones sueltas se valoran a cero, que es lo que pueden llegar a valer.
+        //
+        // Mirar el saldo desnudo hacia saltar el suelo en cuanto se llenaba un par: el efectivo baja,
+        // pero el dinero no se ha perdido, solo ha cambiado de forma.
+        //
+        // Los pares se leen del BUCLE, no del ultimo resumen: el resumen de una pasada detenida trae
+        // ceros, asi que apoyarse en el dejaria la guarda enganchada para siempre.
+        const nuestro = saldo.usd + (this.ultimaPasadaMaker?.vivoUsd ?? 0) + loop.paresUsd();
         if (nuestro < suelo) {
           const retiradas = await loop.retirarTodo(mercados);
-          logger.error("Maker DETENIDO: el saldo cayo por debajo del suelo.", {
-            saldoUsd: Math.round(saldo.usd * 100) / 100,
-            masOrdenesVivasUsd: Math.round((this.ultimaPasadaMaker?.vivoUsd ?? 0) * 100) / 100,
-            sueloUsd: suelo,
-            retiradas,
-          });
+          // Se avisa en la TRANSICION, no en cada pasada: un error cada tres segundos deja de leerse,
+          // y lo que hay que ver es el momento en que paro y por que.
+          const avisar = !this.makerBajoSuelo;
+          this.makerBajoSuelo = true;
+          if (avisar) {
+            logger.error("Maker DETENIDO: el patrimonio cayo por debajo del suelo.", {
+              saldoUsd: Math.round(saldo.usd * 100) / 100,
+              masOrdenesVivasUsd: Math.round((this.ultimaPasadaMaker?.vivoUsd ?? 0) * 100) / 100,
+              masParesCompletosUsd: Math.round(loop.paresUsd() * 100) / 100,
+              patrimonioUsd: Math.round(nuestro * 100) / 100,
+              sueloUsd: suelo,
+              retiradas,
+            });
+          }
           this.ultimaPasadaMaker = {
             colocadas: 0,
             canceladas: retiradas,
             comprometidoUsd: 0,
             gastadoUsd: 0,
             vivoUsd: 0,
+            paresUsd: 0,
             mercados: [{ slug: "(todos)", motivo: `saldo_bajo_suelo_${suelo}` }],
           };
           return;
+        }
+        if (this.makerBajoSuelo) {
+          logger.info("Maker reanudado: el patrimonio volvio por encima del suelo.", {
+            patrimonioUsd: Math.round(nuestro * 100) / 100,
+            sueloUsd: suelo,
+          });
+          this.makerBajoSuelo = false;
         }
       }
 

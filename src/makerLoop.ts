@@ -65,6 +65,18 @@ export interface ResumenPasada {
    * nuestro. Quien mire solo el saldo para decidir si parar, parara en operacion normal.
    */
   vivoUsd: number;
+  /**
+   * Valor GARANTIZADO de los pares completos que se tienen, a $1 el par.
+   *
+   * Un par (una participacion de cada lado) redime exactamente $1 gane quien gane: no es una posicion
+   * de riesgo, es dinero con fecha. Las participaciones SUELTAS —el lado del que se es largo sin su
+   * pareja— se valoran a CERO a proposito: son justo lo que puede irse a cero, y esto alimenta una
+   * guarda de perdida, donde equivocarse por optimista cuesta dinero.
+   *
+   * Sin esto, un suelo de saldo saltaba en operacion normal: al llenarse un par el efectivo baja pero
+   * el dinero no se ha perdido, solo ha cambiado de forma.
+   */
+  paresUsd: number;
   /** Participaciones que se llenaron desde la pasada anterior. Cada una es posicion direccional. */
   llenadas?: number;
   mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
@@ -320,6 +332,7 @@ export class MakerLoop {
       comprometidoUsd: 0,
       gastadoUsd: 0,
       vivoUsd: 0,
+      paresUsd: 0,
       mercados: [],
     };
 
@@ -435,6 +448,7 @@ export class MakerLoop {
     const gastadoGlobal = [...this.estados.values()].reduce((s, e) => s + e.gastadoUsd, 0);
     resumen.gastadoUsd = Number(gastadoGlobal.toFixed(4));
     resumen.vivoUsd = Number(comprometidoGlobal.toFixed(4));
+    resumen.paresUsd = this.paresUsd();
 
     // EL tope de verdad: lo comprometido en ordenes vivas MAS lo ya gastado en llenados. Contar solo
     // lo comprometido es lo que dejo que una ventana de 5 minutos gastara $85 con el tope en $12.
@@ -555,6 +569,21 @@ export class MakerLoop {
       logger.info("Maker: ordenes actualizadas.", resumen);
     }
     return resumen;
+  }
+
+  /**
+   * Valor garantizado de los pares completos que se tienen ahora mismo, a $1 el par.
+   *
+   * Se lee del estado del bucle y no del ultimo resumen a proposito: una guarda que se apoye en el
+   * resumen se queda enganchada, porque el resumen de una pasada detenida trae ceros y la pasada
+   * siguiente creeria que no hay patrimonio.
+   */
+  paresUsd(): number {
+    return Number(
+      [...this.estados.values()]
+        .reduce((suma, e) => suma + Math.min(e.inventario.UP, e.inventario.DOWN), 0)
+        .toFixed(4),
+    );
   }
 
   /** Solo para pruebas y diagnostico: cuanto se lleva gastado y en que lado esta el inventario. */
