@@ -50,6 +50,10 @@ async function main(): Promise<void> {
 
   console.log(`Sonda del maker en SIM — ${pasadas} pasadas, capital $${capitalUsd}, fuente ${fuente}\n`);
   if (fuente === "recompensas") {
+    // El escaner carga el registro POR DETRAS a proposito, para no bloquear el bucle del bot. Una
+    // sonda si puede esperarlo: sin esto la primera llamada devuelve vacio y parece que no cabe nada.
+    console.log("  leyendo el registro de recompensas (~30 peticiones)...");
+    await scanner.precargar();
     const candidatos = await scanner.mejores(capitalUsd);
     console.log(`  el escaner encontro ${candidatos.length} mercados que caben en $${capitalUsd}:`);
     for (const c of candidatos.slice(0, 10)) {

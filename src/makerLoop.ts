@@ -403,19 +403,46 @@ export class MakerLoop {
       let comprometidoTrasPlan = candidato.vivas
         .filter((o) => !plan.cancelar.includes(o))
         .reduce((s, o) => s + o.price * o.size, 0);
+      const conservadas = candidato.vivas.filter((o) => !plan.cancelar.includes(o));
+      const puestas: Array<{ id: string; outcome: Outcome }> = [];
+      let falloAlguna = false;
       for (const orden of plan.colocar) {
         const id = await this.deps.engine.colocar(candidato.market, orden);
-        if (id) {
-          resumen.colocadas += 1;
-          const coste = orden.price * orden.size;
-          resumen.comprometidoUsd += coste;
-          comprometidoTrasPlan += coste;
-          // Se apunta AQUI, no al verla viva en la pasada siguiente. Una orden colocada y llenada
-          // entre dos pasadas no llegaria nunca a `ordenesVivas`, y su llenado —el mas rapido, o sea
-          // el mas adverso— seria invisible para el detector y para el tope de gasto.
-          this.tamanoConocido.set(`${candidato.slug}|${id}`, orden.size);
-          this.datosOrden.set(`${candidato.slug}|${id}`, { price: orden.price, outcome: orden.outcome });
+        if (!id) {
+          falloAlguna = true;
+          continue;
         }
+        resumen.colocadas += 1;
+        const coste = orden.price * orden.size;
+        resumen.comprometidoUsd += coste;
+        comprometidoTrasPlan += coste;
+        puestas.push({ id, outcome: orden.outcome });
+        // Se apunta AQUI, no al verla viva en la pasada siguiente. Una orden colocada y llenada
+        // entre dos pasadas no llegaria nunca a `ordenesVivas`, y su llenado —el mas rapido, o sea
+        // el mas adverso— seria invisible para el detector y para el tope de gasto.
+        this.tamanoConocido.set(`${candidato.slug}|${id}`, orden.size);
+        this.datosOrden.set(`${candidato.slug}|${id}`, { price: orden.price, outcome: orden.outcome });
+      }
+
+      // ATOMICIDAD: dos lados o ninguno, tambien cuando el exchange rechaza uno.
+      //
+      // Sin esto, que la segunda orden fuera rechazada —tamano por debajo del minimo del exchange, un
+      // 429, una carrera del libro— dejaba la primera VIVA y con dinero real: exactamente el estado de
+      // un solo lado que costo $41,41 en 40 minutos. Y no se arregla solo, porque si el rechazo es
+      // permanente la pasada siguiente vuelve a fallar igual.
+      const queriamos = new Set([...conservadas, ...plan.colocar].map((o) => o.outcome));
+      const tenemos = new Set([...conservadas.map((o) => o.outcome), ...puestas.map((o) => o.outcome)]);
+      if (falloAlguna && queriamos.size === 2 && tenemos.size === 1) {
+        const aRetirar = [...conservadas.map((o) => o.id), ...puestas.map((o) => o.id)];
+        logger.warn("Maker: el exchange rechazo un lado; se retira el otro para no quedar direccional.", {
+          slug: candidato.slug,
+          ladoQueQuedaba: [...tenemos][0],
+          retiradas: aRetirar.length,
+        });
+        resumen.canceladas += await this.cancelar(aRetirar, candidato.slug);
+        resumen.comprometidoUsd -= comprometidoTrasPlan;
+        resumen.colocadas -= puestas.length;
+        comprometidoTrasPlan = 0;
       }
       usado += comprometidoTrasPlan;
       resumen.mercados.push({

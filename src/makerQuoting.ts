@@ -82,14 +82,31 @@ export function qMinOficial(qOne: number, qTwo: number, mid: number): number {
 }
 
 /**
- * El reparto es CUADRATICO con la distancia al medio. Se deja un tick de separacion para no cruzar el
- * spread y convertirse en taker — que es justo lo que se viene a dejar de hacer.
+ * El tick INMEDIATAMENTE anterior al medio (o posterior, si se vende).
+ *
+ * Se cuenta en ticks ENTEROS a proposito. La version anterior hacia `Math.round((mid - tick) / tick)`
+ * y la coma flotante la traicionaba en los medios que caen a medio tick, que son la mayoria: con
+ * `mid = 0,595`, `0,585 / 0,01` da `58,499999999999993`, `Math.round` baja a 58 y el precio sale a
+ * 0,58 — **dos ticks del medio**. Con banda de 1,5 centavos eso es distancia 0,015, justo en el borde,
+ * y el mismo error de coma flotante la empuja fuera: la orden **puntuaba CERO** con el dinero
+ * igualmente inmovilizado. Un barrido sobre todo el espacio de precios lo encontro en decenas de
+ * medios (0,045, 0,305, 0,395, 0,405, 0,585, 0,595, 0,605...).
+ *
+ * Contando en ticks enteros quedan garantizadas tres cosas a la vez:
+ *
+ *  - **Nunca a mas de UN tick del medio**, asi que siempre puntua mientras la banda supere al tick.
+ *  - **Estrictamente por debajo del medio** (por encima si se vende), asi que no cruza el spread.
+ *  - **El par cuesta estrictamente menos de $1**: si compra UP por debajo de `mid` y DOWN por debajo de
+ *    `1 - mid`, la suma es menor que 1 por construccion. Y el par redime exactamente $1.
  */
 export function precioObjetivo(mid: number, side: "BUY" | "SELL", tickSize: number): number {
-  const bruto = side === "BUY" ? mid - tickSize : mid + tickSize;
-  const redondeado = Math.round(bruto / tickSize) * tickSize;
+  // `toFixed(6)` antes de redondear: sin eso, un `mid` que deberia caer justo en un tick llega como
+  // 40,000000000000006 y `Math.ceil` se va un tick de mas.
+  const enTicks = Number((mid / tickSize).toFixed(6));
+  const objetivo = side === "BUY" ? Math.ceil(enTicks) - 1 : Math.floor(enTicks) + 1;
+  const precio = Number((objetivo * tickSize).toFixed(6));
   // Nunca fuera de (0,1): un precio de 0 o 1 no es una apuesta, es un error.
-  return Math.min(1 - tickSize, Math.max(tickSize, Number(redondeado.toFixed(6))));
+  return Math.min(1 - tickSize, Math.max(tickSize, precio));
 }
 
 /** Si una orden viva sigue puntuando: dentro de la banda y con tamano suficiente. */
@@ -159,6 +176,14 @@ export function planificarDosLados(args: {
     UP: precioObjetivo(medios.UP, "BUY", tickSize),
     DOWN: precioObjetivo(medios.DOWN, "BUY", tickSize),
   };
+
+  // En los extremos del libro el tope de precio tiene que intervenir —no existe un tick por debajo de
+  // 0,005— y el precio deja de quedar por debajo de su medio. Ahi el par cuesta $1,00 exacto para
+  // redimir $1,00: desaparece el margen que hace que un par completo gane seguro, y ademas el lado
+  // pegado al tope puede cruzar. No hay operacion sin riesgo, asi que no se cotiza.
+  if (precios.UP >= medios.UP || precios.DOWN >= medios.DOWN) {
+    return { colocar: [], cancelar: vivas, motivo: "precio_extremo_sin_margen" };
+  }
 
   // Que lados TOCA cotizar. Se salta el lado del que ya se es largo: pedir mas seria doblar sobre el
   // que cae. Con inventario equilibrado (lo normal) se piden los dos.

@@ -206,6 +206,61 @@ describe("el libro fusionado de los dos tokens", () => {
   });
 });
 
+describe("dos lados o ninguno, tambien cuando el exchange rechaza", () => {
+  it("si el exchange rechaza UN lado, retira el otro en vez de quedarse direccional", async () => {
+    // Un rechazo —tamano bajo el minimo, un 429, una carrera del libro— dejaba la primera orden VIVA
+    // con dinero real: el estado de un solo lado que costo $41,41. Y no se arregla solo: si el rechazo
+    // es permanente, la pasada siguiente falla igual.
+    const vivas: Array<{ id: string; outcome: "UP" | "DOWN"; side: "BUY"; price: number; size: number }> = [];
+    const canceladas: string[] = [];
+    const engine = {
+      ordenesVivas: vi.fn(async () => [...vivas]),
+      // La de UP entra; la de DOWN la rechaza el exchange.
+      colocar: vi.fn(async (_m: MarketInfo, o: { outcome: "UP" | "DOWN"; price: number; size: number }) => {
+        if (o.outcome === "DOWN") {
+          return undefined;
+        }
+        vivas.push({ id: "u1", outcome: "UP", side: "BUY", price: o.price, size: o.size });
+        return "u1";
+      }),
+      cancelar: vi.fn(async (ids: string[]) => {
+        canceladas.push(...ids);
+        for (const id of ids) {
+          const i = vivas.findIndex((v) => v.id === id);
+          if (i >= 0) vivas.splice(i, 1);
+        }
+        return ids.length;
+      }),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC")], AHORA);
+    expect(canceladas).toEqual(["u1"]);
+    expect(vivas).toHaveLength(0);
+    // Y el resumen no puede presumir de una orden que ya se retiro.
+    expect(r.colocadas).toBe(0);
+    expect(r.comprometidoUsd).toBeCloseTo(0, 6);
+  });
+
+  it("un lado intencionado por inventario NO se retira", async () => {
+    // Con inventario desequilibrado se cotiza un lado a proposito para COMPLETAR el par. Eso es lo
+    // correcto y no debe confundirse con quedarse direccional por un rechazo.
+    const engine = new SimulationMakerEngine();
+    const m = market("BTC");
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, minMsEntreRecolocaciones: 0 },
+    );
+    callar();
+    await loop.runOnce([m], AHORA);
+    const vivas = await engine.ordenesVivas(m);
+    expect(vivas.map((o) => o.outcome).sort()).toEqual(["DOWN", "UP"]);
+  });
+});
+
 describe("el tope tiene que acotar el GASTO, no solo lo comprometido", () => {
   /** Motor que llena TODO lo que se coloca: el peor caso, y el que de verdad ocurrio. */
   function motorQueLlena() {
