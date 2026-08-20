@@ -87,3 +87,38 @@ describe("cada ventana es un mercado nuevo", () => {
     expect(segunda?.ratePerDay).toBe(10000);
   });
 });
+
+describe("un vacio no puede durar lo mismo que un acierto", () => {
+  it("reintenta el vacio en 30 s, no en 10 minutos", async () => {
+    // Con el mismo TTL para los dos, una sola lectura vacia —y el endpoint tarda en dar de alta cada
+    // ventana nueva, asi que pasa de continuo— dejaba al maker mudo diez minutos en un mercado que
+    // reparte $10.000/dia. Medido: 24 pasadas seguidas sin cotizar con el endpoint sano.
+    const respuestas = [
+      { data: [] },
+      { data: [{ min_size: 50, max_spread: 1.5, rewards_config: [{ rate_per_day: 10000 }] }] },
+    ];
+    let n = 0;
+    const fetchImpl = vi.fn(async () => ({ json: async () => respuestas[Math.min(n++, 1)] })) as never;
+    const reader = new RewardParamsReader("https://clob", fetchImpl);
+
+    expect(await reader.paraMercado("0x1", "btc-updown-5m-1")).toBeUndefined();
+    // Inmediatamente despues sale de cache: no se vuelve a preguntar.
+    expect(await reader.paraMercado("0x1", "btc-updown-5m-2")).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Pasados 31 s el vacio caduca y se reintenta.
+    vi.setSystemTime(Date.now() + 31_000);
+    expect(await reader.paraMercado("0x1", "btc-updown-5m-3")).toEqual({
+      minSize: 50,
+      maxSpreadCents: 1.5,
+      ratePerDay: 10000,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    // Y el ACIERTO si aguanta: a los 5 minutos sigue sirviendo de cache.
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    expect(await reader.paraMercado("0x1", "btc-updown-5m-4")).toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+});

@@ -17,7 +17,20 @@ export interface RecompensaMercado {
   ratePerDay: number;
 }
 
-const TTL_MS = 10 * 60_000;
+/**
+ * Un ACIERTO dura mucho: la configuracion de una familia no cambia entre ventanas.
+ */
+const TTL_ACIERTO_MS = 10 * 60_000;
+
+/**
+ * Un VACIO dura poco, y esa asimetria no es un detalle.
+ *
+ * Con el mismo TTL para los dos, una sola lectura vacia —cosa que pasa de continuo, porque el endpoint
+ * tarda en dar de alta cada ventana nueva— dejaba al maker mudo DIEZ MINUTOS en un mercado que reparte
+ * $10.000/dia. Medido en la sonda de simulacion: 24 pasadas seguidas diciendo
+ * `sin_programa_de_recompensas` mientras el endpoint respondia con normalidad.
+ */
+const TTL_VACIO_MS = 30_000;
 
 interface Entrada {
   valor: RecompensaMercado | undefined;
@@ -52,7 +65,8 @@ export class RewardParamsReader {
     // `btc-5m-twap-60`—, asi que una lectura buena vale para las siguientes.
     const familia = familiaDeSlug(slug) ?? conditionId;
     const cacheado = this.cache.get(familia);
-    if (cacheado && Date.now() - cacheado.leidoEnMs < TTL_MS) {
+    const ttl = cacheado?.valor ? TTL_ACIERTO_MS : TTL_VACIO_MS;
+    if (cacheado && Date.now() - cacheado.leidoEnMs < ttl) {
       return cacheado.valor;
     }
     let valor: RecompensaMercado | undefined;

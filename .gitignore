@@ -7,3 +7,9 @@ data/
 .mcp.json
 npm-debug.log*
 ui-server.log
+
+# Capturas y volcados de trabajo: no forman parte del proyecto
+_trades*.json
+*.png
+trades_temp.txt
+pnl_calc.py
