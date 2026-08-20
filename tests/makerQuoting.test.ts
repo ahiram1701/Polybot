@@ -139,6 +139,44 @@ describe("plan de ordenes: SIEMPRE los dos lados", () => {
   });
 });
 
+describe("el tope cuenta tambien el lado que se CONSERVA", () => {
+  it("al recolocar un lado, no se pasa del tope sumando el que se queda", () => {
+    // Caso observado en produccion el 2026-08-20, no inventado: `+1 -1 coloca $15,00` sobre un mercado
+    // que tenia $19,60 vivos. El lado conservado valia $5,40 y el nuevo costaba $15,00 -> **$20,40 con
+    // el tope en $20**. La comprobacion medía solo lo que se coloca contra el tope entero e ignoraba lo
+    // que se queda puesto. El exceso no esta acotado: depende de lo que valga el lado conservado.
+    const params = { minSize: 20, maxSpreadCents: 4.5 };
+    // El medio se movio a 0,24; la compra de UP a 0,27 sigue dentro de banda (3c de 4,5c) y vale $5,40.
+    const vivas: OrdenViva[] = [{ id: "u", outcome: "UP", side: "BUY", price: 0.27, size: 20 }];
+    const plan = planificarDosLados({
+      mid: 0.24,
+      tickSize: 0.01,
+      capitalDisponibleUsd: 20,
+      params,
+      vivas,
+    });
+    const conservado = vivas
+      .filter((o) => !plan.cancelar.includes(o))
+      .reduce((s, o) => s + o.price * o.size, 0);
+    const colocado = plan.colocar.reduce((s, o) => s + o.price * o.size, 0);
+    expect(conservado + colocado).toBeLessThanOrEqual(20);
+  });
+
+  it("con tope de sobra si recoloca el lado que falta", () => {
+    // La correccion no puede dejar mudo al maker cuando el dinero SI da.
+    const params = { minSize: 20, maxSpreadCents: 4.5 };
+    const vivas: OrdenViva[] = [{ id: "u", outcome: "UP", side: "BUY", price: 0.27, size: 20 }];
+    const plan = planificarDosLados({
+      mid: 0.24,
+      tickSize: 0.01,
+      capitalDisponibleUsd: 100,
+      params,
+      vivas,
+    });
+    expect(plan.colocar.map((o) => o.outcome)).toEqual(["DOWN"]);
+  });
+});
+
 describe("guarda de inventario contra la seleccion adversa", () => {
   const base = { mid: 0.5, tickSize: 0.01, capitalDisponibleUsd: 60, params: PARAMS };
 

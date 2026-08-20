@@ -225,10 +225,15 @@ export function planificarDosLados(args: {
     return { colocar: [], cancelar };
   }
 
-  // El coste se mide sobre lo que hay que COLOCAR, no sobre el par entero: el capital de una orden que
-  // ya esta en el libro ya lo descontó el llamante. Medirlo sobre los dos lados cancelaba la orden
-  // buena que quedaba y dejaba el mercado sin nada.
-  const costeUsd = faltan.reduce((suma, lado) => suma + precios[lado] * params.minSize, 0);
+  // El coste es lo que se COLOCA mas lo que se CONSERVA, medido contra el presupuesto de este mercado.
+  //
+  // El llamante ya le devolvio a este mercado su propio dinero comprometido —puede cancelar y
+  // reutilizarlo—, asi que el tope de aqui cubre las dos cosas. Contar solo lo que se coloca dejaba un
+  // hueco silencioso: al recolocar UN lado, el que se queda no entraba en la cuenta. Observado en
+  // produccion, no en un test — un lado conservado de $5,40 mas uno nuevo de $15,00 dieron **$20,40
+  // con el tope en $20**. El exceso no esta acotado: depende de lo que valga el lado conservado.
+  const valorConservado = conservar.reduce((suma, o) => suma + o.price * o.size, 0);
+  const costeUsd = faltan.reduce((suma, lado) => suma + precios[lado] * params.minSize, 0) + valorConservado;
   if (costeUsd > capitalDisponibleUsd) {
     return {
       colocar: [],
