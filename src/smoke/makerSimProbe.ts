@@ -8,14 +8,20 @@
  * No toca la red mas que para LEER libros y parametros de recompensa: el motor es
  * `SimulationMakerEngine`, asi que no hay ordenes reales ni dinero en juego.
  *
- * Uso: `npx tsx src/smoke/makerSimProbe.ts [pasadas] [capitalUsd]`
+ * Uso: `npx tsx src/smoke/makerSimProbe.ts [pasadas] [capitalUsd] [fuente]`
+ *
+ * `fuente` es `recompensas` (por defecto: busca en TODO Polymarket lo que mejor paga y cabe en el
+ * capital) o `cripto5m` (BTC/ETH/DOGE, lo que se hacia antes).
  */
 import { loadConfig } from "../config.js";
 import { SimulationMakerEngine } from "../makerEngine.js";
 import { MakerLoop } from "../makerLoop.js";
 import { MarketWatcher } from "../marketWatcher.js";
 import { OrderbookService } from "../orderbookService.js";
+import { RewardMarketScanner } from "../rewardMarketScanner.js";
 import { RewardParamsReader } from "../rewardParams.js";
+import type { RecompensaMercado } from "../rewardParams.js";
+import type { MercadoMaker } from "../makerMarket.js";
 import { secondsToEnd } from "../time.js";
 import type { MarketInfo, MarketSymbol } from "../types.js";
 
@@ -23,19 +29,41 @@ const MERCADOS: MarketSymbol[] = ["BTC", "ETH", "DOGE"];
 
 async function main(): Promise<void> {
   const pasadas = Number(process.argv[2] ?? 40);
-  const capitalUsd = Number(process.argv[3] ?? 150);
+  const capitalUsd = Number(process.argv[3] ?? 20);
+  const fuente = (process.argv[4] ?? "recompensas") as "recompensas" | "cripto5m";
   const { config } = loadConfig(["--mode", "sim"]);
 
   const watcher = new MarketWatcher(config.gammaHost);
   const orderbook = OrderbookService.create(config.clobHost);
-  const rewards = new RewardParamsReader(config.clobHost);
+  const scanner = new RewardMarketScanner(config.clobHost);
+  // Con la fuente `recompensas` los parametros ya vienen del escaner; con `cripto5m` se leen por mercado.
+  const paramsPorSlug = new Map<string, RecompensaMercado>();
+  const rewards =
+    fuente === "recompensas"
+      ? { paraMercado: async (_id: string, slug?: string) => (slug ? paramsPorSlug.get(slug) : undefined) }
+      : new RewardParamsReader(config.clobHost);
   const engine = new SimulationMakerEngine();
   const loop = new MakerLoop(
     { orderbook, rewards, engine },
     { capitalUsd, retirarSegundosAntesDelCierre: 30, minMsEntreRecolocaciones: 15_000 },
   );
 
-  console.log(`Sonda del maker en SIM — ${pasadas} pasadas, capital $${capitalUsd}\n`);
+  console.log(`Sonda del maker en SIM — ${pasadas} pasadas, capital $${capitalUsd}, fuente ${fuente}\n`);
+  if (fuente === "recompensas") {
+    const candidatos = await scanner.mejores(capitalUsd);
+    console.log(`  el escaner encontro ${candidatos.length} mercados que caben en $${capitalUsd}:`);
+    for (const c of candidatos.slice(0, 10)) {
+      console.log(
+        `    $${c.params.ratePerDay.toFixed(2)}/dia  banda ${c.params.maxSpreadCents}c  ` +
+          `entrada $${c.costeEntradaUsd}  ${c.mercado.slug.slice(0, 46)}`,
+      );
+    }
+    if (candidatos.length === 0) {
+      console.log("    ninguno: el capital no llega ni al mercado mas barato");
+      return;
+    }
+    console.log("");
+  }
   let peorComprometido = 0;
   let peorGastado = 0;
   let pasadasUnLado = 0;
@@ -43,9 +71,18 @@ async function main(): Promise<void> {
 
   for (let i = 1; i <= pasadas; i += 1) {
     const nowMs = Date.now();
-    let markets: MarketInfo[] = [];
+    let markets: MercadoMaker[] = [];
     try {
-      markets = await watcher.getCurrentMarkets(MERCADOS, nowMs);
+      if (fuente === "recompensas") {
+        const candidatos = await scanner.mejores(capitalUsd);
+        paramsPorSlug.clear();
+        for (const c of candidatos) {
+          paramsPorSlug.set(c.mercado.slug, c.params);
+        }
+        markets = candidatos.map((c) => c.mercado);
+      } else {
+        markets = await watcher.getCurrentMarkets(MERCADOS, nowMs);
+      }
     } catch (error) {
       console.log(`  pasada ${i}: no se pudieron leer mercados (${String(error)})`);
       await new Promise((r) => setTimeout(r, 3000));
@@ -73,7 +110,7 @@ async function main(): Promise<void> {
         pasadasUnLado += 1;
       }
       porMercado.push(
-        `${market.asset}[${secondsToEnd(market.endMs, nowMs)}s] ${lados}` +
+        `${market.slug.slice(0, 28)}[${secondsToEnd(market.endMs, nowMs)}s] ${lados}` +
           `${desequilibrado ? "  <-- UN SOLO LADO" : ""}` +
           `${inv && (inv.UP || inv.DOWN) ? `  inv UP:${inv.UP} DOWN:${inv.DOWN}` : ""}`,
       );
@@ -109,7 +146,11 @@ async function main(): Promise<void> {
   console.log(`  maximo comprometido         : $${peorComprometido.toFixed(2)}`);
   console.log(`  maximo gastado en llenados  : $${peorGastado.toFixed(2)}`);
   console.log(`  suma peor caso vs tope      : $${tope.toFixed(2)} / $${capitalUsd}  ${tope <= capitalUsd ? "OK" : "SE PASA"}`);
-  await loop.retirarTodo(await watcher.getCurrentMarkets(MERCADOS, Date.now()));
+  await loop.retirarTodo(
+    fuente === "recompensas"
+      ? (await scanner.mejores(capitalUsd)).map((c) => c.mercado)
+      : await watcher.getCurrentMarkets(MERCADOS, Date.now()),
+  );
 }
 
 if (process.argv[1]?.includes("makerSimProbe")) {

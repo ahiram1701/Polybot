@@ -147,7 +147,7 @@ export interface RunnerLike {
     colocadas: number;
     canceladas: number;
     comprometidoUsd: number;
-    mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+    mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
   } | undefined;
   getBankroll?(): {
     usd: number;
@@ -1636,6 +1636,7 @@ export class BotController {
       makerMode: config.makerMode ?? settings.makerMode,
       makerCapitalUsd: config.makerCapitalUsd ?? settings.makerCapitalUsd,
       makerRetireSecondsBeforeClose: config.makerRetireSecondsBeforeClose ?? settings.makerRetireSecondsBeforeClose,
+      makerMarketSource: config.makerMarketSource ?? settings.makerMarketSource,
       arbMode: config.arbMode ?? settings.arbMode,
       directionalMode: config.directionalMode ?? settings.directionalMode,
       arb15mEnabled: config.arb15mEnabled ?? settings.arb15mEnabled,

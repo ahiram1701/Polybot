@@ -124,6 +124,15 @@ export interface BotConfig {
   makerCapitalUsd?: number;
   /** Segundos antes del cierre en que se retira todo: una orden llena ahi resuelve sin margen. */
   makerRetireSecondsBeforeClose?: number;
+  /**
+   * De donde salen los mercados que cotiza el maker.
+   *
+   * `recompensas` busca en TODO Polymarket los que mejor pagan por dolar y caben en el capital;
+   * `cripto5m` se queda en BTC/ETH/DOGE de 5 minutos, que es lo que hacia antes. Medido, cripto 5m es
+   * de los peores sitios para un capital pequeno: entrada de $50 en vez de $20 y banda de 1,5 centavos
+   * en vez de 4,5 —una orden a un tick del medio puntua el 11% del maximo en vez del 60%.
+   */
+  makerMarketSource?: "cripto5m" | "recompensas";
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;

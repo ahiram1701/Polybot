@@ -233,17 +233,52 @@ Es el cambio de modelo de negocio del 2026-08-19, y la primera estrategia del pr
 acertar la dirección**. Polymarket paga por dejar órdenes límite en reposo cerca del punto medio, se
 llenen o no.
 
-Medido contra el exchange, no contra la documentación:
+### Cuánto paga, medido de verdad
 
-| Mercado | Reparte | Por ventana de 5 min |
+**$2,7795 por 40,2 minutos** cotizando, o sea **$0,345 por ventana de 5 minutos**. Es la única cifra
+real que existe, y sirve de ancla: tres modelos teóricos dieron $3.926, $2.000-6.000 y $700-1.800 al
+día, todos **10-30 veces altos**. Si un cálculo de recompensa no cuadra con ese ancla, el cálculo está
+mal.
+
+Las recompensas se abonan **~00:45 UTC** —no a las 00:00 que dice la documentación oficial— como evento
+`MAKER_REBATE` en `data-api.polymarket.com/activity`. No hay endpoint público de recompensas: los de
+`clob.polymarket.com/rewards/user*` piden API key.
+
+### Dónde cotizar: la entrada cuesta `min_size` dólares
+
+Un par de dos lados cuesta `precio(UP) + precio(DOWN)` = **$1 por participación**, siempre. Da igual que
+el mercado esté a 0,05 o a 0,50: **no existe una banda de precio barata**. Así que la cotización mínima
+que califica cuesta `rewards_min_size` dólares, y ese número decide en qué mercados se puede jugar.
+
+Sobre el registro completo (16.000 mercados con programa activo):
+
+| `min_size` | mercados | entrada |
 |---|---|---|
-| BTC 5m | $10.000/día | $34,72 |
-| ETH 5m | $1.666/día | $5,79 |
-| DOGE 5m | $833/día | $2,89 |
+| **20** | 12.391 | **~$20** ← el suelo real |
+| 30 | 806 | ~$30 |
+| 50 | 1.329 | ~$50 ← BTC/ETH/DOGE de 5 min |
+| 100-1000 | 332 | ~$100-1000 |
 
-`min_size: 50` participaciones, banda de `±1,5` centavos. **Los lee del mercado, no del código**: el
-objeto del mercado publica `max_spread: 4.5` y el endpoint de recompensas `1.5` *para el mismo
-mercado*, y esos tres centavos deciden si una orden cobra o no.
+Los 74 mercados con `min_size: 0` traen `max_spread: 0`: con banda cero **ninguna** orden puntúa, así
+que parecerían gratis y no pagan un céntimo. `rewardMarketScanner.ts` los descarta.
+
+**Los mercados de cripto de 5 minutos son de los peores sitios para un capital pequeño**, y se usaban
+solo porque eran los que el bot ya seguía:
+
+| | cripto 5m | lo mejor que hay |
+|---|---|---|
+| entrada | ~$50 | **~$20** |
+| banda que puntúa | 1,5c | **4,5c** |
+| duración | 5 minutos | de un día a meses |
+
+La banda es lo que más pesa: con tick de 1 centavo, una orden a un tick del medio puntúa
+`((1,5−1)/1,5)² = 11%` del máximo con banda estrecha, y `((4,5−1)/4,5)² = 60%` con la ancha. **Cinco
+veces más por exactamente la misma orden.** Y la duración decide el riesgo: en una ventana de 5 minutos
+el precio se desploma a 0 o 1 cada cinco minutos.
+
+`min_size` y la banda **se leen del mercado, no del código**: el objeto del mercado publica
+`max_spread: 4.5` y el endpoint de recompensas `1.5` *para el mismo mercado*, y esos tres centavos
+deciden si una orden cobra o no.
 
 ### Tres piezas, separadas a propósito
 
@@ -251,7 +286,9 @@ mercado*, y esos tres centavos deciden si una orden cobra o no.
 |---|---|---|
 | `makerQuoting.ts` | Decide qué órdenes debería haber | **Puro**: la política entera se prueba sin red ni claves |
 | `makerEngine.ts` | Coloca, lista y cancela | Dos implementaciones, sim y live |
-| `rewardParams.ts` | Lee `min_size`, banda y tasa | Cacheado 10 min; ante fallo conserva lo último bueno |
+| `rewardParams.ts` | Lee `min_size`, banda y tasa | Acierto cacheado 10 min, **vacío solo 30 s** |
+| `rewardMarketScanner.ts` | Busca en TODO Polymarket lo que cabe en el capital | Criba en dos etapas: registro primero, libros después |
+| `makerMarket.ts` | Lo mínimo que el maker necesita de un mercado | Desacopla de `MarketInfo`, que es un tipo de cripto |
 | `makerLoop.ts` | Ata las tres y reparte el capital | Ordena por rendimiento **por dólar**, no por tamaño del bote |
 
 ### Decisiones que no son obvias
@@ -265,6 +302,16 @@ mercado*, y esos tres centavos deciden si una orden cobra o no.
   que un centavo de más cuesta mucho más que proporcionalmente.
 - **El tamaño vivo descuenta lo ya casado.** Una orden medio llenada puede haber caído por debajo del
   mínimo y dejado de puntuar sin que nadie lo note.
+- **Los dos lados o ninguno.** Cotizar un solo lado no es hacer de maker: una compra en reposo solo se
+  llena cuando el precio CAE hasta ella, así que te llenas del lado que se hunde. Además la fórmula
+  oficial lo castiga —un tercio dentro de [0,10-0,90] y **cero** fuera—. Con los dos lados el par
+  cuesta poco menos de $1 y redime exactamente $1 gane quien gane.
+- **El tope cuenta el GASTO, no solo lo comprometido.** Una orden que se llena deja de estar viva; si
+  el presupuesto solo mirase lo comprometido, se liberaría y la pasada siguiente colocaría otra.
+- **Guarda de inventario.** Si ya se es largo de un lado se deja de pedir ese lado y solo el contrario:
+  eso COMPLETA el par en vez de doblar sobre el que cae.
+- **El libro se lee de los DOS tokens.** Una venta de UP vive en el libro de DOWN como compra (comprar
+  DOWN a `p` = vender UP a `1−p`). Leyendo uno solo, el lado ask sale vacío.
 - **El capital es compartido entre mercados.** Una orden de compra inmoviliza `precio × tamaño` hasta
   que se llena o se cancela; sin un tope común, tres mercados comprometerían el mismo dinero tres
   veces.

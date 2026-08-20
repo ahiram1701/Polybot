@@ -201,8 +201,8 @@ describe("el libro fusionado de los dos tokens", () => {
     );
     callar();
     const r = await loop.runOnce([m], AHORA);
-    // Sin competencia ajena, la cuota es total: el esperado es el bote entero de la ventana.
-    expect(r.mercados[0]!.esperadoUsd).toBeCloseTo(10000 / 288, 4);
+    // Sin competencia ajena, la cuota es total: el esperado es el bote entero del dia.
+    expect(r.mercados[0]!.esperadoUsdDia).toBeCloseTo(10000, 4);
   });
 });
 

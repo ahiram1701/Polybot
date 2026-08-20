@@ -227,6 +227,7 @@ const emptySettings: UiSettings = {
   makerMode: "sim",
   makerCapitalUsd: 40,
   makerRetireSecondsBeforeClose: 30,
+  makerMarketSource: "recompensas",
   arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,

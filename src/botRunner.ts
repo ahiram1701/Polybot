@@ -57,7 +57,11 @@ import { LiveMakerEngine, SimulationMakerEngine } from "./makerEngine.js";
 import type { MakerEngine } from "./makerEngine.js";
 import { MakerLoop } from "./makerLoop.js";
 import type { ResumenPasada } from "./makerLoop.js";
+import { RewardMarketScanner } from "./rewardMarketScanner.js";
+import type { CandidatoRecompensa } from "./rewardMarketScanner.js";
 import { RewardParamsReader } from "./rewardParams.js";
+import type { RecompensaMercado } from "./rewardParams.js";
+import type { MercadoMaker } from "./makerMarket.js";
 import { resolveTradeFromTick } from "./tradeResolution.js";
 import type { SkipReason } from "./ui/shared.js";
 import type {
@@ -189,6 +193,8 @@ interface BotDependencies {
   executorByMode?: Partial<Record<Mode, TradeExecutor>>;
   /** Lector de parametros de recompensa. Ausente = el maker no corre. */
   rewardParams?: Pick<RewardParamsReader, "paraMercado">;
+  /** Busca en todo Polymarket los mercados de recompensa que caben en el capital. */
+  rewardScanner?: Pick<RewardMarketScanner, "mejores">;
   makerEngineByMode?: Partial<Record<Mode, MakerEngine>>;
   reconcilerByMode?: Partial<Record<Mode, TradeReconciler>>;
   orderbook: OrderbookService;
@@ -275,6 +281,16 @@ export class BotRunner {
   private makerLoopCache?: MakerLoop;
   /** Ultimos mercados vistos, para poder retirar ordenes al parar sin volver a consultarlos. */
   private ultimosMercados: MarketInfo[] = [];
+
+  /**
+   * Mercados que cotiza el maker cuando la fuente es `recompensas`, y sus parametros.
+   *
+   * Se guardan juntos porque el escaner YA leyo los parametros al cribar: volver a pedirlos por mercado
+   * serian 25 peticiones por pasada para releer lo que acabamos de tener en la mano.
+   */
+  private mercadosMaker: MercadoMaker[] = [];
+
+  private readonly paramsMaker = new Map<string, RecompensaMercado>();
   private ultimaPasadaMaker?: ResumenPasada;
 
   /**
@@ -327,6 +343,7 @@ export class BotRunner {
       // Los dos disponibles a la vez: con arbitraje en live y direccional en sim hacen falta ambos en la
       // misma iteracion. El motor live se construye siempre, pero solo lo usa quien tenga modo live.
       rewardParams: new RewardParamsReader(config.clobHost),
+      rewardScanner: new RewardMarketScanner(config.clobHost),
       makerEngineByMode: { sim: new SimulationMakerEngine(), live: new LiveMakerEngine(config) },
       executorByMode: {
         sim: new SimulationExecutionEngine(config),
@@ -469,7 +486,10 @@ export class BotRunner {
     // un caso raro: el watchdog reinicia el proceso a diario y la maquina se apaga sin avisar. `stop()`
     // es sincrono por contrato, asi que la retirada se lanza y se deja correr — y si falla, se dice.
     const loop = this.makerLoopCache;
-    const mercados = this.ultimosMercados;
+    // Los mercados que hay que retirar son los que el maker COTIZO, que con la fuente `recompensas` no
+    // son los de cripto que sigue el bot. Usar `ultimosMercados` dejaria ordenes reales vivas en
+    // mercados que nadie volveria a mirar.
+    const mercados: MercadoMaker[] = this.mercadosMaker.length > 0 ? this.mercadosMaker : this.ultimosMercados;
     if (loop && mercados.length > 0) {
       void loop.retirarTodo(mercados).catch((error) => {
         logger.error("No se pudieron retirar las ordenes maker al parar. PUEDE HABER ORDENES VIVAS.", {
@@ -681,13 +701,43 @@ export class BotRunner {
   }
 
   /** Una pasada del maker. Nunca tumba la iteracion: perder una pasada cuesta una ventana, no el bot. */
+  /**
+   * De donde salen los mercados del maker.
+   *
+   * `cripto5m` usa los que el bot ya sigue. `recompensas` —el que vale para poco capital— busca en todo
+   * Polymarket: entrada desde $20 en vez de $50 y banda de 4,5 centavos en vez de 1,5, que multiplica
+   * por cinco lo que puntua la misma orden. El escaner cachea, asi que llamarlo cada pasada es barato.
+   */
+  private async mercadosParaMaker(markets: MarketInfo[]): Promise<MercadoMaker[]> {
+    if ((this.config.makerMarketSource ?? "recompensas") === "cripto5m" || !this.deps.rewardScanner) {
+      return markets;
+    }
+    try {
+      const candidatos: CandidatoRecompensa[] = await this.deps.rewardScanner.mejores(
+        this.config.makerCapitalUsd ?? 40,
+      );
+      this.paramsMaker.clear();
+      for (const c of candidatos) {
+        this.paramsMaker.set(c.mercado.slug, c.params);
+      }
+      this.mercadosMaker = candidatos.map((c) => c.mercado);
+    } catch (error) {
+      logger.warn("No se pudieron buscar mercados de recompensa.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Si el escaner falla se conserva la lista anterior: quedarse sin mercados retiraria las ordenes
+    // vivas por un fallo de red, que es justo lo contrario de lo que conviene.
+    return this.mercadosMaker;
+  }
+
   private async runMaker(markets: MarketInfo[], nowMs: number): Promise<void> {
     const loop = this.makerLoop();
     if (!loop) {
       return;
     }
     try {
-      this.ultimaPasadaMaker = await loop.runOnce(markets, nowMs);
+      this.ultimaPasadaMaker = await loop.runOnce(await this.mercadosParaMaker(markets), nowMs);
     } catch (error) {
       logger.warn("Pasada del maker fallida.", {
         error: error instanceof Error ? error.message : String(error),
@@ -706,7 +756,12 @@ export class BotRunner {
     this.makerLoopCache ??= new MakerLoop(
       {
         orderbook: this.deps.orderbook,
-        rewards: this.deps.rewardParams,
+        // Con la fuente `recompensas` los parametros ya vienen del escaner: pedirlos otra vez por
+        // mercado serian 25 peticiones por pasada para releer lo que ya tenemos.
+        rewards:
+          (this.config.makerMarketSource ?? "recompensas") === "recompensas"
+            ? { paraMercado: async (_id: string, slug?: string) => (slug ? this.paramsMaker.get(slug) : undefined) }
+            : this.deps.rewardParams,
         engine:
           this.modeFor("maker") === "live"
             ? (this.deps.makerEngineByMode?.live ?? new LiveMakerEngine(this.config))

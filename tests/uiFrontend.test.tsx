@@ -885,6 +885,7 @@ function settings(): UiSettings {
   makerMode: "sim",
   makerCapitalUsd: 40,
   makerRetireSecondsBeforeClose: 30,
+  makerMarketSource: "recompensas" as const,
   arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,

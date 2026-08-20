@@ -236,8 +236,19 @@ Es lo único que Polybot tiene ahora encendido, y funciona al revés que todo lo
 acertar la dirección**. Polymarket paga por dejar órdenes límite en reposo cerca del punto medio, **se
 llenen o no**.
 
-Los mercados que sigue Polybot reparten **$10.000 al día** (BTC 5m), $1.666 (ETH) y $833 (DOGE). Cada
-ventana de 5 minutos se lleva su parte: $34,72, $5,79 y $2,89.
+### Cuánto se lleva y cuánto hace falta
+
+Medido de verdad, no estimado: **$2,7795 por 40 minutos** cotizando, o sea unos **$0,35 por ventana de
+5 minutos**. Se abonan alrededor de las **00:45 UTC** de cada día.
+
+Lo que decide dónde puede jugar Polybot es el **tamaño mínimo** que el mercado exige. Un par de dos
+lados cuesta **$1 por participación** siempre —da igual que el mercado esté a 0,05 o a 0,50—, así que:
+
+> **La entrada mínima cuesta tantos dólares como participaciones pida el mercado.**
+
+Un mercado con `min_size 20` necesita **$20**; uno con 50, **$50**. No hay mercados más baratos: el
+suelo de todo Polymarket son $20. Con menos de eso el maker no puede cotizar en ningún sitio, y lo dirá
+con el motivo `capital_insuficiente_necesita_X`.
 
 ### Los ajustes
 
@@ -247,15 +258,24 @@ En **Ajustes → «Maker — cobrar por dar liquidez»**:
 |---|---|
 | Interruptor | Enciende y apaga el maker |
 | Modo | `sim` (papel) o `live` (dinero real). **No hereda el modo de arranque**, a diferencia de las otras estrategias |
-| Capital máx inmovilizado | Tope de dólares comprometidos **a la vez, en todos los mercados juntos** |
+| Capital máx inmovilizado | Tope de dólares en riesgo **a la vez**: lo comprometido en órdenes MÁS lo ya gastado en llenados, en todos los mercados juntos |
 | Retirar N segundos antes del cierre | Margen para no quedarte con una posición que resuelve sin darte tiempo |
+| Fuente de mercados | `recompensas` busca en **todo Polymarket** lo que mejor paga y cabe en tu capital; `cripto5m` se queda en BTC/ETH/DOGE |
+
+**Deja la fuente en `recompensas`.** Los mercados de cripto de 5 minutos son de los peores sitios para
+poco capital: piden $50 de entrada en vez de $20, y su banda que puntúa es de 1,5 céntimos en vez de
+4,5 —lo que significa que la misma orden cobra **cinco veces menos**—. Además resuelven cada cinco
+minutos, que es donde el precio se desploma a 0 o 1 y te llena del lado malo.
 
 El tamaño mínimo y la banda que puntúa **los lee del propio mercado**, porque Polymarket los cambia.
 
 ### Qué esperar al mirarlo
 
-Una colocación y una retirada por ventana. Entre medias la orden se queda quieta a propósito:
-recolocarla perdería el turno en la cola, y el reparto premia el **tiempo** en reposo.
+**Siempre dos órdenes por mercado, una de cada lado.** Si ves una sola, algo va mal: media cotización
+no es hacer de maker, es una apuesta direccional, y así se perdieron $41 en 40 minutos el 19 de agosto.
+
+Entre medias las órdenes se quedan quietas a propósito: el reparto premia el **tiempo** en reposo, y en
+un mercado de banda ancha la orden aguanta dentro de la banda durante horas.
 
 En el estado (y en el chip de la web) verás `makerSummary` con lo que decidió en la última pasada y
 **por qué descartó cada mercado**. Los motivos habituales:

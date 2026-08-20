@@ -203,7 +203,7 @@ describe("no recolocar por un tick de nada", () => {
 });
 
 describe("a que mercados dedicar un capital escaso", () => {
-  const base: Omit<CandidatoMercado, "slug" | "poolVentanaUsd" | "qRivalBid" | "qRivalAsk"> = {
+  const base: Omit<CandidatoMercado, "slug" | "poolDiaUsd" | "qRivalBid" | "qRivalAsk"> = {
     params: PARAMS,
     mid: 0.5,
     tickSize: 0.01,
@@ -215,34 +215,34 @@ describe("a que mercados dedicar un capital escaso", () => {
     // bote entero. Con el reparto lineal de antes ganaba BTC — ese sesgo es justo lo que se corrige.
     const elegidos = elegirMercados(
       [
-        { ...base, slug: "btc", poolVentanaUsd: 34.72, qRivalBid: 400, qRivalAsk: 400 },
-        { ...base, slug: "doge", poolVentanaUsd: 2.89, qRivalBid: 0, qRivalAsk: 0 },
+        { ...base, slug: "btc", poolDiaUsd: 34.72, qRivalBid: 400, qRivalAsk: 400 },
+        { ...base, slug: "doge", poolDiaUsd: 2.89, qRivalBid: 0, qRivalAsk: 0 },
       ],
       1000,
     );
     expect(elegidos.map((e) => e.slug)).toEqual(["doge", "btc"]);
-    expect(elegidos[0]!.esperadoUsd).toBeGreaterThan(elegidos[1]!.esperadoUsd);
+    expect(elegidos[0]!.esperadoUsdDia).toBeGreaterThan(elegidos[1]!.esperadoUsdDia);
   });
 
   it("un solo lado rival vale un TERCIO: la formula oficial, no una lineal", () => {
     // Mismo bote y misma puntuacion bruta; el rival de la izquierda cotiza los dos lados y el de la
     // derecha solo uno. Contra el que solo cotiza un lado se captura mas cuota.
     const [dosLados] = elegirMercados(
-      [{ ...base, slug: "a", poolVentanaUsd: 10, qRivalBid: 90, qRivalAsk: 90 }],
+      [{ ...base, slug: "a", poolDiaUsd: 10, qRivalBid: 90, qRivalAsk: 90 }],
       1000,
     );
     const [unLado] = elegirMercados(
-      [{ ...base, slug: "b", poolVentanaUsd: 10, qRivalBid: 90, qRivalAsk: 0 }],
+      [{ ...base, slug: "b", poolDiaUsd: 10, qRivalBid: 90, qRivalAsk: 0 }],
       1000,
     );
-    expect(unLado!.esperadoUsd).toBeGreaterThan(dosLados!.esperadoUsd);
+    expect(unLado!.esperadoUsdDia).toBeGreaterThan(dosLados!.esperadoUsdDia);
   });
 
   it("no compromete el mismo dolar dos veces", () => {
     const tres = ["a", "b", "c"].map((slug) => ({
       ...base,
       slug,
-      poolVentanaUsd: 10,
+      poolDiaUsd: 10,
       qRivalBid: 0,
       qRivalAsk: 0,
     }));
@@ -256,18 +256,18 @@ describe("a que mercados dedicar un capital escaso", () => {
     // UP + DOWN ~= $1 por participacion, y el minimo que puntua son 50. No hay banda barata.
     for (const mid of [0.1, 0.3, 0.5, 0.7, 0.9]) {
       const [e] = elegirMercados(
-        [{ ...base, mid, slug: "x", poolVentanaUsd: 10, qRivalBid: 0, qRivalAsk: 0 }],
+        [{ ...base, mid, slug: "x", poolDiaUsd: 10, qRivalBid: 0, qRivalAsk: 0 }],
         1000,
       );
       expect(e!.costeUsd).toBeGreaterThan(48);
       expect(e!.costeUsd).toBeLessThan(50);
     }
-    expect(elegirMercados([{ ...base, slug: "x", poolVentanaUsd: 10, qRivalBid: 0, qRivalAsk: 0 }], 12)).toEqual([]);
+    expect(elegirMercados([{ ...base, slug: "x", poolDiaUsd: 10, qRivalBid: 0, qRivalAsk: 0 }], 12)).toEqual([]);
   });
 
   it("descarta mercados sin bote: poner ordenes donde no pagan es inmovilizar dinero a cambio de nada", () => {
     expect(
-      elegirMercados([{ ...base, slug: "sin-pool", poolVentanaUsd: 0, qRivalBid: 0, qRivalAsk: 0 }], 1000),
+      elegirMercados([{ ...base, slug: "sin-pool", poolDiaUsd: 0, qRivalBid: 0, qRivalAsk: 0 }], 1000),
     ).toEqual([]);
   });
 });

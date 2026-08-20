@@ -51,6 +51,12 @@ export interface UiSettings {
   makerMode: "heredado" | "sim" | "live";
   makerCapitalUsd: number;
   makerRetireSecondsBeforeClose: number;
+  /**
+   * De donde salen los mercados del maker. `recompensas` busca en todo Polymarket lo que mejor paga y
+   * cabe en el capital; `cripto5m` se queda en BTC/ETH/DOGE, que es de los peores sitios para poco
+   * capital (entrada de $50 y banda de 1,5c, contra $20 y 4,5c de los mejores).
+   */
+  makerMarketSource: "cripto5m" | "recompensas";
   arbMode: "heredado" | "sim" | "live";
   directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;
@@ -183,7 +189,7 @@ export interface UiStatus {
     colocadas: number;
     canceladas: number;
     comprometidoUsd: number;
-    mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+    mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
   };
   bankroll?: {
     usd: number;

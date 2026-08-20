@@ -26,7 +26,8 @@ import type { CandidatoMercado, Inventario, OrdenViva, ParametrosRecompensa } fr
 import type { OrderbookService } from "./orderbookService.js";
 import type { RewardParamsReader } from "./rewardParams.js";
 import { secondsToEnd } from "./time.js";
-import type { MarketInfo, Outcome } from "./types.js";
+import type { MercadoMaker } from "./makerMarket.js";
+import type { Outcome } from "./types.js";
 
 export interface MakerLoopDeps {
   orderbook: Pick<OrderbookService, "getQuote">;
@@ -39,8 +40,6 @@ export interface MakerLoopConfig {
   capitalUsd: number;
   /** Segundos antes del cierre en los que se deja de cotizar y se retira todo. */
   retirarSegundosAntesDelCierre: number;
-  /** Ventanas de 5 min que hay en un dia: el bote diario se prorratea entre ellas. */
-  ventanasPorDia?: number;
   /**
    * Intervalo minimo entre recolocaciones en el mismo mercado.
    *
@@ -60,10 +59,8 @@ export interface ResumenPasada {
   gastadoUsd: number;
   /** Participaciones que se llenaron desde la pasada anterior. Cada una es posicion direccional. */
   llenadas?: number;
-  mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+  mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
 }
-
-const VENTANAS_POR_DIA = 288;
 
 /** 15 s: recorta el ritmo ~10 veces y sigue reaccionando dentro de una ventana de 5 minutos. */
 const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
@@ -108,7 +105,7 @@ export class MakerLoop {
    * pueden llenar en cualquier momento y la posicion resultante resuelve sola. Y no es un caso raro —
    * el watchdog reinicia el proceso a diario y la maquina se apaga sin avisar.
    */
-  async retirarTodo(markets: MarketInfo[]): Promise<number> {
+  async retirarTodo(markets: MercadoMaker[]): Promise<number> {
     let canceladas = 0;
     for (const market of markets) {
       try {
@@ -151,7 +148,7 @@ export class MakerLoop {
    *  - **Total**: la orden DESAPARECE. Seria indistinguible de una cancelacion, y por eso `cancelar()`
    *    borra el rastro de lo que quitamos nosotros: lo que desaparece sin ese borrado, se llenó.
    */
-  private detectarLlenados(market: MarketInfo, vivas: OrdenViva[], resumen: ResumenPasada): void {
+  private detectarLlenados(market: MercadoMaker, vivas: OrdenViva[], resumen: ResumenPasada): void {
     const prefijo = `${market.slug}|`;
     const porId = new Map(vivas.map((o) => [o.id, o.size]));
     const estado = this.estado(market.slug);
@@ -204,7 +201,7 @@ export class MakerLoop {
    * estimador se creia dueño del bote entero.
    */
   private async libroFusionado(
-    market: MarketInfo,
+    market: MercadoMaker,
   ): Promise<{ bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> } | undefined> {
     // Leer los dos libros DUPLICA la exposicion a un timeout, y una excepcion aqui aborta la pasada
     // entera —incluidos los mercados que si respondian—. Un libro que no llega es "no se puede
@@ -263,7 +260,7 @@ export class MakerLoop {
     };
   }
 
-  async runOnce(markets: MarketInfo[], nowMs: number): Promise<ResumenPasada> {
+  async runOnce(markets: MercadoMaker[], nowMs: number): Promise<ResumenPasada> {
     // Los mercados que ya no estan tenian su ventana cerrada: sus posiciones resolvieron y el dinero
     // volvio, asi que su gasto deja de contar contra el tope.
     const vigentes = new Set(markets.map((m) => m.slug));
@@ -280,30 +277,45 @@ export class MakerLoop {
       gastadoUsd: 0,
       mercados: [],
     };
-    const candidatos: Array<CandidatoMercado & { market: MarketInfo; vivas: OrdenViva[] }> = [];
+    const candidatos: Array<CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[] }> = [];
     let comprometidoGlobal = 0;
 
-    for (const market of markets) {
-      const restantes = secondsToEnd(market.endMs, nowMs);
-      const vivas = await this.deps.engine.ordenesVivas(market);
+    // La LECTURA de los mercados va en paralelo; la DECISION, en serie.
+    //
+    // Leer en serie costaba 28 segundos por pasada —tres peticiones por mercado con timeout de 2 s— y
+    // bloqueaba el bucle entero hasta que el watchdog reiniciaba el proceso. Nada de esto se escribe,
+    // asi que paralelizarlo es seguro; lo que si tiene que seguir en orden es repartir el capital,
+    // porque cada mercado consume del mismo presupuesto que el anterior.
+    const leidos = await Promise.all(
+      markets.map(async (market) => {
+        const vivas = await this.deps.engine.ordenesVivas(market);
+        const cerca = secondsToEnd(market.endMs, nowMs) <= this.config.retirarSegundosAntesDelCierre;
+        if (cerca) {
+          return { market, vivas, cerca, params: undefined, libro: undefined };
+        }
+        const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
+        const libro = params ? await this.libroFusionado(market) : undefined;
+        return { market, vivas, cerca, params, libro };
+      }),
+    );
+
+    for (const { market, vivas, cerca, params, libro } of leidos) {
       this.detectarLlenados(market, vivas, resumen);
 
       // Cerca del cierre no se cotiza y se retira lo que haya: una orden llena aqui deja una posicion
       // que resuelve en segundos y no da tiempo a deshacerla.
-      if (restantes <= this.config.retirarSegundosAntesDelCierre) {
+      if (cerca) {
         resumen.canceladas += await this.cancelar(vivas.map((o) => o.id), market.slug);
         resumen.mercados.push({ slug: market.slug, motivo: "cerca_del_cierre" });
         continue;
       }
 
-      const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
       if (!params) {
         resumen.canceladas += await this.cancelar(vivas.map((o) => o.id), market.slug);
         resumen.mercados.push({ slug: market.slug, motivo: "sin_programa_de_recompensas" });
         continue;
       }
 
-      const libro = await this.libroFusionado(market);
       if (!libro) {
         resumen.mercados.push({ slug: market.slug, motivo: "sin_punto_medio" });
         continue;
@@ -316,7 +328,7 @@ export class MakerLoop {
 
       candidatos.push({
         slug: market.slug,
-        poolVentanaUsd: params.ratePerDay / (this.config.ventanasPorDia ?? VENTANAS_POR_DIA),
+        poolDiaUsd: params.ratePerDay,
         qRivalBid,
         qRivalAsk,
         mid,
@@ -342,6 +354,7 @@ export class MakerLoop {
 
     const elegidos = elegirMercados(candidatos, this.config.capitalUsd);
     const elegidosPorSlug = new Set(elegidos.map((e) => e.slug));
+    let sinFinanciar = 0;
 
     for (const candidato of candidatos) {
       const elegido = elegidos.find((e) => e.slug === candidato.slug);
@@ -354,13 +367,17 @@ export class MakerLoop {
         // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
         // manda a mirar donde no es.
         const coste = candidato.params.minSize; // el par cuesta ~$1 por participacion
-        resumen.mercados.push({
-          slug: candidato.slug,
-          motivo:
-            elegidos.length === 0
-              ? `capital_insuficiente_necesita_${coste.toFixed(2)}`
-              : "capital_dedicado_a_otro_mercado",
-        });
+        if (elegidos.length === 0) {
+          resumen.mercados.push({
+            slug: candidato.slug,
+            motivo: `capital_insuficiente_necesita_${coste.toFixed(2)}`,
+          });
+        } else {
+          // Con el escaner mirando 25 mercados y capital para uno, listarlos todos escribia 24 lineas
+          // identicas por pasada. Se cuentan y ya: saber CUAL de los descartados es cual no aporta
+          // nada, y el ruido tapa lo que si importa.
+          sinFinanciar += 1;
+        }
         continue;
       }
 
@@ -404,8 +421,12 @@ export class MakerLoop {
       resumen.mercados.push({
         slug: candidato.slug,
         motivo: plan.motivo,
-        esperadoUsd: elegido?.esperadoUsd,
+        esperadoUsdDia: elegido?.esperadoUsdDia,
       });
+    }
+
+    if (sinFinanciar > 0) {
+      resumen.mercados.push({ slug: `(+${sinFinanciar} sin financiar)`, motivo: "capital_dedicado_a_otro_mercado" });
     }
 
     if (resumen.colocadas > 0 || resumen.canceladas > 0) {

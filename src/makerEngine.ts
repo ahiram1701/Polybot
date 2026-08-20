@@ -14,11 +14,12 @@ import { OrderType, Side } from "@polymarket/clob-client-v2";
 import { LiveClobClientProvider } from "./liveClobClient.js";
 import { logger } from "./logger.js";
 import type { OrdenDeseada, OrdenViva } from "./makerQuoting.js";
-import type { BotConfig, MarketInfo, Outcome } from "./types.js";
+import type { MercadoMaker } from "./makerMarket.js";
+import type { BotConfig, Outcome } from "./types.js";
 
 export interface MakerEngine {
-  ordenesVivas(market: MarketInfo): Promise<OrdenViva[]>;
-  colocar(market: MarketInfo, orden: OrdenDeseada): Promise<string | undefined>;
+  ordenesVivas(market: MercadoMaker): Promise<OrdenViva[]>;
+  colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined>;
   cancelar(ids: string[]): Promise<number>;
 }
 
@@ -27,11 +28,11 @@ export class SimulationMakerEngine implements MakerEngine {
   private readonly porMercado = new Map<string, OrdenViva[]>();
   private siguienteId = 1;
 
-  async ordenesVivas(market: MarketInfo): Promise<OrdenViva[]> {
+  async ordenesVivas(market: MercadoMaker): Promise<OrdenViva[]> {
     return [...(this.porMercado.get(market.slug) ?? [])];
   }
 
-  async colocar(market: MarketInfo, orden: OrdenDeseada): Promise<string | undefined> {
+  async colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined> {
     const id = `sim-${this.siguienteId++}`;
     const previas = this.porMercado.get(market.slug) ?? [];
     this.porMercado.set(market.slug, [...previas, { ...orden, id }]);
@@ -57,7 +58,7 @@ export class LiveMakerEngine implements MakerEngine {
     this.clientProvider = new LiveClobClientProvider(config);
   }
 
-  async ordenesVivas(market: MarketInfo): Promise<OrdenViva[]> {
+  async ordenesVivas(market: MercadoMaker): Promise<OrdenViva[]> {
     const client = await this.clientProvider.getClient();
     const porToken = new Map<string, Outcome>();
     for (const outcome of ["UP", "DOWN"] as const) {
@@ -88,7 +89,7 @@ export class LiveMakerEngine implements MakerEngine {
     return vivas;
   }
 
-  async colocar(market: MarketInfo, orden: OrdenDeseada): Promise<string | undefined> {
+  async colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined> {
     const client = await this.clientProvider.getClient();
     const firmada = await client.createOrder(
       {

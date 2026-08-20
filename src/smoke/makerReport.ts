@@ -21,7 +21,7 @@ interface Pasada {
   colocadas: number;
   canceladas: number;
   comprometidoUsd: number;
-  mercados: Array<{ slug: string; motivo?: string; esperadoUsd?: number }>;
+  mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
 }
 
 function leerPasadas(texto: string): Pasada[] {
@@ -59,7 +59,7 @@ export function resumir(pasadas: Pasada[]): string[] {
       if (m.motivo) motivos.set(m.motivo, (motivos.get(m.motivo) ?? 0) + 1);
     }
   }
-  const esperados = pasadas.flatMap((p) => p.mercados.map((m) => m.esperadoUsd ?? 0)).filter((x) => x > 0);
+  const esperados = pasadas.flatMap((p) => p.mercados.map((m) => m.esperadoUsdDia ?? 0)).filter((x) => x > 0);
   const esperadoMedio = esperados.length ? esperados.reduce((a, b) => a + b, 0) / esperados.length : 0;
 
   const lineas = [

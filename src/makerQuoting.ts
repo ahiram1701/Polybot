@@ -231,8 +231,15 @@ export function planificarDosLados(args: {
 
 export interface CandidatoMercado {
   slug: string;
-  /** Dolares que reparte este mercado en la ventana actual. */
-  poolVentanaUsd: number;
+  /**
+   * Dolares AL DIA que reparte este mercado entre todos los que ponen liquidez.
+   *
+   * Al dia, no por ventana: desde que el maker mira mercados de cualquier duracion —de 5 minutos a
+   * meses—, prorratear entre 288 ventanas dejaba de significar nada. En unidades diarias
+   * `esperadoUsdDia / costeUsd` es un rendimiento comparable entre un mercado de petroleo que dura un
+   * dia y uno de cripto que dura cinco minutos.
+   */
+  poolDiaUsd: number;
   /** Puntuacion `S` ya calculada de las compras AJENAS que puntuan (lado bid del libro fusionado). */
   qRivalBid: number;
   /** Idem del lado ask, que en Polymarket son las compras del token contrario. */
@@ -244,8 +251,8 @@ export interface CandidatoMercado {
 
 export interface MercadoElegido extends CandidatoMercado {
   costeUsd: number;
-  /** Recompensa esperada de la ventana segun la formula oficial. */
-  esperadoUsd: number;
+  /** Recompensa esperada AL DIA segun la formula oficial. */
+  esperadoUsdDia: number;
 }
 
 /**
@@ -256,7 +263,7 @@ export interface MercadoElegido extends CandidatoMercado {
  * ordena por recompensa esperada POR DOLAR inmovilizado, no por tamano del bote: un bote enorme con
  * mucha competencia rinde menos que uno pequeno donde no compite nadie.
  *
- * ## Cuanto fiarse de `esperadoUsd`
+ * ## Cuanto fiarse de `esperadoUsdDia`
  *
  * Aplica la formula oficial —peso cuadratico, `Q_min` y el castigo por un solo lado— pero la
  * competencia se mide con UNA foto del libro y agregando a los rivales como si fueran uno solo. Contra
@@ -266,7 +273,7 @@ export interface MercadoElegido extends CandidatoMercado {
  */
 export function elegirMercados(candidatos: CandidatoMercado[], capitalUsd: number): MercadoElegido[] {
   const evaluados = candidatos
-    .filter((c) => c.mid > 0 && c.mid < 1 && c.poolVentanaUsd > 0)
+    .filter((c) => c.mid > 0 && c.mid < 1 && c.poolDiaUsd > 0)
     .map((c) => {
       // El par cuesta casi $1 por participacion se ponga donde se ponga: es el precio de ser neutral.
       const precioUp = precioObjetivo(c.mid, "BUY", c.tickSize);
@@ -278,10 +285,10 @@ export function elegirMercados(candidatos: CandidatoMercado[], capitalUsd: numbe
       const nuestro = qMinOficial(qPropia, qPropia, c.mid);
       const rivales = qMinOficial(c.qRivalBid, c.qRivalAsk, c.mid);
       const cuota = nuestro + rivales > 0 ? nuestro / (nuestro + rivales) : 0;
-      return { ...c, costeUsd, esperadoUsd: cuota * c.poolVentanaUsd };
+      return { ...c, costeUsd, esperadoUsdDia: cuota * c.poolDiaUsd };
     })
-    .filter((c) => c.costeUsd > 0 && c.esperadoUsd > 0)
-    .sort((izq, der) => der.esperadoUsd / der.costeUsd - izq.esperadoUsd / izq.costeUsd);
+    .filter((c) => c.costeUsd > 0 && c.esperadoUsdDia > 0)
+    .sort((izq, der) => der.esperadoUsdDia / der.costeUsd - izq.esperadoUsdDia / izq.costeUsd);
 
   const elegidos: MercadoElegido[] = [];
   let restante = capitalUsd;
