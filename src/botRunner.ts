@@ -77,6 +77,15 @@ import type {
 } from "./types.js";
 
 // Defaults for the expected-value gate when config omits them (config.ts always sets them in prod).
+/**
+ * Cada cuanto corre una pasada del maker, independiente del ritmo del bucle.
+ *
+ * 15 s = el mismo freno que tiene la recolocacion, asi que no se pierde ninguna decision: entre pasada
+ * y pasada el maker no podria recolocar aunque quisiera. Correr con el bucle (~3 s) multiplicaba por
+ * cinco las lecturas de libro para decidir, casi siempre, no hacer nada.
+ */
+const INTERVALO_MAKER_MS = 15_000;
+
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
 const DEFAULT_MAX_ASK_PRICE_CEILING = 0.85;
 const DEFAULT_EV_SAFETY_MARGIN = 0.03;
@@ -294,6 +303,9 @@ export class BotRunner {
 
   /** Si el suelo de saldo ya esta disparado, para avisar UNA vez y no cada tres segundos. */
   private makerBajoSuelo = false;
+
+  /** Cuando corrio la ultima pasada del maker, que va a su propio ritmo. */
+  private ultimaPasadaMakerMs = 0;
   private ultimaPasadaMaker?: ResumenPasada;
 
   /**
@@ -697,7 +709,20 @@ export class BotRunner {
     // retrasar ninguna decision de entrada.
     if (this.config.makerEnabled === true) {
       this.ultimosMercados = markets;
-      await timer.time("maker", () => this.runMaker(markets, nowMs));
+      // El maker tiene su PROPIA cadencia, mas lenta que la del bucle.
+      //
+      // Correr con el bucle significaba releer 6 libros cada ~3 segundos para decidir, casi siempre,
+      // no hacer nada: su freno de recolocacion son 15 s y en un mercado de banda ancha la orden
+      // aguanta horas. Esa relectura constante saturaba al propio exchange —**1.049 timeouts de 2 s en
+      // una hora**, con el endpoint respondiendo en 280 ms al medirlo suelto— y dejaba al maker medio
+      // ciego mientras el bot parecia sano.
+      //
+      // El direccional SI necesita los 3 segundos: entra en los ultimos segundos de una ventana de 5
+      // minutos. El maker no decide nada en ese plazo.
+      if (nowMs - this.ultimaPasadaMakerMs >= (this.config.makerIntervalMs ?? INTERVALO_MAKER_MS)) {
+        this.ultimaPasadaMakerMs = nowMs;
+        await timer.time("maker", () => this.runMaker(markets, nowMs));
+      }
     }
 
     await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));

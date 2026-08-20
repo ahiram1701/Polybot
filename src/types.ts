@@ -142,6 +142,8 @@ export interface BotConfig {
    * live, porque en sim el saldo no baja.
    */
   makerStopBelowUsd?: number;
+  /** Cada cuanto corre el maker, en ms. Por defecto 15 s, el mismo freno que la recolocacion. */
+  makerIntervalMs?: number;
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;

@@ -23,9 +23,18 @@ export function installHttpKeepAlive(): void {
       // Cubre con holgura el hueco mas largo entre peticiones del bucle (la cache de gamma, 5s).
       keepAliveTimeout: 30_000,
       keepAliveMaxTimeout: 120_000,
-      // Suficiente para las 6 cotizaciones en paralelo por iteracion mas los margenes; sin limite, una
-      // rafaga podria abrir decenas de sockets contra el mismo origen y volver al problema de churn.
-      connections: 8,
+      // Sockets por origen. El numero NO es libre: si se queda corto, las peticiones hacen cola dentro
+      // del cliente y agotan su propio timeout sin que el servidor haya tardado nada.
+      //
+      // Estuvo en 8, dimensionado para "las 6 cotizaciones en paralelo por iteracion". Luego el maker
+      // paso a leer sus mercados en paralelo —hasta 3 mercados x 2 libros— y el pool quedo
+      // sobresuscrito: **1.049 timeouts de 2 s en una hora**, con el endpoint respondiendo en 280 ms
+      // al medirlo suelto. El bot parecia sano y el maker estaba medio ciego.
+      //
+      // Cuentas de la peor iteracion: 6 del maker + 6 del direccional/arbitraje + gamma + la
+      // resolucion de mercados del escaner. 24 cubre eso con holgura sin volver al churn de sockets
+      // que motivo este fichero.
+      connections: 24,
       connect: { timeout: 10_000 },
     }),
   );
