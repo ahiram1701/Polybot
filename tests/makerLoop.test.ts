@@ -190,6 +190,45 @@ describe("el libro fusionado de los dos tokens", () => {
     expect(r.colocadas).toBe(2); // ETH sigue cotizando con sus dos lados
   });
 
+  it("si falla LEER un mercado, los demas siguen cotizando", async () => {
+    // Una excepcion de `ordenesVivas` —timeout, 429— abortaba la pasada entera por `Promise.all`,
+    // incluidos los mercados que si respondian y la retirada de los que estaban cerca del cierre.
+    const engine = new SimulationMakerEngine();
+    const roto = {
+      ordenesVivas: vi.fn(async (m: MarketInfo) => {
+        if (m.asset === "BTC") throw new Error("Timeout tras 2000ms");
+        return engine.ordenesVivas(m);
+      }),
+      colocar: engine.colocar.bind(engine),
+      cancelar: engine.cancelar.bind(engine),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: roto as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC"), market("ETH")], AHORA);
+    expect(r.colocadas).toBe(2); // ETH cotiza con sus dos lados
+    expect(r.mercados.some((m) => m.slug.startsWith("btc"))).toBe(false);
+  });
+
+  it("informa de lo VIVO aparte de lo colocado en esta pasada", async () => {
+    // Una orden en reposo baja el saldo del exchange sin ser una perdida. Quien decida parar mirando
+    // solo el saldo pararia en operacion normal, que es peor que no tener guarda.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const primera = await loop.runOnce([market("BTC")], AHORA);
+    expect(primera.comprometidoUsd).toBeCloseTo(49, 2);
+    // En la pasada siguiente NO se coloca nada, pero sigue habiendo $49 inmovilizados.
+    const segunda = await loop.runOnce([market("BTC")], AHORA + 1000);
+    expect(segunda.comprometidoUsd).toBe(0);
+    expect(segunda.vivoUsd).toBeCloseTo(49, 2);
+  });
+
   it("no se cuenta a si mismo como competencia", async () => {
     // Si las ordenes propias contaran como rivales, la cuota estimada caeria sola en cada pasada.
     const engine = new SimulationMakerEngine();
@@ -229,7 +268,7 @@ describe("dos lados o ninguno, tambien cuando el exchange rechaza", () => {
           const i = vivas.findIndex((v) => v.id === id);
           if (i >= 0) vivas.splice(i, 1);
         }
-        return ids.length;
+        return ids;
       }),
     };
     const loop = new MakerLoop(
@@ -274,7 +313,7 @@ describe("el tope tiene que acotar el GASTO, no solo lo comprometido", () => {
         vivas.push({ id, outcome: o.outcome, side: "BUY", price: o.price, size: o.size });
         return id;
       }),
-      cancelar: vi.fn(async () => 0),
+      cancelar: vi.fn(async (ids: string[]) => ids),
       /** Todas las ordenes vivas se llenan de golpe y desaparecen del libro. */
       llenarTodo(this: { gastado: number }) {
         for (const o of vivas) {
@@ -328,6 +367,70 @@ describe("el tope tiene que acotar el GASTO, no solo lo comprometido", () => {
     // Otra ventana: el mercado viejo ya no esta en la lista.
     await loop.runOnce([market("ETH")], AHORA + 40_000);
     expect(loop.estadoDe(market("BTC").slug)).toBeUndefined();
+  });
+});
+
+describe("mercados que rotan: nada se queda vivo sin vigilancia", () => {
+  it("retira las ordenes de un mercado que se cae de la lista", async () => {
+    // El escaner rehace su seleccion cada 5 minutos y los mercados de un dia expiran. Un mercado que
+    // sale de la lista deja de recorrerse: lo que quede vivo ahi seria una orden que nadie vuelve a
+    // mirar y que puede llenarse y resolver sola.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const viejo = market("BTC");
+    await loop.runOnce([viejo], AHORA);
+    expect(await engine.ordenesVivas(viejo)).toHaveLength(2);
+
+    // Pasada siguiente: el escaner ya no lo devuelve.
+    const r = await loop.runOnce([market("ETH")], AHORA + 20_000);
+    expect(r.canceladas).toBeGreaterThanOrEqual(2);
+    expect(await engine.ordenesVivas(viejo)).toHaveLength(0);
+  });
+
+  it("al parar retira tambien lo cotizado que ya no esta en la lista", async () => {
+    // El llamante pasa los mercados de AHORA. Si uno roto entre la ultima cotizacion y la parada, sus
+    // ordenes seguirian vivas y el llamante no tiene forma de saberlo.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const viejo = market("BTC");
+    await loop.runOnce([viejo], AHORA);
+    // Se para pasando una lista que NO incluye el mercado cotizado.
+    expect(await loop.retirarTodo([market("ETH")])).toBeGreaterThanOrEqual(2);
+    expect(await engine.ordenesVivas(viejo)).toHaveLength(0);
+  });
+
+  it("si no se pueden retirar, el mercado se conserva para reintentarlo", async () => {
+    // Olvidarlo seria perder de vista ordenes vivas de verdad.
+    let fallarBtc = false;
+    const vivas = [{ id: "o1", outcome: "UP" as const, side: "BUY" as const, price: 0.49, size: 50 }];
+    const engine = {
+      ordenesVivas: vi.fn(async (m: MarketInfo) => {
+        if (fallarBtc && m.asset === "BTC") throw new Error("red caida");
+        return [...vivas];
+      }),
+      colocar: vi.fn(async () => "nueva"),
+      cancelar: vi.fn(async (ids: string[]) => ids),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([market("BTC")], AHORA);
+    fallarBtc = true;
+    await loop.runOnce([market("ETH")], AHORA + 20_000);
+    fallarBtc = false;
+    // El mercado sigue vigilado: en la pasada siguiente se vuelve a intentar.
+    const r = await loop.runOnce([market("ETH")], AHORA + 40_000);
+    expect(r.canceladas).toBeGreaterThan(0);
   });
 });
 
@@ -403,7 +506,7 @@ describe("lo que pasa cuando algo va mal", () => {
         { id: "o2", outcome: "DOWN" as const, side: "BUY" as const, price: 0.49, size: 50 },
       ]),
       colocar: vi.fn(async () => "nueva"),
-      cancelar: vi.fn(async () => 0),
+      cancelar: vi.fn(async (ids: string[]) => ids),
     };
     const loop = new MakerLoop(
       { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
@@ -430,7 +533,7 @@ describe("lo que pasa cuando algo va mal", () => {
     const engine = {
       ordenesVivas: vi.fn(async () => [...ordenes]),
       colocar: vi.fn(async () => "nueva"),
-      cancelar: vi.fn(async () => 0),
+      cancelar: vi.fn(async (ids: string[]) => ids),
     };
     const loop = new MakerLoop(
       { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
@@ -456,7 +559,7 @@ describe("lo que pasa cuando algo va mal", () => {
       colocar: vi.fn(async () => "nueva"),
       cancelar: vi.fn(async (ids: string[]) => {
         ordenes = ordenes.filter((o) => !ids.includes(o.id));
-        return ids.length;
+        return ids;
       }),
     };
     const loop = new MakerLoop(

@@ -74,7 +74,34 @@ describe("motor maker real", () => {
   it("cancelar sin ids no llama al exchange", async () => {
     const cancelOrders = vi.fn(async () => ({}));
     const motor = conCliente({ cancelOrders });
-    expect(await motor.cancelar([])).toBe(0);
+    expect(await motor.cancelar([])).toEqual([]);
     expect(cancelOrders).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelar no puede creerse el exito", () => {
+  it("solo devuelve las que el exchange dice haber cancelado", async () => {
+    // Dar por cancelada una orden que sigue viva es la peor forma de perder dinero: el bucle borra su
+    // rastro, deja de detectar su llenado y deja de contarla contra el tope. Queda viva e invisible.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const cliente = {
+      cancelOrders: vi.fn(async () => ({ canceled: ["si"], not_canceled: { no: "not enough balance" } })),
+    };
+    const motor = new LiveMakerEngine({} as never);
+    (motor as unknown as { clientProvider: { getClient: () => Promise<unknown> } }).clientProvider = {
+      getClient: async () => cliente,
+    };
+    expect(await motor.cancelar(["si", "no"])).toEqual(["si"]);
+  });
+
+  it("ante una respuesta SIN detalle asume que siguen vivas", async () => {
+    // Asumir exito perderia la orden de vista para siempre. Asumir fallo solo cuesta seguir mirandola.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const cliente = { cancelOrders: vi.fn(async () => ({})) };
+    const motor = new LiveMakerEngine({} as never);
+    (motor as unknown as { clientProvider: { getClient: () => Promise<unknown> } }).clientProvider = {
+      getClient: async () => cliente,
+    };
+    expect(await motor.cancelar(["a", "b"])).toEqual([]);
   });
 });

@@ -133,6 +133,15 @@ export interface BotConfig {
    * en vez de 4,5 —una orden a un tick del medio puntua el 11% del maximo en vez del 60%.
    */
   makerMarketSource?: "cripto5m" | "recompensas";
+  /**
+   * Suelo de saldo: por debajo de esto el maker RETIRA todo y deja de cotizar. 0 = sin suelo.
+   *
+   * Es la unica guarda que acota la PERDIDA en vez del compromiso. `makerCapitalUsd` limita cuanto se
+   * pone a la vez, pero no cuanto se puede llegar a perder: una posicion que resuelve a cero libera el
+   * tope y la pasada siguiente vuelve a comprometer. Asi se fueron $41,41 en 40 minutos. Solo actua en
+   * live, porque en sim el saldo no baja.
+   */
+  makerStopBelowUsd?: number;
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;

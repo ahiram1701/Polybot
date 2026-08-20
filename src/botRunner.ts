@@ -737,7 +737,42 @@ export class BotRunner {
       return;
     }
     try {
-      this.ultimaPasadaMaker = await loop.runOnce(await this.mercadosParaMaker(markets), nowMs);
+      const mercados = await this.mercadosParaMaker(markets);
+
+      // SUELO DE SALDO: la unica guarda que acota la perdida en vez del compromiso.
+      //
+      // `makerCapitalUsd` limita cuanto se pone a la vez, pero no cuanto se puede llegar a perder: una
+      // posicion que resuelve a cero libera el tope y la pasada siguiente vuelve a comprometer. Asi se
+      // fueron $41,41 en 40 minutos sin que ningun limite saltara. Solo en live: en sim el saldo real
+      // no baja, y aplicarlo ahi congelaria las pruebas sin proteger nada.
+      const suelo = this.config.makerStopBelowUsd ?? 0;
+      if (suelo > 0 && this.modeFor("maker") === "live") {
+        const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, nowMs);
+        // Se suma lo inmovilizado en ordenes PROPIAS: una orden en reposo baja el saldo del exchange
+        // sin ser una perdida —el dinero sigue siendo nuestro—, asi que mirar el saldo desnudo haria
+        // saltar el suelo en operacion normal, que es peor que no tener suelo.
+        const nuestro = saldo.usd + (this.ultimaPasadaMaker?.vivoUsd ?? 0);
+        if (nuestro < suelo) {
+          const retiradas = await loop.retirarTodo(mercados);
+          logger.error("Maker DETENIDO: el saldo cayo por debajo del suelo.", {
+            saldoUsd: Math.round(saldo.usd * 100) / 100,
+            masOrdenesVivasUsd: Math.round((this.ultimaPasadaMaker?.vivoUsd ?? 0) * 100) / 100,
+            sueloUsd: suelo,
+            retiradas,
+          });
+          this.ultimaPasadaMaker = {
+            colocadas: 0,
+            canceladas: retiradas,
+            comprometidoUsd: 0,
+            gastadoUsd: 0,
+            vivoUsd: 0,
+            mercados: [{ slug: "(todos)", motivo: `saldo_bajo_suelo_${suelo}` }],
+          };
+          return;
+        }
+      }
+
+      this.ultimaPasadaMaker = await loop.runOnce(mercados, nowMs);
     } catch (error) {
       logger.warn("Pasada del maker fallida.", {
         error: error instanceof Error ? error.message : String(error),

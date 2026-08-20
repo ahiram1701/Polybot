@@ -261,6 +261,15 @@ En **Ajustes → «Maker — cobrar por dar liquidez»**:
 | Capital máx inmovilizado | Tope de dólares en riesgo **a la vez**: lo comprometido en órdenes MÁS lo ya gastado en llenados, en todos los mercados juntos |
 | Retirar N segundos antes del cierre | Margen para no quedarte con una posición que resuelve sin darte tiempo |
 | Fuente de mercados | `recompensas` busca en **todo Polymarket** lo que mejor paga y cabe en tu capital; `cripto5m` se queda en BTC/ETH/DOGE |
+| Parar por debajo de | **Suelo de saldo.** Si tu dinero (saldo + lo inmovilizado en tus órdenes) baja de aquí, el maker retira todo y deja de cotizar. `0` lo desactiva |
+
+**El suelo es la única guarda que acota la PÉRDIDA.** «Capital máx inmovilizado» limita cuánto se pone
+a la vez, pero no cuánto se puede llegar a perder: una posición que resuelve a cero libera el tope y la
+pasada siguiente vuelve a comprometer. Así se fueron $41,41 en 40 minutos sin que ningún límite saltara.
+
+Ponlo **por debajo de tu capital de trabajo**, no pegado: con $25 en la cuenta y $20 de capital, un
+suelo de $12 corta la pérdida en unos $13. Si lo pones a la altura del capital saltará en cuanto
+coloque la primera orden. Solo actúa en live — en sim el saldo no baja.
 
 **Deja la fuente en `recompensas`.** Los mercados de cripto de 5 minutos son de los peores sitios para
 poco capital: piden $50 de entrada en vez de $20, y su banda que puntúa es de 1,5 céntimos en vez de

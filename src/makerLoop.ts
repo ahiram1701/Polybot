@@ -57,6 +57,14 @@ export interface ResumenPasada {
   comprometidoUsd: number;
   /** Dolares ya GASTADOS en llenados y todavia atados a posiciones sin resolver. */
   gastadoUsd: number;
+  /**
+   * Dolares inmovilizados en ordenes propias VIVAS, sumando todos los mercados.
+   *
+   * No es `comprometidoUsd`, que solo cuenta lo colocado en ESTA pasada. Hace falta por separado
+   * porque una orden en reposo baja el saldo del exchange sin ser una perdida: el dinero sigue siendo
+   * nuestro. Quien mire solo el saldo para decidir si parar, parara en operacion normal.
+   */
+  vivoUsd: number;
   /** Participaciones que se llenaron desde la pasada anterior. Cada una es posicion direccional. */
   llenadas?: number;
   mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
@@ -84,6 +92,15 @@ export class MakerLoop {
 
   private readonly estados = new Map<string, EstadoMercado>();
 
+  /**
+   * Mercados en los que hemos llegado a cotizar, aunque ya no esten en la lista.
+   *
+   * Los mercados ROTAN: el escaner rehace su seleccion cada cinco minutos y los de un dia expiran. Un
+   * mercado que sale de la lista se deja de recorrer, asi que sus ordenes quedarian vivas en el libro
+   * sin que nadie volviera a mirarlas — y una orden viva puede llenarse y resolver sola.
+   */
+  private readonly cotizados = new Map<string, MercadoMaker>();
+
   constructor(
     private readonly deps: MakerLoopDeps,
     private readonly config: MakerLoopConfig,
@@ -106,6 +123,16 @@ export class MakerLoop {
    * el watchdog reinicia el proceso a diario y la maquina se apaga sin avisar.
    */
   async retirarTodo(markets: MercadoMaker[]): Promise<number> {
+    // Se suma lo COTIZADO aunque ya no este en la lista: si un mercado roto entre la ultima cotizacion
+    // y la parada, sus ordenes seguirian vivas y el llamante no tiene forma de saberlo.
+    const porSlug = new Map(markets.map((m) => [m.slug, m]));
+    for (const [slug, market] of this.cotizados) {
+      if (!porSlug.has(slug)) {
+        porSlug.set(slug, market);
+      }
+    }
+    markets = [...porSlug.values()];
+
     let canceladas = 0;
     for (const market of markets) {
       try {
@@ -122,6 +149,25 @@ export class MakerLoop {
     if (canceladas > 0) {
       logger.info("Maker: ordenes retiradas al parar.", { canceladas });
     }
+
+    // COMPROBAR que no queda nada. Cancelar y creerselo es como se pierden ordenes de vista: si el
+    // exchange rechazo alguna, esta es la ultima oportunidad de enterarse antes de que el proceso muera
+    // y nadie vuelva a mirar el libro.
+    let quedan = 0;
+    for (const market of markets) {
+      try {
+        quedan += (await this.deps.engine.ordenesVivas(market)).length;
+      } catch {
+        // Si no se puede comprobar, se dice: un silencio aqui es peor que un aviso de mas.
+        quedan += 1;
+      }
+    }
+    if (quedan > 0) {
+      logger.error("QUEDAN ORDENES MAKER VIVAS tras intentar retirarlas. Hay dinero real expuesto.", {
+        vivas: quedan,
+        mercados: markets.length,
+      });
+    }
     return canceladas;
   }
 
@@ -132,11 +178,18 @@ export class MakerLoop {
    * acumulado se dispararia solo y el tope dejaria al maker mudo sin que nadie hubiera comprado nada.
    */
   private async cancelar(ids: string[], slug: string): Promise<number> {
-    for (const id of ids) {
+    // Se olvida SOLO lo que el exchange confirma haber cancelado.
+    //
+    // Borrar el rastro por adelantado era peligroso: una orden que el exchange se negara a cancelar
+    // quedaba viva en el libro y ademas invisible —su llenado no se detectaba ni contaba contra el
+    // tope—. Ahora lo que no se cancela se sigue vigilando, y en la pasada siguiente se vuelve a
+    // intentar porque sigue apareciendo en `ordenesVivas`.
+    const canceladas = await this.deps.engine.cancelar(ids);
+    for (const id of canceladas) {
       this.tamanoConocido.delete(`${slug}|${id}`);
       this.datosOrden.delete(`${slug}|${id}`);
     }
-    return this.deps.engine.cancelar(ids);
+    return canceladas.length;
   }
 
   /**
@@ -261,22 +314,46 @@ export class MakerLoop {
   }
 
   async runOnce(markets: MercadoMaker[], nowMs: number): Promise<ResumenPasada> {
-    // Los mercados que ya no estan tenian su ventana cerrada: sus posiciones resolvieron y el dinero
-    // volvio, asi que su gasto deja de contar contra el tope.
-    const vigentes = new Set(markets.map((m) => m.slug));
-    for (const slug of [...this.estados.keys()]) {
-      if (!vigentes.has(slug)) {
-        this.estados.delete(slug);
-      }
-    }
-
     const resumen: ResumenPasada = {
       colocadas: 0,
       canceladas: 0,
       comprometidoUsd: 0,
       gastadoUsd: 0,
+      vivoUsd: 0,
       mercados: [],
     };
+
+    // Mercados que se han caido de la lista: se les retiran las ordenes ANTES de olvidarlos.
+    //
+    // Su ventana se cerro o el escaner encontro algo mejor. En los dos casos dejan de recorrerse, asi
+    // que lo que quede vivo ahi seria una orden que nadie vuelve a mirar y que puede llenarse y
+    // resolver sola. Y su gasto deja de contar contra el tope: esas posiciones ya resolvieron.
+    const vigentes = new Set(markets.map((m) => m.slug));
+    for (const [slug, market] of [...this.cotizados]) {
+      if (vigentes.has(slug)) {
+        continue;
+      }
+      try {
+        const huerfanas = await this.deps.engine.ordenesVivas(market);
+        if (huerfanas.length > 0) {
+          logger.warn("Maker: retirando ordenes de un mercado que ya no se sigue.", {
+            slug,
+            ordenes: huerfanas.length,
+          });
+          resumen.canceladas += await this.cancelar(huerfanas.map((o) => o.id), slug);
+        }
+      } catch (error) {
+        // Si no se pueden retirar, se conserva el mercado para reintentarlo en la pasada siguiente:
+        // olvidarlo aqui seria perder de vista ordenes vivas de verdad.
+        logger.warn("Maker: no se pudieron retirar las ordenes huerfanas.", {
+          slug,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+      this.cotizados.delete(slug);
+      this.estados.delete(slug);
+    }
     const candidatos: Array<CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[] }> = [];
     let comprometidoGlobal = 0;
 
@@ -288,18 +365,34 @@ export class MakerLoop {
     // porque cada mercado consume del mismo presupuesto que el anterior.
     const leidos = await Promise.all(
       markets.map(async (market) => {
-        const vivas = await this.deps.engine.ordenesVivas(market);
-        const cerca = secondsToEnd(market.endMs, nowMs) <= this.config.retirarSegundosAntesDelCierre;
-        if (cerca) {
-          return { market, vivas, cerca, params: undefined, libro: undefined };
+        // Un fallo leyendo UN mercado no puede tumbar la pasada entera. Sin este intento, una excepcion
+        // de `ordenesVivas` —un timeout, un 429— abortaba tambien los mercados que si respondian, y
+        // ademas dejaba sin recorrer la retirada de los que estaban cerca del cierre.
+        try {
+          const vivas = await this.deps.engine.ordenesVivas(market);
+          const cerca = secondsToEnd(market.endMs, nowMs) <= this.config.retirarSegundosAntesDelCierre;
+          if (cerca) {
+            return { market, vivas, cerca, params: undefined, libro: undefined };
+          }
+          const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
+          const libro = params ? await this.libroFusionado(market) : undefined;
+          return { market, vivas, cerca, params, libro };
+        } catch (error) {
+          logger.warn("Maker: no se pudo leer el estado de un mercado; se salta esta pasada.", {
+            slug: market.slug,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // Sin saber que hay vivo no se toca nada: ni se cotiza ni se cancela a ciegas.
+          return undefined;
         }
-        const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
-        const libro = params ? await this.libroFusionado(market) : undefined;
-        return { market, vivas, cerca, params, libro };
       }),
     );
 
-    for (const { market, vivas, cerca, params, libro } of leidos) {
+    for (const leido of leidos) {
+      if (!leido) {
+        continue;
+      }
+      const { market, vivas, cerca, params, libro } = leido;
       this.detectarLlenados(market, vivas, resumen);
 
       // Cerca del cierre no se cotiza y se retira lo que haya: una orden llena aqui deja una posicion
@@ -341,6 +434,7 @@ export class MakerLoop {
 
     const gastadoGlobal = [...this.estados.values()].reduce((s, e) => s + e.gastadoUsd, 0);
     resumen.gastadoUsd = Number(gastadoGlobal.toFixed(4));
+    resumen.vivoUsd = Number(comprometidoGlobal.toFixed(4));
 
     // EL tope de verdad: lo comprometido en ordenes vivas MAS lo ya gastado en llenados. Contar solo
     // lo comprometido es lo que dejo que una ventana de 5 minutos gastara $85 con el tope en $12.
@@ -417,6 +511,7 @@ export class MakerLoop {
         resumen.comprometidoUsd += coste;
         comprometidoTrasPlan += coste;
         puestas.push({ id, outcome: orden.outcome });
+        this.cotizados.set(candidato.slug, candidato.market);
         // Se apunta AQUI, no al verla viva en la pasada siguiente. Una orden colocada y llenada
         // entre dos pasadas no llegaria nunca a `ordenesVivas`, y su llenado —el mas rapido, o sea
         // el mas adverso— seria invisible para el detector y para el tope de gasto.

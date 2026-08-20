@@ -20,7 +20,8 @@ import type { BotConfig, Outcome } from "./types.js";
 export interface MakerEngine {
   ordenesVivas(market: MercadoMaker): Promise<OrdenViva[]>;
   colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined>;
-  cancelar(ids: string[]): Promise<number>;
+  /** Devuelve los ids REALMENTE cancelados, no los pedidos. La diferencia importa: ver abajo. */
+  cancelar(ids: string[]): Promise<string[]>;
 }
 
 /** Motor de simulacion: lleva un libro de ordenes propio en memoria. No toca la red. */
@@ -39,11 +40,11 @@ export class SimulationMakerEngine implements MakerEngine {
     return id;
   }
 
-  async cancelar(ids: string[]): Promise<number> {
-    let quitadas = 0;
+  async cancelar(ids: string[]): Promise<string[]> {
+    const quitadas: string[] = [];
     for (const [slug, ordenes] of this.porMercado) {
       const restantes = ordenes.filter((o) => !ids.includes(o.id));
-      quitadas += ordenes.length - restantes.length;
+      quitadas.push(...ordenes.filter((o) => ids.includes(o.id)).map((o) => o.id));
       this.porMercado.set(slug, restantes);
     }
     return quitadas;
@@ -115,12 +116,42 @@ export class LiveMakerEngine implements MakerEngine {
     return respuesta.orderID;
   }
 
-  async cancelar(ids: string[]): Promise<number> {
+  /**
+   * Cancela y devuelve las que el exchange dice haber cancelado DE VERDAD.
+   *
+   * Antes hacia `await client.cancelOrders(ids); return ids.length;` — daba por cancelada cualquier
+   * orden sin mirar la respuesta. Y como el bucle borra el rastro de lo que cancela, una orden que el
+   * exchange rechazara cancelar quedaba **viva en el libro y ademas invisible**: su llenado no se
+   * detectaba, no contaba contra el tope de gasto y nadie volvia a mirarla. Es la peor forma de perder
+   * dinero, porque no aparece en ningun sitio.
+   *
+   * El endpoint responde `{canceled: [...], not_canceled: {id: motivo}}`. Si la respuesta no trae ese
+   * detalle se asume lo peor —que NO se cancelaron— y se conserva el rastro: quedarse vigilando una
+   * orden que ya no existe solo cuesta una deteccion de llenado fantasma; perder de vista una que
+   * sigue viva cuesta dinero.
+   */
+  async cancelar(ids: string[]): Promise<string[]> {
     if (ids.length === 0) {
-      return 0;
+      return [];
     }
     const client = await this.clientProvider.getClient();
-    await client.cancelOrders(ids);
-    return ids.length;
+    const respuesta = (await client.cancelOrders(ids)) as {
+      canceled?: unknown;
+      not_canceled?: Record<string, unknown>;
+    };
+    const canceladas = Array.isArray(respuesta?.canceled) ? respuesta.canceled.map(String) : [];
+    const fallidas = respuesta?.not_canceled ? Object.keys(respuesta.not_canceled) : [];
+    if (fallidas.length > 0) {
+      logger.warn("El exchange NO cancelo algunas ordenes maker: siguen vivas.", {
+        fallidas,
+        motivos: respuesta.not_canceled,
+      });
+    }
+    if (canceladas.length === 0 && fallidas.length === 0) {
+      logger.warn("Respuesta de cancelacion sin detalle: se asume que las ordenes SIGUEN VIVAS.", {
+        pedidas: ids.length,
+      });
+    }
+    return canceladas;
   }
 }

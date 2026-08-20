@@ -312,6 +312,18 @@ deciden si una orden cobra o no.
   eso COMPLETA el par en vez de doblar sobre el que cae.
 - **El libro se lee de los DOS tokens.** Una venta de UP vive en el libro de DOWN como compra (comprar
   DOWN a `p` = vender UP a `1−p`). Leyendo uno solo, el lado ask sale vacío.
+- **Cancelar no se da por hecho.** El exchange responde `{canceled, not_canceled}` y hay que leerlo: dar
+  por cancelada una orden que sigue viva la deja **viva e invisible** —el bucle borra su rastro, deja de
+  detectar su llenado y deja de contarla contra el tope—. Ante una respuesta sin detalle se asume que
+  siguen vivas, porque vigilar una orden que ya no existe solo cuesta un llenado fantasma.
+- **Los mercados rotan.** El escaner rehace su seleccion cada 5 minutos y los de un dia expiran; a los
+  que se caen de la lista se les retiran las ordenes ANTES de olvidarlos, o quedarian vivas sin que
+  nadie las mirara.
+- **Un fallo en UN mercado no tumba la pasada.** Ni leyendo el libro ni leyendo las ordenes vivas: el
+  `Promise.all` abortaba tambien los mercados que si respondian.
+- **Suelo de saldo (`makerStopBelowUsd`).** La unica guarda que acota la PERDIDA en vez del compromiso.
+  Compara saldo **mas lo inmovilizado en ordenes propias**, porque una orden en reposo baja el saldo del
+  exchange sin ser una perdida y un suelo sobre el saldo desnudo saltaria en operacion normal.
 - **El capital es compartido entre mercados.** Una orden de compra inmoviliza `precio × tamaño` hasta
   que se llena o se cancela; sin un tope común, tres mercados comprometerían el mismo dinero tres
   veces.

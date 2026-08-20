@@ -57,6 +57,8 @@ export interface UiSettings {
    * capital (entrada de $50 y banda de 1,5c, contra $20 y 4,5c de los mejores).
    */
   makerMarketSource: "cripto5m" | "recompensas";
+  /** Suelo de saldo: por debajo, el maker retira todo y deja de cotizar. 0 = sin suelo. */
+  makerStopBelowUsd: number;
   arbMode: "heredado" | "sim" | "live";
   directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;
