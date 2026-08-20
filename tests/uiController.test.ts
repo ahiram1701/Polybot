@@ -196,7 +196,7 @@ describe("BotController", () => {
     const status = await controller.start("sim");
     expect(status.running).toBe(true);
     // La insignia tiene que decir la verdad: hay dinero real en juego aunque el arranque sea "sim".
-    expect(status.effectiveModes).toEqual({ arb: "live", directional: "sim" });
+    expect(status.effectiveModes).toEqual({ arb: "live", directional: "sim", maker: "sim" });
     await controller.stop();
     controller.dispose();
   });
@@ -467,5 +467,42 @@ describe("la ventana de ask llega entera al runner", () => {
     const runtime = applySettings(config, settings);
     expect(runtime.minAskPriceByMarketOutcome?.DOGE.UP).toBe(0.85);
     expect(runtime.minAskPriceByMarketOutcome?.BTC.UP).toBe(0.7);
+  });
+});
+
+describe("ninguna insignia puede mentir sobre el dinero", () => {
+  it("toda estrategia con modo propio aparece en effectiveModes", async () => {
+    // El maker se anadio DESPUES de `effectiveModes` y quedo fuera: con el maker en live y todo lo
+    // demas en papel, el dashboard decia "corriendo SIM" mientras habia ordenes reales en el libro.
+    // Este test deriva la lista de los propios ajustes, asi que la proxima estrategia no se puede
+    // olvidar: si tiene `*Mode`, tiene que estar.
+    const { settingsFromConfig } = await import("../src/ui/settings.js");
+    const settings = settingsFromConfig(await baseConfig());
+    const conModo = Object.keys(settings)
+      .filter((k) => k.endsWith("Mode"))
+      .map((k) => k.replace(/Mode$/, ""));
+    expect(conModo.length).toBeGreaterThanOrEqual(3);
+
+    const controller = new BotController(await baseConfig(), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const modos = (await controller.getStatus()).effectiveModes as unknown as Record<string, string>;
+    controller.dispose();
+
+    // `directionalMode` -> `directional`, `arbMode` -> `arb`, `makerMode` -> `maker`.
+    const faltan = conModo.filter((nombre) => modos[nombre] === undefined);
+    expect(faltan).toEqual([]);
+  });
+
+  it("el maker en live se refleja en effectiveModes", async () => {
+    const controller = new BotController(await baseConfig({ extra: { makerMode: "live" } }), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    expect((await controller.getStatus()).effectiveModes.maker).toBe("live");
+    controller.dispose();
   });
 });

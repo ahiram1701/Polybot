@@ -179,12 +179,10 @@ describe("UI frontend components", () => {
   it("el boton avisa cuando arrancar mueve dinero real", async () => {
     const { enVivo } = await import("../src/ui/client/App.js");
     const base = status({ liveReady: true });
-    expect(enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim" } })).toBe(false);
+    expect(enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim", maker: "sim" } })).toBe(false);
     // Cualquier estrategia en live basta: el peligro no depende del modo de arranque.
-    expect(enVivo({ ...base, effectiveModes: { arb: "live", directional: "sim" } })).toBe(true);
-    expect(
-      enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim" }, settings: { ...base.settings, makerMode: "live" } }),
-    ).toBe(true);
+    expect(enVivo({ ...base, effectiveModes: { arb: "live", directional: "sim", maker: "sim" } })).toBe(true);
+    expect(enVivo({ ...base, effectiveModes: { arb: "sim", directional: "sim", maker: "live" } })).toBe(true);
   });
 
   it("offers the local-state reset only from the Settings danger zone", () => {
@@ -921,7 +919,7 @@ function getBodyRows(): HTMLElement[] {
 function status(args: { liveReady: boolean }): UiStatus {
   return {
     running: false,
-  effectiveModes: { arb: "sim", directional: "sim" },
+  effectiveModes: { arb: "sim", directional: "sim", maker: "sim" },
     settings: settings(),
     config: {
       ...settings(),

@@ -142,16 +142,24 @@ export function enVivo(status: UiStatus | null): boolean {
     return false;
   }
   const modos = status.effectiveModes;
-  return modos?.arb === "live" || modos?.directional === "live" || status.settings?.makerMode === "live";
+  return modos?.arb === "live" || modos?.directional === "live" || modos?.maker === "live";
 }
 
 function runningModeLabel(status: UiStatus): string {
-  const arb = status.effectiveModes?.arb ?? status.mode;
-  const dir = status.effectiveModes?.directional ?? status.mode;
-  if (arb !== dir) {
-    return `arb ${String(arb).toUpperCase()} · dir ${String(dir).toUpperCase()}`;
-  }
-  return String(arb).toUpperCase();
+  const m = status.effectiveModes;
+  const arb = m?.arb ?? status.mode;
+  const dir = m?.directional ?? status.mode;
+  const maker = m?.maker ?? "sim";
+  // Solo se nombra lo que esta ACTIVO. Un maker apagado no merece sitio en la insignia, pero uno en
+  // live tiene que verse aunque el resto este en papel — que fue justo el caso que la hizo mentir.
+  const partes: string[] = [];
+  if (status.settings?.arbEnabled) partes.push(`arb ${String(arb).toUpperCase()}`);
+  if (status.settings?.makerEnabled) partes.push(`maker ${maker.toUpperCase()}`);
+  const dirActivo = Object.values(status.settings?.enabledMarketOutcomes ?? {}).some((lados) =>
+    Object.values(lados ?? {}).some(Boolean),
+  );
+  if (dirActivo) partes.push(`dir ${String(dir).toUpperCase()}`);
+  return partes.length > 0 ? partes.join(" · ") : String(arb).toUpperCase();
 }
 
 const emptySettings: UiSettings = {

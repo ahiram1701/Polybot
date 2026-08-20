@@ -1263,6 +1263,8 @@ export class BotController {
         arb: settings.arbMode === "heredado" ? this.mode ?? config.mode : settings.arbMode,
         directional:
           settings.directionalMode === "heredado" ? this.mode ?? config.mode : settings.directionalMode,
+        // El maker NO hereda: cae a "sim" por diseno, porque es el unico que deja ordenes vivas.
+        maker: settings.makerMode === "heredado" ? "sim" : settings.makerMode,
       },
       startedAtMs: this.startedAtMs,
       lastError: this.lastError,

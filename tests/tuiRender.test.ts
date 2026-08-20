@@ -259,7 +259,7 @@ describe("TUI settings model", () => {
   });
 
   it("la cabecera separa las dos estrategias cuando sus modos difieren", () => {
-    const status = statusFixture({ effectiveModes: { arb: "live", directional: "sim" } });
+    const status = statusFixture({ effectiveModes: { arb: "live", directional: "sim", maker: "sim" } });
     const text = stripAnsi(renderDashboard(baseVm({ status })).join(NL));
     // Una sola insignia diria "SIM" con el arbitraje moviendo dinero real.
     expect(text).toContain("arb LIVE");

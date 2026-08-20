@@ -125,8 +125,12 @@ function runningBadge(status: CompactStatus): string {
   // "SIM" con el arbitraje moviendo dinero real.
   const arb = status.effectiveModes?.arb ?? status.mode;
   const dir = status.effectiveModes?.directional ?? status.mode;
-  if (arb !== dir) {
-    return `${green("●")} corriendo ${badge("arb", arb)} ${badge("dir", dir)}`;
+  const maker = status.effectiveModes?.maker;
+  // El maker se anadio despues y quedaba fuera: la cabecera decia SIM con dinero real en el libro.
+  const modos = [arb, dir, ...(maker ? [maker] : [])];
+  if (modos.some((m) => m !== modos[0])) {
+    const partes = [badge("arb", arb), badge("dir", dir), ...(maker ? [badge("maker", maker)] : [])];
+    return `${green("●")} corriendo ${partes.join(" ")}`;
   }
   return `${green("●")} corriendo ${arb === "live" ? red(bold("LIVE")) : green(bold("SIM"))}`;
 }

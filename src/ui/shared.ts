@@ -137,6 +137,14 @@ export interface MarketStatusSnapshot {
 export interface EffectiveModes {
   arb: Mode;
   directional: Mode;
+  /**
+   * El maker se anadio DESPUES de este campo y quedo fuera: la insignia decia "SIM" con el maker
+   * moviendo dinero real. Es exactamente la mentira que este tipo existe para impedir.
+   *
+   * Toda estrategia con modo propio tiene que aparecer aqui. Hay un test que lo comprueba contra las
+   * claves `*Mode` de los ajustes, para que la proxima no se olvide.
+   */
+  maker: Mode;
 }
 
 export interface UiStatus {
