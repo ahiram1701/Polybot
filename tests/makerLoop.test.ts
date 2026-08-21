@@ -1086,3 +1086,102 @@ describe("el latido recien arrancado no puede parecer un fallo", () => {
     cortar();
   });
 });
+
+/**
+ * El titular se mide fresco en CADA pasada —tiene dinero puesto—, y los demas compiten con una ficha
+ * de hasta dos minutos. Esa asimetria empujaba a mudarse: a quien se le tomo la ficha en un buen
+ * momento seguia compitiendo con ese numero aunque desde entonces se le hubiera llenado de
+ * competencia. Medido sobre 3,5 h de produccion: 6 mudanzas/hora, 16 de 21 decididas por el ranking.
+ */
+describe("una ficha rancia no puede desbancar a quien ya cotiza", () => {
+  /** Competencia mutable por activo: es la palanca exacta para mover el ranking sin tocar el resto. */
+  function libroMutable(comp: Record<string, number>) {
+    return {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const a = String(tokenId).split("-")[0]!;
+        const m = 0.5;
+        return {
+          tokenId,
+          bestAsk: m + 0.005,
+          bestBid: m - 0.005,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: [{ price: m + 0.005, size: (comp[a] ?? 0) / 2 }],
+          rawBidLevels: [{ price: m - 0.005, size: (comp[a] ?? 0) / 2 }],
+        };
+      }),
+    } as never;
+  }
+
+  it("no se muda a un mercado que HOY es peor, aunque su ficha vieja dijera que era mejor", async () => {
+    const engine = new SimulationMakerEngine();
+    const comp: Record<string, number> = { BTC: 0, ETH: 0, DOGE: 1e6 };
+    const loop = new MakerLoop(
+      { orderbook: libroMutable(comp), rewards: recompensas(100) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, sondeosPorPasada: 1, margenRelevo: 0.25 },
+    );
+    callar();
+    const ms = [market("BTC", 7200), market("ETH", 7200), market("DOGE", 7200)];
+
+    await loop.runOnce(ms, AHORA); // sondea BTC -> lo financia; ya es el titular
+    await loop.runOnce(ms, AHORA + 20_000); // sondea ETH -> ficha de ETH SIN competencia
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(2);
+
+    // La realidad cambia: ETH se llena de competencia y BTC empeora un poco, pero BTC sigue siendo
+    // mejor DE VERDAD. En la pasada 3 le toca sondear a DOGE, asi que ETH entra con su ficha vieja.
+    comp.ETH = 5e5;
+    comp.BTC = 1e4;
+    await loop.runOnce(ms, AHORA + 40_000);
+
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(2);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(0);
+  });
+
+  it("pero una mejora REAL sigue llevandose el capital", async () => {
+    // La regla es "decidir con datos frescos", no "no mudarse nunca". Si al releer el aspirante sigue
+    // siendo mejor, se muda igual: lo que se elimina es la mudanza decidida a ciegas.
+    const engine = new SimulationMakerEngine();
+    const comp: Record<string, number> = { BTC: 0, ETH: 0, DOGE: 1e6 };
+    const loop = new MakerLoop(
+      { orderbook: libroMutable(comp), rewards: recompensas(100) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, sondeosPorPasada: 1, margenRelevo: 0.25 },
+    );
+    callar();
+    const ms = [market("BTC", 7200), market("ETH", 7200), market("DOGE", 7200)];
+    await loop.runOnce(ms, AHORA);
+    await loop.runOnce(ms, AHORA + 20_000);
+
+    // Ahora es BTC el que se llena de competencia y ETH sigue limpio: la mudanza esta justificada.
+    comp.BTC = 1e6;
+    await loop.runOnce(ms, AHORA + 40_000);
+
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(0);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(2);
+  });
+
+  it("al relevar, el log dice cuanto valia el que PIERDE el capital", async () => {
+    // Con solo el ganador anotado no habia forma de juzgar una mudanza desde el log: el valor del
+    // saliente que quedaba en el historial era el de su ultima pasada con movimiento, a veces de hace
+    // media hora. Hubo que reproducir el fallo en un banco de pruebas para entenderlo.
+    const engine = new SimulationMakerEngine();
+    const comp: Record<string, number> = { BTC: 0, ETH: 0 };
+    const loop = new MakerLoop(
+      { orderbook: libroMutable(comp), rewards: recompensas(100) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, margenRelevo: 0.25 },
+    );
+    callar();
+    const ms = [market("BTC", 7200), market("ETH", 7200)];
+    await loop.runOnce(ms, AHORA);
+    comp.BTC = 1e6; // BTC se hunde: ETH se lleva el capital
+    const r = await loop.runOnce(ms, AHORA + 20_000);
+
+    const saliente = r.mercados.find((m) => m.slug.startsWith("btc"));
+    expect(saliente?.motivo).toBe("relevado");
+    expect(typeof saliente?.esperadoUsdDia).toBe("number");
+    const entrante = r.mercados.find((m) => m.slug.startsWith("eth"));
+    // Las dos cifras en la misma linea: la mudanza se puede juzgar sin salir del log.
+    expect(entrante!.esperadoUsdDia!).toBeGreaterThan(saliente!.esperadoUsdDia!);
+  });
+});

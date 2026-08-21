@@ -678,13 +678,61 @@ export class MakerLoop {
     // que al planificar uno ya refleja lo que los anteriores han cancelado o colocado en ESTA pasada.
     // Su propio dinero atado NO se le descuenta: puede cancelarlo y reutilizarlo.
 
-    const elegidos = elegirMercados(
-      candidatos,
-      this.config.capitalUsd,
-      this.config.ticksDelMedio,
-      this.config.margenRelevo ?? MARGEN_RELEVO,
-    );
+    const margen = this.config.margenRelevo ?? MARGEN_RELEVO;
+    /** Elegidos cuya relectura dice que ahi ya no se puede cotizar. Salen del ranking, no del bucle. */
+    const descartados = new Set<string>();
+    const enJuego = () => candidatos.filter((c) => !descartados.has(c.slug));
+    const rankear = (capital: number) =>
+      elegirMercados(enJuego(), capital, this.config.ticksDelMedio, margen);
+
+    let elegidos = rankear(this.config.capitalUsd);
+
+    // UN ASPIRANTE CON FICHA RANCIA NO PUEDE DESBANCAR A QUIEN YA COTIZA.
+    //
+    // El titular se mide fresco en cada pasada —tiene dinero puesto, se le mira siempre—, mientras que
+    // los demas compiten con una ficha de hasta dos minutos. Esa asimetria empuja sistematicamente a
+    // mudarse: a quien se le tomo la ficha en un buen momento sigue compitiendo con ESE numero aunque
+    // desde entonces se le haya llenado de competencia, contra un titular que compite con el suyo
+    // honesto y actual.
+    //
+    // Medido sobre 3,5 h de produccion: 6 mudanzas/hora, 16 de 21 decididas por el ranking, muchas
+    // hacia mercados de menos valor. Y reproducido en banco: con la ficha del aspirante tomada 20 s
+    // antes, el maker se mudaba a un mercado que en ese instante era PEOR.
+    //
+    // La relectura que ya habia corregia el PRECIO antes de colocar, pero no la DECISION, que estaba
+    // tomada con el dato viejo. Asi que cuando el ganador es rancio Y hay un titular al que desbancar,
+    // se relee y se vuelve a decidir con todos frescos. No cuesta una pasada de retraso: cuesta las
+    // lecturas de los elegidos, que son uno o dos.
+    const hayTitularDesbancado = () =>
+      candidatos.some((c) => c.vivas.length > 0 && !elegidos.some((e) => e.slug === c.slug));
+    const ganadorRancio = () =>
+      elegidos.some((e) => enJuego().find((c) => c.slug === e.slug)?.fresco === false);
+
+    if (ganadorRancio() && hayTitularDesbancado()) {
+      for (const elegido of elegidos) {
+        const candidato = candidatos.find((c) => c.slug === elegido.slug);
+        if (!candidato || candidato.fresco) {
+          continue;
+        }
+        const refresco = await this.refrescarCandidato(candidato, nowMs, resumen);
+        atadoUsd += refresco.atadoUsd;
+        if (!refresco.ok) {
+          descartados.add(candidato.slug);
+        }
+      }
+      elegidos = rankear(this.config.capitalUsd);
+    }
+
     const elegidosPorSlug = new Set(elegidos.map((e) => e.slug));
+
+    // Cuanto vale CADA candidato ahora mismo, no solo el ganador.
+    //
+    // Sin esto el log registraba el mercado al que se muda y nada del que abandona, asi que desde
+    // fuera no habia forma de juzgar si la mudanza estaba justificada: hubo que reproducirla en un
+    // banco de pruebas para entenderla. Es un reparto sin tope, o sea la evaluacion pura.
+    const evaluados = new Map(
+      rankear(Number.POSITIVE_INFINITY).map((e) => [e.slug, e.esperadoUsdDia] as const),
+    );
     let sinFinanciar = 0;
     /** El descartado mas BARATO cuando no se financia ninguno: dice cuanto capital falta. */
     let faltaCapital: { slug: string; costeUsd: number; cuantos: number } | undefined;
@@ -706,7 +754,17 @@ export class MakerLoop {
       // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
       // manda a mirar donde no es.
       const coste = candidato.params.minSize; // el par cuesta ~$1 por participacion
-      if (elegidos.length === 0) {
+      if (candidato.vivas.length > 0) {
+        // Quien PIERDE el capital se nombra siempre, y con lo que vale AHORA. Es la unica forma de
+        // juzgar una mudanza desde el log: con solo el ganador anotado, el valor del saliente que
+        // quedaba en el historial era el de su ultima pasada con movimiento, a veces de hace media
+        // hora, y comparar contra eso no dice nada.
+        resumen.mercados.push({
+          slug: candidato.slug,
+          motivo: elegidos.length > 0 ? "relevado" : "retirado_sin_relevo",
+          esperadoUsdDia: evaluados.get(candidato.slug),
+        });
+      } else if (elegidos.length === 0) {
         // Se resume en UNA linea con la entrada mas barata de todas, que es el dato accionable:
         // "cuanto capital hace falta para poder cotizar en algun sitio". Una linea por candidato
         // eran 25 lineas identicas por pasada desde que el escaner propone 25.
@@ -734,30 +792,12 @@ export class MakerLoop {
       // y no para colocar: la banda que puntua son 1,5-4,5 centavos, asi que con un medio de hace un
       // minuto las dos ordenes pueden nacer fuera, sin cobrar y con el dinero igualmente inmovilizado.
       if (!candidato.fresco) {
-        const releido = await this.inspeccionar(candidato.market, nowMs);
-        if (!releido || releido.cerca || !releido.params || !releido.libro) {
+        const refresco = await this.refrescarCandidato(candidato, nowMs, resumen);
+        atadoUsd += refresco.atadoUsd;
+        if (!refresco.ok) {
           resumen.mercados.push({ slug: candidato.slug, motivo: "sin_lectura_para_cotizar" });
           continue;
         }
-        const { vivas, params, libro } = releido;
-        this.detectarLlenados(candidato.market, vivas, resumen);
-        atadoUsd += vivas.reduce((suma, o) => suma + o.price * o.size, 0);
-        const midFresco = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
-        const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
-        const rivales = this.competencia(libro, midFresco, parametros, vivas);
-        this.fichas.set(candidato.slug, {
-          poolDiaUsd: params.ratePerDay,
-          qRivalBid: rivales.qRivalBid,
-          qRivalAsk: rivales.qRivalAsk,
-          mid: midFresco,
-          tickSize: Number(candidato.market.tickSize),
-          params: parametros,
-          enMs: nowMs,
-        });
-        candidato.mid = midFresco;
-        candidato.params = parametros;
-        candidato.vivas = vivas;
-        candidato.fresco = true;
       }
 
       const estado = this.estado(candidato.slug);
@@ -921,6 +961,45 @@ export class MakerLoop {
       return;
     }
     logger.info("Maker: latido.", meta);
+  }
+
+  /**
+   * Relee un candidato y le pone la ficha al dia. Devuelve los dolares atados que descubre al hacerlo.
+   *
+   * `ok: false` significa "aqui no se puede cotizar ahora": cerca del cierre, sin programa, sin libro o
+   * sin respuesta. Quien llama decide si eso es saltarselo o rehacer el ranking sin el.
+   */
+  private async refrescarCandidato(
+    candidato: CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[]; fresco: boolean },
+    nowMs: number,
+    resumen: ResumenPasada,
+  ): Promise<{ ok: boolean; atadoUsd: number }> {
+    const releido = await this.inspeccionar(candidato.market, nowMs);
+    if (!releido || releido.cerca || !releido.params || !releido.libro) {
+      return { ok: false, atadoUsd: 0 };
+    }
+    const { vivas, params, libro } = releido;
+    this.detectarLlenados(candidato.market, vivas, resumen);
+    const mid = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
+    const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
+    const rivales = this.competencia(libro, mid, parametros, vivas);
+    this.fichas.set(candidato.slug, {
+      poolDiaUsd: params.ratePerDay,
+      qRivalBid: rivales.qRivalBid,
+      qRivalAsk: rivales.qRivalAsk,
+      mid,
+      tickSize: Number(candidato.market.tickSize),
+      params: parametros,
+      enMs: nowMs,
+    });
+    candidato.poolDiaUsd = params.ratePerDay;
+    candidato.qRivalBid = rivales.qRivalBid;
+    candidato.qRivalAsk = rivales.qRivalAsk;
+    candidato.mid = mid;
+    candidato.params = parametros;
+    candidato.vivas = vivas;
+    candidato.fresco = true;
+    return { ok: true, atadoUsd: vivas.reduce((suma, o) => suma + o.price * o.size, 0) };
   }
 
   /** Los mercados en los que creemos tener alguna orden viva. Ver `detectarLlenados` para el rastro. */
