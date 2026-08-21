@@ -662,33 +662,44 @@ export class MakerLoop {
     /** El descartado mas BARATO cuando no se financia ninguno: dice cuanto capital falta. */
     let faltaCapital: { slug: string; costeUsd: number; cuantos: number } | undefined;
 
+    // PRIMERO se suelta TODO lo descartado, y solo DESPUES se reparte. El orden no es un detalle de
+    // estilo: en un solo recorrido, el presupuesto del ganador depende de si el mercado al que releva
+    // aparecia antes o despues que el en la lista. Observado en el banco de ensayo — el titular
+    // cancelado y el ganador con `capital_insuficiente_necesita_19.80` en la MISMA pasada, dejando al
+    // maker sin cotizar en ningun sitio con el tope entero libre. En dos fases no puede pasar.
     for (const candidato of candidatos) {
-      const elegido = elegidos.find((e) => e.slug === candidato.slug);
+      if (elegidosPorSlug.has(candidato.slug)) {
+        continue;
+      }
       // Un mercado que no entra en el presupuesto no se queda con ordenes puestas: inmovilizarian
-      // dinero que otro mercado esta rindiendo mejor.
-      if (!elegidosPorSlug.has(candidato.slug)) {
-        // Su dinero vuelve al bote EN ESTA MISMA PASADA. Dejarlo apartado hasta la siguiente dejaba
-        // sin cotizar al mercado que acababa de ganar el ranking, con el capital entero libre.
-        atadoUsd -= await this.retirarYLiberar(candidato.vivas, candidato.slug, resumen);
-        // Se distinguen dos situaciones que antes compartian mensaje, y esa ambiguedad me tuvo
-        // persiguiendo un fantasma: si NO se financio ninguno, el problema es que el tope no da para
-        // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
-        // manda a mirar donde no es.
-        const coste = candidato.params.minSize; // el par cuesta ~$1 por participacion
-        if (elegidos.length === 0) {
-          // Se resume en UNA linea con la entrada mas barata de todas, que es el dato accionable:
-          // "cuanto capital hace falta para poder cotizar en algun sitio". Una linea por candidato
-          // eran 25 lineas identicas por pasada desde que el escaner propone 25.
-          faltaCapital =
-            faltaCapital && faltaCapital.costeUsd <= coste
-              ? { ...faltaCapital, cuantos: faltaCapital.cuantos + 1 }
-              : { slug: candidato.slug, costeUsd: coste, cuantos: (faltaCapital?.cuantos ?? 0) + 1 };
-        } else {
-          // Con el escaner mirando 25 mercados y capital para uno, listarlos todos escribia 24 lineas
-          // identicas por pasada. Se cuentan y ya: saber CUAL de los descartados es cual no aporta
-          // nada, y el ruido tapa lo que si importa.
-          sinFinanciar += 1;
-        }
+      // dinero que otro mercado esta rindiendo mejor. Y su dinero vuelve al bote EN ESTA PASADA.
+      atadoUsd -= await this.retirarYLiberar(candidato.vivas, candidato.slug, resumen);
+      // Se distinguen dos situaciones que antes compartian mensaje, y esa ambiguedad me tuvo
+      // persiguiendo un fantasma: si NO se financio ninguno, el problema es que el tope no da para
+      // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
+      // manda a mirar donde no es.
+      const coste = candidato.params.minSize; // el par cuesta ~$1 por participacion
+      if (elegidos.length === 0) {
+        // Se resume en UNA linea con la entrada mas barata de todas, que es el dato accionable:
+        // "cuanto capital hace falta para poder cotizar en algun sitio". Una linea por candidato
+        // eran 25 lineas identicas por pasada desde que el escaner propone 25.
+        faltaCapital =
+          faltaCapital && faltaCapital.costeUsd <= coste
+            ? { ...faltaCapital, cuantos: faltaCapital.cuantos + 1 }
+            : { slug: candidato.slug, costeUsd: coste, cuantos: (faltaCapital?.cuantos ?? 0) + 1 };
+      } else {
+        // Con el escaner mirando 25 mercados y capital para uno, listarlos todos escribia 24 lineas
+        // identicas por pasada. Se cuentan y ya: saber CUAL de los descartados es cual no aporta
+        // nada, y el ruido tapa lo que si importa.
+        sinFinanciar += 1;
+      }
+    }
+
+    // El reparto va en ORDEN DE RANKING, que es el orden en el que `elegirMercados` repartio el
+    // capital. Recorrer el array de candidatos daba un orden distinto al que se uso para decidir.
+    for (const elegido of elegidos) {
+      const candidato = candidatos.find((c) => c.slug === elegido.slug);
+      if (!candidato) {
         continue;
       }
 

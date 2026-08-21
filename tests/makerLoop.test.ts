@@ -901,3 +901,46 @@ describe("con 25 candidatos, los mensajes tienen que seguir siendo legibles", ()
     expect(avisos[0]!.slug).toContain("(+2 mas)");
   });
 });
+
+describe("el reparto no puede depender del ORDEN de la lista", () => {
+  it("el ganador cobra su presupuesto aunque el titular al que releva vaya DETRAS", async () => {
+    // Cazado con `npm run ensayo:maker`, no razonando: en una sola pasada el titular quedo cancelado
+    // y el ganador recibio `capital_insuficiente_necesita_19.80`, dejando al maker sin cotizar en
+    // ningun sitio con el tope entero libre. En un solo recorrido el presupuesto del ganador dependia
+    // de si el mercado al que releva aparecia antes o despues que el. Ahora primero se suelta todo lo
+    // descartado y solo despues se reparte.
+    const engine = new SimulationMakerEngine();
+    const btc = market("BTC");
+    await engine.colocar(btc, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    await engine.colocar(btc, { outcome: "DOWN", side: "BUY", price: 0.49, size: 50 });
+
+    const orderbook = {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const asset = String(tokenId).split("-")[0]!;
+        const competencia = asset === "BTC" ? 100_000 : 0; // BTC pierde el ranking
+        const m = 0.5;
+        return {
+          tokenId,
+          bestAsk: m + 0.005,
+          bestBid: m - 0.005,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: [{ price: m + 0.005, size: competencia / 2 }],
+          rawBidLevels: [{ price: m - 0.005, size: competencia / 2 }],
+        };
+      }),
+    } as never;
+    const loop = new MakerLoop(
+      { orderbook, rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    // ETH —el que va a GANAR— primero en la lista, y el titular BTC detras.
+    const r = await loop.runOnce([market("ETH"), btc], AHORA);
+    expect(await engine.ordenesVivas(btc)).toHaveLength(0);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(2);
+    expect(r.mercados.some((m) => m.motivo?.startsWith("capital_insuficiente"))).toBe(false);
+  });
+});

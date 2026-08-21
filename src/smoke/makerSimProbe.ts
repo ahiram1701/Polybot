@@ -99,6 +99,7 @@ async function main(): Promise<void> {
    */
   let mudanzas = 0;
   let dondeCotizabamos: string | undefined;
+  const arrancoLaSonda = Date.now();
 
   for (let i = 1; i <= pasadas; i += 1) {
     const nowMs = Date.now();
@@ -187,8 +188,12 @@ async function main(): Promise<void> {
   const media = (xs: number[]) => (xs.length === 0 ? 0 : xs.reduce((s, x) => s + x, 0) / xs.length);
   const percentil = (xs: number[], q: number) =>
     xs.length === 0 ? 0 : [...xs].sort((a, b) => a - b)[Math.floor(q * (xs.length - 1))]!;
-  // El ritmo real del bot, no el de la sonda: `INTERVALO_MAKER_MS` en `botRunner`.
-  const mudanzasPorHora = pasadas > 1 ? (mudanzas / (pasadas - 1)) * (3_600_000 / 15_000) : 0;
+  // Por hora de reloj DE LA SONDA, no extrapolando al ritmo del bot. La sonda pasa cada ~3 s y el bot
+  // cada 15: entre dos pasadas de la sonda el libro se ha movido cinco veces menos, asi que convertir
+  // una cadencia en la otra da un numero inventado. Lo que se compara con el 10,7/h de produccion es
+  // esta cifra cuando la sonda corre un rato largo.
+  const horas = (Date.now() - arrancoLaSonda) / 3_600_000;
+  const mudanzasPorHora = horas > 0 ? mudanzas / horas : 0;
 
   console.log(`\n=== VEREDICTO ===`);
   console.log(`  pasadas con cotizacion viva : ${pasadasConCotizacion}/${pasadas}`);
@@ -204,9 +209,12 @@ async function main(): Promise<void> {
   );
   console.log(`  duracion de la pasada       : p50 ${percentil(msPorPasada, 0.5)}ms  max ${Math.max(0, ...msPorPasada)}ms`);
   console.log(
-    `  mudanzas de mercado         : ${mudanzas} en ${pasadas} pasadas` +
-      `  ->  ${mudanzasPorHora.toFixed(1)}/hora al ritmo del bot   (antes: 10,7/h, el 86% sin motivo)`,
+    `  mudanzas de mercado         : ${mudanzas} en ${pasadas} pasadas (${(horas * 60).toFixed(1)} min)` +
+      `  ->  ${mudanzasPorHora.toFixed(1)}/hora   (produccion antes: 10,7/h, el 86% sin motivo)`,
   );
+  if (horas * 60 < 20) {
+    console.log(`  (esa tasa por hora vale poco con menos de 20 min de sonda: son pocas oportunidades de mudarse)`);
+  }
   await loop.retirarTodo(
     fuente === "recompensas"
       ? (await scanner.mejores(capitalUsd)).map((c) => c.mercado)

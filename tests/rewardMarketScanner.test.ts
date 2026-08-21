@@ -234,3 +234,39 @@ describe("buscar mercados de recompensa que quepan en el capital", () => {
     expect(r[0]!.mercado.outcomes.DOWN.tokenId).toBe("x-b");
   });
 });
+
+describe("resolver en paralelo no puede cambiar lo que se elige", () => {
+  it("conserva el orden de la criba aunque las respuestas lleguen desordenadas", async () => {
+    // Se resuelve por tandas para no comerse 6 segundos del bucle. El paralelismo es una optimizacion
+    // de latencia y NO debe reordenar el ranking: quien llega antes no gana nada.
+    const filas = Array.from({ length: 10 }, (_, i) => fila(`m${i}`, 20, 4.5, 200 - i));
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/rewards/markets/current")) {
+        return { json: async () => ({ data: filas, next_cursor: "LTE=" }) };
+      }
+      const id = url.split("/markets/")[1] ?? "";
+      // Los primeros de la criba responden los ULTIMOS: si el orden dependiera de la llegada, se veria.
+      const retraso = id === "m0" ? 30 : id === "m1" ? 20 : 1;
+      await new Promise((r) => setTimeout(r, retraso));
+      return { json: async () => mercado(id) };
+    });
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl as never);
+    await scanner.precargar();
+    const r = await scanner.mejores(20, 5);
+    expect(r.map((c) => c.mercado.conditionId)).toEqual(["m0", "m1", "m2", "m3", "m4"]);
+  });
+
+  it("si alguno no resuelve, se rellena con los siguientes hasta el limite", async () => {
+    // El bucle en serie se saltaba los que fallaban y seguia bajando. La version por tandas pide
+    // algunos de mas para conservar ese comportamiento: el objetivo son N BUENOS, no N intentos.
+    const filas = Array.from({ length: 10 }, (_, i) => fila(`m${i}`, 20, 4.5, 200 - i));
+    const { fetchImpl } = servidor(filas, {
+      m1: mercado("m1", { accepting_orders: false }),
+      m2: mercado("m2", { closed: true }),
+    });
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl);
+    await scanner.precargar();
+    const r = await scanner.mejores(20, 4);
+    expect(r.map((c) => c.mercado.conditionId)).toEqual(["m0", "m3", "m4", "m5"]);
+  });
+});

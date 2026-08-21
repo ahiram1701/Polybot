@@ -208,12 +208,32 @@ export class RewardMarketScanner {
     // sondea por turnos (`sondeosPorPasada`) y ordena con la ultima ficha de cada uno.
     const aResolver = limite;
 
+    // Resolver EN PARALELO, por tandas. En serie son una peticion tras otra: con 3 mercados costaba
+    // ~700 ms y no se notaba, pero al pasar a 25 la pasada del maker se comio **6 segundos enteros del
+    // bucle** cada vez que caducaba la cache (medido en produccion, `maker: 6024ms`). El bucle es de
+    // todos, y el direccional captura el precio de apertura en los primeros segundos de su ventana.
+    //
+    // La tanda es pequena a proposito: esto convive con las lecturas de libro de la misma iteracion y
+    // el pool de conexiones es compartido. Sobresuscribirlo no da un error claro, da timeouts.
+    const TANDA = 8;
+    // Se piden algunos de mas porque algunos no resuelven —cerrados, sin par completo, timeout— y el
+    // objetivo es llegar a `aResolver` BUENOS, que es lo que hacia el bucle en serie al saltarselos.
+    const aPedir = cribados.slice(0, aResolver + 5);
+    const resolucion: Array<{ mercado: MercadoMaker | undefined; c: (typeof cribados)[number] }> = [];
+    for (let i = 0; i < aPedir.length; i += TANDA) {
+      const tanda = aPedir.slice(i, i + TANDA);
+      const hechos = await Promise.all(
+        tanda.map(async (c) => ({ c, mercado: await this.resolver(String(c.fila.condition_id)) })),
+      );
+      resolucion.push(...hechos);
+    }
+
     const resueltos: CandidatoRecompensa[] = [];
-    for (const c of cribados) {
+    // Se recorre en el ORDEN de la criba, no en el de llegada: el paralelismo no debe reordenar nada.
+    for (const { c, mercado } of resolucion) {
       if (resueltos.length >= aResolver) {
         break;
       }
-      const mercado = await this.resolver(String(c.fila.condition_id));
       if (!mercado) {
         continue;
       }
