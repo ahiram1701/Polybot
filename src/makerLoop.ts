@@ -901,6 +901,10 @@ export class MakerLoop {
 
     const mudoMinutos =
       this.sinCotizarDesdeMs === undefined ? 0 : Math.round((nowMs - this.sinCotizarDesdeMs) / 60_000);
+    // `porQueNo` solo si hay algo que explicar. Recien arrancado no hay ni candidatos —el escaner tarda
+    // en traer el registro— y salia un `"porQueNo":{}` vacio que parece un fallo y no dice nada: con
+    // `candidatos: 0` delante, la explicacion ya esta dada.
+    const porQueNo = cotizandoEn.length === 0 ? recuentoDeMotivos(resumen.mercados) : {};
     const meta = {
       cotizandoEn: cotizandoEn.length,
       mercados: cotizandoEn.slice(0, 3),
@@ -908,7 +912,8 @@ export class MakerLoop {
       gastadoUsd: resumen.gastadoUsd,
       paresUsd: resumen.paresUsd,
       candidatos,
-      ...(cotizandoEn.length === 0 ? { mudoMinutos, porQueNo: recuentoDeMotivos(resumen.mercados) } : {}),
+      ...(cotizandoEn.length === 0 ? { mudoMinutos } : {}),
+      ...(Object.keys(porQueNo).length > 0 ? { porQueNo } : {}),
     };
 
     if (cotizandoEn.length === 0 && mudoMinutos >= MINUTOS_MUDO_PARA_AVISAR) {

@@ -1063,3 +1063,26 @@ describe("el latido: el silencio tiene que significar algo", () => {
     cortar();
   });
 });
+
+describe("el latido recien arrancado no puede parecer un fallo", () => {
+  it("sin candidatos todavia, no escribe un porQueNo vacio", async () => {
+    // El escaner tarda en traer el registro, asi que las primeras pasadas no tienen ni un mercado que
+    // mirar. Salia `"porQueNo":{}` — un hueco que parece un error y no explica nada. Con
+    // `candidatos: 0` delante, la explicacion ya esta dada.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const entradas: LogEntry[] = [];
+    const cortar = logger.subscribe((e) => entradas.push(e));
+    await loop.runOnce([], AHORA); // el escaner aun no ha traido nada
+    const latido = entradas.find((e) => e.message === "Maker: latido.")!;
+    const meta = latido.meta as Record<string, unknown>;
+    expect(meta.candidatos).toBe(0);
+    expect(meta.cotizandoEn).toBe(0);
+    expect("porQueNo" in meta).toBe(false);
+    cortar();
+  });
+});
