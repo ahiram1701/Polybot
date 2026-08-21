@@ -24,7 +24,7 @@ import {
 } from "./makerQuoting.js";
 import type { CandidatoMercado, Inventario, OrdenViva, ParametrosRecompensa } from "./makerQuoting.js";
 import type { OrderbookService } from "./orderbookService.js";
-import type { RewardParamsReader } from "./rewardParams.js";
+import type { RecompensaMercado, RewardParamsReader } from "./rewardParams.js";
 import { secondsToEnd } from "./time.js";
 import type { MercadoMaker } from "./makerMarket.js";
 import type { Outcome } from "./types.js";
@@ -51,6 +51,25 @@ export interface MakerLoopConfig {
    * peticiones del exchange.
    */
   minMsEntreRecolocaciones?: number;
+  /**
+   * Cuantos mercados NO cotizados se sondean (libro + ordenes) en cada pasada.
+   *
+   * El escaner propone hasta 25 candidatos, y leerlos todos en cada pasada serian 75 peticiones cada
+   * 15 s contra un pool de 24 conexiones. Ese exceso ya se pago una vez: **1.049 timeouts de 2 s en
+   * una hora** con el endpoint respondiendo en 280 ms al medirlo suelto, y el maker medio ciego sin
+   * que nada pareciera roto. Se sondea por turnos, del mas rancio al mas fresco.
+   */
+  sondeosPorPasada?: number;
+  /**
+   * Cuanto vale una medida de competencia para ORDENAR mercados.
+   *
+   * Solo para ordenar. Colocar con un punto medio rancio seria peor que no colocar: la banda que
+   * puntua son 1,5-4,5 centavos, asi que un medio de hace un minuto puede dejar las dos ordenes fuera
+   * y con el dinero igualmente inmovilizado. Antes de cotizar en un mercado se le relee el libro.
+   */
+  ttlCompetenciaMs?: number;
+  /** Cuanto mejor tiene que ser un aspirante para quitarle el capital al que ya cotiza. Ver `elegirMercados`. */
+  margenRelevo?: number;
 }
 
 export interface ResumenPasada {
@@ -60,11 +79,18 @@ export interface ResumenPasada {
   /** Dolares ya GASTADOS en llenados y todavia atados a posiciones sin resolver. */
   gastadoUsd: number;
   /**
-   * Dolares inmovilizados en ordenes propias VIVAS, sumando todos los mercados.
+   * Dolares inmovilizados en ordenes propias VIVAS al TERMINAR la pasada, sumando todos los mercados.
    *
    * No es `comprometidoUsd`, que solo cuenta lo colocado en ESTA pasada. Hace falta por separado
    * porque una orden en reposo baja el saldo del exchange sin ser una perdida: el dinero sigue siendo
    * nuestro. Quien mire solo el saldo para decidir si parar, parara en operacion normal.
+   *
+   * Al terminar, no al empezar, y contando TODOS los mercados leidos —no solo los que llegaron a ser
+   * candidatos—. Medirlo antes describia un estado que dejaba de ser cierto en la misma pasada, y
+   * dejar fuera a un mercado cuyo libro no llego reportaba $0 con dinero de verdad atado. Los dos
+   * errores empujan en la misma direccion: hacia parar el maker sin motivo.
+   *
+   * Un mercado cuya lectura falla ENTERA no aparece: no se puede contar lo que no se ha podido ver.
    */
   vivoUsd: number;
   /**
@@ -86,6 +112,35 @@ export interface ResumenPasada {
 
 /** 15 s: recorta el ritmo ~10 veces y sigue reaccionando dentro de una ventana de 5 minutos. */
 const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
+
+/**
+ * Cuantos mercados nuevos se miran por pasada. Con 25 candidatos y pasadas de 15 s, todos quedan
+ * revisados en ~95 s: de sobra para ORDENAR, y sin acercarse al limite de sockets.
+ */
+const SONDEOS_POR_PASADA = 4;
+
+/** Dos minutos: mas que el barrido completo, para que ningun candidato caiga del ranking por turno. */
+const TTL_COMPETENCIA_MS = 120_000;
+
+/**
+ * 25% mejor para merecer el relevo.
+ *
+ * Medido sobre 21,8 h: 10,7 mudanzas por hora, el 86% abandonando un mercado que seguia disponible.
+ * Entre los que caben en $20 hay 54 empatados por bote, asi que sin margen se cambia de sitio con el
+ * ruido de la foto del libro.
+ */
+const MARGEN_RELEVO = 0.25;
+
+/** Lo ultimo que se midio de un mercado. Sirve para ordenar; para cotizar hace falta relectura. */
+interface FichaCompetencia {
+  poolDiaUsd: number;
+  qRivalBid: number;
+  qRivalAsk: number;
+  mid: number;
+  tickSize: number;
+  params: ParametrosRecompensa;
+  enMs: number;
+}
 
 /** Lo que hay que recordar de un mercado entre pasadas. Muere cuando su ventana se cierra. */
 interface EstadoMercado {
@@ -114,6 +169,16 @@ export class MakerLoop {
    * sin que nadie volviera a mirarlas — y una orden viva puede llenarse y resolver sola.
    */
   private readonly cotizados = new Map<string, MercadoMaker>();
+
+  /**
+   * Ultima medida de competencia de cada mercado, para poder ORDENAR muchos leyendo pocos.
+   *
+   * Es lo que hace asequible mirar 25 candidatos en vez de 3. Y mirar 3 costaba caro: entre los
+   * mercados que caben en $20 hay 54 empatados por bote, el orden del registro **no predice el
+   * rendimiento real** (Spearman 0,007 medido sobre 60 mercados) y el rendimiento va de 10,2 a 0,004
+   * dolares al dia por dolar. Elegir el mejor de 3 al azar rinde menos de la mitad que el mejor de 20.
+   */
+  private readonly fichas = new Map<string, FichaCompetencia>();
 
   constructor(
     private readonly deps: MakerLoopDeps,
@@ -151,7 +216,7 @@ export class MakerLoop {
     for (const market of markets) {
       try {
         const vivas = await this.deps.engine.ordenesVivas(market);
-        canceladas += await this.cancelar(vivas.map((o) => o.id), market.slug);
+        canceladas += (await this.cancelar(vivas.map((o) => o.id), market.slug)).length;
       } catch (error) {
         // Se sigue con los demas mercados: dejar ordenes vivas en UNO es malo, en TODOS es peor.
         logger.warn("No se pudieron retirar las ordenes de un mercado.", {
@@ -191,7 +256,7 @@ export class MakerLoop {
    * Sin este olvido, la orden desaparecida se contaria como llenada en la pasada siguiente: el gasto
    * acumulado se dispararia solo y el tope dejaria al maker mudo sin que nadie hubiera comprado nada.
    */
-  private async cancelar(ids: string[], slug: string): Promise<number> {
+  private async cancelar(ids: string[], slug: string): Promise<string[]> {
     // Se olvida SOLO lo que el exchange confirma haber cancelado.
     //
     // Borrar el rastro por adelantado era peligroso: una orden que el exchange se negara a cancelar
@@ -203,7 +268,28 @@ export class MakerLoop {
       this.tamanoConocido.delete(`${slug}|${id}`);
       this.datosOrden.delete(`${slug}|${id}`);
     }
-    return canceladas.length;
+    return canceladas;
+  }
+
+  /**
+   * Cancela, apunta el recuento en el resumen y devuelve los DOLARES que quedan REALMENTE libres.
+   *
+   * Existe porque el reparto de capital necesita las dos cosas a la vez y antes solo tenia una: se
+   * contaban las cancelaciones pero no se devolvia su dinero al bote. Y devolver el dinero de lo que
+   * se PIDIO cancelar seria peor que no devolverlo: una orden que el exchange se niega a cancelar
+   * sigue viva y sigue costando. Solo libera lo confirmado.
+   */
+  private async retirarYLiberar(
+    ordenes: Array<{ id: string; price: number; size: number }>,
+    slug: string,
+    resumen: ResumenPasada,
+  ): Promise<number> {
+    if (ordenes.length === 0) {
+      return 0;
+    }
+    const confirmadas = new Set(await this.cancelar(ordenes.map((o) => o.id), slug));
+    resumen.canceladas += confirmadas.size;
+    return ordenes.filter((o) => confirmadas.has(o.id)).reduce((s, o) => s + o.price * o.size, 0);
   }
 
   /**
@@ -267,6 +353,79 @@ export class MakerLoop {
    * dos consecuencias graves: el punto medio salia indefinido (1.187 pasadas perdidas en un dia) y el
    * estimador se creia dueño del bote entero.
    */
+  /**
+   * A que mercados se les lee el estado ESTA pasada.
+   *
+   * Donde ya se cotiza va siempre: ahi hay dinero, y hay que ver si la orden sigue puntuando y si
+   * alguien la lleno. Del resto entra un turno, del mas rancio al que se miro hace menos, para que
+   * ninguno se quede sin medir. Nunca se sondea la lista entera: 25 candidatos x 3 peticiones cada
+   * 15 s contra un pool de 24 conexiones es exactamente como se llego a 1.049 timeouts en una hora.
+   */
+  private aQuienSondear(markets: MercadoMaker[]): Set<string> {
+    const elegidos = new Set<string>();
+    const resto: MercadoMaker[] = [];
+    for (const market of markets) {
+      // El criterio es "queda alguna orden nuestra viva ahi", NO "hemos cotizado ahi alguna vez".
+      // `cotizados` es lo segundo y ademas gobierna otra cosa —cuando olvidar el gasto de una ventana
+      // cerrada—, asi que usarlo aqui hacia dos cosas malas: los mercados abandonados se comian el cupo
+      // de sondeo para siempre, y podarlo para arreglarlo dejaba el gasto contando eternamente contra
+      // el tope. Son dos preguntas distintas y ahora tienen dos respuestas distintas.
+      if (this.tieneRastroDeOrdenes(market.slug)) {
+        elegidos.add(market.slug);
+      } else {
+        resto.push(market);
+      }
+    }
+    const cupo = Math.max(0, this.config.sondeosPorPasada ?? SONDEOS_POR_PASADA);
+    // Los nunca vistos tienen ficha en el instante 0, asi que entran los primeros por construccion.
+    const porAntiguedad = [...resto].sort(
+      (izq, der) => (this.fichas.get(izq.slug)?.enMs ?? 0) - (this.fichas.get(der.slug)?.enMs ?? 0),
+    );
+    for (const market of porAntiguedad.slice(0, cupo)) {
+      elegidos.add(market.slug);
+    }
+    return elegidos;
+  }
+
+  /**
+   * Todo lo que hay que saber de UN mercado para decidir: que tenemos vivo, si paga y como esta el libro.
+   *
+   * Un fallo leyendo uno no puede tumbar la pasada entera. Sin este intento, una excepcion de
+   * `ordenesVivas` —un timeout, un 429— abortaba tambien los mercados que si respondian, y ademas
+   * dejaba sin recorrer la retirada de los que estaban cerca del cierre.
+   */
+  private async inspeccionar(
+    market: MercadoMaker,
+    nowMs: number,
+  ): Promise<
+    | {
+        market: MercadoMaker;
+        vivas: OrdenViva[];
+        cerca: boolean;
+        params: RecompensaMercado | undefined;
+        libro: { bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> } | undefined;
+      }
+    | undefined
+  > {
+    try {
+      const vivas = await this.deps.engine.ordenesVivas(market);
+      const cerca = secondsToEnd(market.endMs, nowMs) <= this.config.retirarSegundosAntesDelCierre;
+      if (cerca) {
+        return { market, vivas, cerca, params: undefined, libro: undefined };
+      }
+      const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
+      const libro = params ? await this.libroFusionado(market) : undefined;
+      return { market, vivas, cerca, params, libro };
+    } catch (error) {
+      logger.warn("Maker: no se pudo leer el estado de un mercado; se salta esta pasada.", {
+        slug: market.slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Sin saber que hay vivo no se toca nada: ni se cotiza ni se cancela a ciegas.
+      return undefined;
+    }
+  }
+
   private async libroFusionado(
     market: MercadoMaker,
   ): Promise<{ bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> } | undefined> {
@@ -344,6 +503,9 @@ export class MakerLoop {
     // que lo que quede vivo ahi seria una orden que nadie vuelve a mirar y que puede llenarse y
     // resolver sola. Y su gasto deja de contar contra el tope: esas posiciones ya resolvieron.
     const vigentes = new Set(markets.map((m) => m.slug));
+    // Dinero que sigue atado en mercados que ya no se recorren porque el exchange no acepto retirarlo.
+    // Cuenta contra el tope igual que el resto: sigue siendo dinero fuera del bolsillo.
+    let atadoHuerfanoUsd = 0;
     for (const [slug, market] of [...this.cotizados]) {
       if (vigentes.has(slug)) {
         continue;
@@ -355,7 +517,15 @@ export class MakerLoop {
             slug,
             ordenes: huerfanas.length,
           });
-          resumen.canceladas += await this.cancelar(huerfanas.map((o) => o.id), slug);
+          const liberado = await this.retirarYLiberar(huerfanas, slug, resumen);
+          const restante = huerfanas.reduce((suma, o) => suma + o.price * o.size, 0) - liberado;
+          if (restante > 0) {
+            // Cancelar puede confirmar SOLO una parte. Olvidar el mercado aqui dejaria las que
+            // sobreviven vivas, sin que nadie vuelva a mirarlas y ademas invisibles para el tope. Se
+            // conserva para reintentarlo, igual que cuando la llamada falla entera.
+            atadoHuerfanoUsd += restante;
+            continue;
+          }
         }
       } catch (error) {
         // Si no se pueden retirar, se conserva el mercado para reintentarlo en la pasada siguiente:
@@ -369,8 +539,25 @@ export class MakerLoop {
       this.cotizados.delete(slug);
       this.estados.delete(slug);
     }
-    const candidatos: Array<CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[] }> = [];
-    let comprometidoGlobal = 0;
+    const candidatos: Array<
+      CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[]; fresco: boolean }
+    > = [];
+
+    /**
+     * DOLARES ATADOS AHORA MISMO en ordenes propias vivas, en todos los mercados. Cuenta unica.
+     *
+     * Antes habia dos medias cuentas y las dos mentian. Solo sumaba los mercados que llegaban a ser
+     * CANDIDATOS, asi que un libro que no llegaba —y llegan ~1.000 timeouts a la hora— borraba sus
+     * ordenes de la contabilidad sin retirarlas: el tope se pasaba (medido en banco de pruebas: $98
+     * con el tope en $60) y `vivoUsd` reportaba $0 con dinero de verdad inmovilizado, que es justo lo
+     * que lee el suelo de patrimonio para decidir si parar. Y el dinero de un mercado descartado no
+     * volvia al bote hasta la pasada siguiente, asi que el mercado que GANABA el ranking se quedaba
+     * sin cotizar por falta de un capital que ya estaba libre.
+     *
+     * Sube al colocar y baja SOLO con cancelaciones confirmadas. Lo que no se puede leer no se puede
+     * contar: un mercado cuya lectura falla entera queda fuera, y por eso ahi tampoco se toca nada.
+     */
+    let atadoUsd = atadoHuerfanoUsd;
 
     // La LECTURA de los mercados va en paralelo; la DECISION, en serie.
     //
@@ -378,29 +565,12 @@ export class MakerLoop {
     // bloqueaba el bucle entero hasta que el watchdog reiniciaba el proceso. Nada de esto se escribe,
     // asi que paralelizarlo es seguro; lo que si tiene que seguir en orden es repartir el capital,
     // porque cada mercado consume del mismo presupuesto que el anterior.
+    //
+    // Y se lee a POCOS: donde ya cotizamos —ahi hay dinero— mas un turno de los demas. Los que no
+    // tocan esta vez entran al ranking con su ultima ficha; ninguno se cotiza sin relectura.
+    const aSondear = this.aQuienSondear(markets);
     const leidos = await Promise.all(
-      markets.map(async (market) => {
-        // Un fallo leyendo UN mercado no puede tumbar la pasada entera. Sin este intento, una excepcion
-        // de `ordenesVivas` —un timeout, un 429— abortaba tambien los mercados que si respondian, y
-        // ademas dejaba sin recorrer la retirada de los que estaban cerca del cierre.
-        try {
-          const vivas = await this.deps.engine.ordenesVivas(market);
-          const cerca = secondsToEnd(market.endMs, nowMs) <= this.config.retirarSegundosAntesDelCierre;
-          if (cerca) {
-            return { market, vivas, cerca, params: undefined, libro: undefined };
-          }
-          const params = await this.deps.rewards.paraMercado(market.conditionId, market.slug);
-          const libro = params ? await this.libroFusionado(market) : undefined;
-          return { market, vivas, cerca, params, libro };
-        } catch (error) {
-          logger.warn("Maker: no se pudo leer el estado de un mercado; se salta esta pasada.", {
-            slug: market.slug,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // Sin saber que hay vivo no se toca nada: ni se cotiza ni se cancela a ciegas.
-          return undefined;
-        }
-      }),
+      markets.filter((m) => aSondear.has(m.slug)).map((m) => this.inspeccionar(m, nowMs)),
     );
 
     for (const leido of leidos) {
@@ -409,17 +579,18 @@ export class MakerLoop {
       }
       const { market, vivas, cerca, params, libro } = leido;
       this.detectarLlenados(market, vivas, resumen);
+      atadoUsd += vivas.reduce((suma, o) => suma + o.price * o.size, 0);
 
       // Cerca del cierre no se cotiza y se retira lo que haya: una orden llena aqui deja una posicion
       // que resuelve en segundos y no da tiempo a deshacerla.
       if (cerca) {
-        resumen.canceladas += await this.cancelar(vivas.map((o) => o.id), market.slug);
+        atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
         resumen.mercados.push({ slug: market.slug, motivo: "cerca_del_cierre" });
         continue;
       }
 
       if (!params) {
-        resumen.canceladas += await this.cancelar(vivas.map((o) => o.id), market.slug);
+        atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
         resumen.mercados.push({ slug: market.slug, motivo: "sin_programa_de_recompensas" });
         continue;
       }
@@ -432,56 +603,86 @@ export class MakerLoop {
 
       const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
       const { qRivalBid, qRivalAsk } = this.competencia(libro, mid, parametros, vivas);
-      comprometidoGlobal += vivas.reduce((s, o) => s + o.price * o.size, 0);
 
-      candidatos.push({
-        slug: market.slug,
+      const ficha: FichaCompetencia = {
         poolDiaUsd: params.ratePerDay,
         qRivalBid,
         qRivalAsk,
         mid,
         tickSize: Number(market.tickSize),
         params: parametros,
+        enMs: nowMs,
+      };
+      this.fichas.set(market.slug, ficha);
+      candidatos.push({
+        ...ficha,
+        slug: market.slug,
         market,
         vivas,
+        fresco: true,
+        esTitular: vivas.length > 0,
       });
+    }
+
+    // Los que no tocaban esta vez compiten con su ultima ficha. Ordenar con un dato de hace un minuto
+    // es barato y casi siempre correcto; COTIZAR con el no lo es, y por eso el ganador se relee abajo.
+    const ttlFicha = this.config.ttlCompetenciaMs ?? TTL_COMPETENCIA_MS;
+    for (const market of markets) {
+      if (aSondear.has(market.slug)) {
+        continue;
+      }
+      const ficha = this.fichas.get(market.slug);
+      if (!ficha || nowMs - ficha.enMs > ttlFicha) {
+        continue; // sin medida vigente no se puede ni ordenar; le tocara turno de sondeo
+      }
+      // `vivas` vacio no es un supuesto: todo mercado con rastro de una orden nuestra se sondea
+      // siempre. Un mercado que no se sondea es un mercado donde no tenemos nada vivo.
+      candidatos.push({ ...ficha, slug: market.slug, market, vivas: [], fresco: false, esTitular: false });
     }
 
     const gastadoGlobal = [...this.estados.values()].reduce((s, e) => s + e.gastadoUsd, 0);
     resumen.gastadoUsd = Number(gastadoGlobal.toFixed(4));
-    resumen.vivoUsd = Number(comprometidoGlobal.toFixed(4));
     resumen.paresUsd = this.paresUsd();
 
-    // EL tope de verdad: lo comprometido en ordenes vivas MAS lo ya gastado en llenados. Contar solo
-    // lo comprometido es lo que dejo que una ventana de 5 minutos gastara $85 con el tope en $12.
+    // EL tope de verdad: lo atado en ordenes vivas MAS lo ya gastado en llenados. Contar solo lo
+    // comprometido es lo que dejo que una ventana de 5 minutos gastara $85 con el tope en $12.
     //
-    // `usado` crece con lo que queda inmovilizado en cada mercado YA planificado; `porPlanificar`
-    // guarda lo que siguen inmovilizando los que faltan. Asi, al planificar un mercado, su propio
-    // dinero comprometido NO se le descuenta: puede cancelar y reutilizarlo. Descontarselo cancelaba
-    // sus ordenes y no colocaba nada — quedandose sin cotizar por falta de un capital que ya era suyo.
-    let usado = gastadoGlobal;
-    let porPlanificar = comprometidoGlobal;
+    // El presupuesto de cada mercado sale de `atadoUsd`, que se mantiene al dia sobre la marcha, asi
+    // que al planificar uno ya refleja lo que los anteriores han cancelado o colocado en ESTA pasada.
+    // Su propio dinero atado NO se le descuenta: puede cancelarlo y reutilizarlo.
 
-    const elegidos = elegirMercados(candidatos, this.config.capitalUsd, this.config.ticksDelMedio);
+    const elegidos = elegirMercados(
+      candidatos,
+      this.config.capitalUsd,
+      this.config.ticksDelMedio,
+      this.config.margenRelevo ?? MARGEN_RELEVO,
+    );
     const elegidosPorSlug = new Set(elegidos.map((e) => e.slug));
     let sinFinanciar = 0;
+    /** El descartado mas BARATO cuando no se financia ninguno: dice cuanto capital falta. */
+    let faltaCapital: { slug: string; costeUsd: number; cuantos: number } | undefined;
 
     for (const candidato of candidatos) {
       const elegido = elegidos.find((e) => e.slug === candidato.slug);
       // Un mercado que no entra en el presupuesto no se queda con ordenes puestas: inmovilizarian
       // dinero que otro mercado esta rindiendo mejor.
       if (!elegidosPorSlug.has(candidato.slug)) {
-        resumen.canceladas += await this.cancelar(candidato.vivas.map((o) => o.id), candidato.slug);
+        // Su dinero vuelve al bote EN ESTA MISMA PASADA. Dejarlo apartado hasta la siguiente dejaba
+        // sin cotizar al mercado que acababa de ganar el ranking, con el capital entero libre.
+        atadoUsd -= await this.retirarYLiberar(candidato.vivas, candidato.slug, resumen);
         // Se distinguen dos situaciones que antes compartian mensaje, y esa ambiguedad me tuvo
         // persiguiendo un fantasma: si NO se financio ninguno, el problema es que el tope no da para
         // el minimo a los precios de ahora — decir "el capital se fue a otro mercado" es falso y
         // manda a mirar donde no es.
         const coste = candidato.params.minSize; // el par cuesta ~$1 por participacion
         if (elegidos.length === 0) {
-          resumen.mercados.push({
-            slug: candidato.slug,
-            motivo: `capital_insuficiente_necesita_${coste.toFixed(2)}`,
-          });
+          // Se resume en UNA linea con la entrada mas barata de todas, que es el dato accionable:
+          // "cuanto capital hace falta para poder cotizar en algun sitio". Una linea por candidato
+          // eran 25 lineas identicas por pasada desde que el escaner propone 25.
+          faltaCapital =
+            faltaCapital && faltaCapital.costeUsd <= coste
+              ? { ...faltaCapital, cuantos: faltaCapital.cuantos + 1 }
+              : { slug: candidato.slug, costeUsd: coste, cuantos: (faltaCapital?.cuantos ?? 0) + 1 };
         } else {
           // Con el escaner mirando 25 mercados y capital para uno, listarlos todos escribia 24 lineas
           // identicas por pasada. Se cuentan y ya: saber CUAL de los descartados es cual no aporta
@@ -491,13 +692,45 @@ export class MakerLoop {
         continue;
       }
 
+      // Un elegido que no se sondeo esta pasada se RELEE antes de cotizar. La ficha vale para ordenar
+      // y no para colocar: la banda que puntua son 1,5-4,5 centavos, asi que con un medio de hace un
+      // minuto las dos ordenes pueden nacer fuera, sin cobrar y con el dinero igualmente inmovilizado.
+      if (!candidato.fresco) {
+        const releido = await this.inspeccionar(candidato.market, nowMs);
+        if (!releido || releido.cerca || !releido.params || !releido.libro) {
+          resumen.mercados.push({ slug: candidato.slug, motivo: "sin_lectura_para_cotizar" });
+          continue;
+        }
+        const { vivas, params, libro } = releido;
+        this.detectarLlenados(candidato.market, vivas, resumen);
+        atadoUsd += vivas.reduce((suma, o) => suma + o.price * o.size, 0);
+        const midFresco = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
+        const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
+        const rivales = this.competencia(libro, midFresco, parametros, vivas);
+        this.fichas.set(candidato.slug, {
+          poolDiaUsd: params.ratePerDay,
+          qRivalBid: rivales.qRivalBid,
+          qRivalAsk: rivales.qRivalAsk,
+          mid: midFresco,
+          tickSize: Number(candidato.market.tickSize),
+          params: parametros,
+          enMs: nowMs,
+        });
+        candidato.mid = midFresco;
+        candidato.params = parametros;
+        candidato.vivas = vivas;
+        candidato.fresco = true;
+      }
+
       const estado = this.estado(candidato.slug);
       const comprometidoPropio = candidato.vivas.reduce((s, o) => s + o.price * o.size, 0);
-      porPlanificar -= comprometidoPropio;
       const plan = planificarDosLados({
         mid: candidato.mid,
         tickSize: candidato.tickSize,
-        capitalDisponibleUsd: Math.max(0, this.config.capitalUsd - usado - porPlanificar),
+        capitalDisponibleUsd: Math.max(
+          0,
+          this.config.capitalUsd - gastadoGlobal - (atadoUsd - comprometidoPropio),
+        ),
         params: candidato.params,
         vivas: candidato.vivas,
         inventario: estado.inventario,
@@ -507,15 +740,14 @@ export class MakerLoop {
         nowMs,
       });
 
-      resumen.canceladas += await this.cancelar(plan.cancelar.map((o) => o.id), candidato.slug);
+      atadoUsd -= await this.retirarYLiberar(plan.cancelar, candidato.slug, resumen);
       if (plan.colocar.length > 0) {
         estado.ultimaRecolocacionMs = nowMs;
       }
-      let comprometidoTrasPlan = candidato.vivas
-        .filter((o) => !plan.cancelar.includes(o))
-        .reduce((s, o) => s + o.price * o.size, 0);
       const conservadas = candidato.vivas.filter((o) => !plan.cancelar.includes(o));
-      const puestas: Array<{ id: string; outcome: Outcome }> = [];
+      const puestas: Array<{ id: string; outcome: Outcome; price: number; size: number }> = [];
+      /** Solo lo COLOCADO en esta pasada: es lo unico que se puede deshacer del recuento. */
+      let nuevoUsd = 0;
       let falloAlguna = false;
       for (const orden of plan.colocar) {
         const id = await this.deps.engine.colocar(candidato.market, orden);
@@ -526,8 +758,9 @@ export class MakerLoop {
         resumen.colocadas += 1;
         const coste = orden.price * orden.size;
         resumen.comprometidoUsd += coste;
-        comprometidoTrasPlan += coste;
-        puestas.push({ id, outcome: orden.outcome });
+        nuevoUsd += coste;
+        atadoUsd += coste;
+        puestas.push({ id, outcome: orden.outcome, price: orden.price, size: orden.size });
         this.cotizados.set(candidato.slug, candidato.market);
         // Se apunta AQUI, no al verla viva en la pasada siguiente. Una orden colocada y llenada
         // entre dos pasadas no llegaria nunca a `ordenesVivas`, y su llenado —el mas rapido, o sea
@@ -545,18 +778,19 @@ export class MakerLoop {
       const queriamos = new Set([...conservadas, ...plan.colocar].map((o) => o.outcome));
       const tenemos = new Set([...conservadas.map((o) => o.outcome), ...puestas.map((o) => o.outcome)]);
       if (falloAlguna && queriamos.size === 2 && tenemos.size === 1) {
-        const aRetirar = [...conservadas.map((o) => o.id), ...puestas.map((o) => o.id)];
+        const aRetirar = [...conservadas, ...puestas];
         logger.warn("Maker: el exchange rechazo un lado; se retira el otro para no quedar direccional.", {
           slug: candidato.slug,
           ladoQueQuedaba: [...tenemos][0],
           retiradas: aRetirar.length,
         });
-        resumen.canceladas += await this.cancelar(aRetirar, candidato.slug);
-        resumen.comprometidoUsd -= comprometidoTrasPlan;
+        atadoUsd -= await this.retirarYLiberar(aRetirar, candidato.slug, resumen);
+        // Se deshace SOLO lo colocado en esta pasada. Restar tambien lo conservado dejaba el recuento
+        // en negativo —medido: -$24,50 con una sola orden conservada de $24,50—, porque ese dinero
+        // nunca llego a sumarse aqui: `comprometidoUsd` cuenta colocaciones, no ordenes vivas.
+        resumen.comprometidoUsd -= nuevoUsd;
         resumen.colocadas -= puestas.length;
-        comprometidoTrasPlan = 0;
       }
-      usado += comprometidoTrasPlan;
       resumen.mercados.push({
         slug: candidato.slug,
         motivo: plan.motivo,
@@ -564,9 +798,35 @@ export class MakerLoop {
       });
     }
 
+    if (faltaCapital) {
+      resumen.mercados.push({
+        slug:
+          faltaCapital.cuantos > 1
+            ? `${faltaCapital.slug} (+${faltaCapital.cuantos - 1} mas)`
+            : faltaCapital.slug,
+        motivo: `capital_insuficiente_necesita_${faltaCapital.costeUsd.toFixed(2)}`,
+      });
+    }
+
     if (sinFinanciar > 0) {
       resumen.mercados.push({ slug: `(+${sinFinanciar} sin financiar)`, motivo: "capital_dedicado_a_otro_mercado" });
     }
+
+
+    // Las fichas caducadas se tiran: ya no sirven para ordenar, y guardarlas seria acumular una entrada
+    // por cada mercado que ha pasado alguna vez por el escaner —miles al cabo de un dia— sin que
+    // ninguna vuelva a leerse. Un mercado sin ficha vuelve a ser el primero en el turno de sondeo, que
+    // es exactamente lo que se quiere de el.
+    for (const [slug, ficha] of [...this.fichas]) {
+      if (nowMs - ficha.enMs > ttlFicha) {
+        this.fichas.delete(slug);
+      }
+    }
+
+    // Se mide al FINAL, con las cancelaciones y colocaciones de esta pasada ya aplicadas. Medirlo al
+    // principio describia un estado que dejaba de ser cierto tres lineas despues, y quien lo lee es el
+    // suelo de patrimonio: equivocarse por abajo ahi para el maker en operacion normal.
+    resumen.vivoUsd = Number(atadoUsd.toFixed(4));
 
     if (resumen.colocadas > 0 || resumen.canceladas > 0) {
       logger.info("Maker: ordenes actualizadas.", resumen);
@@ -587,6 +847,17 @@ export class MakerLoop {
         .reduce((suma, e) => suma + Math.min(e.inventario.UP, e.inventario.DOWN), 0)
         .toFixed(4),
     );
+  }
+
+  /** `true` si creemos que sigue viva alguna orden nuestra ahi. Ver `detectarLlenados` para el rastro. */
+  private tieneRastroDeOrdenes(slug: string): boolean {
+    const prefijo = `${slug}|`;
+    for (const clave of this.tamanoConocido.keys()) {
+      if (clave.startsWith(prefijo)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Solo para pruebas y diagnostico: cuanto se lleva gastado y en que lado esta el inventario. */

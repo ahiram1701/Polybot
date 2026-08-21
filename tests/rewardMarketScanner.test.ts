@@ -152,27 +152,38 @@ describe("buscar mercados de recompensa que quepan en el capital", () => {
     expect(r[0]!.mercado.endMs).toBe(Date.parse(finIso));
   });
 
-  it("resuelve solo los que caben en el capital, mas dos de reserva", async () => {
-    // Resolver 25 y leerles el libro a todos costaba 28 SEGUNDOS por pasada y bloqueaba el bucle hasta
-    // que el watchdog reiniciaba el proceso. Con capital para uno, evaluar veinticinco es trabajo
-    // tirado: cada mercado son tres peticiones con timeout de 2 s.
+  it("con capital para UN mercado sigue proponiendo muchos: este orden no sabe elegir", async () => {
+    // Antes se resolvian los que caben mas dos —con $20, TRES de 13.109— razonando que si solo se
+    // financia uno, evaluar 25 es trabajo tirado. Es al reves. Medido el 2026-08-21 sobre los 60
+    // primeros del registro real: la correlacion de Spearman entre ESTE puesto y el rendimiento real
+    // es 0,007, y hay 54 mercados empatados por bote. Cortar en 3 es sortear. Quien sabe elegir es la
+    // competencia, que mide `MakerLoop`, y solo puede elegir entre los que le lleguen.
     callar();
     const filas = Array.from({ length: 25 }, (_, i) => fila(`m${i}`, 20, 4.5, 200 - i));
     const { fetchImpl } = servidor(filas);
     const scanner = new RewardMarketScanner("https://clob", fetchImpl);
     await scanner.precargar();
-    // $20 dan para UNO: se resuelven 1 + 2 de reserva.
-    expect(await scanner.mejores(20)).toHaveLength(3);
+    expect(await scanner.mejores(20)).toHaveLength(25);
   });
 
-  it("con mas capital resuelve mas mercados", async () => {
+  it("el tope lo pone el limite pedido, no el capital", async () => {
     callar();
     const filas = Array.from({ length: 25 }, (_, i) => fila(`m${i}`, 20, 4.5, 200 - i));
     const { fetchImpl } = servidor(filas);
     const scanner = new RewardMarketScanner("https://clob", fetchImpl);
     await scanner.precargar();
-    // $100 dan para cinco: 5 + 2 de reserva.
-    expect(await scanner.mejores(100)).toHaveLength(7);
+    expect(await scanner.mejores(20, 8)).toHaveLength(8);
+  });
+
+  it("los que NO caben en el capital se quedan fuera", async () => {
+    // Un mercado cuya entrada minima no cabe no es un candidato: no se puede cotizar en el.
+    callar();
+    const filas = [fila("caro", 500, 4.5, 5000), fila("barato", 20, 4.5, 100)];
+    const { fetchImpl } = servidor(filas);
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl);
+    await scanner.precargar();
+    const r = await scanner.mejores(20);
+    expect(r.map((c) => c.mercado.conditionId)).toEqual(["barato"]);
   });
 
   it("la PRIMERA llamada no espera al registro: devuelve vacio y carga por detras", async () => {

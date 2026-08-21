@@ -20,6 +20,7 @@
     "start:ui": "node dist/src/ui/index.js --static",
     "service:install": "bash scripts/install-systemd.sh",
     "smoke:market": "tsx src/smoke/market.ts",
+    "ensayo:maker": "tsx src/smoke/makerSimProbe.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json"

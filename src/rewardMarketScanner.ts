@@ -142,10 +142,14 @@ export class RewardMarketScanner {
   /**
    * Los mercados que MEJOR rinden por dolar y que caben en `capitalUsd`.
    *
-   * El orden es por `bote diario / coste de entrada`, que es un rendimiento comparable entre mercados
-   * de cualquier duracion. NO tiene en cuenta la competencia —eso exigiria leer 15.000 libros—, asi que
-   * es una CRIBA, no un veredicto: `MakerLoop` mide la competencia real sobre los que salgan de aqui y
-   * puede descartarlos.
+   * El orden es por `bote diario / coste de entrada`. NO tiene en cuenta la competencia —eso exigiria
+   * leer 15.000 libros—, asi que es una CRIBA, no un veredicto: `MakerLoop` mide la competencia real
+   * sobre los que salgan de aqui y puede descartarlos.
+   *
+   * Y es una criba MALA, cosa que conviene tener presente: medida contra el rendimiento real, su
+   * correlacion de Spearman es 0,007. Sirve para tirar 13.000 mercados que no caben o no pagan, no
+   * para elegir entre los que quedan. Por eso `limite` tiene que ser generoso: cuanto mas ancha sea la
+   * lista que llega a medirse la competencia, mejor el elegido.
    */
   async mejores(capitalUsd: number, limite = A_RESOLVER): Promise<CandidatoRecompensa[]> {
     const cache = this.candidatos;
@@ -185,23 +189,24 @@ export class RewardMarketScanner {
       return [];
     }
 
-    // Cuantos resolver de verdad.
+    // Cuantos resolver de verdad. TODOS los que quepan en `limite`, y esto costo aprenderlo dos veces.
     //
-    // Resolver 25 y dejar que `MakerLoop` lea los libros de todos costaba **28 segundos por pasada** —
-    // 50 peticiones en serie con timeout de 2 s— y bloqueaba el bucle entero hasta que el watchdog
-    // reiniciaba el proceso. Con $20 de capital solo se puede financiar UN mercado: evaluar 25 era
-    // trabajo tirado. Se resuelven los que caben en el capital mas dos de reserva, por si alguno no
-    // tiene libro o deja de aceptar ordenes.
-    let acumulado = 0;
-    let caben = 0;
-    for (const c of cribados) {
-      if (acumulado + c.costeEntradaUsd > capitalUsd) {
-        break;
-      }
-      acumulado += c.costeEntradaUsd;
-      caben += 1;
-    }
-    const aResolver = Math.min(limite, Math.max(1, caben) + 2);
+    // Antes se resolvian los que caben en el capital mas dos —con $20, TRES de 13.109—, con el
+    // argumento de que si solo se puede financiar un mercado, evaluar 25 era trabajo tirado. El
+    // argumento es exactamente al reves: financiar uno es justo lo que obliga a mirar muchos, porque
+    // este orden NO SIRVE para elegirlo. Medido el 2026-08-21 sobre los 60 primeros:
+    //
+    //  - la correlacion de Spearman entre este puesto y el rendimiento real es **0,007**: ninguna;
+    //  - hay **54 mercados practicamente empatados** por bote/dolar, asi que el corte en 3 es un sorteo;
+    //  - el rendimiento real va de 10,2 a 0,004 dolares al dia por dolar — un factor 2.700.
+    //
+    // Valor esperado del mejor de k candidatos: k=3 -> 3,64; k=10 -> 6,61; k=20 -> 7,99; k=40 -> 9,05.
+    // Pasar de 3 a 20 vale **2,2x**. Lo que decide de verdad es la competencia, y esa la mide
+    // `MakerLoop` sobre los que salgan de aqui.
+    //
+    // Lo que hacia inasumible resolver 25 era que el bucle leia el libro de TODOS en cada pasada. Ya no:
+    // sondea por turnos (`sondeosPorPasada`) y ordena con la ultima ficha de cada uno.
+    const aResolver = limite;
 
     const resueltos: CandidatoRecompensa[] = [];
     for (const c of cribados) {

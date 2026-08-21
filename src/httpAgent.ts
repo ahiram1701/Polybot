@@ -32,9 +32,15 @@ export function installHttpKeepAlive(): void {
       // al medirlo suelto. El bot parecia sano y el maker estaba medio ciego.
       //
       // Cuentas de la peor iteracion: 6 del maker + 6 del direccional/arbitraje + gamma + la
-      // resolucion de mercados del escaner. 24 cubre eso con holgura sin volver al churn de sockets
-      // que motivo este fichero.
-      connections: 24,
+      // resolucion de mercados del escaner. 24 cubria eso con holgura.
+      //
+      // Desde el 2026-08-21 el maker ordena 25 candidatos en vez de 3 —el orden del registro no predice
+      // el rendimiento, asi que mirar a pocos es sortear— y sondea por turnos hasta 6 mercados por
+      // pasada: 6 x (1 consulta de ordenes + 2 libros) = **18 en vuelo**, mas los 6 del direccional se
+      // comen los 24 justos. Quedarse corto no da un error claro: da timeouts de 2 s con el endpoint
+      // respondiendo en 280 ms, que es como el maker estuvo medio ciego una hora entera. El coste de
+      // sobrar son sockets ociosos; el de faltar es no verlo.
+      connections: 48,
       connect: { timeout: 10_000 },
     }),
   );

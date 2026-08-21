@@ -326,6 +326,13 @@ export interface CandidatoMercado {
   mid: number;
   tickSize: number;
   params: ParametrosRecompensa;
+  /**
+   * `true` si YA se esta cotizando aqui. Solo influye en el ORDEN, nunca en la cifra que se reporta.
+   *
+   * Ver `margenRelevo` en `elegirMercados`: sin esta marca no hay forma de distinguir "es mejor" de
+   * "parece mejor por un pelo", y esa distincion vale 9,2 mudanzas a la hora.
+   */
+  esTitular?: boolean;
 }
 
 export interface MercadoElegido extends CandidatoMercado {
@@ -349,11 +356,30 @@ export interface MercadoElegido extends CandidatoMercado {
  * la unica medida real que existe ($2,7795 cobrados el 2026-08-19 por 40,2 minutos, o sea $0,345 por
  * ventana) los modelos teoricos salieron 10-30 veces ALTOS. Sirve para ORDENAR mercados, que es para
  * lo unico que se usa aqui; no para prometer un ingreso.
+ *
+ * ## `margenRelevo`: por que el que ya cotiza juega con ventaja
+ *
+ * Medido sobre 21,8 h de produccion: el maker cambiaba de mercado **10,7 veces por hora**, y el 86% de
+ * esas mudanzas abandonaban un mercado que seguia disponible. No era informacion nueva, era un empate
+ * resuelto a cara o cruz: entre los mercados que caben en $20 hay **54 practicamente empatados** por
+ * bote, y basta que la foto del libro se mueva un pelo para que cambie el ganador.
+ *
+ * Mudarse no es gratis —se deja de estar en el libro justo cuando la muestra del minuto puede caer—,
+ * asi que un aspirante tiene que ser MEJOR, no empatar. Con `margenRelevo = 0,25` tiene que rendir un
+ * 25% mas para llevarse el capital. La ventaja se aplica al ORDEN y al reparto; la cifra reportada en
+ * `esperadoUsdDia` sigue siendo la estimacion honesta.
  */
+/** Rendimiento por dolar con la ventaja del titular ya aplicada. Solo para ordenar. */
+function rendimientoOrdenado(c: MercadoElegido, margenRelevo: number): number {
+  const ventaja = c.esTitular ? 1 + margenRelevo : 1;
+  return (c.esperadoUsdDia / c.costeUsd) * ventaja;
+}
+
 export function elegirMercados(
   candidatos: CandidatoMercado[],
   capitalUsd: number,
   ticksDelMedio: number = TICKS_DEL_MEDIO,
+  margenRelevo = 0,
 ): MercadoElegido[] {
   const evaluados = candidatos
     .filter((c) => c.mid > 0 && c.mid < 1 && c.poolDiaUsd > 0)
@@ -371,10 +397,14 @@ export function elegirMercados(
       return { ...c, costeUsd, esperadoUsdDia: cuota * c.poolDiaUsd };
     })
     .filter((c) => c.costeUsd > 0 && c.esperadoUsdDia > 0)
-    .sort((izq, der) => der.esperadoUsdDia / der.costeUsd - izq.esperadoUsdDia / izq.costeUsd);
+    // El desempate va SOLO en el orden; `esperadoUsdDia` se reporta sin tocar, porque es la cifra que
+    // se mira para saber si el modelo acierta y falsearla ahi seria mentirse en el sitio mas caro.
+    .sort((izq, der) => rendimientoOrdenado(der, margenRelevo) - rendimientoOrdenado(izq, margenRelevo));
 
   const elegidos: MercadoElegido[] = [];
   let restante = capitalUsd;
+  // El titular gasta su ventaja tambien AQUI, no solo en el orden: con capital para un solo mercado,
+  // entrar antes en el reparto es lo unico que decide.
   for (const c of evaluados) {
     if (c.costeUsd <= restante) {
       elegidos.push(c);

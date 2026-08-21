@@ -623,3 +623,281 @@ describe("mensajes que no mienten", () => {
     expect(r.mercados[0]!.motivo).toMatch(/^capital_insuficiente_necesita_/);
   });
 });
+
+/**
+ * El dinero atado en ordenes vivas tiene que cuadrar SIEMPRE, y con una sola cuenta.
+ *
+ * Habia dos medias cuentas —lo comprometido al empezar y lo usado al planificar— y las tres formas de
+ * que se descuadraran costaban dinero en direcciones opuestas: una dejaba al maker mudo con el capital
+ * libre, otra le dejaba pasarse del tope, y la tercera reportaba menos patrimonio del que hay, que es
+ * lo que lee el suelo para decidir si parar.
+ */
+describe("la contabilidad del capital no puede mentir", () => {
+  /** Libro con competencia DISTINTA por activo: asi uno gana el ranking y el otro lo pierde. */
+  function libroPorActivo(competenciaPorActivo: Record<string, number>) {
+    return {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const asset = String(tokenId).split("-")[0]!;
+        const competencia = competenciaPorActivo[asset] ?? 0;
+        const m = 0.5;
+        return {
+          tokenId,
+          bestAsk: m + 0.005,
+          bestBid: m - 0.005,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: [{ price: m + 0.005, size: competencia / 2 }],
+          rawBidLevels: [{ price: m - 0.005, size: competencia / 2 }],
+        };
+      }),
+    } as never;
+  }
+
+  /** Libro que revienta por timeout en ciertos activos, que es lo que pasa ~1.000 veces por hora. */
+  function libroQueFallaEn(assetsQueFallan: string[]) {
+    return {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const asset = String(tokenId).split("-")[0]!;
+        if (assetsQueFallan.includes(asset)) {
+          throw new Error("Timeout tras 2000ms: orderbook getQuote");
+        }
+        const m = 0.5;
+        return {
+          tokenId,
+          bestAsk: m + 0.005,
+          bestBid: m - 0.005,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: [{ price: m + 0.005, size: 0 }],
+          rawBidLevels: [{ price: m - 0.005, size: 0 }],
+        };
+      }),
+    } as never;
+  }
+
+  it("el dinero de un mercado descartado vuelve al bote en la MISMA pasada", async () => {
+    // Un mercado financiado que pierde el ranking se queda sin ordenes en el acto, asi que su capital
+    // esta libre. Apartarlo hasta la pasada siguiente dejaba sin cotizar al que acababa de GANAR el
+    // ranking: $60 de tope, $0 en uso, y aun asi "capital_insuficiente_necesita_49.00".
+    const engine = new SimulationMakerEngine();
+    const btc = market("BTC");
+    await engine.colocar(btc, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    await engine.colocar(btc, { outcome: "DOWN", side: "BUY", price: 0.49, size: 50 });
+
+    const loop = new MakerLoop(
+      { orderbook: libroPorActivo({ BTC: 100_000, ETH: 0 }), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([btc, market("ETH")], AHORA);
+    expect(await engine.ordenesVivas(btc)).toHaveLength(0);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(2);
+  });
+
+  it("un mercado cuyo libro no llega SIGUE contando: ni se pasa del tope ni desaparece del patrimonio", async () => {
+    // Sin punto medio no se cotiza, pero tampoco se retira nada: sus ordenes siguen vivas y su dinero
+    // sigue fuera. Antes se borraban de la cuenta y pasaban las dos cosas a la vez — $98 atados con el
+    // tope en $60, y un `vivoUsd` de $0 que le habria dicho al suelo de patrimonio que no queda nada.
+    const engine = new SimulationMakerEngine();
+    const btc = market("BTC");
+    await engine.colocar(btc, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    await engine.colocar(btc, { outcome: "DOWN", side: "BUY", price: 0.49, size: 50 });
+
+    const loop = new MakerLoop(
+      { orderbook: libroQueFallaEn(["BTC"]), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([btc, market("ETH")], AHORA);
+    expect(r.mercados.find((m) => m.slug.startsWith("btc"))?.motivo).toBe("sin_punto_medio");
+
+    const vivas = [...(await engine.ordenesVivas(btc)), ...(await engine.ordenesVivas(market("ETH")))];
+    const atadoDeVerdad = vivas.reduce((s, o) => s + o.price * o.size, 0);
+    expect(atadoDeVerdad).toBeLessThanOrEqual(CAPITAL);
+    expect(r.vivoUsd).toBeCloseTo(atadoDeVerdad, 2);
+  });
+
+  it("al retirar por un rechazo, solo se deshace lo COLOCADO en esta pasada", async () => {
+    // El retroceso restaba tambien el valor de lo conservado, que nunca llego a sumarse: `comprometidoUsd`
+    // cuenta colocaciones, no ordenes vivas. Con una sola orden conservada de $24,50 el resumen salia a
+    // -$24,50, y ese numero es el que mira el informe del maker para decir si esta trabajando.
+    const sim = new SimulationMakerEngine();
+    const btc = market("BTC");
+    await sim.colocar(btc, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const engine = {
+      ordenesVivas: (m: MarketInfo) => sim.ordenesVivas(m),
+      colocar: async () => undefined, // el exchange rechaza toda colocacion nueva
+      cancelar: (ids: string[]) => sim.cancelar(ids),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libroPorActivo({ BTC: 0 }), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([btc], AHORA);
+    expect(r.comprometidoUsd).toBe(0);
+    expect(r.colocadas).toBe(0);
+    // Y lo que importa de verdad: no queda ningun lado suelto.
+    expect(await sim.ordenesVivas(btc)).toHaveLength(0);
+  });
+});
+
+/**
+ * Elegir mercado es TODO el negocio del maker, y hasta el 2026-08-21 se elegia casi a ciegas.
+ *
+ * Medido ese dia sobre el registro real: entre los 13.109 mercados que caben en $20 hay 54 empatados
+ * por bote, la correlacion entre el orden del escaner y el rendimiento real es 0,007, y el rendimiento
+ * va de 10,2 a 0,004 dolares al dia por dolar. Con esa forma, dos cosas deciden cuanto se gana: mirar
+ * a MUCHOS (el mejor de 20 rinde 2,2x el mejor de 3) y no mudarse por ruido (10,7 mudanzas/hora, el
+ * 86% a un mercado que no era mejor).
+ */
+describe("elegir donde cotizar", () => {
+  /** Libro con competencia por activo y CONTADOR de lecturas, que es el recurso escaso. */
+  function libroContado(competenciaPorActivo: Record<string, number>) {
+    const getQuote = vi.fn(async (tokenId: string) => {
+      const asset = String(tokenId).split("-")[0]!;
+      const competencia = competenciaPorActivo[asset] ?? 0;
+      const m = 0.5;
+      return {
+        tokenId,
+        bestAsk: m + 0.005,
+        bestBid: m - 0.005,
+        availableUsdUnderCap: 100,
+        availableUsdAllLevels: 100,
+        availableBidUsdAllLevels: 100,
+        estimatedSharesForAmount: 10,
+        rawAskLevels: [{ price: m + 0.005, size: competencia / 2 }],
+        rawBidLevels: [{ price: m - 0.005, size: competencia / 2 }],
+      };
+    });
+    return { orderbook: { getQuote } as never, getQuote };
+  }
+
+  /** Bote por activo, mutable: es la forma exacta de mover el ranking sin tocar el libro. */
+  function recompensasPorActivo(botes: Record<string, number>) {
+    return {
+      paraMercado: vi.fn(async (_id: string, slug?: string) => ({
+        minSize: 50,
+        maxSpreadCents: 1.5,
+        ratePerDay: botes[String(slug).split("-")[0]!.toUpperCase()] ?? 0,
+      })),
+    };
+  }
+
+  it("no lee el libro de TODOS: sondea por turnos y ordena con la ultima ficha", async () => {
+    // 25 candidatos x 3 peticiones cada 15 s contra un pool de 24 conexiones es como se llego a 1.049
+    // timeouts en una hora con el endpoint respondiendo en 280 ms. Mirar a muchos solo es posible si
+    // mirar es barato.
+    const engine = new SimulationMakerEngine();
+    const { orderbook, getQuote } = libroContado({});
+    const loop = new MakerLoop(
+      { orderbook, rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, sondeosPorPasada: 2 },
+    );
+    callar();
+    const muchos = ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA"].map((a) => market(a));
+    await loop.runOnce(muchos, AHORA);
+    // 2 sondeos x 2 libros. Sin el cupo serian 12 lecturas para decidir, casi siempre, no hacer nada.
+    expect(getQuote).toHaveBeenCalledTimes(4);
+  });
+
+  it("un mercado con ficha compite aunque no toque sondearlo, y se RELEE antes de cotizar", async () => {
+    // La ficha vale para ordenar y no para colocar: la banda que puntua son 1,5 centavos, asi que con
+    // un medio rancio las dos ordenes pueden nacer fuera, sin cobrar y con el dinero inmovilizado.
+    const engine = new SimulationMakerEngine();
+    // ETH no tiene competencia (rinde mas); BTC y DOGE si.
+    const { orderbook, getQuote } = libroContado({ BTC: 100_000, DOGE: 100_000 });
+    const loop = new MakerLoop(
+      { orderbook, rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, sondeosPorPasada: 1 },
+    );
+    callar();
+    const tres = [market("BTC"), market("ETH"), market("DOGE")];
+    await loop.runOnce(tres, AHORA); // sondea BTC
+    await loop.runOnce(tres, AHORA + 20_000); // sondea ETH: ya tiene ficha
+    getQuote.mockClear();
+    // Aqui toca DOGE por turno; ETH entra al ranking con su ficha, gana, y se relee para cotizar.
+    await loop.runOnce(tres, AHORA + 40_000);
+    const vivas = await engine.ordenesVivas(market("ETH"));
+    expect(vivas.map((o) => o.outcome).sort()).toEqual(["DOWN", "UP"]);
+    const leidos = (a: string) => getQuote.mock.calls.filter((c) => String(c[0]).startsWith(a)).length;
+    expect(leidos("ETH")).toBe(2); // releido, no cotizado a ciegas
+    // Y BTC no: no se cotiza ahi y ya tenia ficha. Leerlos todos es lo que hacia inasumible mirar a 25.
+    expect(leidos("BTC")).toBe(0);
+  });
+
+  it("no se muda por un empate, pero si por una mejora de verdad", async () => {
+    // 10,7 mudanzas por hora, el 86% abandonando un mercado que seguia disponible. No era informacion
+    // nueva: era un empate resuelto a cara o cruz entre 54 mercados casi identicos.
+    const engine = new SimulationMakerEngine();
+    const botes: Record<string, number> = { BTC: 100, ETH: 50 };
+    const { orderbook } = libroContado({});
+    const loop = new MakerLoop(
+      { orderbook, rewards: recompensasPorActivo(botes) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, margenRelevo: 0.25 },
+    );
+    callar();
+    const dos = [market("BTC"), market("ETH")];
+
+    await loop.runOnce(dos, AHORA);
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(2);
+
+    // ETH pasa a rendir un 10% mas: por encima, pero dentro del ruido. No se toca nada.
+    botes.ETH = 110;
+    await loop.runOnce(dos, AHORA + 60_000);
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(2);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(0);
+
+    // Un 40% mas ya no es ruido: el capital se muda.
+    botes.ETH = 140;
+    await loop.runOnce(dos, AHORA + 120_000);
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(0);
+    expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(2);
+  });
+
+  it("la cifra que se reporta es la honesta, sin la ventaja del titular", async () => {
+    // La ventaja existe para no mudarse por ruido, no para creerse mas rico. `esperadoUsdDia` es lo que
+    // se mira para saber si el modelo acierta: falsearlo ahi seria mentirse en el sitio mas caro.
+    const engine = new SimulationMakerEngine();
+    const { orderbook } = libroContado({});
+    const loop = new MakerLoop(
+      { orderbook, rewards: recompensasPorActivo({ BTC: 100 }) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, margenRelevo: 0.25 },
+    );
+    callar();
+    await loop.runOnce([market("BTC")], AHORA);
+    const segunda = await loop.runOnce([market("BTC")], AHORA + 60_000);
+    const btc = segunda.mercados.find((m) => m.slug.startsWith("btc"));
+    expect(btc?.esperadoUsdDia).toBeCloseTo(100, 6); // el bote entero, sin competencia y sin inflar
+  });
+});
+
+describe("con 25 candidatos, los mensajes tienen que seguir siendo legibles", () => {
+  it("si no se financia ninguno, UNA linea con la entrada mas barata", async () => {
+    // Una linea por candidato eran 25 identicas por pasada, y el ruido tapa lo que importa. El dato
+    // accionable es cuanto capital hace falta para poder cotizar en algun sitio: el minimo, no el primero.
+    const engine = new SimulationMakerEngine();
+    const rewards = {
+      paraMercado: vi.fn(async (_id: string, slug?: string) => ({
+        // DOGE es el mas barato de los tres, y es el que hay que nombrar.
+        minSize: String(slug).startsWith("doge") ? 80 : 200,
+        maxSpreadCents: 1.5,
+        ratePerDay: 10000,
+      })),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: rewards as never, engine },
+      { capitalUsd: 60, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC"), market("ETH"), market("DOGE")], AHORA);
+    const avisos = r.mercados.filter((m) => m.motivo?.startsWith("capital_insuficiente"));
+    expect(avisos).toHaveLength(1);
+    expect(avisos[0]!.motivo).toBe("capital_insuficiente_necesita_80.00");
+    expect(avisos[0]!.slug).toContain("(+2 mas)");
+  });
+});

@@ -280,6 +280,46 @@ el precio se desploma a 0 o 1 cada cinco minutos.
 `max_spread: 4.5` y el endpoint de recompensas `1.5` *para el mismo mercado*, y esos tres centavos
 deciden si una orden cobra o no.
 
+### Elegir mercado es casi todo el resultado
+
+Medido el 2026-08-21 sobre el registro real (16.039 mercados, 13.109 de ellos con entrada ≤ $20):
+
+| | |
+|---|---|
+| rendimiento real entre los 60 mejores | de **10,2** a **0,004** $/día por $ — factor 2.700 |
+| mediana | 0,17 $/día por $ |
+| mercados prácticamente empatados por bote/dólar | **54** |
+| correlación de Spearman entre el puesto del escáner y el rendimiento real | **0,007** |
+
+La criba por `bote / min_size` sirve para **tirar** los 13.000 que no caben o no pagan. Para **elegir**
+entre los que quedan no vale nada: su correlación con el rendimiento real es cero. Lo que decide es la
+competencia en la banda, y esa solo se ve leyendo el libro.
+
+De ahí las dos reglas del modelo:
+
+**1. Mirar a muchos.** Valor esperado del mejor de *k* candidatos evaluados:
+
+| k | 3 | 5 | 10 | 20 | 40 |
+|---|---|---|---|---|---|
+| $/día por $ | 3,64 | 4,91 | 6,61 | **7,99** | 9,05 |
+
+Pasar de 3 a 20 vale **2,2×**. Antes se resolvían `los que caben + 2` —con $20, **tres**— razonando que
+si solo se financia un mercado, evaluar 25 era trabajo tirado. Es al revés: financiar uno es justo lo que
+obliga a mirar muchos. En dos fotos independientes del mercado, el mejor de 3 acertó una vez y la otra
+rindió **5,8× menos** que el mejor de 20 (1,62 contra 9,37).
+
+Mirar a muchos solo es asumible si mirar es barato: `MakerLoop` **no** lee el libro de todos en cada
+pasada. Sondea por turnos (`sondeosPorPasada`, 4) más los mercados donde queda alguna orden viva, y
+ordena el resto con su última ficha. Un barrido completo de 25 candidatos tarda ~90 s. La ficha vale
+para **ordenar**; antes de cotizar en un mercado se le relee el libro, porque con una banda de 1,5-4,5
+centavos un punto medio de hace un minuto deja las dos órdenes fuera y el dinero igual de inmovilizado.
+
+**2. No mudarse por ruido.** Sobre 21,8 h de producción el maker cambiaba de mercado **10,7 veces por
+hora**, y el **86%** de esas mudanzas abandonaban un mercado que seguía disponible. Con 54 candidatos
+empatados, el ganador lo decidía el temblor de la foto del libro. Ahora el que ya cotiza juega con un
+`margenRelevo` del 25%: un aspirante tiene que **rendir un 25% más**, no empatar. La ventaja se aplica
+al orden y al reparto; `esperadoUsdDia` se sigue reportando sin inflar.
+
 ### Tres piezas, separadas a propósito
 
 | Módulo | Qué hace | Por qué así |
