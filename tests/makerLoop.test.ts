@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MakerLoop } from "../src/makerLoop.js";
 import { SimulationMakerEngine } from "../src/makerEngine.js";
+import { logger } from "../src/logger.js";
+import type { LogEntry } from "../src/logger.js";
 import type { MarketInfo } from "../src/types.js";
 
 const AHORA = Date.UTC(2026, 7, 19, 12, 0, 0);
@@ -942,5 +944,122 @@ describe("el reparto no puede depender del ORDEN de la lista", () => {
     expect(await engine.ordenesVivas(btc)).toHaveLength(0);
     expect(await engine.ordenesVivas(market("ETH"))).toHaveLength(2);
     expect(r.mercados.some((m) => m.motivo?.startsWith("capital_insuficiente"))).toBe(false);
+  });
+});
+
+/**
+ * Un maker sano parado en su mejor mercado y uno que no encuentra donde entrar escribian lo MISMO:
+ * nada. El log solo hablaba cuando algo cambiaba, y quedarse quieto es justo el objetivo del modelo
+ * desde que no se muda por ruido. Medido el 2026-08-21: ocho minutos sin una linea, y hubo que
+ * preguntarle a la API para saber que estaba sano.
+ */
+describe("el latido: el silencio tiene que significar algo", () => {
+  /** Escucha el logger de verdad, que es lo que se lee en produccion. */
+  function escuchar() {
+    const entradas: LogEntry[] = [];
+    const cortar = logger.subscribe((e) => entradas.push(e));
+    return { entradas, cortar, delMaker: () => entradas.filter((e) => e.message.startsWith("Maker:")) };
+  }
+
+  it("sin movimiento late cada intervalo, no en cada pasada", async () => {
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, intervaloLatidoMs: 60_000 },
+    );
+    callar();
+    const m = market("BTC", 3600);
+    await loop.runOnce([m], AHORA); // coloca: deja constancia por si misma
+
+    const { entradas, cortar, delMaker } = escuchar();
+    await loop.runOnce([m], AHORA + 30_000); // dentro del intervalo: callado
+    expect(delMaker()).toHaveLength(0);
+
+    await loop.runOnce([m], AHORA + 70_000); // pasado el intervalo: late
+    const latidos = delMaker();
+    expect(latidos).toHaveLength(1);
+    expect(latidos[0]!.message).toBe("Maker: latido.");
+    cortar();
+    void entradas;
+  });
+
+  it("el latido dice DONDE se esta cotizando", async () => {
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, intervaloLatidoMs: 1000 },
+    );
+    callar();
+    const m = market("BTC", 3600);
+    await loop.runOnce([m], AHORA);
+
+    const { cortar, delMaker } = escuchar();
+    await loop.runOnce([m], AHORA + 20_000);
+    const meta = delMaker()[0]!.meta as Record<string, unknown>;
+    expect(meta.cotizandoEn).toBe(1);
+    expect(meta.mercados).toEqual([m.slug]);
+    expect(meta.vivoUsd).toBeCloseTo(49, 2);
+    // Cotizando no hace falta explicar nada: el "por que no" solo aparece cuando no se cotiza.
+    expect(meta.porQueNo).toBeUndefined();
+    cortar();
+  });
+
+  it("un movimiento reprograma el latido en vez de sumarse a el", async () => {
+    // Dos lineas seguidas diciendo lo mismo no aportan nada, y el latido existe para quitar ruido.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, intervaloLatidoMs: 1000 },
+    );
+    callar();
+    const { cortar, delMaker } = escuchar();
+    await loop.runOnce([market("BTC", 3600)], AHORA); // coloca
+    expect(delMaker().map((e) => e.message)).toEqual(["Maker: ordenes actualizadas."]);
+    cortar();
+  });
+
+  it("mucho rato sin cotizar en NINGUN sitio sube a aviso, y dice por que", async () => {
+    // Es el estado que no se distinguia de uno sano. Unos minutos es corriente —un mercado que cierra,
+    // una rotacion del escaner—; un cuarto de hora sin una sola orden viva no lo es.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(0) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const m = market("BTC", 7200);
+    const { cortar, delMaker } = escuchar();
+
+    await loop.runOnce([m], AHORA);
+    expect(delMaker().at(-1)!.message).toBe("Maker: latido."); // recien mudo: aun es normal
+
+    await loop.runOnce([m], AHORA + 16 * 60_000);
+    const aviso = delMaker().at(-1)!;
+    expect(aviso.level).toBe("warn");
+    expect(aviso.message).toBe("Maker: sin cotizar en ningun sitio.");
+    const meta = aviso.meta as Record<string, unknown>;
+    expect(meta.mudoMinutos).toBe(16);
+    expect(meta.porQueNo).toEqual({ sin_programa_de_recompensas: 1 });
+    cortar();
+  });
+
+  it("el reloj del mudo cuenta desde que se quedo mudo, no desde el ultimo latido", async () => {
+    // Si se reiniciara con cada latido, el aviso del cuarto de hora no saltaria NUNCA: el latido es
+    // cada cinco minutos.
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(0) as never, engine },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, intervaloLatidoMs: 60_000 },
+    );
+    callar();
+    const m = market("BTC", 7200);
+    const { cortar, delMaker } = escuchar();
+    for (let minuto = 0; minuto <= 16; minuto += 1) {
+      await loop.runOnce([m], AHORA + minuto * 60_000);
+    }
+    const ultimo = delMaker().at(-1)!;
+    expect(ultimo.level).toBe("warn");
+    expect((ultimo.meta as Record<string, unknown>).mudoMinutos).toBe(16);
+    cortar();
   });
 });

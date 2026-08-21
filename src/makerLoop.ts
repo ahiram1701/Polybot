@@ -70,6 +70,8 @@ export interface MakerLoopConfig {
   ttlCompetenciaMs?: number;
   /** Cuanto mejor tiene que ser un aspirante para quitarle el capital al que ya cotiza. Ver `elegirMercados`. */
   margenRelevo?: number;
+  /** Cada cuanto deja constancia de que sigue vivo aunque no cambie nada. Ver `dejarConstancia`. */
+  intervaloLatidoMs?: number;
 }
 
 export interface ResumenPasada {
@@ -131,6 +133,25 @@ const TTL_COMPETENCIA_MS = 120_000;
  */
 const MARGEN_RELEVO = 0.25;
 
+/**
+ * Cada cuanto deja constancia de que sigue vivo aunque no cambie nada.
+ *
+ * Cinco minutos son 288 lineas al dia, que es poco al lado de la ambiguedad que quitan: hasta ahora el
+ * log SOLO hablaba cuando algo cambiaba, asi que un maker parado en su mejor mercado y uno que no
+ * encuentra donde entrar escribian exactamente lo mismo —nada— y habia que preguntarle a la API para
+ * distinguirlos. Ocho minutos de silencio no decian si todo iba bien.
+ */
+const INTERVALO_LATIDO_MS = 5 * 60_000;
+
+/**
+ * A partir de aqui, no cotizar en NINGUN sitio deja de ser normal y pasa a ser un aviso.
+ *
+ * Quedarse sin cotizar unos minutos es corriente: un mercado que cierra, una rotacion del escaner, una
+ * pasada sin libro. Un cuarto de hora entero sin una sola orden viva no lo es, y es justo el estado que
+ * no se distinguia del de un maker sano.
+ */
+const MINUTOS_MUDO_PARA_AVISAR = 15;
+
 /** Lo ultimo que se midio de un mercado. Sirve para ordenar; para cotizar hace falta relectura. */
 interface FichaCompetencia {
   poolDiaUsd: number;
@@ -179,6 +200,12 @@ export class MakerLoop {
    * dolares al dia por dolar. Elegir el mejor de 3 al azar rinde menos de la mitad que el mejor de 20.
    */
   private readonly fichas = new Map<string, FichaCompetencia>();
+
+  /** Cuando se dejo constancia por ultima vez, para que el latido no compita con el log de cambios. */
+  private ultimoLatidoMs = 0;
+
+  /** Desde cuando no hay ni una orden viva en ningun sitio. `undefined` = si la hay. */
+  private sinCotizarDesdeMs: number | undefined;
 
   constructor(
     private readonly deps: MakerLoopDeps,
@@ -839,10 +866,68 @@ export class MakerLoop {
     // suelo de patrimonio: equivocarse por abajo ahi para el maker en operacion normal.
     resumen.vivoUsd = Number(atadoUsd.toFixed(4));
 
+    this.dejarConstancia(resumen, candidatos.length, nowMs);
+    return resumen;
+  }
+
+  /**
+   * Deja constancia de la pasada: siempre que haya movimiento, y cada `INTERVALO_LATIDO_MS` si no lo hay.
+   *
+   * El log solo hablaba cuando algo cambiaba. Con el maker parado en su mejor mercado —que es el
+   * objetivo— eso son horas de silencio indistinguibles de las de un maker que no encuentra donde
+   * entrar. Medido el 2026-08-21: ocho minutos sin una linea, y hubo que preguntarle a la API para
+   * saber que estaba sano.
+   *
+   * El latido dice DONDE se esta cotizando y, cuando no se cotiza en ningun sitio, POR QUE: el
+   * recuento de motivos de la pasada. Sin el "por que" el latido solo cambia el silencio por ruido.
+   */
+  private dejarConstancia(resumen: ResumenPasada, candidatos: number, nowMs: number): void {
     if (resumen.colocadas > 0 || resumen.canceladas > 0) {
       logger.info("Maker: ordenes actualizadas.", resumen);
+      // El latido se reprograma: acaba de quedar constancia, y dos lineas seguidas no aportan nada.
+      this.ultimoLatidoMs = nowMs;
+      return;
     }
-    return resumen;
+
+    const cotizandoEn = this.slugsConOrdenes();
+    // Se cuenta desde que se quedo mudo, no desde el ultimo latido: si no, el reloj se reiniciaria
+    // cada cinco minutos y nunca llegaria al cuarto de hora que dispara el aviso.
+    this.sinCotizarDesdeMs = cotizandoEn.length > 0 ? undefined : (this.sinCotizarDesdeMs ?? nowMs);
+
+    if (nowMs - this.ultimoLatidoMs < (this.config.intervaloLatidoMs ?? INTERVALO_LATIDO_MS)) {
+      return;
+    }
+    this.ultimoLatidoMs = nowMs;
+
+    const mudoMinutos =
+      this.sinCotizarDesdeMs === undefined ? 0 : Math.round((nowMs - this.sinCotizarDesdeMs) / 60_000);
+    const meta = {
+      cotizandoEn: cotizandoEn.length,
+      mercados: cotizandoEn.slice(0, 3),
+      vivoUsd: resumen.vivoUsd,
+      gastadoUsd: resumen.gastadoUsd,
+      paresUsd: resumen.paresUsd,
+      candidatos,
+      ...(cotizandoEn.length === 0 ? { mudoMinutos, porQueNo: recuentoDeMotivos(resumen.mercados) } : {}),
+    };
+
+    if (cotizandoEn.length === 0 && mudoMinutos >= MINUTOS_MUDO_PARA_AVISAR) {
+      logger.warn("Maker: sin cotizar en ningun sitio.", meta);
+      return;
+    }
+    logger.info("Maker: latido.", meta);
+  }
+
+  /** Los mercados en los que creemos tener alguna orden viva. Ver `detectarLlenados` para el rastro. */
+  private slugsConOrdenes(): string[] {
+    const slugs = new Set<string>();
+    for (const clave of this.tamanoConocido.keys()) {
+      const corte = clave.lastIndexOf("|");
+      if (corte > 0) {
+        slugs.add(clave.slice(0, corte));
+      }
+    }
+    return [...slugs];
   }
 
   /**
@@ -876,6 +961,24 @@ export class MakerLoop {
     const e = this.estados.get(slug);
     return e ? { gastadoUsd: e.gastadoUsd, inventario: { ...e.inventario } } : undefined;
   }
+}
+
+/**
+ * Recuento de motivos de una pasada, para que el latido quepa en una linea.
+ *
+ * Se le quita el importe al motivo (`capital_insuficiente_necesita_19.80` -> `capital_insuficiente_necesita`)
+ * porque cambia en cada pasada y con el se convertiria en una lista en vez de un recuento.
+ */
+function recuentoDeMotivos(mercados: ResumenPasada["mercados"]): Record<string, number> {
+  const cuenta: Record<string, number> = {};
+  for (const mercado of mercados) {
+    if (!mercado.motivo) {
+      continue;
+    }
+    const clave = mercado.motivo.replace(/_[0-9.]+$/, "");
+    cuenta[clave] = (cuenta[clave] ?? 0) + 1;
+  }
+  return cuenta;
 }
 
 /** Reexportado para que los consumidores no tengan que conocer `makerQuoting`. */
