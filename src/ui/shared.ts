@@ -59,6 +59,8 @@ export interface UiSettings {
   makerMarketSource: "cripto5m" | "recompensas";
   /** Suelo de saldo: por debajo, el maker retira todo y deja de cotizar. 0 = sin suelo. */
   makerStopBelowUsd: number;
+  /** A cuantos ticks del medio coloca el maker. 1 = conservador, 0 = pegado al medio (mas recompensa, mas llenados). */
+  makerTicksDelMedio: number;
   arbMode: "heredado" | "sim" | "live";
   directionalMode: "heredado" | "sim" | "live";
   arb15mEnabled: boolean;

@@ -45,6 +45,31 @@ export interface OrdenViva extends OrdenDeseada {
 export const FACTOR_UN_SOLO_LADO = 3.0;
 
 /**
+ * A cuantos ticks del punto medio se coloca. 1 = conservador (por defecto), 0 = pegado al medio.
+ *
+ * Es la palanca que queda sobre la recompensa, y es un intercambio, no una mejora gratis:
+ *
+ * | | a 1 tick (por defecto) | pegado al medio |
+ * |---|---|---|
+ * | puntuacion con banda 4,5c | 60% del maximo | **100%** |
+ * | puntuacion con banda 1,5c | 11% del maximo | **100%** |
+ * | coste del par | $0,98 (margen de 2c) | $1,00 (sin margen) |
+ * | probabilidad de llenarse | menor | **mayor**: quedas el mejor del libro |
+ *
+ * Dos cosas que parecen atajos y no lo son:
+ *
+ *  - **Acercar UN solo lado no sirve.** `Q_min` toma el MINIMO de los dos lados, asi que la recompensa
+ *    la limita el mas debil. O se acercan los dos o no se gana nada.
+ *  - **El margen de 2 centavos no es una defensa.** Contra un llenado de un solo lado se pierde mucho
+ *    mas que eso; lo que protege de verdad es la guarda de inventario y el suelo de saldo. Pero SI
+ *    cuesta llenados: pegado al medio eres el mejor precio del libro y te eligen antes.
+ *
+ * Sale a 1 por defecto porque la seleccion adversa —lo unico que de verdad se comio dinero aqui— sigue
+ * sin medirse. Con un dia de datos reales se decide con numeros en vez de con criterio.
+ */
+export const TICKS_DEL_MEDIO = 1;
+
+/**
  * Puntuacion oficial de una orden: `S(v, s) = ((v - s) / v)^2 * tamano`.
  *
  * Es CUADRATICA con la distancia al medio, asi que una orden pegada al borde de la banda puntua casi
@@ -99,11 +124,24 @@ export function qMinOficial(qOne: number, qTwo: number, mid: number): number {
  *  - **El par cuesta estrictamente menos de $1**: si compra UP por debajo de `mid` y DOWN por debajo de
  *    `1 - mid`, la suma es menor que 1 por construccion. Y el par redime exactamente $1.
  */
-export function precioObjetivo(mid: number, side: "BUY" | "SELL", tickSize: number): number {
+export function precioObjetivo(
+  mid: number,
+  side: "BUY" | "SELL",
+  tickSize: number,
+  ticksDelMedio: number = TICKS_DEL_MEDIO,
+): number {
   // `toFixed(6)` antes de redondear: sin eso, un `mid` que deberia caer justo en un tick llega como
   // 40,000000000000006 y `Math.ceil` se va un tick de mas.
   const enTicks = Number((mid / tickSize).toFixed(6));
-  const objetivo = side === "BUY" ? Math.ceil(enTicks) - 1 : Math.floor(enTicks) + 1;
+  const separacion = Math.max(0, Math.floor(ticksDelMedio));
+  const objetivo =
+    side === "BUY"
+      ? // Con separacion 0 se usa `floor`: el tick mas alto que NO pasa del medio, que puede ser el
+        // medio mismo. Con 1 o mas, se resta esa cantidad de ticks al primero estrictamente por debajo.
+        (separacion === 0 ? Math.floor(enTicks) : Math.ceil(enTicks) - separacion)
+      : separacion === 0
+        ? Math.ceil(enTicks)
+        : Math.floor(enTicks) + separacion;
   const precio = Number((objetivo * tickSize).toFixed(6));
   // Nunca fuera de (0,1): un precio de 0 o 1 no es una apuesta, es un error.
   return Math.min(1 - tickSize, Math.max(tickSize, precio));
@@ -159,9 +197,12 @@ export function planificarDosLados(args: {
   ultimaRecolocacionMs?: number;
   /** Intervalo minimo entre recolocaciones. 0 = sin limite. */
   minMsEntreRecolocaciones?: number;
+  /** A cuantos ticks del medio se coloca. Ver `TICKS_DEL_MEDIO`. */
+  ticksDelMedio?: number;
   nowMs?: number;
 }): PlanMaker {
   const { mid, tickSize, capitalDisponibleUsd, params, vivas } = args;
+  const ticksDelMedio = args.ticksDelMedio ?? TICKS_DEL_MEDIO;
   const inventario = args.inventario ?? { UP: 0, DOWN: 0 };
   const minMsEntreRecolocaciones = args.minMsEntreRecolocaciones ?? 0;
   const nowMs = args.nowMs ?? 0;
@@ -173,15 +214,23 @@ export function planificarDosLados(args: {
 
   const medios: Record<Outcome, number> = { UP: mid, DOWN: medioContrario(mid) };
   const precios: Record<Outcome, number> = {
-    UP: precioObjetivo(medios.UP, "BUY", tickSize),
-    DOWN: precioObjetivo(medios.DOWN, "BUY", tickSize),
+    UP: precioObjetivo(medios.UP, "BUY", tickSize, ticksDelMedio),
+    DOWN: precioObjetivo(medios.DOWN, "BUY", tickSize, ticksDelMedio),
   };
 
-  // En los extremos del libro el tope de precio tiene que intervenir —no existe un tick por debajo de
-  // 0,005— y el precio deja de quedar por debajo de su medio. Ahi el par cuesta $1,00 exacto para
-  // redimir $1,00: desaparece el margen que hace que un par completo gane seguro, y ademas el lado
-  // pegado al tope puede cruzar. No hay operacion sin riesgo, asi que no se cotiza.
-  if (precios.UP >= medios.UP || precios.DOWN >= medios.DOWN) {
+  // Dos condiciones que hay que comprobar por separado, y ninguna sobra:
+  //
+  //  - **El par no puede costar mas de $1.** Redime exactamente $1, asi que pagar mas es una perdida
+  //    garantizada. Costar $1 EXACTO si se permite: es lo que pasa al cotizar pegado al medio, y
+  //    entonces un par completo simplemente no gana ni pierde — el ingreso es la recompensa.
+  //  - **Ningun precio puede quedar POR ENCIMA de su medio.** En los extremos del libro no existe un
+  //    tick por debajo de 0,005 y el tope de precio tiene que intervenir; ese lado pegado al tope
+  //    podria cruzar el spread y convertirse en taker, que es justo lo que se viene a dejar de hacer.
+  // La tolerancia no es cosmetica: `0,56 + 0,44` da `1,0000000000000002` en coma flotante, y sin ella
+  // el guardian rechazaba mercados perfectamente validos como si el par costara mas de $1. Un tick
+  // vale 0,01 o 0,001, asi que 1e-9 no puede tapar un exceso real.
+  const EPS = 1e-9;
+  if (precios.UP + precios.DOWN > 1 + EPS || precios.UP > medios.UP + EPS || precios.DOWN > medios.DOWN + EPS) {
     return { colocar: [], cancelar: vivas, motivo: "precio_extremo_sin_margen" };
   }
 
@@ -301,13 +350,17 @@ export interface MercadoElegido extends CandidatoMercado {
  * ventana) los modelos teoricos salieron 10-30 veces ALTOS. Sirve para ORDENAR mercados, que es para
  * lo unico que se usa aqui; no para prometer un ingreso.
  */
-export function elegirMercados(candidatos: CandidatoMercado[], capitalUsd: number): MercadoElegido[] {
+export function elegirMercados(
+  candidatos: CandidatoMercado[],
+  capitalUsd: number,
+  ticksDelMedio: number = TICKS_DEL_MEDIO,
+): MercadoElegido[] {
   const evaluados = candidatos
     .filter((c) => c.mid > 0 && c.mid < 1 && c.poolDiaUsd > 0)
     .map((c) => {
       // El par cuesta casi $1 por participacion se ponga donde se ponga: es el precio de ser neutral.
-      const precioUp = precioObjetivo(c.mid, "BUY", c.tickSize);
-      const precioDown = precioObjetivo(medioContrario(c.mid), "BUY", c.tickSize);
+      const precioUp = precioObjetivo(c.mid, "BUY", c.tickSize, ticksDelMedio);
+      const precioDown = precioObjetivo(medioContrario(c.mid), "BUY", c.tickSize, ticksDelMedio);
       const costeUsd = (precioUp + precioDown) * c.params.minSize;
 
       // Nuestra puntuacion: mismo tamano en los dos lados, a un tick del medio.

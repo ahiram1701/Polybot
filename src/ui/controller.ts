@@ -1638,6 +1638,7 @@ export class BotController {
       makerRetireSecondsBeforeClose: config.makerRetireSecondsBeforeClose ?? settings.makerRetireSecondsBeforeClose,
       makerMarketSource: config.makerMarketSource ?? settings.makerMarketSource,
       makerStopBelowUsd: config.makerStopBelowUsd ?? settings.makerStopBelowUsd,
+      makerTicksDelMedio: config.makerTicksDelMedio ?? settings.makerTicksDelMedio,
       arbMode: config.arbMode ?? settings.arbMode,
       directionalMode: config.directionalMode ?? settings.directionalMode,
       arb15mEnabled: config.arb15mEnabled ?? settings.arb15mEnabled,

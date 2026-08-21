@@ -887,6 +887,7 @@ function settings(): UiSettings {
   makerRetireSecondsBeforeClose: 30,
   makerMarketSource: "recompensas" as const,
   makerStopBelowUsd: 0,
+  makerTicksDelMedio: 1,
   arbMode: "heredado",
   directionalMode: "heredado",
   arb15mEnabled: false,

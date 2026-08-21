@@ -40,6 +40,8 @@ export interface MakerLoopConfig {
   capitalUsd: number;
   /** Segundos antes del cierre en los que se deja de cotizar y se retira todo. */
   retirarSegundosAntesDelCierre: number;
+  /** A cuantos ticks del medio se coloca. Ver `TICKS_DEL_MEDIO` en `makerQuoting`. */
+  ticksDelMedio?: number;
   /**
    * Intervalo minimo entre recolocaciones en el mismo mercado.
    *
@@ -460,7 +462,7 @@ export class MakerLoop {
     let usado = gastadoGlobal;
     let porPlanificar = comprometidoGlobal;
 
-    const elegidos = elegirMercados(candidatos, this.config.capitalUsd);
+    const elegidos = elegirMercados(candidatos, this.config.capitalUsd, this.config.ticksDelMedio);
     const elegidosPorSlug = new Set(elegidos.map((e) => e.slug));
     let sinFinanciar = 0;
 
@@ -501,6 +503,7 @@ export class MakerLoop {
         inventario: estado.inventario,
         ultimaRecolocacionMs: estado.ultimaRecolocacionMs,
         minMsEntreRecolocaciones: this.config.minMsEntreRecolocaciones ?? MIN_MS_ENTRE_RECOLOCACIONES,
+        ticksDelMedio: this.config.ticksDelMedio,
         nowMs,
       });
 

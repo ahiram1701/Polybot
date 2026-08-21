@@ -157,3 +157,71 @@ describe("invariantes del par, barridas sobre TODO el espacio de precios", () =>
     }
   });
 });
+
+describe("colocar PEGADO al medio no relaja ninguna invariante", () => {
+  // `ticksDelMedio: 0` multiplica la puntuacion (100% en vez del 60% con banda de 4,5c) a cambio de
+  // quedarse sin margen en el par y de ser el mejor precio del libro. Lo que NO puede hacer es abrir un
+  // agujero: si el par llegara a costar mas de $1, cada par completo perderia dinero seguro.
+  const AGRESIVO = { minSize: 20, maxSpreadCents: 4.5 };
+
+  it("el par nunca cuesta MAS de $1, en todo el espacio de precios", () => {
+    const infractores: string[] = [];
+    let planes = 0;
+    for (const tick of TICKS) {
+      for (const mid of mediosABarrer(tick)) {
+        const plan = planificarDosLados({
+          mid,
+          tickSize: tick,
+          capitalDisponibleUsd: 10_000,
+          params: AGRESIVO,
+          vivas: [],
+          ticksDelMedio: 0,
+        });
+        if (plan.colocar.length === 0) continue;
+        planes += 1;
+        const porParticipacion = plan.colocar.reduce((s, o) => s + o.price, 0);
+        if (porParticipacion > 1) {
+          infractores.push(`mid=${mid} tick=${tick} -> ${porParticipacion.toFixed(4)}`);
+        }
+      }
+    }
+    expect(infractores.slice(0, 10)).toEqual([]);
+    expect(planes).toBeGreaterThan(1000);
+  });
+
+  it("ningun precio queda por ENCIMA de su medio: cruzar convierte la orden en taker", () => {
+    const cruces: string[] = [];
+    for (const tick of TICKS) {
+      for (const mid of mediosABarrer(tick)) {
+        const plan = planificarDosLados({
+          mid,
+          tickSize: tick,
+          capitalDisponibleUsd: 10_000,
+          params: AGRESIVO,
+          vivas: [],
+          ticksDelMedio: 0,
+        });
+        for (const o of plan.colocar) {
+          const suMedio = o.outcome === "UP" ? mid : medioContrario(mid);
+          if (o.price > suMedio + 1e-9) {
+            cruces.push(`mid=${mid} tick=${tick} ${o.outcome}@${o.price} > ${suMedio}`);
+          }
+        }
+      }
+    }
+    expect(cruces.slice(0, 10)).toEqual([]);
+  });
+
+  it("y puntua MAS que el modo conservador, que es para lo que existe", () => {
+    // Con el medio justo en un tick, el conservador queda a 1 centavo (60% de la puntuacion con banda
+    // de 4,5c) y el agresivo a cero (100%).
+    const conservador = precioObjetivo(0.5, "BUY", 0.01, 1);
+    const agresivo = precioObjetivo(0.5, "BUY", 0.01, 0);
+    expect(conservador).toBeCloseTo(0.49, 6);
+    expect(agresivo).toBeCloseTo(0.5, 6);
+    const qCons = puntuacionRecompensa(20, 0.5 - conservador, AGRESIVO);
+    const qAgr = puntuacionRecompensa(20, 0.5 - agresivo, AGRESIVO);
+    expect(qAgr).toBeGreaterThan(qCons);
+    expect(qAgr / qCons).toBeCloseTo(1 / ((4.5 - 1) / 4.5) ** 2, 2);
+  });
+});

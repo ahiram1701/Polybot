@@ -857,6 +857,7 @@ export class BotRunner {
       {
         capitalUsd: this.config.makerCapitalUsd ?? 40,
         retirarSegundosAntesDelCierre: this.config.makerRetireSecondsBeforeClose ?? 30,
+        ticksDelMedio: this.config.makerTicksDelMedio,
       },
     );
     return this.makerLoopCache;

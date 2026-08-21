@@ -144,6 +144,14 @@ export interface BotConfig {
   makerStopBelowUsd?: number;
   /** Cada cuanto corre el maker, en ms. Por defecto 15 s, el mismo freno que la recolocacion. */
   makerIntervalMs?: number;
+  /**
+   * A cuantos ticks del punto medio coloca el maker. 1 = conservador (defecto), 0 = pegado al medio.
+   *
+   * Es un intercambio, no una mejora gratis: pegado al medio la orden puntua el 100% en vez del 60%
+   * (banda de 4,5c), pero el par pasa a costar $1,00 en vez de $0,98 y, sobre todo, quedas el mejor
+   * precio del libro — te llenan antes. Sale a 1 hasta que la seleccion adversa este medida.
+   */
+  makerTicksDelMedio?: number;
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;
