@@ -398,9 +398,18 @@ export class AnalyticsRecorder {
   }
 
   async pruneIfNeeded(force = false): Promise<number | undefined> {
-    const estimadas =
-      this.analyticsSampleCount === undefined ? undefined : this.analyticsSampleCount + this.appendedSinceCount;
-    if (!force && estimadas !== undefined && estimadas <= this.maxSamples + this.pruneSlack) {
+    // Si no se sabe cuantas hay —proceso recien arrancado—, se CUENTAN sin parsear.
+    //
+    // Antes, no saberlo bastaba para caer en la poda cara: leer 446 MB, construir 4,5 millones de
+    // objetos y reescribir el fichero entero. Y como el arranque la forzaba, eso pasaba en CADA
+    // arranque. Contando saltos de linea el mismo fichero cuesta E/S y nada mas, asi que la poda cara
+    // solo ocurre cuando de verdad se ha pasado del tope.
+    if (this.analyticsSampleCount === undefined) {
+      this.analyticsSampleCount = await contarMuestrasAnalytics(this.analyticsPath);
+      this.appendedSinceCount = 0;
+    }
+    const estimadas = this.analyticsSampleCount + this.appendedSinceCount;
+    if (!force && estimadas <= this.maxSamples + this.pruneSlack) {
       return estimadas;
     }
     this.analyticsSampleCount = await trimAnalyticsFileToMostRecent(this.analyticsPath, this.maxSamples);
@@ -460,6 +469,54 @@ export function invalidateAnalyticsReadCache(path?: string): void {
     analyticsReadCache.clear();
   } else {
     analyticsReadCache.delete(path);
+  }
+}
+
+/**
+ * Cuantas muestras hay en el fichero, contando saltos de linea y SIN parsear ni una.
+ *
+ * La diferencia no es de matiz: parsear estas 10.000 muestras construye ~4,5 millones de objetos
+ * —cada una lleva 260 cotizaciones y 115 ticks por segundo de su ventana, 55 KB de mediana— y bloquea
+ * el bucle de eventos varios segundos. Contar es leer por trozos, con una espera entre trozo y trozo
+ * en la que el proceso puede atender peticiones. Es lo que hace que `/api/health` siga respondiendo.
+ *
+ * Un fichero que no existe son cero muestras, no un error: es el primer arranque.
+ */
+export async function contarMuestrasAnalytics(path: string): Promise<number> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    let lineas = 0;
+    let ultimoByte: number | undefined;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      let desde = 0;
+      for (;;) {
+        const salto = buffer.indexOf(0x0a, desde);
+        if (salto === -1 || salto >= bytesRead) {
+          break;
+        }
+        lineas += 1;
+        desde = salto + 1;
+      }
+      ultimoByte = buffer[bytesRead - 1];
+    }
+    // Una ultima linea sin salto final cuenta igual: el fichero puede quedar asi tras una escritura
+    // a medias, y contar de menos haria creer que cabe una muestra mas de las que caben.
+    return ultimoByte !== undefined && ultimoByte !== 0x0a ? lineas + 1 : lineas;
+  } finally {
+    await handle.close();
   }
 }
 

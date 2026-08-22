@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AnalyticsRecorder,
   importAnalyticsSamples,
+  contarMuestrasAnalytics,
   parseAnalyticsSamplesText,
   readAnalyticsSamples,
   serializeAnalyticsSamples,
@@ -569,5 +570,99 @@ describe("la muestra mide la serie que RESUELVE, no el spot", () => {
     // Y con el lado comprador, que hasta ahora se obtenia y se tiraba.
     expect(temprana?.upBidDepthUsd).toBe(77);
     expect(temprana?.quotedAtMs).toBe(base + 1_000);
+  });
+});
+
+/**
+ * Contar muestras no puede costar lo que parsearlas.
+ *
+ * Cada muestra lleva 260 cotizaciones y 115 ticks por segundo de su ventana —55 KB de mediana—, asi
+ * que parsear las 10.000 que se retienen construye ~4,5 millones de objetos. Medido sobre el fichero
+ * real de 446 MB el 2026-08-22: contar 248 ms, parsear ~4.817 ms y ~702 MB de heap. **19 veces mas
+ * barato**, y sin bloquear el bucle: entre trozo y trozo hay una espera en la que se atienden
+ * peticiones.
+ *
+ * Importa porque el arranque FORZABA la poda, y podar sin saber cuantas hay significaba parsearlo
+ * todo. Con `/api/health` ya escuchando, esos segundos hacian que el watchdog lo tomara por muerto.
+ */
+describe("contar muestras sin parsearlas", () => {
+  async function ficheroCon(contenido: string): Promise<string> {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-contar-"));
+    temps.push(dataDir);
+    const path = join(dataDir, "analytics.jsonl");
+    await writeFile(path, contenido, "utf8");
+    return path;
+  }
+
+  it("cuenta una linea por muestra", async () => {
+    const path = await ficheroCon("a\nb\nc\n");
+    expect(await contarMuestrasAnalytics(path)).toBe(3);
+  });
+
+  it("la ultima linea sin salto final tambien cuenta", async () => {
+    // Un fichero puede quedar asi tras una escritura a medias. Contar de menos haria creer que cabe
+    // una muestra mas de las que caben.
+    const path = await ficheroCon("a\nb\nc");
+    expect(await contarMuestrasAnalytics(path)).toBe(3);
+  });
+
+  it("un fichero vacio son cero muestras", async () => {
+    expect(await contarMuestrasAnalytics(await ficheroCon(""))).toBe(0);
+  });
+
+  it("un fichero que no existe son cero muestras, no un error", async () => {
+    // Es el primer arranque, no un fallo.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-contar-"));
+    temps.push(dataDir);
+    expect(await contarMuestrasAnalytics(join(dataDir, "no-existe.jsonl"))).toBe(0);
+  });
+
+  it("cuenta bien cuando el fichero ocupa varios trozos de lectura", async () => {
+    // El bucle lee de 1 MB en 1 MB: una linea a caballo entre dos trozos no puede contarse dos veces
+    // ni perderse.
+    const linea = "x".repeat(4096);
+    const cuantas = 700; // ~2,8 MB, o sea tres trozos
+    const path = await ficheroCon(`${Array.from({ length: cuantas }, () => linea).join("\n")}\n`);
+    expect(await contarMuestrasAnalytics(path)).toBe(cuantas);
+  });
+});
+
+describe("el arranque no puede pagar una poda que no hace falta", () => {
+  it("un recorder recien creado respeta la holgura en vez de reescribir", async () => {
+    // Antes, no saber cuantas muestras hay bastaba para caer en la poda cara, y el arranque la
+    // forzaba: se pagaba en CADA arranque —~17 s con el bucle bloqueado sobre 446 MB— con el watchdog
+    // mirando. La clave es la HOLGURA: dentro de ella no se toca el fichero aunque se pase del tope,
+    // que es justo lo que el codigo viejo no podia saber sin parsearlo todo.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const sembrador = new AnalyticsRecorder(dataDir, 3, 10);
+    for (let i = 0; i < 5; i += 1) {
+      await resolveSample(sembrador, marketInfo("BTC", base + i * 300_000));
+    }
+
+    const analyticsPath = join(dataDir, "analytics.jsonl");
+    const antes = await readFile(analyticsPath, "utf8");
+
+    // Un proceso NUEVO: no sabe cuantas hay. Es exactamente el caso del arranque.
+    const recien = new AnalyticsRecorder(dataDir, 3, 10);
+    expect(await recien.pruneIfNeeded()).toBe(5); // 5 pasa del tope de 3, pero cabe en la holgura
+    expect(await readFile(analyticsPath, "utf8")).toBe(antes); // intacto: no se ha reescrito nada
+  });
+
+  it("pero si se ha pasado del tope, poda igual", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-"));
+    temps.push(dataDir);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    const sembrador = new AnalyticsRecorder(dataDir, 100, 10);
+    for (let i = 0; i < 8; i += 1) {
+      await resolveSample(sembrador, marketInfo("BTC", base + i * 300_000));
+    }
+
+    const recien = new AnalyticsRecorder(dataDir, 3, 0);
+    expect(await recien.pruneIfNeeded()).toBe(3);
+    const samples = await recien.readSamples();
+    expect(samples).toHaveLength(3);
+    expect(Math.max(...samples.map((s) => s.windowStartMs))).toBe(base + 7 * 300_000);
   });
 });

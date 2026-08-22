@@ -429,9 +429,18 @@ export class BotRunner {
 
   async start(options: { once?: boolean } = {}): Promise<void> {
     await this.deps.state.load();
-    // Poda ANTES de que el bucle empiece. Es cara —lee el fichero entero— y por eso no puede correr
-    // mientras se opera: bloqueaba el bucle casi 8 segundos, y un arbitraje dura segundos.
-    await this.deps.analyticsRecorder?.pruneIfNeeded?.(true);
+    // Poda ANTES de que el bucle empiece, pero SIN forzarla.
+    //
+    // Forzarla convertia cada arranque en una lectura y reescritura del fichero entero. Con 446 MB
+    // eso son ~17 segundos con el bucle bloqueado —medido: `lagMaxMs 16919.8` justo despues de un
+    // arranque—, y el servidor HTTP ya esta escuchando, asi que `/api/health` no puede contestar. El
+    // watchdog lo tomaba por muerto y lo mataba, y el arranque siguiente volvia a podar: un bucle que
+    // se alimentaba solo. Encaja con que los reinicios pasaran de 1-3 al dia a 7-11 cuando el fichero
+    // crecio.
+    //
+    // Sin forzar, `pruneIfNeeded` cuenta las muestras sin parsearlas y solo poda si de verdad se ha
+    // pasado del tope mas la holgura, que es una vez cada ~600 muestras y no una vez por arranque.
+    await this.deps.analyticsRecorder?.pruneIfNeeded?.();
     const tamanoMb = await this.deps.analyticsRecorder?.analyticsSizeMb?.();
     if (tamanoMb !== undefined) {
       logger.info("Analitica en disco.", { mb: tamanoMb, tope: "10.000 muestras" });
