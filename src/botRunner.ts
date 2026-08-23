@@ -867,6 +867,8 @@ export class BotRunner {
         capitalUsd: this.config.makerCapitalUsd ?? 40,
         retirarSegundosAntesDelCierre: this.config.makerRetireSecondsBeforeClose ?? 30,
         ticksDelMedio: this.config.makerTicksDelMedio,
+        // Solo en LIVE hay herencia que limpiar: el libro de simulacion muere con el proceso.
+        limpiarHerenciaAlArrancar: this.modeFor("maker") === "live",
       },
     );
     return this.makerLoopCache;

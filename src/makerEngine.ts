@@ -22,6 +22,18 @@ export interface MakerEngine {
   colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined>;
   /** Devuelve los ids REALMENTE cancelados, no los pedidos. La diferencia importa: ver abajo. */
   cancelar(ids: string[]): Promise<string[]>;
+  /**
+   * TODAS las ordenes vivas de la cuenta, sin filtrar por mercado. Solo para limpiar al arrancar.
+   *
+   * Existe porque el resto del bucle pregunta SIEMPRE por un mercado concreto, y despues de un
+   * arranque no sabemos por cuales preguntar: el rastro en memoria —que ordenes teniamos y donde—
+   * muere con el proceso. Las que quedaron en un mercado que ya no esta entre los candidatos no las
+   * encuentra nadie, y una orden que nadie mira puede llenarse y resolver sola.
+   *
+   * Opcional: un motor que no sepa responder esto simplemente no se limpia, que es lo que se hacia
+   * antes. Nunca debe tumbar el arranque.
+   */
+  ordenesDeLaCuenta?(): Promise<string[]>;
 }
 
 /** Motor de simulacion: lleva un libro de ordenes propio en memoria. No toca la red. */
@@ -48,6 +60,10 @@ export class SimulationMakerEngine implements MakerEngine {
       this.porMercado.set(slug, restantes);
     }
     return quitadas;
+  }
+
+  async ordenesDeLaCuenta(): Promise<string[]> {
+    return [...this.porMercado.values()].flat().map((o) => o.id);
   }
 }
 
@@ -153,5 +169,25 @@ export class LiveMakerEngine implements MakerEngine {
       });
     }
     return canceladas;
+  }
+
+  /**
+   * Todas las ordenes vivas de la cuenta. Es la unica consulta que NO filtra por mercado.
+   *
+   * Todo lo demas pregunta por un `conditionId` concreto, y tras un arranque no sabemos por cuales
+   * preguntar. El unico camino de retirada que existia —`retirarTodo`— corre al PARAR limpiamente, y
+   * el watchdog no para: mata con `Stop-Process -Force`. Asi que una orden en un mercado que despues
+   * se cae del top-25 del escaner no la vuelve a mirar nadie.
+   *
+   * Todas las ordenes en reposo de esta cuenta son del maker: el motor direccional manda FAK —dispara
+   * y olvida— y esas no se quedan en el libro.
+   */
+  async ordenesDeLaCuenta(): Promise<string[]> {
+    const client = await this.clientProvider.getClient();
+    const respuesta = (await client.getOpenOrders({})) as unknown as {
+      data?: Array<Record<string, unknown>>;
+    };
+    const filas = Array.isArray(respuesta) ? respuesta : (respuesta?.data ?? []);
+    return filas.map((fila) => String(fila.id)).filter((id) => id && id !== "undefined");
   }
 }

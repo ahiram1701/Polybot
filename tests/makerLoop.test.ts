@@ -1185,3 +1185,84 @@ describe("una ficha rancia no puede desbancar a quien ya cotiza", () => {
     expect(entrante!.esperadoUsdDia!).toBeGreaterThan(saliente!.esperadoUsdDia!);
   });
 });
+
+/**
+ * Lo que quedo vivo de un proceso anterior no lo encuentra nadie.
+ *
+ * El rastro de que ordenes teniamos y donde vive en memoria. El bucle pregunta SIEMPRE por un mercado
+ * concreto, asi que lo que quedo en uno que ya no esta entre los candidatos es invisible — y una orden
+ * que nadie mira puede llenarse y resolver sola. El unico camino de retirada que existia corre al
+ * PARAR limpiamente, y el watchdog no para: mata con `Stop-Process -Force`.
+ */
+describe("la herencia de un proceso muerto", () => {
+  it("al arrancar en LIVE, retira lo que quedo vivo aunque su mercado ya no se siga", async () => {
+    const sim = new SimulationMakerEngine();
+    // Un mercado que YA NO esta en la lista de candidatos: nadie preguntaria por el.
+    const olvidado = market("DOGE", 7200);
+    await sim.colocar(olvidado, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    await sim.colocar(olvidado, { outcome: "DOWN", side: "BUY", price: 0.49, size: 50 });
+
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: sim },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, limpiarHerenciaAlArrancar: true },
+    );
+    callar();
+    await loop.runOnce([market("BTC", 7200)], AHORA);
+    expect(await sim.ordenesVivas(olvidado)).toHaveLength(0);
+  });
+
+  it("solo se intenta UNA vez, no en cada pasada", async () => {
+    // Si el exchange responde mal, reintentarlo cada quince segundos seria machacarlo sin arreglar nada.
+    const sim = new SimulationMakerEngine();
+    const listar = vi.fn(async () => [] as string[]);
+    const engine = {
+      ordenesVivas: (m: MarketInfo) => sim.ordenesVivas(m),
+      colocar: (m: MarketInfo, o: never) => sim.colocar(m, o),
+      cancelar: (ids: string[]) => sim.cancelar(ids),
+      ordenesDeLaCuenta: listar,
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, limpiarHerenciaAlArrancar: true },
+    );
+    callar();
+    await loop.runOnce([market("BTC", 7200)], AHORA);
+    await loop.runOnce([market("BTC", 7200)], AHORA + 20_000);
+    await loop.runOnce([market("BTC", 7200)], AHORA + 40_000);
+    expect(listar).toHaveBeenCalledTimes(1);
+  });
+
+  it("en SIM no toca nada: no hay herencia que limpiar", async () => {
+    // El libro de simulacion muere con el proceso. Activarlo aqui solo borraria lo que un test siembra.
+    const sim = new SimulationMakerEngine();
+    const btc = market("BTC", 7200);
+    await sim.colocar(btc, { outcome: "UP", side: "BUY", price: 0.49, size: 50 });
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: sim },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([btc], AHORA);
+    expect((await sim.ordenesVivas(btc)).length).toBeGreaterThan(0);
+  });
+
+  it("si listar la cuenta falla, el arranque sigue adelante", async () => {
+    // Nunca puede tumbar el arranque: sin limpieza el bot queda como antes de que existiera.
+    const sim = new SimulationMakerEngine();
+    const engine = {
+      ordenesVivas: (m: MarketInfo) => sim.ordenesVivas(m),
+      colocar: (m: MarketInfo, o: never) => sim.colocar(m, o),
+      cancelar: (ids: string[]) => sim.cancelar(ids),
+      ordenesDeLaCuenta: async () => {
+        throw new Error("503 del exchange");
+      },
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, limpiarHerenciaAlArrancar: true },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC", 7200)], AHORA);
+    expect(r.colocadas).toBe(2); // cotiza igual
+  });
+});

@@ -72,6 +72,13 @@ export interface MakerLoopConfig {
   margenRelevo?: number;
   /** Cada cuanto deja constancia de que sigue vivo aunque no cambie nada. Ver `dejarConstancia`. */
   intervaloLatidoMs?: number;
+  /**
+   * Retirar al arrancar lo que quedara vivo de un proceso anterior. Solo tiene sentido en LIVE.
+   *
+   * En simulacion el libro vive en memoria y muere con el proceso, asi que no hay herencia que
+   * limpiar: activarlo ahi solo serviria para borrar lo que un test acaba de sembrar.
+   */
+  limpiarHerenciaAlArrancar?: boolean;
 }
 
 export interface ResumenPasada {
@@ -206,6 +213,9 @@ export class MakerLoop {
 
   /** Desde cuando no hay ni una orden viva en ningun sitio. `undefined` = si la hay. */
   private sinCotizarDesdeMs: number | undefined;
+
+  /** La limpieza de arranque se intenta UNA vez, salga bien o mal. Ver `limpiarHerenciaDeOtroProceso`. */
+  private herenciaRevisada = false;
 
   constructor(
     private readonly deps: MakerLoopDeps,
@@ -523,6 +533,8 @@ export class MakerLoop {
       paresUsd: 0,
       mercados: [],
     };
+
+    await this.limpiarHerenciaDeOtroProceso(resumen);
 
     // Mercados que se han caido de la lista: se les retiran las ordenes ANTES de olvidarlos.
     //
@@ -1000,6 +1012,56 @@ export class MakerLoop {
     candidato.vivas = vivas;
     candidato.fresco = true;
     return { ok: true, atadoUsd: vivas.reduce((suma, o) => suma + o.price * o.size, 0) };
+  }
+
+  /**
+   * Retira, UNA vez al arrancar, lo que quedara vivo de un proceso anterior.
+   *
+   * El rastro de que ordenes teniamos y donde vive en memoria y muere con el proceso. El bucle
+   * pregunta SIEMPRE por un mercado concreto, asi que lo que quedo en uno que ya no esta entre los
+   * candidatos no lo encuentra nadie — y una orden que nadie mira puede llenarse y resolver sola.
+   *
+   * El unico camino de retirada que existia, `retirarTodo`, corre al PARAR limpiamente. El watchdog no
+   * para: mata con `Stop-Process -Force`. Con 1 reinicio al dia y 7 salidas del escaner cada 24 h, esa
+   * combinacion llega.
+   *
+   * No se intenta adoptarlas: su gasto, su inventario y su precio de referencia se perdieron con el
+   * proceso, asi que conservarlas seria sostener una posicion sin contabilidad. Se retiran y se empieza
+   * limpio, que es lo que el resto del bucle sabe manejar.
+   *
+   * Nunca tumba el arranque: un motor que no sepa listar la cuenta entera, o un fallo de red, dejan
+   * esto sin hacer y el bot sigue exactamente como antes de existir esta limpieza.
+   */
+  private async limpiarHerenciaDeOtroProceso(resumen: ResumenPasada): Promise<void> {
+    if (this.herenciaRevisada || !this.config.limpiarHerenciaAlArrancar) {
+      return;
+    }
+    // Se marca ANTES de intentarlo: si falla, no se reintenta en cada pasada machacando al exchange.
+    this.herenciaRevisada = true;
+    const listar = this.deps.engine.ordenesDeLaCuenta?.bind(this.deps.engine);
+    if (!listar) {
+      return;
+    }
+    try {
+      const ids = await listar();
+      if (ids.length === 0) {
+        return;
+      }
+      logger.warn("Maker: quedaban ordenes vivas de un proceso anterior; se retiran.", { ordenes: ids.length });
+      const canceladas = await this.cancelar(ids, "(herencia)");
+      resumen.canceladas += canceladas.length;
+      if (canceladas.length < ids.length) {
+        // A gritos: son ordenes con dinero que nadie va a vigilar, y el bot no puede arreglarlo solo.
+        logger.error("Maker: NO se pudieron retirar todas las ordenes heredadas. SIGUEN VIVAS.", {
+          pedidas: ids.length,
+          retiradas: canceladas.length,
+        });
+      }
+    } catch (error) {
+      logger.warn("Maker: no se pudo comprobar si habia ordenes de un proceso anterior.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** Los mercados en los que creemos tener alguna orden viva. Ver `detectarLlenados` para el rastro. */
