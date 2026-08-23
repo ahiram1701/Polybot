@@ -455,6 +455,65 @@ interface AnalyticsReadCache {
   mtimeMs: number;
   latestBySlug: Map<string, AnalyticsSample>;
   sorted: AnalyticsSample[];
+  /** Cuando se pidieron por ultima vez. Lo que decide si siguen mereciendo la memoria que ocupan. */
+  ultimoAccesoMs: number;
+}
+
+/**
+ * Cuanto se conservan las muestras parseadas sin que NADIE las pida.
+ *
+ * Diez minutos. El panel de analisis refresca cada 60 s mientras esta abierto y el gate de EV consulta
+ * en cada decision, asi que quien las usa de verdad las mantiene calientes: el coste de volver a
+ * leerlas solo lo paga quien dejo de usarlas.
+ *
+ * Sin esto la retencion era PARA SIEMPRE. Medido el 2026-08-22 en produccion: el proceso vivia con
+ * 95 MB de heap, una sola consulta al panel lo subio a 607 MB **en un intervalo de cinco minutos**, y
+ * ahi se quedo. En una maquina de 7,76 GB con 31 GB comprometidos, eso son 550 MB que el sistema
+ * acaba sacando a disco: la paginacion paso del 7% al 44%, y traerse de vuelta medio heap para un GC
+ * son los segundos de bucle bloqueado que matan al proceso.
+ */
+const TTL_MUESTRAS_EN_MEMORIA_MS = 10 * 60_000;
+
+/** Cada cuanto se revisa. No hace falta afinar: lo que importa es que acabe soltandose. */
+const BARRIDO_CACHE_MS = 60_000;
+
+let barredorCache: NodeJS.Timeout | undefined;
+
+/**
+ * Suelta lo que lleva rato sin pedirse. Se programa solo cuando hay algo que soltar y se apaga cuando
+ * no queda nada, para no dejar un temporizador latiendo de fondo en un proceso que no usa la analitica
+ * —la CLI, un test—. Y va sin `ref`: limpiar memoria no es motivo para mantener vivo un proceso.
+ */
+function programarBarridoCache(): void {
+  if (barredorCache) {
+    return;
+  }
+  barredorCache = setInterval(() => {
+    const limite = Date.now() - TTL_MUESTRAS_EN_MEMORIA_MS;
+    for (const [ruta, entrada] of [...analyticsReadCache]) {
+      if (entrada.ultimoAccesoMs <= limite) {
+        analyticsReadCache.delete(ruta);
+      }
+    }
+    if (analyticsReadCache.size === 0) {
+      pararBarridoCache();
+    }
+  }, BARRIDO_CACHE_MS);
+  barredorCache.unref?.();
+}
+
+function pararBarridoCache(): void {
+  if (barredorCache) {
+    clearInterval(barredorCache);
+    barredorCache = undefined;
+  }
+}
+
+/** Guarda la entrada y deja el barredor en marcha. Unico sitio por el que se puebla la cache. */
+function guardarEnCache(path: string, cache: AnalyticsReadCache): void {
+  cache.ultimoAccesoMs = Date.now();
+  analyticsReadCache.set(path, cache);
+  programarBarridoCache();
 }
 
 // The analytics ledger is append-only (compactions rewrite it smaller) and grows to >100MB; parsing it
@@ -470,6 +529,25 @@ export function invalidateAnalyticsReadCache(path?: string): void {
   } else {
     analyticsReadCache.delete(path);
   }
+  if (analyticsReadCache.size === 0) {
+    pararBarridoCache();
+  }
+}
+
+/** Solo para pruebas: fuerza el barrido sin esperar al temporizador. Devuelve cuantas entradas solto. */
+export function barrerMuestrasEnMemoria(ahoraMs = Date.now()): number {
+  const limite = ahoraMs - TTL_MUESTRAS_EN_MEMORIA_MS;
+  let soltadas = 0;
+  for (const [ruta, entrada] of [...analyticsReadCache]) {
+    if (entrada.ultimoAccesoMs <= limite) {
+      analyticsReadCache.delete(ruta);
+      soltadas += 1;
+    }
+  }
+  if (analyticsReadCache.size === 0) {
+    pararBarridoCache();
+  }
+  return soltadas;
 }
 
 /**
@@ -537,6 +615,7 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
 
   const cached = analyticsReadCache.get(path);
   if (cached && fileSize === cached.byteOffset && fileMtimeMs === cached.mtimeMs) {
+    cached.ultimoAccesoMs = Date.now();
     return [...cached.sorted];
   }
 
@@ -544,7 +623,7 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
   const cache: AnalyticsReadCache =
     cached && fileSize > cached.byteOffset
       ? cached
-      : { byteOffset: 0, mtimeMs: 0, latestBySlug: new Map(), sorted: [] };
+      : { byteOffset: 0, mtimeMs: 0, latestBySlug: new Map(), sorted: [], ultimoAccesoMs: 0 };
 
   const handle = await open(path, "r");
   try {
@@ -554,7 +633,7 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
     // Never consume a trailing partial line: a writer may be mid-append; it will be read next time.
     const lastNewline = buffer.lastIndexOf(0x0a);
     if (lastNewline === -1) {
-      analyticsReadCache.set(path, cache);
+      guardarEnCache(path, cache);
       return [...cache.sorted];
     }
     const contents = buffer.toString("utf8", 0, lastNewline + 1);
@@ -570,7 +649,7 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
     cache.byteOffset += lastNewline + 1;
     cache.mtimeMs = cache.byteOffset === fileSize ? fileMtimeMs : 0;
     cache.sorted = [...cache.latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs);
-    analyticsReadCache.set(path, cache);
+    guardarEnCache(path, cache);
     return [...cache.sorted];
   } finally {
     await handle.close();

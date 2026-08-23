@@ -1,12 +1,14 @@
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AnalyticsRecorder,
-  importAnalyticsSamples,
+  barrerMuestrasEnMemoria,
   contarMuestrasAnalytics,
+  importAnalyticsSamples,
+  invalidateAnalyticsReadCache,
   parseAnalyticsSamplesText,
   readAnalyticsSamples,
   serializeAnalyticsSamples,
@@ -664,5 +666,74 @@ describe("el arranque no puede pagar una poda que no hace falta", () => {
     const samples = await recien.readSamples();
     expect(samples).toHaveLength(3);
     expect(Math.max(...samples.map((s) => s.windowStartMs))).toBe(base + 7 * 300_000);
+  });
+});
+
+/**
+ * Las muestras parseadas no pueden quedarse en memoria para siempre.
+ *
+ * Medido en produccion el 2026-08-22: el proceso vivia con 95 MB de heap, UNA consulta al panel de
+ * analisis lo subio a 607 MB en un intervalo de cinco minutos, y ahi se quedo. En una maquina de
+ * 7,76 GB con 31 GB comprometidos eso son 550 MB que el sistema acaba sacando a disco —la paginacion
+ * paso del 7% al 44%— y traerse medio heap de vuelta para un GC son los segundos de bucle bloqueado
+ * que acaban con el proceso muerto.
+ */
+describe("la memoria de las muestras se suelta sola", () => {
+  async function ficheroConMuestras(cuantas: number): Promise<string> {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-ttl-"));
+    temps.push(dataDir);
+    const recorder = new AnalyticsRecorder(dataDir, 1000, 1000);
+    const base = Date.UTC(2026, 4, 8, 12, 0, 0);
+    for (let i = 0; i < cuantas; i += 1) {
+      await resolveSample(recorder, marketInfo("BTC", base + i * 300_000));
+    }
+    invalidateAnalyticsReadCache();
+    return join(dataDir, "analytics.jsonl");
+  }
+
+  it("tras el plazo sin pedirse, se sueltan", async () => {
+    const path = await ficheroConMuestras(3);
+    expect(await readAnalyticsSamples(path)).toHaveLength(3);
+    // Once minutos despues sin que nadie las mire: fuera.
+    expect(barrerMuestrasEnMemoria(Date.now() + 11 * 60_000)).toBe(1);
+  });
+
+  it("mientras se usan, no se sueltan", async () => {
+    // El panel refresca cada 60 s y el gate de EV consulta en cada decision: quien las usa de verdad
+    // las mantiene calientes, y el coste de releerlas solo lo paga quien dejo de usarlas.
+    const path = await ficheroConMuestras(3);
+    await readAnalyticsSamples(path);
+    expect(barrerMuestrasEnMemoria(Date.now())).toBe(0);
+  });
+
+  it("una lectura nueva reinicia el plazo", async () => {
+    const path = await ficheroConMuestras(3);
+    const t0 = Date.UTC(2026, 7, 23, 12, 0, 0);
+    // Solo se finge el RELOJ, no los temporizadores: fingirlos tambien dejaria colgada la E/S de
+    // fichero que estas lecturas necesitan.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(t0);
+      await readAnalyticsSamples(path);
+      // Nueve minutos despues alguien las vuelve a pedir.
+      vi.setSystemTime(t0 + 9 * 60_000);
+      await readAnalyticsSamples(path);
+      // A los once desde la PRIMERA siguen vivas: la segunda lectura reinicio el plazo.
+      expect(barrerMuestrasEnMemoria(t0 + 11 * 60_000)).toBe(0);
+      // Y a los once desde la SEGUNDA, ya no.
+      expect(barrerMuestrasEnMemoria(t0 + 20 * 60_000 + 1)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("soltarlas no pierde nada: la siguiente lectura devuelve lo mismo", async () => {
+    // Es lo unico que hace aceptable el desalojo. El coste es volver a parsear; el error seria
+    // devolver menos muestras de las que hay.
+    const path = await ficheroConMuestras(4);
+    const antes = await readAnalyticsSamples(path);
+    barrerMuestrasEnMemoria(Date.now() + 11 * 60_000);
+    const despues = await readAnalyticsSamples(path);
+    expect(despues.map((s) => s.slug)).toEqual(antes.map((s) => s.slug));
   });
 });

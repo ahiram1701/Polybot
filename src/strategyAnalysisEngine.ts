@@ -91,7 +91,14 @@ type BaseStrategyCandidate = Omit<
 
 export class StrategyAnalysisEngine {
   private cache?: { key: string; response: StrategyAnalysisResponse };
-  private samplesCache?: { signature: string; samples: AnalyticsSample[] };
+  /**
+   * Solo la FIRMA, no las muestras.
+   *
+   * Retenerlas aqui tambien las mantenia vivas para siempre por mucho que el lector las soltara: dos
+   * referencias al mismo medio giga de objetos, y basta una para que el recolector no pueda tocarlo.
+   * La firma si se guarda porque forma parte de otras claves de cache de esta clase.
+   */
+  private samplesCache?: { signature: string };
   private readonly pending = new Map<string, Promise<StrategyAnalysisResponse>>();
   // The similarity pool is O(samples×ticks) to build; rebuilding it on EVERY gate evaluation added
   // latency exactly at the entry moment. Keyed by params + the samples-file signature.
@@ -323,13 +330,11 @@ export class StrategyAnalysisEngine {
     // Simulating a SINGLE setup is O(samples), so use the full retained history (not the 300/market
     // cap the expensive grid needs) to give the win-rate estimate enough executable trades.
     const analyticsPath = join(this.dataDir, "analytics.jsonl");
-    const signature = await analyticsFileSignature(analyticsPath);
-    if (this.samplesCache?.signature === signature) {
-      return this.samplesCache.samples;
-    }
-    const samples = await readAnalyticsSamples(analyticsPath);
-    this.samplesCache = { signature, samples };
-    return samples;
+    // Sin cache propia: `readAnalyticsSamples` ya solo lee la cola nueva del fichero, asi que repetir
+    // la llamada cuesta un `stat` y copiar un array de referencias. Lo que se ahorraba aqui era eso;
+    // lo que costaba era impedir que la memoria se liberara nunca.
+    this.samplesCache = { signature: await analyticsFileSignature(analyticsPath) };
+    return await readAnalyticsSamples(analyticsPath);
   }
 
   async analyze(settings: StrategyAnalysisSettings, nowMs = Date.now()): Promise<StrategyAnalysisResponse> {
