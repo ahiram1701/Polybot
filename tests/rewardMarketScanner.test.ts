@@ -270,3 +270,74 @@ describe("resolver en paralelo no puede cambiar lo que se elige", () => {
     expect(r.map((c) => c.mercado.conditionId)).toEqual(["m0", "m3", "m4", "m5"]);
   });
 });
+
+/**
+ * Una lista vacia significa "no lo se todavia", no "abandona lo que tienes puesto".
+ *
+ * `MakerLoop` da por huerfano todo mercado que desaparece de la lista y le RETIRA las ordenes. Asi que
+ * devolver vacio por un fallo de red es abandonar las posiciones. Observado 3 veces en 24 h de
+ * produccion —tres latidos con `candidatos: 0`, y los tres con `mudoMinutos: 5`, que es exactamente lo
+ * que dura la cache de candidatos— y reproducido en el ensayo, que devolvio 0 mercados en una
+ * ejecucion y 25 en la siguiente.
+ */
+describe("un hipo de red no puede vaciar la lista", () => {
+  it("si NINGUN mercado resuelve, conserva la lista anterior", async () => {
+    // Es el caso que se veia en produccion: la criba SI tiene candidatos y aun asi no resuelve
+    // ninguno. Cachear ese vacio dejaba al maker mudo los cinco minutos de la cache.
+    callar();
+    const filas = Array.from({ length: 5 }, (_, i) => fila(`m${i}`, 20, 4.5, 200 - i));
+    let mercadosCaidos = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/rewards/markets/current")) {
+        return { json: async () => ({ data: filas, next_cursor: "LTE=" }) };
+      }
+      if (mercadosCaidos) {
+        throw new Error("ECONNRESET");
+      }
+      const id = url.split("/markets/")[1] ?? "";
+      return { json: async () => mercado(id) };
+    });
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl as never);
+    await scanner.precargar();
+    const antes = await scanner.mejores(20);
+    expect(antes.length).toBeGreaterThan(0);
+
+    mercadosCaidos = true;
+    const ahora = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Caduca la cache de candidatos (5 min) pero no la del registro (10 min): el escaner rehace la
+      // criba y se estrella al resolver, que es la secuencia exacta de produccion.
+      vi.setSystemTime(ahora + 6 * 60_000);
+      const despues = await scanner.mejores(20);
+      expect(despues.map((c) => c.mercado.conditionId)).toEqual(antes.map((c) => c.mercado.conditionId));
+      // Y el vacio NO se ha cacheado: al siguiente intento sigue conservando lo bueno.
+      const otraVez = await scanner.mejores(20);
+      expect(otraVez.length).toBe(antes.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("si el registro aun no ha cargado, no inventa nada", async () => {
+    // Sin nada bueno anterior, vacio SI es la verdad: es el primer arranque.
+    callar();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("DNS");
+    });
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl as never);
+    await scanner.precargar();
+    expect(await scanner.mejores(20)).toEqual([]);
+  });
+
+  it("pero si de verdad no cabe nada en el capital, la lista SI se vacia", async () => {
+    // La guarda no puede tapar un "aqui no hay nada" real: con $5 no califica ningun mercado, y
+    // seguir cotizando con una lista vieja seria peor que no cotizar.
+    callar();
+    const filas = [fila("caro", 50, 4.5, 500)];
+    const { fetchImpl } = servidor(filas);
+    const scanner = new RewardMarketScanner("https://clob", fetchImpl);
+    await scanner.precargar();
+    expect(await scanner.mejores(5)).toEqual([]);
+  });
+});

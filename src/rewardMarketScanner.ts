@@ -158,7 +158,18 @@ export class RewardMarketScanner {
     }
     const filas = this.registroActual();
     if (filas.length === 0) {
-      return []; // aun se esta leyendo por detras: no se cotiza esta pasada y ya esta
+      // "No lo se todavia" NO es "aqui no hay nada", y confundirlos cuesta dinero.
+      //
+      // El registro esta vacio mientras se carga por detras y tambien cuando la lectura falla. Con la
+      // lista vacia, `MakerLoop` da por huerfanos TODOS los mercados y retira las ordenes vivas: un
+      // hipo de red bastaba para abandonar las posiciones. Observado 3 veces en 24 h de produccion
+      // —tres latidos con `candidatos: 0` y ~15 minutos sin cotizar— y reproducido en el ensayo, que
+      // devolvio 0 mercados en una ejecucion y 25 en la siguiente.
+      //
+      // Se conserva lo ultimo bueno aunque haya caducado: una lista de hace diez minutos describe el
+      // mundo infinitamente mejor que ninguna. Es la misma asimetria que `rewardParams` aplica a sus
+      // vacios. Si nunca hubo nada, vacio SI es la verdad.
+      return this.candidatos?.valor ?? [];
     }
 
     const cribados = filas
@@ -246,6 +257,16 @@ export class RewardMarketScanner {
         continue;
       }
       resueltos.push({ mercado, params: c.params, costeEntradaUsd: c.costeEntradaUsd });
+    }
+    if (resueltos.length === 0) {
+      // La criba SI tenia candidatos y aun asi no resolvio ninguno: eso es la red, no un mercado
+      // vacio. Cachear ese vacio dejaria al maker mudo los cinco minutos que dura la cache —y con las
+      // ordenes retiradas— por un mal momento del exchange.
+      logger.warn("Ningun mercado de recompensa resolvio; se conserva la lista anterior.", {
+        cribados: cribados.length,
+        anteriores: this.candidatos?.valor.length ?? 0,
+      });
+      return this.candidatos?.valor ?? [];
     }
     this.candidatos = { capitalUsd, valor: resueltos, enMs: Date.now() };
     return resueltos;
