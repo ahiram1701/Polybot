@@ -21,6 +21,7 @@
     "service:install": "bash scripts/install-systemd.sh",
     "smoke:market": "tsx src/smoke/market.ts",
     "ensayo:maker": "tsx src/smoke/makerSimProbe.ts",
+    "recompensa:real": "tsx src/smoke/recompensaReal.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json"
