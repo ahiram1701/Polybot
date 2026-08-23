@@ -387,7 +387,7 @@ describe("el tope tiene que acotar el GASTO, no solo lo comprometido", () => {
     expect(estado?.gastadoUsd).toBeCloseTo(49, 2);
   });
 
-  it("cuando la ventana se cierra, el gasto deja de contar", async () => {
+  it("cuando el mercado ACABA, el gasto deja de contar", async () => {
     // Las posiciones resolvieron y el dinero volvio: seguir descontandolo dejaria el maker mudo.
     const engine = motorQueLlena();
     const loop = new MakerLoop(
@@ -395,14 +395,40 @@ describe("el tope tiene que acotar el GASTO, no solo lo comprometido", () => {
       { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, minMsEntreRecolocaciones: 0 },
     );
     callar();
-    await loop.runOnce([market("BTC")], AHORA);
+    const btc = market("BTC", 200);
+    await loop.runOnce([btc], AHORA);
     engine.llenarTodo();
-    await loop.runOnce([market("BTC")], AHORA + 20_000);
-    expect(loop.estadoDe(market("BTC").slug)?.gastadoUsd).toBeCloseTo(49, 2);
+    await loop.runOnce([btc], AHORA + 20_000);
+    expect(loop.estadoDe(btc.slug)?.gastadoUsd).toBeCloseTo(49, 2);
 
-    // Otra ventana: el mercado viejo ya no esta en la lista.
-    await loop.runOnce([market("ETH")], AHORA + 40_000);
-    expect(loop.estadoDe(market("BTC").slug)).toBeUndefined();
+    // Otra ventana, y la de BTC ya PASO (cerraba a los 200 s): su posicion resolvio y su dinero volvio.
+    await loop.runOnce([market("ETH")], AHORA + 300_000);
+    expect(loop.estadoDe(btc.slug)).toBeUndefined();
+    expect(loop.paresUsd()).toBe(0);
+  });
+
+  it("pero si el mercado sigue ABIERTO, el gasto sigue contando aunque rote", async () => {
+    // El estado se borraba al rotar con el argumento de que "esas posiciones ya resolvieron". Cierto
+    // para una ventana de cripto de 5 min; FALSO para los mercados de un dia o de meses que el maker
+    // opera ahora. Si te llenan un lado en uno de temperatura y luego se cae del top-25 —7 veces en
+    // 24 h—, su gasto dejaba de contar contra el tope con la posicion todavia abierta.
+    const engine = motorQueLlena();
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, minMsEntreRecolocaciones: 0 },
+    );
+    callar();
+    const btc = market("BTC", 7200); // dos horas por delante: no resuelve por rotar
+    await loop.runOnce([btc], AHORA);
+    engine.llenarTodo();
+    await loop.runOnce([btc], AHORA + 20_000);
+    expect(loop.estadoDe(btc.slug)?.gastadoUsd).toBeCloseTo(49, 2);
+
+    // BTC se cae de la lista, pero su mercado sigue abierto: esos $49 siguen fuera de la cuenta.
+    const r = await loop.runOnce([market("ETH", 7200)], AHORA + 40_000);
+    expect(r.gastadoUsd).toBeCloseTo(49, 2);
+    // Y con $60 de tope y $49 gastados no queda para financiar otro par de $49.
+    expect(r.colocadas).toBe(0);
   });
 });
 

@@ -20,6 +20,7 @@ import {
 } from "./executionEngine.js";
 import {
   OnChainBankrollSource,
+  makerDebeRetirarse,
   resolveEffectiveBankrollUsd,
   type BankrollReading,
   type BankrollSource,
@@ -796,22 +797,38 @@ export class BotRunner {
         //
         // Los pares se leen del BUCLE, no del ultimo resumen: el resumen de una pasada detenida trae
         // ceros, asi que apoyarse en el dejaria la guarda enganchada para siempre.
-        const nuestro = saldo.usd + (this.ultimaPasadaMaker?.vivoUsd ?? 0) + loop.paresUsd();
-        if (nuestro < suelo) {
+        // La decision vive en `makerDebeRetirarse`, pura y probada aparte: es sobre DINERO, y esas hay
+        // que poder probarlas sin levantar medio bot.
+        const veredicto = makerDebeRetirarse({
+          saldo,
+          ordenesVivasUsd: this.ultimaPasadaMaker?.vivoUsd ?? 0,
+          paresUsd: loop.paresUsd(),
+          sueloUsd: suelo,
+        });
+        const nuestro = veredicto.patrimonioUsd;
+        const aCiegas = veredicto.motivo === "saldo_a_ciegas";
+        if (veredicto.retirar) {
           const retiradas = await loop.retirarTodo(mercados);
           // Se avisa en la TRANSICION, no en cada pasada: un error cada tres segundos deja de leerse,
           // y lo que hay que ver es el momento en que paro y por que.
           const avisar = !this.makerBajoSuelo;
           this.makerBajoSuelo = true;
           if (avisar) {
-            logger.error("Maker DETENIDO: el patrimonio cayo por debajo del suelo.", {
-              saldoUsd: Math.round(saldo.usd * 100) / 100,
-              masOrdenesVivasUsd: Math.round((this.ultimaPasadaMaker?.vivoUsd ?? 0) * 100) / 100,
-              masParesCompletosUsd: Math.round(loop.paresUsd() * 100) / 100,
-              patrimonioUsd: Math.round(nuestro * 100) / 100,
-              sueloUsd: suelo,
-              retiradas,
-            });
+            logger.error(
+              aCiegas
+                ? "Maker DETENIDO: no se puede leer el saldo, y a ciegas no se arriesga."
+                : "Maker DETENIDO: el patrimonio cayo por debajo del suelo.",
+              {
+                saldoUsd: Math.round(saldo.usd * 100) / 100,
+                origenDelSaldo: saldo.source,
+                sinLeerDesdeMs: saldo.staleReadingMs,
+                masOrdenesVivasUsd: Math.round((this.ultimaPasadaMaker?.vivoUsd ?? 0) * 100) / 100,
+                masParesCompletosUsd: Math.round(loop.paresUsd() * 100) / 100,
+                patrimonioUsd: Math.round(nuestro * 100) / 100,
+                sueloUsd: suelo,
+                retiradas,
+              },
+            );
           }
           this.ultimaPasadaMaker = {
             colocadas: 0,

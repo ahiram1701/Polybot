@@ -167,3 +167,38 @@ export function resolveEffectiveBankrollUsd(
   }
   return { usd: 0, source: "unknown" };
 }
+
+/**
+ * Si el maker tiene que retirarse: por patrimonio bajo o por no poder leer el saldo.
+ *
+ * Vive aparte y es pura porque es una decision sobre DINERO, y esas hay que poder probarlas sin
+ * levantar medio bot.
+ *
+ * El patrimonio no es solo el efectivo: una orden en reposo baja el saldo del exchange sin ser una
+ * perdida, y un par completo redime $1 gane quien gane. Las participaciones SUELTAS se valoran a cero
+ * a proposito, que es lo que pueden llegar a valer.
+ *
+ * Y lo segundo, que costo verlo: una guarda de perdidas NO puede seguir con un saldo declarado. Cuando
+ * la lectura on-chain caduca, `resolveEffectiveBankrollUsd` cae al valor de la configuracion; para
+ * dimensionar una apuesta es razonable, para decidir si PARAR es al reves, porque el declarado es
+ * optimista por naturaleza y no baja cuando el dinero se va. Medido el 2026-08-23: la configuracion
+ * decia 40 con $4,13 reales en la cuenta. No saber cuanto tienes es motivo de sobra para dejar de
+ * arriesgarlo.
+ */
+export function makerDebeRetirarse(args: {
+  saldo: { usd: number; source: "onchain" | "declared" | "unknown" };
+  ordenesVivasUsd: number;
+  paresUsd: number;
+  sueloUsd: number;
+}): { retirar: boolean; motivo?: "saldo_a_ciegas" | "patrimonio_bajo"; patrimonioUsd: number } {
+  const patrimonioUsd = args.saldo.usd + args.ordenesVivasUsd + args.paresUsd;
+  if (args.sueloUsd <= 0) {
+    return { retirar: false, patrimonioUsd };
+  }
+  if (args.saldo.source !== "onchain") {
+    return { retirar: true, motivo: "saldo_a_ciegas", patrimonioUsd };
+  }
+  return patrimonioUsd < args.sueloUsd
+    ? { retirar: true, motivo: "patrimonio_bajo", patrimonioUsd }
+    : { retirar: false, patrimonioUsd };
+}

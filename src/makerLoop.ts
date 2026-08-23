@@ -217,6 +217,22 @@ export class MakerLoop {
   /** La limpieza de arranque se intenta UNA vez, salga bien o mal. Ver `limpiarHerenciaDeOtroProceso`. */
   private herenciaRevisada = false;
 
+  /**
+   * Dinero gastado en mercados que ya no se siguen y cuya posicion NO ha resuelto todavia.
+   *
+   * Al rotar, el estado de un mercado se borraba entero con el argumento de que "esas posiciones ya
+   * resolvieron". Es cierto para una ventana de cripto de 5 minutos, que se cierra sola. Es FALSO
+   * desde que el maker opera mercados de un dia o de meses: si te llenan un lado en uno de temperatura
+   * y luego se cae del top-25 del escaner —observado 7 veces en 24 h—, su gasto dejaba de contar
+   * contra el tope mientras la posicion seguia abierta. Sumando rotaciones, la exposicion podia pasar
+   * del tope sin que nada lo dijera.
+   *
+   * Se conserva hasta que el mercado ACABA, que es cuando la posicion resuelve de verdad. Equivocarse
+   * aqui por conservador cuesta dejar de cotizar antes de tiempo; por optimista, arriesgar dinero que
+   * uno cree tener.
+   */
+  private readonly gastoSinResolver = new Map<string, { finMs: number; gastadoUsd: number; inventario: Inventario }>();
+
   constructor(
     private readonly deps: MakerLoopDeps,
     private readonly config: MakerLoopConfig,
@@ -576,7 +592,26 @@ export class MakerLoop {
         continue;
       }
       this.cotizados.delete(slug);
+      // El gasto y el inventario solo se olvidan si el mercado YA ACABO. Mientras siga abierto, ese
+      // dinero esta fuera de la cuenta y tiene que seguir contando contra el tope.
+      const estado = this.estados.get(slug);
+      const abierto = market.endMs > nowMs;
+      const hayPosicion = estado && (estado.gastadoUsd > 0 || estado.inventario.UP > 0 || estado.inventario.DOWN > 0);
+      if (estado && abierto && hayPosicion) {
+        this.gastoSinResolver.set(slug, {
+          finMs: market.endMs,
+          gastadoUsd: estado.gastadoUsd,
+          inventario: { ...estado.inventario },
+        });
+      }
       this.estados.delete(slug);
+    }
+    // Lo que ya acabo resuelve y su dinero vuelve: seguir descontandolo dejaria al maker mudo para
+    // siempre a base de posiciones viejas.
+    for (const [slug, pendiente] of [...this.gastoSinResolver]) {
+      if (pendiente.finMs <= nowMs) {
+        this.gastoSinResolver.delete(slug);
+      }
     }
     const candidatos: Array<
       CandidatoMercado & { market: MercadoMaker; vivas: OrdenViva[]; fresco: boolean }
@@ -679,7 +714,11 @@ export class MakerLoop {
       candidatos.push({ ...ficha, slug: market.slug, market, vivas: [], fresco: false, esTitular: false });
     }
 
-    const gastadoGlobal = [...this.estados.values()].reduce((s, e) => s + e.gastadoUsd, 0);
+    // Cuenta tambien lo gastado en mercados que ya no se siguen pero siguen abiertos: ese dinero esta
+    // igual de fuera de la cuenta que el de los mercados vivos. Ver `gastoSinResolver`.
+    const gastadoGlobal =
+      [...this.estados.values()].reduce((s, e) => s + e.gastadoUsd, 0) +
+      [...this.gastoSinResolver.values()].reduce((s, e) => s + e.gastadoUsd, 0);
     resumen.gastadoUsd = Number(gastadoGlobal.toFixed(4));
     resumen.paresUsd = this.paresUsd();
 
@@ -1084,11 +1123,12 @@ export class MakerLoop {
    * siguiente creeria que no hay patrimonio.
    */
   paresUsd(): number {
-    return Number(
-      [...this.estados.values()]
-        .reduce((suma, e) => suma + Math.min(e.inventario.UP, e.inventario.DOWN), 0)
-        .toFixed(4),
-    );
+    // Incluye los mercados que ya no se siguen pero siguen abiertos: un par completo redime $1 gane
+    // quien gane, y sigue haciendolo aunque el escaner haya dejado de mirar ese mercado. Dejarlo fuera
+    // haria saltar el suelo de patrimonio por dinero que no se ha perdido.
+    const de = (fuente: Iterable<{ inventario: Inventario }>) =>
+      [...fuente].reduce((suma, e) => suma + Math.min(e.inventario.UP, e.inventario.DOWN), 0);
+    return Number((de(this.estados.values()) + de(this.gastoSinResolver.values())).toFixed(4));
   }
 
   /** `true` si creemos que sigue viva alguna orden nuestra ahi. Ver `detectarLlenados` para el rastro. */

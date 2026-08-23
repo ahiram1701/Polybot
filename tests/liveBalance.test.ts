@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  makerDebeRetirarse,
   OnChainBankrollSource,
   POLYMARKET_COLLATERAL_ADDRESS,
   resolveEffectiveBankrollUsd,
@@ -174,5 +175,62 @@ describe("una lectura on-chain caduca", () => {
     const { resolveEffectiveBankrollUsd } = await import("../src/liveBalance.js");
     // Taparlo con un declarado obsoleto es el fallo original que este modulo vino a corregir.
     expect(resolveEffectiveBankrollUsd({ usd: 0, atMs: 1_000 }, 500, 1_000)).toEqual({ usd: 0, source: "onchain" });
+  });
+});
+
+/**
+ * La unica red global del maker: cuando retirarse.
+ *
+ * Se prueba aparte y en puro porque es una decision sobre DINERO. Cablear medio bot para comprobar
+ * tres condiciones es como no comprobarlas.
+ */
+describe("cuando el maker tiene que retirarse", () => {
+  const base = { ordenesVivasUsd: 0, paresUsd: 0, sueloUsd: 8 };
+
+  it("con saldo leido y patrimonio por encima, sigue", () => {
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 30, source: "onchain" } });
+    expect(v.retirar).toBe(false);
+    expect(v.patrimonioUsd).toBe(30);
+  });
+
+  it("por debajo del suelo, se retira", () => {
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 5, source: "onchain" } });
+    expect(v.retirar).toBe(true);
+    expect(v.motivo).toBe("patrimonio_bajo");
+  });
+
+  it("una orden viva no es una perdida: cuenta como patrimonio", () => {
+    // El efectivo baja al poner una orden en reposo, pero el dinero sigue siendo nuestro. Mirar el
+    // saldo desnudo hacia saltar el suelo en operacion normal.
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 2, source: "onchain" }, ordenesVivasUsd: 20 });
+    expect(v.retirar).toBe(false);
+  });
+
+  it("un par completo tambien: redime $1 gane quien gane", () => {
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 2, source: "onchain" }, paresUsd: 20 });
+    expect(v.retirar).toBe(false);
+  });
+
+  it("SIN saldo leido se retira, por mucho dinero que diga el declarado", () => {
+    // Es el fallo que motivo esto. Cuando la lectura on-chain caduca se cae al valor de la
+    // configuracion, que es optimista por naturaleza y no baja cuando el dinero se va: el 2026-08-23
+    // decia 40 con $4,13 reales. Con la lectura caida, la unica red global habria visto diez veces mas
+    // dinero del que hay. No saber cuanto tienes es motivo de sobra para dejar de arriesgarlo.
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 40, source: "declared" } });
+    expect(v.retirar).toBe(true);
+    expect(v.motivo).toBe("saldo_a_ciegas");
+  });
+
+  it("y con saldo desconocido, igual", () => {
+    const v = makerDebeRetirarse({ ...base, saldo: { usd: 0, source: "unknown" } });
+    expect(v.retirar).toBe(true);
+    expect(v.motivo).toBe("saldo_a_ciegas");
+  });
+
+  it("sin suelo configurado no se retira nunca: la guarda esta apagada a proposito", () => {
+    // Con el suelo en cero el usuario ha dicho que no quiere esta red. Retirarle las ordenes porque no
+    // podemos leer un saldo que no le importa seria decidir por el.
+    const v = makerDebeRetirarse({ ...base, sueloUsd: 0, saldo: { usd: 0, source: "unknown" } });
+    expect(v.retirar).toBe(false);
   });
 });
