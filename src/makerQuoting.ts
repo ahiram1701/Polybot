@@ -171,6 +171,54 @@ export function medioContrario(mid: number): number {
   return 1 - mid;
 }
 
+/** Un nivel del libro fusionado, ya en el espacio de precios de UP. */
+export interface NivelLibro {
+  price: number;
+  size: number;
+}
+
+/**
+ * El punto medio QUE USA POLYMARKET para repartir: el "size-cutoff-adjusted midpoint".
+ *
+ * La formula oficial no mide la distancia contra el medio del libro a secas. `S(v, s)` define `s` como
+ * *"spread from size-cutoff-adjusted midpoint"*: el medio que queda **despues de tirar los niveles por
+ * debajo del tamano minimo del programa**. Existe para que nadie fije un medio falso con polvo — cuatro
+ * participaciones sueltas en el borde del libro moverian el reparto de todos los demas.
+ *
+ * El bucle calculaba el medio crudo, con polvo incluido, y colocaba a un tick de EL. Cuando los dos
+ * medios se separan, las ordenes nacen a la distancia equivocada del unico medio que puntua: el dinero
+ * queda inmovilizado igual y la puntuacion baja o se va a cero, sin que nada lo diga.
+ *
+ * Medido el 2026-08-25 sobre los 29 mejores mercados que caben en $22:
+ *
+ *  - **1 de 29 puntuaba CERO** (medios separados 11,5 centavos con banda de 4,5);
+ *  - otros 4 perdian entre el 26% y el 51% de su puntuacion por desvios de 0,5 a 1,5 centavos;
+ *  - entre ellos, el que el maker estaba cotizando en ese momento: `S` real 8,9 contra 12,1 creidos.
+ *
+ * Devuelve `undefined` si NINGUN lado tiene un nivel que llegue al minimo. Eso no es un fallo: es un
+ * libro que es todo polvo, y ahi quien llama decide (el bucle cae al medio crudo, que es lo unico que
+ * hay). Un `undefined` nunca debe interpretarse como "medio cero".
+ */
+export function medioAjustadoPorTamano(
+  bids: NivelLibro[],
+  asks: NivelLibro[],
+  minSize: number,
+): number | undefined {
+  // El corte es `>=`: el minimo del programa es el tamano que YA califica, no el que hay que superar.
+  const mejorBid = bids.filter((n) => n.size >= minSize).reduce<number | undefined>(
+    (mejor, n) => (mejor === undefined || n.price > mejor ? n.price : mejor),
+    undefined,
+  );
+  const mejorAsk = asks.filter((n) => n.size >= minSize).reduce<number | undefined>(
+    (mejor, n) => (mejor === undefined || n.price < mejor ? n.price : mejor),
+    undefined,
+  );
+  if (mejorBid === undefined || mejorAsk === undefined) {
+    return undefined;
+  }
+  return (mejorBid + mejorAsk) / 2;
+}
+
 /**
  * Plan de los DOS lados del mercado.
  *
@@ -375,11 +423,34 @@ function rendimientoOrdenado(c: MercadoElegido, margenRelevo: number): number {
   return (c.esperadoUsdDia / c.costeUsd) * ventaja;
 }
 
+/**
+ * El suelo de $1 AL DIA por debajo del cual Polymarket no paga nada.
+ *
+ * De la documentacion oficial, literal: *"The minimum reward payout is $1; amounts below this will not
+ * be paid."* Se cuenta por usuario y por dia, y lo que no llega **no se acumula** para el dia
+ * siguiente: se pierde.
+ *
+ * Es la regla que cambia la estrategia con poco capital, y el bot no la conocia. Cotizar en un mercado
+ * cuyo reparto realista da $0,40 al dia no rinde $0,40: rinde **$0**, con el capital entero
+ * inmovilizado y la seleccion adversa corriendo igual. Con $20 no hay margen para repartirse entre
+ * varios sitios flojos: hay que concentrarse en uno que cruce el liston de sobra.
+ */
+export const MINIMO_PAGO_USD_DIA = 1;
+
 export function elegirMercados(
   candidatos: CandidatoMercado[],
   capitalUsd: number,
   ticksDelMedio: number = TICKS_DEL_MEDIO,
   margenRelevo = 0,
+  /**
+   * Recompensa esperada minima para molestarse en inmovilizar el capital.
+   *
+   * Se compara contra `esperadoUsdDia`, que es una ESTIMACION y ademas optimista —contra la unica
+   * medida real que existe, los modelos de este proyecto salieron altos—. Por eso el umbral util no es
+   * $1 sino un multiplo suyo: pedir $1 estimado para cobrar $1 real seria creerse el modelo justo
+   * donde ya se sabe que falla. Con 0 el filtro no actua, que es el comportamiento de antes.
+   */
+  minEsperadoUsdDia = 0,
 ): MercadoElegido[] {
   const evaluados = candidatos
     .filter((c) => c.mid > 0 && c.mid < 1 && c.poolDiaUsd > 0)
@@ -396,7 +467,9 @@ export function elegirMercados(
       const cuota = nuestro + rivales > 0 ? nuestro / (nuestro + rivales) : 0;
       return { ...c, costeUsd, esperadoUsdDia: cuota * c.poolDiaUsd };
     })
-    .filter((c) => c.costeUsd > 0 && c.esperadoUsdDia > 0)
+    // Un mercado que no puede cruzar el suelo de pago no es un mercado flojo: es uno que paga CERO.
+    // Ver `MINIMO_PAGO_USD_DIA`.
+    .filter((c) => c.costeUsd > 0 && c.esperadoUsdDia > 0 && c.esperadoUsdDia >= minEsperadoUsdDia)
     // El desempate va SOLO en el orden; `esperadoUsdDia` se reporta sin tocar, porque es la cifra que
     // se mira para saber si el modelo acierta y falsearla ahi seria mentirse en el sitio mas caro.
     .sort((izq, der) => rendimientoOrdenado(der, margenRelevo) - rendimientoOrdenado(izq, margenRelevo));

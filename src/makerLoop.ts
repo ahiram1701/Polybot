@@ -18,6 +18,8 @@ import { logger } from "./logger.js";
 import type { MakerEngine } from "./makerEngine.js";
 import {
   elegirMercados,
+  medioAjustadoPorTamano,
+  MINIMO_PAGO_USD_DIA,
   medioContrario,
   planificarDosLados,
   puntuacionRecompensa,
@@ -70,6 +72,10 @@ export interface MakerLoopConfig {
   ttlCompetenciaMs?: number;
   /** Cuanto mejor tiene que ser un aspirante para quitarle el capital al que ya cotiza. Ver `elegirMercados`. */
   margenRelevo?: number;
+  /**
+   * Recompensa esperada minima al dia para cotizar en un mercado. Ver `MIN_ESPERADO_USD_DIA`.
+   */
+  minEsperadoUsdDia?: number;
   /** Cada cuanto deja constancia de que sigue vivo aunque no cambie nada. Ver `dejarConstancia`. */
   intervaloLatidoMs?: number;
   /**
@@ -139,6 +145,23 @@ const TTL_COMPETENCIA_MS = 120_000;
  * ruido de la foto del libro.
  */
 const MARGEN_RELEVO = 0.25;
+
+/**
+ * Recompensa estimada minima al dia para que merezca la pena inmovilizar el capital: **cinco veces**
+ * el suelo de pago de Polymarket.
+ *
+ * El suelo real son $1 al dia COBRADOS (`MINIMO_PAGO_USD_DIA`), y lo que no llega se pierde en vez de
+ * acumularse. Pero lo que el bucle sabe no es lo cobrado sino `esperadoUsdDia`, una estimacion que
+ * mide la competencia con una foto del libro y que en este proyecto ya salio alta contra la realidad.
+ * Exigir $1 estimado para cobrar $1 real seria fiarse del modelo justo en el punto donde se sabe que
+ * falla, asi que se pide 5x de margen.
+ *
+ * No es un filtro que muerda en operacion normal: los mercados que el escaner trae hoy estiman entre
+ * $130 y $220 al dia. Muerde exactamente cuando tiene que morder — cuando la competencia se ha comido
+ * nuestra cuota y quedarse ahi seria inmovilizar la cuenta entera a cambio de cero, corriendo igual
+ * el riesgo de que te llenen un solo lado.
+ */
+const MIN_ESPERADO_USD_DIA = 5 * MINIMO_PAGO_USD_DIA;
 
 /**
  * Cada cuanto deja constancia de que sigue vivo aunque no cambie nada.
@@ -510,6 +533,34 @@ export class MakerLoop {
     return { bids, asks };
   }
 
+  /**
+   * El punto medio contra el que se puntua, y si fiarse de el.
+   *
+   * Son DOS medios y no uno. El crudo —el del libro entero— es el que ve cualquiera que mire el
+   * exchange. El que reparte es el **ajustado por tamano**: el que queda al tirar los niveles por
+   * debajo del minimo del programa. Ver `medioAjustadoPorTamano`; la formula oficial mide `s` contra
+   * ese y no contra el otro.
+   *
+   * Se coloca contra el ajustado, que es el que paga. Y cuando los dos se separan MAS que la banda
+   * entera, se declara ambiguo y no se cotiza: una orden a un tick del ajustado quedaria fuera de la
+   * banda del crudo y viceversa, asi que no existe un precio que puntue con los dos. Ahi la eleccion
+   * es una apuesta sobre cual usa el exchange, y esa apuesta se paga inmovilizando el capital entero
+   * de la cuenta a cambio de una probabilidad de cobrar cero. Medido: 1 de cada 29 mercados.
+   */
+  private medioParaPuntuar(
+    libro: { bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> },
+    params: ParametrosRecompensa,
+  ): { mid: number; ambiguo: boolean } {
+    const crudo = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
+    // Sin un solo nivel que llegue al minimo, el ajustado no existe y el crudo es lo unico que hay.
+    // No es ambiguo: es que no hay nada que ajustar.
+    const ajustado = medioAjustadoPorTamano(libro.bids, libro.asks, params.minSize);
+    if (ajustado === undefined) {
+      return { mid: crudo, ambiguo: false };
+    }
+    return { mid: ajustado, ambiguo: Math.abs(ajustado - crudo) > params.maxSpreadCents / 100 };
+  }
+
   /** Puntuacion de los rivales por lado, descontando lo nuestro para no competir contra uno mismo. */
   private competencia(
     libro: { bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> },
@@ -673,9 +724,16 @@ export class MakerLoop {
         resumen.mercados.push({ slug: market.slug, motivo: "sin_punto_medio" });
         continue;
       }
-      const mid = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
-
       const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
+      const { mid, ambiguo } = this.medioParaPuntuar(libro, parametros);
+      if (ambiguo) {
+        // No hay precio que puntue con los dos medios candidatos. Se retira: dejar ordenes aqui es
+        // inmovilizar el capital a cambio de una moneda al aire.
+        atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
+        resumen.mercados.push({ slug: market.slug, motivo: "medio_ambiguo" });
+        continue;
+      }
+
       const { qRivalBid, qRivalAsk } = this.competencia(libro, mid, parametros, vivas);
 
       const ficha: FichaCompetencia = {
@@ -733,8 +791,9 @@ export class MakerLoop {
     /** Elegidos cuya relectura dice que ahi ya no se puede cotizar. Salen del ranking, no del bucle. */
     const descartados = new Set<string>();
     const enJuego = () => candidatos.filter((c) => !descartados.has(c.slug));
+    const minEsperado = this.config.minEsperadoUsdDia ?? MIN_ESPERADO_USD_DIA;
     const rankear = (capital: number) =>
-      elegirMercados(enJuego(), capital, this.config.ticksDelMedio, margen);
+      elegirMercados(enJuego(), capital, this.config.ticksDelMedio, margen, minEsperado);
 
     let elegidos = rankear(this.config.capitalUsd);
 
@@ -781,8 +840,13 @@ export class MakerLoop {
     // Sin esto el log registraba el mercado al que se muda y nada del que abandona, asi que desde
     // fuera no habia forma de juzgar si la mudanza estaba justificada: hubo que reproducirla en un
     // banco de pruebas para entenderla. Es un reparto sin tope, o sea la evaluacion pura.
+    // SIN el suelo de pago: aqui no se elige, se anota cuanto valia cada uno. Un mercado que se
+    // abandona por no cruzar el suelo es justo el que hay que poder ver en el log con su cifra al
+    // lado; filtrarlo tambien aqui lo dejaria sin explicacion, que es el fallo que este mapa arreglo.
     const evaluados = new Map(
-      rankear(Number.POSITIVE_INFINITY).map((e) => [e.slug, e.esperadoUsdDia] as const),
+      elegirMercados(enJuego(), Number.POSITIVE_INFINITY, this.config.ticksDelMedio, margen).map(
+        (e) => [e.slug, e.esperadoUsdDia] as const,
+      ),
     );
     let sinFinanciar = 0;
     /** El descartado mas BARATO cuando no se financia ninguno: dice cuanto capital falta. */
@@ -1031,8 +1095,12 @@ export class MakerLoop {
     }
     const { vivas, params, libro } = releido;
     this.detectarLlenados(candidato.market, vivas, resumen);
-    const mid = (libro.bids[0]!.price + libro.asks[0]!.price) / 2;
     const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
+    const { mid, ambiguo } = this.medioParaPuntuar(libro, parametros);
+    if (ambiguo) {
+      // Igual que en la pasada normal: sin un medio con el que puntuar, aqui no se cotiza.
+      return { ok: false, atadoUsd: 0 };
+    }
     const rivales = this.competencia(libro, mid, parametros, vivas);
     this.fichas.set(candidato.slug, {
       poolDiaUsd: params.ratePerDay,

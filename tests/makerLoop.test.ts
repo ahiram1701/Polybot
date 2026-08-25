@@ -1146,7 +1146,16 @@ describe("una ficha rancia no puede desbancar a quien ya cotiza", () => {
     const comp: Record<string, number> = { BTC: 0, ETH: 0, DOGE: 1e6 };
     const loop = new MakerLoop(
       { orderbook: libroMutable(comp), rewards: recompensas(100) as never, engine },
-      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30, sondeosPorPasada: 1, margenRelevo: 0.25 },
+      {
+        capitalUsd: CAPITAL,
+        retirarSegundosAntesDelCierre: 30,
+        sondeosPorPasada: 1,
+        margenRelevo: 0.25,
+        // Lo que se prueba aqui es el RELEVO, no el suelo de pago. La competencia de este banco es
+        // deliberadamente extrema (1e4 contra 50 participaciones nuestras), asi que el esperado cae
+        // por debajo del suelo y sin esto no se cotizaria en ningun sitio, tapando el efecto a medir.
+        minEsperadoUsdDia: 0,
+      },
     );
     callar();
     const ms = [market("BTC", 7200), market("ETH", 7200), market("DOGE", 7200)];
@@ -1290,5 +1299,103 @@ describe("la herencia de un proceso muerto", () => {
     callar();
     const r = await loop.runOnce([market("BTC", 7200)], AHORA);
     expect(r.colocadas).toBe(2); // cotiza igual
+  });
+});
+
+/**
+ * La formula oficial mide la distancia contra el "size-cutoff-adjusted midpoint": el medio que queda
+ * tras tirar los niveles por debajo del minimo del programa. El bucle usaba el medio CRUDO, con el
+ * polvo incluido, y colocaba a un tick de el. Medido sobre los 29 mejores mercados que caben en $22 el
+ * 2026-08-25: 1 puntuaba CERO y otros 4 perdian entre el 26% y el 51% de la puntuacion.
+ */
+describe("se coloca contra el medio que REPARTE, no contra el del libro entero", () => {
+  /** Libro con polvo pegado por dentro y los niveles que califican mas afuera. */
+  function libroConPolvo(args: {
+    /** Precio del polvo en el lado bid de UP (tamano por debajo del minimo). */
+    polvoBid: number;
+    polvoAsk: number;
+    buenoBid: number;
+    buenoAsk: number;
+  }) {
+    return {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const esDown = String(tokenId).endsWith("-down");
+        // El libro de DOWN es el espejo del de UP: comprar DOWN a `p` es vender UP a `1 - p`.
+        const bids = esDown
+          ? [{ price: 1 - args.polvoAsk, size: 2 }, { price: 1 - args.buenoAsk, size: 200 }]
+          : [{ price: args.polvoBid, size: 2 }, { price: args.buenoBid, size: 200 }];
+        const asks = esDown
+          ? [{ price: 1 - args.polvoBid, size: 2 }, { price: 1 - args.buenoBid, size: 200 }]
+          : [{ price: args.polvoAsk, size: 2 }, { price: args.buenoAsk, size: 200 }];
+        return {
+          tokenId,
+          bestAsk: asks[0]!.price,
+          bestBid: bids[0]!.price,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: asks,
+          rawBidLevels: bids,
+        };
+      }),
+    } as never;
+  }
+
+  it("el polvo NO mueve donde se colocan las ordenes", async () => {
+    const engine = new SimulationMakerEngine();
+    // Polvo en 0,55/0,57 (medio crudo 0,56) contra niveles que califican en 0,30/0,50 (ajustado 0,40).
+    const loop = new MakerLoop(
+      {
+        orderbook: libroConPolvo({ polvoBid: 0.55, polvoAsk: 0.57, buenoBid: 0.3, buenoAsk: 0.5 }),
+        rewards: { paraMercado: vi.fn(async () => ({ minSize: 50, maxSpreadCents: 20, ratePerDay: 10000 })) } as never,
+        engine,
+      },
+      { capitalUsd: CAPITAL * 4, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([market("BTC", 7200)], AHORA);
+    const vivas = await engine.ordenesVivas(market("BTC"));
+    expect(vivas).toHaveLength(2);
+    // Ajustado = (0,30 + 0,50) / 2 = 0,40. A un tick: UP a 0,39 y DOWN a 0,59 (o sea ask de UP a 0,41).
+    // Con el medio crudo (0,56) habrian salido en 0,55 y 0,43: 15 centavos fuera de sitio.
+    expect(vivas.find((o) => o.outcome === "UP")!.price).toBeCloseTo(0.39, 6);
+    expect(vivas.find((o) => o.outcome === "DOWN")!.price).toBeCloseTo(0.59, 6);
+  });
+
+  it("si los dos medios discrepan MAS que la banda entera, no se cotiza: no hay precio que puntue", async () => {
+    const engine = new SimulationMakerEngine();
+    // Crudo 0,56 y ajustado 0,40: 16 centavos de separacion con una banda de 4,5. Elegir uno seria
+    // apostar a cual usa el exchange, inmovilizando el capital entero a cambio de esa moneda al aire.
+    const loop = new MakerLoop(
+      {
+        orderbook: libroConPolvo({ polvoBid: 0.55, polvoAsk: 0.57, buenoBid: 0.3, buenoAsk: 0.5 }),
+        rewards: { paraMercado: vi.fn(async () => ({ minSize: 50, maxSpreadCents: 4.5, ratePerDay: 10000 })) } as never,
+        engine,
+      },
+      { capitalUsd: CAPITAL * 4, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC", 7200)], AHORA);
+    expect(r.colocadas).toBe(0);
+    expect(r.mercados.find((m) => m.slug.startsWith("btc"))?.motivo).toBe("medio_ambiguo");
+    expect(await engine.ordenesVivas(market("BTC"))).toHaveLength(0);
+  });
+
+  it("un libro que es TODO polvo cae al medio crudo: no hay nada que ajustar", async () => {
+    const engine = new SimulationMakerEngine();
+    const loop = new MakerLoop(
+      {
+        orderbook: libro(0.5, 4), // niveles de 2 participaciones, por debajo del minimo de 50
+        rewards: recompensas(10000) as never,
+        engine,
+      },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    const r = await loop.runOnce([market("BTC")], AHORA);
+    // Sigue cotizando: quedarse quieto porque nadie llega al minimo seria renunciar justo a los
+    // mercados vacios, que son los que mas pagan.
+    expect(r.colocadas).toBe(2);
   });
 });

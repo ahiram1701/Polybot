@@ -280,6 +280,36 @@ el precio se desploma a 0 o 1 cada cinco minutos.
 `max_spread: 4.5` y el endpoint de recompensas `1.5` *para el mismo mercado*, y esos tres centavos
 deciden si una orden cobra o no.
 
+### Dos reglas oficiales que el bot ignoraba (2026-08-25)
+
+Salieron de leer la especificación en vez de inferirla del comportamiento, que es el error que este
+proyecto ya pagó dos veces.
+
+**1. El medio que reparte es el ajustado por tamaño.** La fórmula oficial define `s` como *"spread from
+size-cutoff-adjusted midpoint"*: el punto medio que queda **después de tirar los niveles por debajo de
+`min_size`**. Existe para que nadie fije un medio falso con polvo. `MakerLoop` usaba el medio crudo, con
+el polvo incluido, y colocaba a un tick de él; cuando los dos medios se separan, las órdenes nacen a la
+distancia equivocada del único medio que puntúa. Medido sobre los 29 mejores mercados que caben en $22:
+
+| | |
+|---|---|
+| puntuaban **exactamente cero** | 1 de 29 (medios separados 11,5c con banda de 4,5) |
+| perdían entre el 26% y el 51% | 4 más |
+| el que el maker estaba cotizando | `S` real **8,9** contra **12,1** creídos |
+| ganancia agregada al corregirlo | **+5,7%**, y hasta **+78%** en el mercado concreto |
+
+Vive en `medioAjustadoPorTamano`. Cuando los dos medios se separan **más que la banda entera** no existe
+un precio que puntúe con los dos: ahí no se cotiza (`medio_ambiguo`), porque elegir uno sería apostar a
+cuál usa el exchange inmovilizando la cuenta entera a cambio de esa moneda al aire.
+
+**2. Por debajo de $1 al día no se cobra menos: se cobra cero.** Literal de la documentación: *"The
+minimum reward payout is $1; amounts below this will not be paid."* Por usuario y por día, y lo que no
+llega **no se acumula**: se pierde. Con capital pequeño esto cambia la estrategia — repartirse entre
+varios sitios flojos no da la suma de sus migajas, da **$0** con el capital igual de inmovilizado y la
+selección adversa corriendo igual. `elegirMercados` descarta lo que no cruce el listón; el umbral es
+**5x** el suelo (`MIN_ESPERADO_USD_DIA`) porque lo que se compara no es lo cobrado sino `esperadoUsdDia`,
+que es una estimación y ya se sabe que sale alta.
+
 ### Elegir mercado es casi todo el resultado
 
 Medido el 2026-08-21 sobre el registro real (16.039 mercados, 13.109 de ellos con entrada ≤ $20):

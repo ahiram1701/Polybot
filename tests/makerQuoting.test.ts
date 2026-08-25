@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   elegirMercados,
+  medioAjustadoPorTamano,
   planificarDosLados,
   precioObjetivo,
   puntuacionRecompensa,
@@ -307,5 +308,84 @@ describe("a que mercados dedicar un capital escaso", () => {
     expect(
       elegirMercados([{ ...base, slug: "sin-pool", poolDiaUsd: 0, qRivalBid: 0, qRivalAsk: 0 }], 1000),
     ).toEqual([]);
+  });
+});
+
+describe("el medio que reparte es el AJUSTADO POR TAMANO, no el del libro entero", () => {
+  // La formula oficial define `s` como "spread from size-cutoff-adjusted midpoint": el medio que queda
+  // tras tirar los niveles por debajo del minimo del programa. Existe para que nadie fije un medio
+  // falso con polvo. El bucle usaba el crudo y colocaba a un tick de EL.
+  it("tira los niveles por debajo del minimo antes de calcular el medio", () => {
+    // Polvo pegado por dentro (5 y 4 participaciones) contra los niveles que SI califican.
+    const bids = [
+      { price: 0.45, size: 5 },
+      { price: 0.3, size: 40 },
+    ];
+    const asks = [
+      { price: 0.55, size: 4 },
+      { price: 0.7, size: 40 },
+    ];
+    expect(medioAjustadoPorTamano(bids, asks, 20)).toBeCloseTo(0.5, 9);
+    // Con el minimo por debajo del polvo, el polvo cuenta y el medio es el crudo.
+    expect(medioAjustadoPorTamano(bids, asks, 4)).toBeCloseTo((0.45 + 0.55) / 2, 9);
+    // El corte es INCLUSIVO: el minimo del programa es el tamano que ya califica, no el que hay que
+    // superar. Con corte en 5, el bid de 5 entra y el ask de 4 no.
+    expect(medioAjustadoPorTamano(bids, asks, 5)).toBeCloseTo((0.45 + 0.7) / 2, 9);
+  });
+
+  it("el polvo puede desplazar el medio de verdad, que es justo el fallo que esto corrige", () => {
+    const bids = [
+      { price: 0.49, size: 5 },
+      { price: 0.2, size: 40 },
+    ];
+    const asks = [{ price: 0.6, size: 40 }];
+    const crudo = (0.49 + 0.6) / 2; // 0,545
+    const ajustado = medioAjustadoPorTamano(bids, asks, 20)!; // (0,20 + 0,60) / 2 = 0,40
+    expect(ajustado).toBeCloseTo(0.4, 9);
+    // Casi 15 centavos de diferencia: con banda de 4,5 no existe un precio que puntue con los dos.
+    expect(Math.abs(crudo - ajustado)).toBeGreaterThan(0.045);
+  });
+
+  it("sin un solo nivel que llegue al minimo devuelve undefined, que NO es un medio de cero", () => {
+    const polvo = [{ price: 0.4, size: 3 }];
+    expect(medioAjustadoPorTamano(polvo, [{ price: 0.6, size: 3 }], 20)).toBeUndefined();
+    // Un lado si y el otro no tampoco vale: el medio necesita los dos.
+    expect(medioAjustadoPorTamano([{ price: 0.4, size: 50 }], [{ price: 0.6, size: 3 }], 20)).toBeUndefined();
+  });
+});
+
+describe("el suelo de pago de $1 al dia: por debajo no se cobra menos, se cobra CERO", () => {
+  const base: Omit<CandidatoMercado, "slug" | "poolDiaUsd" | "qRivalBid" | "qRivalAsk"> = {
+    params: PARAMS,
+    mid: 0.5,
+    tickSize: 0.01,
+  };
+
+  it("descarta el mercado que no puede cruzar el suelo, aunque sea el mejor disponible", () => {
+    // Bote minusculo y sin competencia: se lleva el 100% de $0,40 al dia. Polymarket no paga eso —
+    // y el capital queda igual de inmovilizado, con la seleccion adversa corriendo igual.
+    const flojo = [{ ...base, slug: "flojo", poolDiaUsd: 0.4, qRivalBid: 0, qRivalAsk: 0 }];
+    expect(elegirMercados(flojo, 1000, 1, 0, 5)).toEqual([]);
+    // Sin umbral (el comportamiento de antes) si lo elegia.
+    expect(elegirMercados(flojo, 1000).map((e) => e.slug)).toEqual(["flojo"]);
+  });
+
+  it("no toca a los que si lo cruzan", () => {
+    const bueno = [{ ...base, slug: "bueno", poolDiaUsd: 200, qRivalBid: 0, qRivalAsk: 0 }];
+    expect(elegirMercados(bueno, 1000, 1, 0, 5).map((e) => e.slug)).toEqual(["bueno"]);
+  });
+
+  it("el umbral se mide contra lo esperado DESPUES de repartir con los rivales, no contra el bote", () => {
+    // Bote de $100 al dia, pero con tanta competencia que nuestra cuota deja $3: por debajo del
+    // umbral aunque el bote parezca enorme. Mirar el bote es exactamente el error que cuesta dinero.
+    const [conCuota] = elegirMercados(
+      [{ ...base, slug: "peleado", poolDiaUsd: 100, qRivalBid: 5000, qRivalAsk: 5000 }],
+      1000,
+    );
+    expect(conCuota!.esperadoUsdDia).toBeLessThan(5);
+    expect(elegirMercados(
+      [{ ...base, slug: "peleado", poolDiaUsd: 100, qRivalBid: 5000, qRivalAsk: 5000 }],
+      1000, 1, 0, 5,
+    )).toEqual([]);
   });
 });
