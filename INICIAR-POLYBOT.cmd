@@ -35,13 +35,39 @@ if not exist "node_modules" (
   )
 )
 
-set EXISTING_PID=
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do set EXISTING_PID=%%a
-if defined EXISTING_PID (
-  echo Reiniciando Polybot para cargar cambios nuevos...
-  taskkill /PID %EXISTING_PID% /F >nul 2>nul
-  timeout /t 2 /nobreak >nul
-)
+call :puerto8787
+if not defined EXISTING_PID goto arrancar
+
+echo Reiniciando Polybot para cargar cambios nuevos...
+REM El fallo de taskkill NO se silencia. Cuando el proceso viejo lo lanzo la tarea programada, vive en
+REM la SESION 0 (la de servicios) y no se deja matar desde una sesion interactiva sin elevar. Antes
+REM esto era `>nul 2>nul` y el script seguia adelante: npm no podia coger el 8787, y desde fuera
+REM parecia que el reinicio habia funcionado cuando seguia corriendo el codigo viejo.
+taskkill /PID %EXISTING_PID% /F
+timeout /t 3 /nobreak >nul
+
+call :puerto8787
+if not defined EXISTING_PID goto arrancar
+
+echo.
+echo ================================================
+echo   NO SE PUDO PARAR EL POLYBOT QUE YA CORRIA
+echo ================================================
+echo.
+echo El proceso %EXISTING_PID% sigue ocupando el puerto 8787.
+echo Lo normal es que lo lanzara la tarea programada PolybotWatchdog, que corre
+echo en la sesion 0 y no se deja matar desde aqui sin permisos de administrador.
+echo.
+echo Que hacer: cierra esta ventana y abre este mismo archivo con boton derecho
+echo y "Ejecutar como administrador".
+echo.
+echo NO se arranca nada. Arrancar ahora dejaria el codigo viejo corriendo y
+echo pareceria que los cambios estan aplicados cuando no lo estan.
+echo.
+pause
+exit /b 1
+
+:arrancar
 
 start "Polybot Browser Opener" cmd /c "timeout /t 5 /nobreak >nul & start "" http://127.0.0.1:8787"
 
@@ -60,3 +86,10 @@ echo.
 
 call npm run ui:sim
 pause
+exit /b 0
+
+REM Deja en EXISTING_PID el PID que escucha en 8787, o sin definir si no hay ninguno.
+:puerto8787
+set EXISTING_PID=
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do set EXISTING_PID=%%a
+goto :eof
