@@ -46,6 +46,27 @@ ABRIR-POLYBOT.cmd
 
 Usa `ABRIR-POLYBOT.cmd` despues de editar `.env` para que la UI recargue credenciales live.
 
+### Si el reinicio no surte efecto
+
+`INICIAR-POLYBOT.cmd` mata el Polybot que ya corria y lo relanza. Pero cuando el proceso viejo lo lanzo
+la tarea programada `PolybotWatchdog` —que corre "tanto si el usuario inicio sesion como si no"— ese
+proceso vive en la **sesion 0**, la de servicios, y una ventana normal no puede matarlo.
+
+Sintoma: parece que reinicio, pero sigue corriendo el codigo de antes. Se comprueba mirando si cambio
+el PID que escucha en 8787:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8787 -State Listen | Select-Object OwningProcess
+```
+
+Solucion: boton derecho sobre **`REINICIAR-ADMIN.cmd`** -> "Ejecutar como administrador". Solo mata el
+proceso; el watchdog lo levanta solo en menos de 5 minutos, ya con el codigo nuevo. Deja constancia de
+cada intento en `data/reinicio-admin.log`, salga bien o mal, para poder diagnosticarlo despues aunque
+la ventana se haya cerrado.
+
+Si ni elevado se deja matar, reiniciar el equipo lo resuelve: la tarea programada tiene disparador de
+arranque y Polybot vuelve solo.
+
 Tambien puedes usar terminal:
 
 ```bash
