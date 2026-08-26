@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { archivarAnalitica } from "../src/archiveAnalytics.js";
+import { archivarAnalitica, ejecutarArchivado } from "../src/archiveAnalytics.js";
 import { invalidateAnalyticsReadCache, serializeAnalyticsSamples } from "../src/analyticsRecorder.js";
 import type { AnalyticsSample } from "../src/types.js";
 
@@ -85,5 +85,59 @@ describe("archivador de analitica", () => {
     await mkdir(dataDir, { recursive: true });
     const r = await archivarAnalitica(dataDir);
     expect(r.nuevas).toBe(0);
+  });
+});
+
+/**
+ * El archivo es la unica memoria larga del proyecto: el fichero vivo es una ventana rodante que se
+ * recicla sola. Su unico rastro era una linea en `archive.log` que no mira nadie, y el 2026-08-25 el
+ * archivador llevaba CATORCE HORAS caido sin que nadie se enterara.
+ */
+describe("cuando el archivador falla, avisa por Telegram", () => {
+  function notificadorFalso() {
+    const enviados: Array<Record<string, unknown>> = [];
+    return {
+      enviados,
+      notifier: { notify: async (m: Record<string, unknown>) => { enviados.push(m); } },
+    };
+  }
+
+  const config = { dataDir: "/no/importa" };
+
+  it("avisa con nivel error y explica que el histórico deja de acumularse", async () => {
+    const { enviados, notifier } = notificadorFalso();
+    const ok = await ejecutarArchivado(config, {
+      archivar: async () => { throw new Error("Cannot create a string longer than 0x1fffffe8 characters"); },
+      notifier: notifier as never,
+    });
+
+    expect(ok).toBe(false);
+    expect(enviados).toHaveLength(1);
+    expect(enviados[0]!.level).toBe("error");
+    // `system` y no `trade`: los avisos de sistema nunca se agrupan en el resumen periodico, que es
+    // justo donde un fallo asi se quedaria esperando cuatro horas.
+    expect(enviados[0]!.category).toBe("system");
+    expect(String(enviados[0]!.body)).toContain("0x1fffffe8");
+    expect(String(enviados[0]!.body)).toContain("NO se acumula");
+  });
+
+  it("NO avisa cuando la pasada va bien: un canal que habla siempre se deja de leer", async () => {
+    const { enviados, notifier } = notificadorFalso();
+    const ok = await ejecutarArchivado(config, {
+      archivar: async () => ({ nuevas: 12, total: 10_000 }),
+      notifier: notifier as never,
+    });
+    expect(ok).toBe(true);
+    expect(enviados).toEqual([]);
+  });
+
+  it("que Telegram este caido no tapa el fallo que se venia a contar", async () => {
+    const ok = await ejecutarArchivado(config, {
+      archivar: async () => { throw new Error("disco lleno"); },
+      notifier: { notify: async () => { throw new Error("Telegram 502"); } } as never,
+    });
+    // Sigue devolviendo false —el archivado fallo— en vez de propagar el error del aviso, que mandaria
+    // al log un motivo equivocado y dejaria al envoltorio contando otra historia.
+    expect(ok).toBe(false);
   });
 });

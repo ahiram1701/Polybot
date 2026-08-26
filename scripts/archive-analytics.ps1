@@ -19,7 +19,15 @@ try {
     Push-Location $root
     # `npx tsx` y no el binario compilado: el proyecto se ejecuta desde fuente y asi no hay que
     # acordarse de recompilar para que el archivado siga al dia.
-    $salida = & npx tsx src/archiveAnalytics.ts 2>&1
+    # SIN `2>&1`. En PowerShell 5.1, redirigir la stderr de un ejecutable nativo envuelve cada linea en
+    # un ErrorRecord; con `$ErrorActionPreference = "Stop"` eso es un error TERMINANTE, asi que
+    # cualquier aviso suelto de npm abortaba la pasada y el log guardaba
+    # `EXCEPCION: <primera linea del stack>` en vez del fallo real. Asi se perdio el diagnostico del
+    # 2026-08-25 (`node:buffer:891`), que era el tope de 512 MB del lector de analitica.
+    #
+    # Quien manda es el codigo de salida. Y el logger del proyecto escribe TODO por stdout, asi que
+    # `$salida` conserva el mensaje de error util sin necesidad de capturar la stderr.
+    $salida = & npx tsx src/archiveAnalytics.ts
     $codigo = $LASTEXITCODE
     Pop-Location
 

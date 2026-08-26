@@ -21,7 +21,9 @@ import { dirname, join } from "node:path";
 import { readAnalyticsSamples, serializeAnalyticsSamples } from "./analyticsRecorder.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
-import type { AnalyticsSample } from "./types.js";
+import { createDynamicNotifier } from "./notifier.js";
+import type { Notifier } from "./notifier.js";
+import type { AnalyticsSample, BotConfig } from "./types.js";
 
 /** Cuantos bytes del final del archivo se leen para averiguar hasta donde llego la ultima pasada. */
 const COLA_BYTES = 512 * 1024;
@@ -83,16 +85,78 @@ export async function archivarAnalitica(dataDir: string): Promise<{ nuevas: numb
   return { nuevas: nuevas.length, total: muestras.length };
 }
 
+/**
+ * Una pasada de archivado, avisando por Telegram si falla.
+ *
+ * El aviso no es un adorno. Este archivo es la unica memoria larga del proyecto —el fichero vivo es
+ * una ventana rodante que se recicla sola— y su unico rastro era una linea en `archive.log` que no
+ * mira nadie. El 2026-08-25 el archivador llevaba **catorce horas caido** por el fallo de los 512 MB
+ * (`EXCEPCION: node:buffer:891`) y solo se descubrio mirando el log a mano por otro motivo. Hubo otro
+ * fallo el 22 que nunca se vio.
+ *
+ * Se avisa SOLO al fallar. Un aviso diario de "todo bien" se deja de leer en una semana, y entonces el
+ * canal ya no sirve para lo que se creo.
+ *
+ * **Lo que este aviso NO cubre**, y conviene saberlo: si el proceso de Node no llega a arrancar —npx
+ * roto, el disco lleno— nadie puede avisar desde dentro, y queda solo la linea de `archive.log`. Y si
+ * la tarea programada no llega a dispararse (equipo apagado, tarea deshabilitada) tampoco hay fallo
+ * que notificar: el silencio no se distingue del exito. Para eso haria falta vigilar la ANTIGUEDAD del
+ * archivo, que es otra cosa y no esta hecha.
+ *
+ * `deps` existe para poder probar el camino de fallo sin red ni credenciales.
+ */
+export async function ejecutarArchivado(
+  config: Pick<BotConfig, "dataDir" | "telegramBotToken" | "telegramChatId" | "publicUrl">,
+  deps: { archivar?: typeof archivarAnalitica; notifier?: Notifier } = {},
+): Promise<boolean> {
+  const archivar = deps.archivar ?? archivarAnalitica;
+  try {
+    const { nuevas, total } = await archivar(config.dataDir);
+    logger.info("Analitica archivada.", {
+      nuevas,
+      enElFicheroVivo: total,
+      destino: join(config.dataDir, "archive", "analytics-archive.jsonl"),
+    });
+    return true;
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    logger.error("El archivado de analitica FALLO.", { error: detalle });
+    // El aviso va en su propio try: que Telegram este caido no puede tapar el fallo que se venia a
+    // contar, ni convertir un fallo de archivado en una excepcion distinta que despiste al leer el log.
+    try {
+      const notifier = deps.notifier ?? createDynamicNotifier(config);
+      await notifier.notify({
+        level: "error",
+        category: "system",
+        title: "Archivador de analitica caido",
+        body:
+          `No se pudo archivar: ${detalle}\n\n` +
+          "Mientras siga asi NO se acumula histórico: el fichero vivo recicla las muestras viejas y " +
+          "lo que se cae de el se pierde. Revisa data/archive/archive.log.",
+      });
+    } catch (falloAviso) {
+      logger.warn("Ademas, no se pudo avisar por Telegram del fallo del archivador.", {
+        error: falloAviso instanceof Error ? falloAviso.message : String(falloAviso),
+      });
+    }
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
-  const { nuevas, total } = await archivarAnalitica(config.dataDir);
-  logger.info("Analitica archivada.", {
-    nuevas,
-    enElFicheroVivo: total,
-    destino: join(config.dataDir, "archive", "analytics-archive.jsonl"),
-  });
+  // Codigo de salida distinto de 0 para que el envoltorio de PowerShell lo registre como FALLO.
+  if (!(await ejecutarArchivado(config))) {
+    process.exitCode = 1;
+  }
 }
 
 if (process.argv[1]?.includes("archiveAnalytics")) {
-  void main();
+  void main().catch((error: unknown) => {
+    // Aqui solo se llega si fallo algo ANTES de poder avisar (leer la configuracion, por ejemplo).
+    logger.error("El archivado de analitica fallo antes de poder avisar.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exitCode = 1;
+  });
 }
