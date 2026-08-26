@@ -595,15 +595,34 @@ export class BotRunner {
     // El aislamiento por mercado vive en el watcher y en `getCurrentMarkets`: un fallo parcial ya no
     // llega hasta aqui. Lo que SI sube es el apagon total, y debe seguir subiendo — el bucle continuo
     // lo captura en `runLoopIteration` y un `start({ once: true })` se lo devuelve a quien llamo.
-    // Calienta la ventana siguiente durante la parte tranquila de la actual: el cambio de ventana era
-    // el unico sitio donde la cache llegaba fria, y ahi un fetch lento cuesta el precio de apertura.
-    // Va SIN await a proposito — no debe sumar ni un milisegundo al bucle.
-    this.deps.watcher.prefetchNextWindow?.(SUPPORTED_MARKETS, nowMs);
-    const markets = await timer.time("fetch", () => this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs));
+    //
+    // Los mercados cripto de 5m solo se leen si alguien los va a usar. Con el maker de recompensas como
+    // unica estrategia no los usa NADIE: `mercadosParaMaker` tira del escaner de recompensas y ni mira
+    // esta lista. Pero la captura seguia corriendo entera cada iteracion —dentro de la ventana de
+    // analitica son 6 lecturas de libro por segundo mas una escritura a disco por mercado— para
+    // alimentar un historico que ningun consumidor iba a leer.
+    //
+    // El gate mira la CONFIG, no una preferencia aparte: encender un mercado o el arbitraje devuelve la
+    // captura y la analitica sin tocar codigo. Lo que se apaga se puede volver a encender.
+    const necesitaCripto = this.necesitaMercadosCripto();
+    if (necesitaCripto) {
+      // Calienta la ventana siguiente durante la parte tranquila de la actual: el cambio de ventana era
+      // el unico sitio donde la cache llegaba fria, y ahi un fetch lento cuesta el precio de apertura.
+      // Va SIN await a proposito — no debe sumar ni un milisegundo al bucle.
+      this.deps.watcher.prefetchNextWindow?.(SUPPORTED_MARKETS, nowMs);
+    }
+    const markets = necesitaCripto
+      ? await timer.time("fetch", () => this.getCurrentMarkets(SUPPORTED_MARKETS, nowMs))
+      : [];
     if (markets.length === 0) {
-      this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
-      // La verificación oficial no depende de mercados abiertos; debe seguir corriendo.
-      await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
+      // Sin mercados solo se salta la captura de cripto. El maker NO depende de ella y antes se caia
+      // aqui con un `return`: una lista vacia —gamma lento, o ahora el gate— le costaba la pasada
+      // entera aunque sus mercados vengan de otra fuente. Y la verificacion oficial no depende de
+      // mercados abiertos, asi que sigue corriendo igual.
+      if (necesitaCripto) {
+        this.logSkipOnce("unknown", "market_not_found", { observedMarkets: SUPPORTED_MARKETS });
+      }
+      await this.cerrarIteracion(markets, nowMs, timer);
       return;
     }
 
@@ -714,6 +733,18 @@ export class BotRunner {
     });
     void candidates;
 
+    await this.cerrarIteracion(markets, nowMs, timer);
+  }
+
+  /**
+   * El cierre de toda iteracion, con mercados cripto o sin ellos.
+   *
+   * Vive aparte porque la captura de cripto puede saltarse —el gate la apaga cuando no la usa nadie,
+   * y gamma puede devolver la lista vacia— y nada de lo que hay aqui depende de ella. Antes esto era
+   * la cola de `runIteration` detras de un `return` temprano, asi que una lista vacia se llevaba por
+   * delante la pasada del maker, que no tiene ninguna relacion con esos mercados.
+   */
+  private async cerrarIteracion(markets: MarketInfo[], nowMs: number, timer: PhaseTimer): Promise<void> {
     // Fuera del camino caliente: la verificación oficial (2 HTTP a gamma cada 30s) corre al FINAL del
     // tick, después de capturar precios y decidir — su latencia ya no retrasa la lectura del mercado.
     // Ventanas de 15m: SOLO arbitraje.
@@ -733,7 +764,11 @@ export class BotRunner {
     // porque no compite por el mismo capital que el resto — tiene su propio tope — y porque no debe
     // retrasar ninguna decision de entrada.
     if (this.config.makerEnabled === true) {
-      this.ultimosMercados = markets;
+      // Solo si hay algo que recordar: `ultimosMercados` es el respaldo del que sale la retirada de
+      // ordenes en `stop()`, y pisarlo con la lista vacia del gate dejaria ese respaldo en nada.
+      if (markets.length > 0) {
+        this.ultimosMercados = markets;
+      }
       // El maker tiene su PROPIA cadencia, mas lenta que la del bucle.
       //
       // Correr con el bucle significaba releer 6 libros cada ~3 segundos para decidir, casi siempre,
@@ -2012,6 +2047,30 @@ export class BotRunner {
 
   private isMarketEnabledForTrading(market: MarketSymbol): boolean {
     return OUTCOMES.some((outcome) => this.isConfiguredOutcomeEnabled(market, outcome));
+  }
+
+  /**
+   * Si hay alguien que vaya a USAR los mercados cripto de 5m esta iteracion.
+   *
+   * Son cuatro consumidores y todos son opcionales: el direccional, el arbitraje, el detector de mint
+   * y la analitica que los alimenta. El maker de recompensas no esta en la lista — saca sus mercados
+   * del escaner de recompensas ([mercadosParaMaker]) y esta lista no la mira nunca.
+   *
+   * Sin ninguno encendido, capturar era trabajo puro: dentro de la ventana de analitica, seis lecturas
+   * de libro por segundo mas una escritura por mercado y segundo para llenar un historico que nadie
+   * iba a leer. La unica excepcion es el maker con fuente `cripto5m`, que si cotiza estos mercados.
+   *
+   * Se decide por config y en cada iteracion, no por un ajuste nuevo: no hay un estado aparte que se
+   * pueda quedar desincronizado, y encender un mercado devuelve la captura sola.
+   */
+  private necesitaMercadosCripto(): boolean {
+    if (this.config.arbEnabled === true) {
+      return true;
+    }
+    if (this.config.makerEnabled === true && (this.config.makerMarketSource ?? "recompensas") === "cripto5m") {
+      return true;
+    }
+    return SUPPORTED_MARKETS.some((market) => this.isMarketEnabledForTrading(market));
   }
 
   private async getAnalyticsQuotes(

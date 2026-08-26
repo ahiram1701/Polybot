@@ -310,7 +310,7 @@ describe("BotRunner", () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it("records analytics for all supported markets even when trading is disabled", async () => {
+  it("records analytics for all supported markets even when no market is enabled for directional trading", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
@@ -371,6 +371,9 @@ describe("BotRunner", () => {
     const runner = new BotRunner(
       {
         ...baseConfig(),
+        // El arbitraje mantiene la captura abierta sin operar nada direccional, que es justo el caso
+        // que este test protege: la analitica cubre los 3 mercados aunque no se opere ninguno.
+        arbEnabled: true,
         enabledMarkets: [],
         enabledMarketOutcomes: {
           BTC: { UP: false, DOWN: false },
@@ -394,6 +397,105 @@ describe("BotRunner", () => {
     expect(watcher.getCurrentMarkets).toHaveBeenCalledWith(["BTC", "ETH", "DOGE"], nowMs);
     expect(analyticsRecorder.observeMarket).toHaveBeenCalledTimes(3);
     expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("skips the crypto capture entirely when nothing consumes it", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const nowMs = windowStartMs + 290_000;
+    const watcher = {
+      getCurrentMarkets: vi.fn(async () => []),
+      getCurrentMarket: vi.fn(async () => null),
+      prefetchNextWindow: vi.fn(),
+    } as unknown as MarketWatcher;
+    const orderbook = fakeOrderbook();
+    const analyticsRecorder = {
+      observeMarket: vi.fn(async () => undefined),
+      recordResolvedTrade: vi.fn(async () => undefined),
+    } as unknown as AnalyticsRecorder;
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        // Ni direccional, ni arbitraje, ni maker sobre cripto de 5m: nadie lee esos mercados.
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher,
+        orderbook,
+        priceFeed: { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) } as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+        analyticsRecorder,
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    // Ni la lista de mercados, ni el prefetch de la siguiente ventana, ni una sola lectura de libro.
+    expect(watcher.getCurrentMarkets).not.toHaveBeenCalled();
+    expect(watcher.prefetchNextWindow).not.toHaveBeenCalled();
+    expect(orderbook.getQuote).not.toHaveBeenCalled();
+    expect(analyticsRecorder.observeMarket).not.toHaveBeenCalled();
+  });
+
+  it("runs the maker pass even with an empty crypto market list", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    // La regresion que cubre: la cola de la iteracion vivia detras de un `return` temprano por lista
+    // vacia, asi que el maker —que saca sus mercados de otra fuente— perdia la pasada por algo que no
+    // le incumbe. Ahora una lista vacia solo se lleva la captura de cripto.
+    const nowMs = Date.UTC(2026, 4, 7, 4, 30, 0, 0);
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        makerEnabled: true,
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) } as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+        // Sin lector de parametros el maker ni se construye, asi que el test no probaria nada.
+        rewardParams: { paraMercado: vi.fn(async () => undefined) },
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(runner.getMakerSummary()).toBeDefined();
   });
 
   it("halts trading when the risk circuit breaker trips, but keeps recording analytics", async () => {
