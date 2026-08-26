@@ -15,10 +15,11 @@
  *
  * Uso: `npx tsx src/archiveAnalytics.ts`
  */
-import { appendFile, mkdir, open, stat } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { readAnalyticsSamples, serializeAnalyticsSamples } from "./analyticsRecorder.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { createDynamicNotifier } from "./notifier.js";
@@ -85,6 +86,98 @@ export async function archivarAnalitica(dataDir: string): Promise<{ nuevas: numb
   return { nuevas: nuevas.length, total: muestras.length };
 }
 
+/** Donde el archivador deja constancia de su ultima pasada BUENA. Ver `escribirLatido`. */
+export function rutaLatidoArchivado(dataDir: string): string {
+  return join(dataDir, "archive", "archive-state.json");
+}
+
+/**
+ * Constancia de que el archivador CORRIO, aunque no tuviera nada que escribir.
+ *
+ * Es la pieza que permite distinguir las dos cosas que desde fuera se parecen: "corrio y no habia
+ * muestras nuevas" y "no corrio". La fecha del propio archivo no sirve para eso — solo se mueve cuando
+ * hay algo que añadir, asi que un dia con el bot parado la dejaria igual de quieta que una tarea
+ * programada deshabilitada.
+ */
+async function escribirLatido(dataDir: string, datos: { nuevas: number; total: number }): Promise<void> {
+  const ruta = rutaLatidoArchivado(dataDir);
+  await mkdir(dirname(ruta), { recursive: true });
+  await writeFileAtomic(
+    ruta,
+    `${JSON.stringify({ ultimaPasadaMs: Date.now(), nuevas: datos.nuevas, enElFicheroVivo: datos.total }, null, 2)}\n`,
+  );
+}
+
+/**
+ * Cuando corrio bien el archivador por ultima vez. `undefined` = no se sabe.
+ *
+ * Si todavia no hay latido —instalaciones anteriores a que existiera— se cae a la fecha del propio
+ * archivo. Es peor señal (solo se mueve cuando hubo algo que escribir) pero es mucho mejor que nada, y
+ * evita que la vigilancia empiece a gritar el dia que se estrena.
+ */
+export async function ultimaPasadaArchivado(dataDir: string): Promise<number | undefined> {
+  try {
+    const crudo = JSON.parse(await readFile(rutaLatidoArchivado(dataDir), "utf8")) as { ultimaPasadaMs?: unknown };
+    if (typeof crudo.ultimaPasadaMs === "number" && Number.isFinite(crudo.ultimaPasadaMs)) {
+      return crudo.ultimaPasadaMs;
+    }
+  } catch {
+    // Sin latido: se prueba con la fecha del archivo.
+  }
+  try {
+    return (await stat(join(dataDir, "archive", "analytics-archive.jsonl"))).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Cuanto puede pasar sin una pasada buena antes de que sea un problema.
+ *
+ * La tarea corre DOS veces al dia (06:57 y 18:57), asi que 26 horas son dos pasadas perdidas mas un
+ * margen. Con 24 justas, un retraso normal del planificador daria un aviso falso; y los avisos falsos
+ * son como se mata un canal de avisos.
+ */
+export const MAX_HORAS_SIN_ARCHIVAR = 26;
+
+/**
+ * Si hay que avisar de que el archivador lleva demasiado sin dar señales.
+ *
+ * Tapa los dos huecos que el aviso desde dentro del script NO puede cubrir, y los tapa los dos con la
+ * misma pregunta —"¿cuando fue la ultima pasada buena?"— porque desde fuera son el mismo silencio:
+ *
+ *  - **Node no llega a arrancar** (npx roto, disco lleno): no hay nadie dentro que pueda avisar.
+ *  - **La tarea programada no se dispara** (deshabilitada, equipo apagado): no hay fallo que notificar,
+ *    y el silencio no se distingue del exito. Este es el peor de los dos, porque no deja ni rastro.
+ *
+ * Quien pregunta esto es el BOT, que corre siempre y al que el watchdog reinicia. Tiene que ser algo
+ * ajeno al archivador: pedirle a la tarea programada que vigile si la tarea programada corre es un
+ * circulo. Queda un hueco irreducible —si el equipo esta apagado no hay nadie— y para eso haria falta
+ * algo fuera de esta maquina.
+ *
+ * `msDesdeArranque` evita el aviso falso mas obvio: un bot recien arrancado que todavia no sabe nada
+ * no puede concluir que nadie ha archivado. Sin eso, cada reinicio con el latido ausente seria un
+ * aviso.
+ */
+export function archivadorDesatendido(args: {
+  ultimaPasadaMs: number | undefined;
+  nowMs: number;
+  msDesdeArranque: number;
+  maxEdadMs?: number;
+}): { avisar: boolean; motivo?: "nunca_corrio" | "demasiado_tiempo"; horas?: number } {
+  const maxEdadMs = args.maxEdadMs ?? MAX_HORAS_SIN_ARCHIVAR * 3_600_000;
+  if (args.ultimaPasadaMs === undefined) {
+    // Nunca corrio (o no queda rastro). Solo se afirma cuando el bot lleva despierto lo bastante como
+    // para que una pasada hubiera cabido de sobra.
+    return args.msDesdeArranque >= maxEdadMs ? { avisar: true, motivo: "nunca_corrio" } : { avisar: false };
+  }
+  const edadMs = args.nowMs - args.ultimaPasadaMs;
+  if (edadMs < maxEdadMs) {
+    return { avisar: false };
+  }
+  return { avisar: true, motivo: "demasiado_tiempo", horas: Math.floor(edadMs / 3_600_000) };
+}
+
 /**
  * Una pasada de archivado, avisando por Telegram si falla.
  *
@@ -112,6 +205,9 @@ export async function ejecutarArchivado(
   const archivar = deps.archivar ?? archivarAnalitica;
   try {
     const { nuevas, total } = await archivar(config.dataDir);
+    // El latido va SIEMPRE que la pasada termine bien, aunque `nuevas` sea 0: es lo unico que
+    // distingue "corrio y no habia nada" de "no corrio". Ver `escribirLatido`.
+    await escribirLatido(config.dataDir, { nuevas, total });
     logger.info("Analitica archivada.", {
       nuevas,
       enElFicheroVivo: total,

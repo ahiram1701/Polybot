@@ -13,3 +13,4 @@ _trades*.json
 *.png
 trades_temp.txt
 pnl_calc.py
+data/archive/archive-state.json

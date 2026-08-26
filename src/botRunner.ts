@@ -42,6 +42,7 @@ import {
   SUPPORTED_MARKETS,
 } from "./markets.js";
 import { MarketWatcher } from "./marketWatcher.js";
+import { archivadorDesatendido, ultimaPasadaArchivado } from "./archiveAnalytics.js";
 import { createDynamicNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
 import { calculatePnlSummaryByMode, calculateTradePnl, estimateTradeFeeUsd } from "./pnl.js";
@@ -86,6 +87,15 @@ import type {
  * cinco las lecturas de libro para decidir, casi siempre, no hacer nada.
  */
 const INTERVALO_MAKER_MS = 15_000;
+
+/**
+ * Cada cuanto se comprueba que el archivador de analitica sigue vivo.
+ *
+ * Una hora es de sobra para algo que corre dos veces al dia, y son 24 lecturas de un fichero
+ * pequeño al dia: nada al lado de lo que cuesta enterarse tarde de que el histórico dejo de
+ * acumularse. Ver `vigilarArchivador`.
+ */
+const INTERVALO_VIGILANCIA_ARCHIVADOR_MS = 3_600_000;
 
 const DEFAULT_REQUIRE_POSITIVE_EV = true;
 const DEFAULT_MAX_ASK_PRICE_CEILING = 0.85;
@@ -306,6 +316,11 @@ export class BotRunner {
   private makerBajoSuelo = false;
 
   /** Cuando corrio la ultima pasada del maker, que va a su propio ritmo. */
+  private ultimaVigilanciaArchivadorMs = 0;
+
+  /** Cuando empezo a correr este bot, para no acusar de nada a un arranque reciente. */
+  private arranqueMs = 0;
+
   private ultimaPasadaMakerMs = 0;
   private ultimaPasadaMaker?: ResumenPasada;
 
@@ -736,6 +751,63 @@ export class BotRunner {
     }
 
     await timer.time("verify", () => this.verifyOfficialResolutions(nowMs));
+
+    await this.vigilarArchivador(nowMs);
+  }
+
+  /**
+   * Avisa si el archivador de analitica lleva demasiado sin dar señales de vida.
+   *
+   * El archivador ya avisa por su cuenta cuando FALLA, pero eso solo cubre los fallos que ocurren
+   * DENTRO de el. Quedaban dos silencios que no puede contar nadie desde ahi: que el proceso de Node no
+   * llegue a arrancar, y que la tarea programada no se dispare siquiera. Los dos se ven igual desde
+   * fuera —no pasa nada— y el segundo es el peor, porque el silencio no se distingue del exito.
+   *
+   * Por eso vigila el BOT y no el propio archivador: pedirle a la tarea programada que compruebe si la
+   * tarea programada corre es un circulo. Esto es barato —una lectura de fichero cada hora— y va al
+   * final del tick para no meterse en el camino de ninguna decision.
+   */
+  private async vigilarArchivador(nowMs: number): Promise<void> {
+    if (nowMs - this.ultimaVigilanciaArchivadorMs < INTERVALO_VIGILANCIA_ARCHIVADOR_MS) {
+      return;
+    }
+    this.ultimaVigilanciaArchivadorMs = nowMs;
+    this.arranqueMs ||= nowMs;
+    try {
+      const veredicto = archivadorDesatendido({
+        ultimaPasadaMs: await ultimaPasadaArchivado(this.config.dataDir),
+        nowMs,
+        msDesdeArranque: nowMs - this.arranqueMs,
+      });
+      if (!veredicto.avisar) {
+        return;
+      }
+      const cuanto =
+        veredicto.motivo === "nunca_corrio"
+          ? "no hay constancia de que haya corrido NUNCA"
+          : `lleva ${veredicto.horas} horas sin una pasada buena`;
+      logger.error("El archivador de analitica esta desatendido.", { motivo: veredicto.motivo, horas: veredicto.horas });
+      // `key` + `minIntervalMs` en vez de avisar una sola vez en la transicion: si el aviso se pierde
+      // —el movil apagado, Telegram caido— un aviso unico deja el problema tapado para siempre. Asi
+      // insiste dos veces al dia mientras siga roto, que es la cadencia de la propia tarea.
+      await this.deps.notifier?.notify({
+        level: "error",
+        category: "system",
+        key: "archivador-desatendido",
+        minIntervalMs: 12 * 3_600_000,
+        title: "Archivador de analitica desatendido",
+        body:
+          `El archivado de analitica ${cuanto}.\n\n` +
+          "Ni siquiera esta fallando: no se esta ejecutando. Mira si la tarea programada " +
+          "'PolybotArchivoAnalitica' sigue activa. Mientras tanto NO se acumula histórico, porque el " +
+          "fichero vivo recicla las muestras viejas y lo que se cae de el se pierde.",
+      });
+    } catch (error) {
+      // Vigilar no puede tumbar el tick: perder una comprobacion cuesta una hora, no el bot.
+      logger.warn("No se pudo comprobar el estado del archivador.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** Una pasada del maker. Nunca tumba la iteracion: perder una pasada cuesta una ventana, no el bot. */
