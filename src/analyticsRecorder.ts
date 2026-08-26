@@ -627,26 +627,61 @@ export async function readAnalyticsSamples(path: string): Promise<AnalyticsSampl
 
   const handle = await open(path, "r");
   try {
+    // Se lee POR TRAMOS y se decodifica LINEA A LINEA. Nunca existe un string del tamaño del fichero.
+    //
+    // Antes se traia la cola entera a un Buffer y se hacia `buffer.toString(...)` de una vez. En un
+    // arranque en frio la cola ES el fichero entero, y al cruzar los 512 MB —`0x1fffffe8`, el tope de
+    // longitud de string de Node— eso lanza y no hay vuelta atras.
+    //
+    // Medido el 2026-08-26 con `analytics.jsonl` en 514.835.099 bytes: el bot no arrancaba
+    // (`UI runner stopped with error: Cannot create a string longer than 0x1fffffe8 characters`), y lo
+    // grave es que era un PUNTO MUERTO — la poda es lo unico que puede encoger el fichero y la poda
+    // empieza leyendolo, asi que a partir de ese tamaño el fichero solo podia crecer. Llevaba 34 h sin
+    // dar la cara porque la cache estaba caliente de antes de cruzar el limite: cualquier reinicio
+    // —el watchdog, un arranque de maquina— lo habria destapado igual.
+    //
+    // Cortar por saltos de linea es seguro con UTF-8 multibyte: `0x0a` no aparece dentro de ningun
+    // caracter de mas de un byte, asi que el limite de linea nunca parte un caracter.
+    const TRAMO = 8 * 1024 * 1024;
     const tailLength = fileSize - cache.byteOffset;
-    const buffer = Buffer.alloc(tailLength);
-    await handle.read(buffer, 0, tailLength, cache.byteOffset);
+    const buffer = Buffer.alloc(Math.min(TRAMO, Math.max(tailLength, 1)));
+    let posicion = cache.byteOffset;
+    let restante = tailLength;
+    /** Linea a medias que cruza el corte entre dos tramos. Nunca se consume: se arrastra. */
+    let resto = Buffer.alloc(0);
+    /** Bytes de lineas COMPLETAS ya procesadas. Cada byte se cuenta exactamente una vez. */
+    let consumidos = 0;
+    while (restante > 0) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, restante), posicion);
+      if (bytesRead === 0) {
+        break;
+      }
+      posicion += bytesRead;
+      restante -= bytesRead;
+      const leido = buffer.subarray(0, bytesRead);
+      const datos = resto.length > 0 ? Buffer.concat([resto, leido]) : leido;
+      let desde = 0;
+      for (;;) {
+        const salto = datos.indexOf(0x0a, desde);
+        if (salto === -1) {
+          break;
+        }
+        const linea = datos.toString("utf8", desde, salto + 1).trim();
+        consumidos += salto + 1 - desde;
+        desde = salto + 1;
+        if (!linea) {
+          continue;
+        }
+        const sample = parseAnalyticsLine(linea);
+        if (sample && isResolvedAnalyticsSample(sample)) {
+          cache.latestBySlug.set(sample.slug, sample);
+        }
+      }
+      // Copia obligatoria: `buffer` se reutiliza en la vuelta siguiente y `datos` puede apuntar a el.
+      resto = Buffer.from(datos.subarray(desde));
+    }
     // Never consume a trailing partial line: a writer may be mid-append; it will be read next time.
-    const lastNewline = buffer.lastIndexOf(0x0a);
-    if (lastNewline === -1) {
-      guardarEnCache(path, cache);
-      return [...cache.sorted];
-    }
-    const contents = buffer.toString("utf8", 0, lastNewline + 1);
-    for (const line of contents.split(/\r?\n/)) {
-      if (!line.trim()) {
-        continue;
-      }
-      const sample = parseAnalyticsLine(line);
-      if (sample && isResolvedAnalyticsSample(sample)) {
-        cache.latestBySlug.set(sample.slug, sample);
-      }
-    }
-    cache.byteOffset += lastNewline + 1;
+    cache.byteOffset += consumidos;
     cache.mtimeMs = cache.byteOffset === fileSize ? fileMtimeMs : 0;
     cache.sorted = [...cache.latestBySlug.values()].sort((left, right) => left.windowStartMs - right.windowStartMs);
     guardarEnCache(path, cache);

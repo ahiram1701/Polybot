@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -735,5 +735,83 @@ describe("la memoria de las muestras se suelta sola", () => {
     barrerMuestrasEnMemoria(Date.now() + 11 * 60_000);
     const despues = await readAnalyticsSamples(path);
     expect(despues.map((s) => s.slug)).toEqual(antes.map((s) => s.slug));
+  });
+});
+
+/**
+ * El 2026-08-26 el bot no arrancaba: `Cannot create a string longer than 0x1fffffe8 characters`.
+ * `readAnalyticsSamples` traia la cola entera a un Buffer y hacia UN `toString`, y en un arranque en
+ * frio la cola es el fichero ENTERO. Al cruzar los 512 MB —el tope de longitud de string de Node— eso
+ * lanza. Y era un punto muerto: la poda es lo unico que encoge el fichero, y la poda empieza leyendolo.
+ *
+ * Llevaba 34 h sin dar la cara porque la cache estaba caliente; el barrido por TTL la suelta y
+ * cualquier reinicio cae en la lectura en frio.
+ *
+ * **Lo que estos tests cubren y lo que no.** No reproducen el limite de 512 MB: un fichero asi no cabe
+ * en una suite. Cubren lo que SI se puede cubrir en un test —que el lector por tramos no pierde,
+ * duplica ni parte lineas en los cortes, que es donde un lector por tramos se rompe—. El limite en si
+ * se verifico a mano contra el fichero real de produccion: 549.421.452 bytes, 10.699 muestras leidas,
+ * 5,7 s, salida limpia. Con el codigo anterior ese mismo fichero lanzaba.
+ */
+describe("leer el registro no puede depender de que quepa en un string", () => {
+  /** Una muestra resuelta y valida, con `ticks` de relleno para engordar la linea a voluntad. */
+  function muestraGorda(slug: string, ticks: number) {
+    const base = Date.UTC(2026, 7, 26, 0, 0, 0);
+    return {
+      version: 1 as const,
+      slug,
+      market: "BTC" as const,
+      windowStartMs: base,
+      endMs: base + 300_000,
+      openingPrice: 100,
+      openingTickTimestampMs: base,
+      ticks: Array.from({ length: ticks }, (_, i) => ({
+        timestampMs: base + i * 100,
+        secondsToEnd: 300 - i / 10,
+        price: 100 + i / 1000,
+        distanceUsd: i / 1000,
+      })),
+      quotes: [],
+      finalPrice: 101,
+      winningOutcome: "UP" as const,
+      // Sin `resolvedAtMs` la muestra no cuenta como resuelta y el lector la ignora en silencio.
+      resolvedAtMs: base + 300_001,
+    };
+  }
+
+  it("lee un fichero que NO cabe en un solo tramo, sin perder ni duplicar muestras", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-tramos-"));
+    temps.push(dataDir);
+    const ruta = join(dataDir, "analytics.jsonl");
+    // ~40 KB por linea x 400 lineas = ~16 MB: cruza de sobra el tramo de 8 MB, asi que hay lineas
+    // partidas justo en el corte. Es la situacion que el `toString` unico ocultaba.
+    const total = 400;
+    const texto = serializeAnalyticsSamples(
+      Array.from({ length: total }, (_, i) => muestraGorda(`slug-${i}`, 500)),
+    );
+    await writeFile(ruta, texto, "utf8");
+    expect((await stat(ruta)).size).toBeGreaterThan(8 * 1024 * 1024);
+
+    invalidateAnalyticsReadCache(ruta);
+    const leidas = await readAnalyticsSamples(ruta);
+    expect(leidas).toHaveLength(total);
+    expect(new Set(leidas.map((m) => m.slug)).size).toBe(total);
+    // Y los ticks llegan intactos: si un corte partiera una linea, el JSON no parsearia.
+    expect(leidas.every((m) => m.ticks.length === 500)).toBe(true);
+  });
+
+  it("una linea a medias al final NO se consume: el escritor puede estar a mitad de append", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-analytics-parcial-"));
+    temps.push(dataDir);
+    const ruta = join(dataDir, "analytics.jsonl");
+    const completa = serializeAnalyticsSamples([muestraGorda("uno", 2)]);
+    await writeFile(ruta, `${completa}{"at":"2026-01-01T00:00:00Z","type":"anal`, "utf8");
+
+    invalidateAnalyticsReadCache(ruta);
+    expect((await readAnalyticsSamples(ruta)).map((m) => m.slug)).toEqual(["uno"]);
+
+    // Al completarse, la lectura siguiente la recoge leyendo SOLO la cola nueva.
+    await writeFile(ruta, `${completa}${serializeAnalyticsSamples([muestraGorda("dos", 2)])}`, "utf8");
+    expect((await readAnalyticsSamples(ruta)).map((m) => m.slug).sort()).toEqual(["dos", "uno"]);
   });
 });
