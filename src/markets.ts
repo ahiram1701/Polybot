@@ -217,6 +217,52 @@ export function getMarketOutcomeBoolean(
   return typeof value === "boolean" ? value : fallback;
 }
 
+/**
+ * Lo que hace falta saber para decidir si alguien va a mirar los mercados cripto de 5m.
+ *
+ * Los campos son los mismos en `BotConfig` y en `UiSettings`, que es justo el motivo de que esto viva
+ * aqui: el runner apaga la captura y el controlador apaga el feed de precios con la MISMA respuesta, y
+ * dos copias de esta regla acabarian discrepando — un bot capturando sin feed, o un feed alimentando a
+ * nadie.
+ */
+export interface ConsumidoresDeCripto {
+  arbEnabled?: boolean;
+  makerEnabled?: boolean;
+  makerMarketSource?: "cripto5m" | "recompensas";
+  enabledMarkets: MarketSymbol[];
+  enabledMarketOutcomes?: Partial<Record<MarketSymbol, Partial<Record<Outcome, boolean>>>>;
+}
+
+/**
+ * Si hay alguna estrategia encendida que USE los mercados cripto de 5m.
+ *
+ * Son cuatro consumidores y todos son opcionales: el direccional, el arbitraje, el detector de mint y
+ * la analitica que los alimenta. El maker de recompensas NO esta en la lista — saca sus mercados del
+ * escaner de recompensas y esta lista no la mira nunca. La excepcion es el maker con fuente
+ * `cripto5m`, que si cotiza estos mercados.
+ *
+ * Sin ninguno encendido, seguir leyendolos era trabajo puro: seis lecturas de libro por segundo dentro
+ * de la ventana de analitica, mas el feed de precios procesando ticks para nadie.
+ */
+export function necesitaMercadosCripto(config: ConsumidoresDeCripto): boolean {
+  if (config.arbEnabled === true) {
+    return true;
+  }
+  if (config.makerEnabled === true && (config.makerMarketSource ?? "recompensas") === "cripto5m") {
+    return true;
+  }
+  return SUPPORTED_MARKETS.some((market) =>
+    OUTCOMES.some((outcome) =>
+      getMarketOutcomeBoolean(
+        config.enabledMarketOutcomes,
+        market,
+        outcome,
+        config.enabledMarkets.includes(market),
+      ),
+    ),
+  );
+}
+
 export function getEntryWindowSeconds(
   windows: Partial<MarketEntryWindowSettings> | undefined,
   symbol: MarketSymbol,

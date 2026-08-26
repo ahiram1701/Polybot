@@ -44,6 +44,7 @@ import {
   getMarketOutcomeBoolean,
   getMarketOutcomeNumber,
   getMinDistanceUsd,
+  necesitaMercadosCripto,
   normalizeEnabledMarkets,
   SUPPORTED_MARKETS,
 } from "../markets.js";
@@ -245,6 +246,12 @@ export class BotController {
   // because the tuner is deterministic over the same ledger).
   private readonly askCapTunedAtMs = new Map<MarketSymbol, number>();
   private bandProgramStoreCache?: BandProgramStore;
+  /** Si el feed de precios esta corriendo ahora mismo. Lo gobierna `sincronizarFeed`. */
+  private feedArrancado = false;
+  /** `false` cuando quien construye el controlador prohibe tocar el feed (dobles de test). */
+  private readonly feedPermitido: boolean;
+  /** Cola de una sola via para que dos sincronizaciones a la vez no arranquen dos feeds. */
+  private sincronizacionFeed: Promise<void> = Promise.resolve();
   private dailyReportTimer?: NodeJS.Timeout;
   private lastDailyReportDayKey?: string;
 
@@ -258,6 +265,7 @@ export class BotController {
     this.watcher = deps.watcher ?? new MarketWatcher(baseConfig.gammaHost);
     this.orderbook = deps.orderbook ?? OrderbookService.create(baseConfig.clobHost);
     this.priceFeed = deps.priceFeed ?? new ChainlinkPriceFeed(baseConfig.rtdsUrl);
+    this.feedPermitido = deps.startPriceFeed !== false;
     this.strategyAnalysisEngine = deps.strategyAnalysisEngine ?? new StrategyAnalysisEngine(baseConfig.dataDir);
     this.recommendationEngine = deps.recommendationEngine ?? new RecommendationEngine(baseConfig.dataDir);
     this.telegramStore = new TelegramNotificationStore(baseConfig.dataDir, baseConfig, this.env);
@@ -267,9 +275,10 @@ export class BotController {
     this.fetchImpl = deps.fetch ?? fetch;
     this.unsubscribeLogger = logger.subscribe((entry) => this.pushLog(entry));
 
-    if (deps.startPriceFeed !== false) {
-      this.priceFeed.start();
-    }
+    // Sin await: el constructor no puede ser asincrono y la lectura de ajustes tarda. Mientras tanto el
+    // feed sigue parado, que es el estado correcto si resulta que no hace falta — y si hace falta,
+    // arrancar unos milisegundos tarde no cuesta nada: el bot aun no esta operando.
+    void this.sincronizarFeed();
 
     // Auto-reporte diario: chequeo ligero cada 10 min; envía UNA vez al cruzar la hora configurada.
     // Corre aunque el bot esté detenido (el reporte incluye precisamente ese estado).
@@ -399,7 +408,62 @@ export class BotController {
 
   /** Antiguedad del ultimo tick del feed, para que la salud pueda decir la verdad. */
   feedStalenessMs(nowMs = Date.now()): number | undefined {
+    // Apagado a proposito no es lo mismo que ciego, y esta diferencia la lee el watchdog.
+    //
+    // `/api/health` devuelve 503 cuando el feed lleva demasiado sin ticks, y el watchdog reinicia el
+    // proceso. Sin esta linea, apagar el feed despues de haber recibido un solo tick dejaba una
+    // antiguedad que solo crece: salud en rojo para siempre y un proceso reiniciandose en bucle por
+    // estar haciendo justo lo que se le pidio.
+    if (!this.feedArrancado) {
+      return undefined;
+    }
     return this.priceFeed.msSinceLastTick?.(nowMs);
+  }
+
+  /**
+   * Arranca o para el feed de precios segun quede alguien que lo lea.
+   *
+   * El feed procesa ticks de BTC/ETH/DOGE sin parar, y con el maker de recompensas como unica
+   * estrategia no los lee nadie: sus mercados salen del escaner de recompensas. Es la misma pregunta
+   * que decide la captura en el runner, y por eso la respuesta sale de la misma funcion.
+   *
+   * Idempotente: se llama en el arranque del proceso y en cada arranque del bot, asi que encender un
+   * mercado y darle a empezar devuelve el feed sin reiniciar nada.
+   */
+  private sincronizarFeed(settings?: UiSettings): Promise<void> {
+    // En fila de uno. El constructor lanza una sincronizacion sin esperarla y el arranque del bot lanza
+    // otra, asi que sin esto las dos podian leer `feedArrancado === false` antes de que ninguna lo
+    // cambiara y arrancar el feed dos veces: dos WebSockets vivos y solo uno alcanzable para pararlo.
+    this.sincronizacionFeed = this.sincronizacionFeed.then(() => this.aplicarEstadoDelFeed(settings));
+    return this.sincronizacionFeed;
+  }
+
+  private async aplicarEstadoDelFeed(settings?: UiSettings): Promise<void> {
+    // `startPriceFeed: false` significa "este proceso no toca el feed", y manda sobre todo lo demas: si
+    // solo cortara el arranque del constructor, el arranque del bot lo encenderia por detras.
+    if (!this.feedPermitido) {
+      return;
+    }
+    let haceFalta = true;
+    try {
+      haceFalta = necesitaMercadosCripto(settings ?? (await this.settingsStore.load(this.baseConfig)));
+    } catch (error) {
+      // Ante la duda, el feed corre: un feed de mas cuesta CPU, uno de menos deja al bot ciego.
+      logger.warn("No se pudieron leer los ajustes para decidir el feed de precios; se arranca.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (haceFalta === this.feedArrancado) {
+      return;
+    }
+    this.feedArrancado = haceFalta;
+    if (haceFalta) {
+      this.priceFeed.start();
+      logger.info("Feed de precios arrancado: hay estrategias que leen los mercados cripto.");
+    } else {
+      this.priceFeed.stop();
+      logger.info("Feed de precios parado: ninguna estrategia encendida lee los mercados cripto.");
+    }
   }
 
   onEvent(listener: (event: UiEvent) => void): () => void {
@@ -417,6 +481,9 @@ export class BotController {
     }
 
     const settings = await this.settingsStore.load(this.baseConfig);
+    // Con los ajustes ya en la mano: encender un mercado y arrancar devuelve el feed sin reiniciar el
+    // proceso, y apagarlo todo lo para.
+    await this.sincronizarFeed(settings);
     const config = this.buildRuntimeConfig(mode, confirmLive, settings);
     if (mode === "live") {
       this.assertLiveAllowed(confirmLive);

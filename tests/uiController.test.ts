@@ -291,6 +291,101 @@ function simTrade(slug: string): TradeAttempt {
   };
 }
 
+/**
+ * El feed de precios procesa ticks de BTC/ETH/DOGE sin descanso. Con el maker de recompensas como
+ * unica estrategia no los lee nadie —sus mercados salen del escaner de recompensas— y en una maquina
+ * modesta eso es trabajo continuo a cambio de nada.
+ */
+describe("BotController: el feed de precios solo corre si alguien lo lee", () => {
+  class FakeFeed {
+    arranques = 0;
+    paradas = 0;
+    start(): void {
+      this.arranques += 1;
+    }
+    stop(): void {
+      this.paradas += 1;
+    }
+    getLatestTick(): undefined {
+      return undefined;
+    }
+    getOpeningTick(): undefined {
+      return undefined;
+    }
+    msSinceLastTick(): number {
+      // Como un feed que recibio un tick y se quedo mudo hace horas: es el caso que disparaba al
+      // watchdog.
+      return 9_999_999;
+    }
+  }
+
+  const sinConsumidores = {
+    enabledMarkets: [],
+    enabledMarketOutcomes: {
+      BTC: { UP: false, DOWN: false },
+      ETH: { UP: false, DOWN: false },
+      DOGE: { UP: false, DOWN: false },
+    },
+    arbEnabled: false,
+    makerEnabled: true,
+    makerMarketSource: "recompensas",
+  } as Partial<BotConfig>;
+
+  it("no lo arranca cuando solo corre el maker de recompensas", async () => {
+    const feed = new FakeFeed();
+    const controller = new BotController(await baseConfig({ extra: sinConsumidores }), {
+      priceFeed: feed,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await controller.start("sim");
+
+    expect(feed.arranques).toBe(0);
+    await controller.stop();
+  });
+
+  it("no da el feed por rancio cuando esta apagado a proposito", async () => {
+    // Sin esto el watchdog reinicia el proceso en bucle: `/api/health` responde 503 por un feed que
+    // no esta ciego, sino apagado porque se le pidio.
+    const feed = new FakeFeed();
+    const controller = new BotController(await baseConfig({ extra: sinConsumidores }), {
+      priceFeed: feed,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await controller.start("sim");
+
+    expect(controller.feedStalenessMs()).toBeUndefined();
+    await controller.stop();
+  });
+
+  it("lo arranca en cuanto hay un mercado encendido", async () => {
+    const feed = new FakeFeed();
+    const controller = new BotController(
+      await baseConfig({
+        extra: {
+          ...sinConsumidores,
+          enabledMarkets: ["BTC"],
+          enabledMarketOutcomes: {
+            BTC: { UP: true, DOWN: false },
+            ETH: { UP: false, DOWN: false },
+            DOGE: { UP: false, DOWN: false },
+          },
+        },
+      }),
+      { priceFeed: feed, snapshotProvider: fixedSnapshot, runnerFactory: () => new FakeRunner() },
+    );
+
+    await controller.start("sim");
+
+    expect(feed.arranques).toBe(1);
+    expect(controller.feedStalenessMs()).toBe(9_999_999);
+    await controller.stop();
+  });
+});
+
 async function baseConfig(options: { withSecrets?: boolean; extra?: Partial<BotConfig> } = {}): Promise<BotConfig> {
   const dataDir = await mkdtemp(join(tmpdir(), "polybot-ui-"));
   temps.push(dataDir);

@@ -1079,7 +1079,6 @@ describe("GET /api/health", () => {
   it("FALLA cuando el feed lleva demasiado sin ticks", async () => {
     const controller = new BotController(await baseConfig(true), {
       env: { POLYMARKET_SIGNATURE_TYPE: "0" },
-      startPriceFeed: false,
       snapshotProvider: fixedSnapshot,
       runnerFactory: () => new FakeRunner(),
       priceFeed: {
@@ -1090,11 +1089,16 @@ describe("GET /api/health", () => {
         msSinceLastTick: () => 10 * 60_000,
       } as never,
     });
+    // El feed tiene que estar CORRIENDO para que su antiguedad signifique algo: apagado a proposito no
+    // es estar ciego. `start` lo sincroniza con los ajustes —que aqui traen BTC encendido— y de paso
+    // hace determinista lo que el constructor lanza sin esperar.
+    await controller.start("sim");
     const app = createUiApp(controller);
 
     const response = await request(app).get("/api/health").expect(503);
     expect(response.body.ok).toBe(false);
     expect(response.body.reason).toBe("price_feed_stale");
+    await controller.stop();
     controller.dispose();
   });
 

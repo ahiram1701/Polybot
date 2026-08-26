@@ -38,6 +38,7 @@ import {
   getMarketOutcomeNumber,
   getMinDistanceUsd,
   marketSymbolFromSlug,
+  necesitaMercadosCripto,
   OUTCOMES,
   SUPPORTED_MARKETS,
 } from "./markets.js";
@@ -604,7 +605,7 @@ export class BotRunner {
     //
     // El gate mira la CONFIG, no una preferencia aparte: encender un mercado o el arbitraje devuelve la
     // captura y la analitica sin tocar codigo. Lo que se apaga se puede volver a encender.
-    const necesitaCripto = this.necesitaMercadosCripto();
+    const necesitaCripto = necesitaMercadosCripto(this.config);
     if (necesitaCripto) {
       // Calienta la ventana siguiente durante la parte tranquila de la actual: el cambio de ventana era
       // el unico sitio donde la cache llegaba fria, y ahi un fetch lento cuesta el precio de apertura.
@@ -2047,30 +2048,6 @@ export class BotRunner {
 
   private isMarketEnabledForTrading(market: MarketSymbol): boolean {
     return OUTCOMES.some((outcome) => this.isConfiguredOutcomeEnabled(market, outcome));
-  }
-
-  /**
-   * Si hay alguien que vaya a USAR los mercados cripto de 5m esta iteracion.
-   *
-   * Son cuatro consumidores y todos son opcionales: el direccional, el arbitraje, el detector de mint
-   * y la analitica que los alimenta. El maker de recompensas no esta en la lista — saca sus mercados
-   * del escaner de recompensas ([mercadosParaMaker]) y esta lista no la mira nunca.
-   *
-   * Sin ninguno encendido, capturar era trabajo puro: dentro de la ventana de analitica, seis lecturas
-   * de libro por segundo mas una escritura por mercado y segundo para llenar un historico que nadie
-   * iba a leer. La unica excepcion es el maker con fuente `cripto5m`, que si cotiza estos mercados.
-   *
-   * Se decide por config y en cada iteracion, no por un ajuste nuevo: no hay un estado aparte que se
-   * pueda quedar desincronizado, y encender un mercado devuelve la captura sola.
-   */
-  private necesitaMercadosCripto(): boolean {
-    if (this.config.arbEnabled === true) {
-      return true;
-    }
-    if (this.config.makerEnabled === true && (this.config.makerMarketSource ?? "recompensas") === "cripto5m") {
-      return true;
-    }
-    return SUPPORTED_MARKETS.some((market) => this.isMarketEnabledForTrading(market));
   }
 
   private async getAnalyticsQuotes(

@@ -330,6 +330,11 @@ export class ChainlinkPriceFeed {
     const socket = this.socket;
     this.socket = undefined;
     socket.removeAllListeners();
+    // Un socket que aun estaba CONECTANDO emite 'error' al terminarlo, y lo emite DESPUES, en otro
+    // tick: el try/catch de aqui no lo ve. Sin un oyente, ese 'error' sin dueño es una excepcion no
+    // capturada que se lleva el proceso entero por delante — parar el feed mientras conectaba bastaba,
+    // y eso pasa justo en un reinicio, que es cuando menos falta hace tirar el bot.
+    socket.on("error", () => undefined);
     try {
       socket.terminate();
     } catch {
