@@ -212,16 +212,51 @@ describe("colocar PEGADO al medio no relaja ninguna invariante", () => {
     expect(cruces.slice(0, 10)).toEqual([]);
   });
 
-  it("y puntua MAS que el modo conservador, que es para lo que existe", () => {
-    // Con el medio justo en un tick, el conservador queda a 1 centavo (60% de la puntuacion con banda
-    // de 4,5c) y el agresivo a cero (100%).
+  // Aqui vivia un test que afirmaba que `ticksDelMedio: 0` "puntua MAS que el modo conservador, que es
+  // para lo que existe". La primera mitad es cierta MIRANDO UN SOLO LADO, y por eso el test pasaba. La
+  // conclusion no lo es: el par que hace falta para cobrar esa puntuacion no se puede colocar.
+  it("la puntuacion que promete el modo pegado al medio es INALCANZABLE: el par se cruza consigo mismo", () => {
+    // Un lado suelto si puntua mas, y esto es lo unico que el test viejo comprobaba.
     const conservador = precioObjetivo(0.5, "BUY", 0.01, 1);
     const agresivo = precioObjetivo(0.5, "BUY", 0.01, 0);
-    expect(conservador).toBeCloseTo(0.49, 6);
     expect(agresivo).toBeCloseTo(0.5, 6);
-    const qCons = puntuacionRecompensa(20, 0.5 - conservador, AGRESIVO);
-    const qAgr = puntuacionRecompensa(20, 0.5 - agresivo, AGRESIVO);
-    expect(qAgr).toBeGreaterThan(qCons);
-    expect(qAgr / qCons).toBeCloseTo(1 / ((4.5 - 1) / 4.5) ** 2, 2);
+    expect(puntuacionRecompensa(20, 0.5 - agresivo, AGRESIVO)).toBeGreaterThan(
+      puntuacionRecompensa(20, 0.5 - conservador, AGRESIVO),
+    );
+
+    // Pero `Q_min` toma el minimo de los DOS lados, asi que hay que poder poner los dos. Y no se puede:
+    // comprar UP a 0,50 y DOWN a 0,50 deja, en el libro fusionado, una compra y una venta en el MISMO
+    // precio. Polymarket casa compras complementarias acuñando un par: son ordenes que se comen entre
+    // si. El plan lo rechaza en vez de mandarlas.
+    const plan = planificarDosLados({
+      mid: 0.5,
+      tickSize: 0.01,
+      capitalDisponibleUsd: 10_000,
+      params: AGRESIVO,
+      vivas: [],
+      ticksDelMedio: 0,
+    });
+    expect(plan.colocar).toEqual([]);
+    expect(plan.motivo).toBe("precio_extremo_sin_margen");
+  });
+
+  it("y cuando NO bloquea, da exactamente el mismo precio que el conservador: no aporta nada", () => {
+    // `floor` solo se aparta de `ceil - 1` cuando el medio cae justo en un tick, que es el caso que
+    // bloquea. Fuera de ahi los dos modos coinciden, asi que la palanca no existe.
+    const distintosSinBloquear: string[] = [];
+    for (const tick of TICKS) {
+      for (const mid of mediosABarrer(tick)) {
+        const up0 = precioObjetivo(mid, "BUY", tick, 0);
+        const dn0 = precioObjetivo(medioContrario(mid), "BUY", tick, 0);
+        const up1 = precioObjetivo(mid, "BUY", tick, 1);
+        const dn1 = precioObjetivo(medioContrario(mid), "BUY", tick, 1);
+        if (up0 === up1 && dn0 === dn1) continue;
+        // Difiere del conservador: entonces TIENE que ser un par bloqueado, o la nota miente.
+        if (up0 + dn0 < 1 - 1e-9) {
+          distintosSinBloquear.push(`mid=${mid} tick=${tick} -> ${up0}+${dn0}`);
+        }
+      }
+    }
+    expect(distintosSinBloquear.slice(0, 10)).toEqual([]);
   });
 });

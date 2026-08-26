@@ -376,6 +376,14 @@ al orden y al reparto; `esperadoUsdDia` se sigue reportando sin inflar.
   llena cuando el precio CAE hasta ella, así que te llenas del lado que se hunde. Además la fórmula
   oficial lo castiga —un tercio dentro de [0,10-0,90] y **cero** fuera—. Con los dos lados el par
   cuesta poco menos de $1 y redime exactamente $1 gane quien gane.
+- **El par cuesta ESTRICTAMENTE menos de $1, nunca $1 exacto.** No por el margen, sino porque comprar
+  UP a `p` y DOWN a `q` deja en el libro fusionado una compra en `p` y una venta en `1−q`: con `p+q=1`
+  las dos caen en el mismo precio y **se cruzan entre sí**. Polymarket casa compras complementarias
+  acuñando un par, así que con `postOnly` el exchange rechaza la segunda, la guarda de atomicidad
+  retira la primera y el maker se queda mudo en bucle. Es lo que producía `makerTicksDelMedio: 0`, que
+  se documentaba como una palanca de rendimiento: barrido sobre 2.196 medios, cambia el precio en
+  1.098 y **los 1.098 bloquean**; en los demás da el mismo precio que el modo normal. No es una opción
+  peor, es una que no funciona — la guarda la rechaza y `settings.ts` la normaliza a 1.
 - **El tope cuenta el GASTO, no solo lo comprometido.** Una orden que se llena deja de estar viva; si
   el presupuesto solo mirase lo comprometido, se liberaría y la pasada siguiente colocaría otra.
 - **Guarda de inventario.** Si ya se es largo de un lado se deja de pedir ese lado y solo el contrario:

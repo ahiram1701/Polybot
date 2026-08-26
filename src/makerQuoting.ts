@@ -45,27 +45,31 @@ export interface OrdenViva extends OrdenDeseada {
 export const FACTOR_UN_SOLO_LADO = 3.0;
 
 /**
- * A cuantos ticks del punto medio se coloca. 1 = conservador (por defecto), 0 = pegado al medio.
+ * A cuantos ticks del punto medio se coloca. **1 es el minimo util; 0 no existe como opcion.**
  *
- * Es la palanca que queda sobre la recompensa, y es un intercambio, no una mejora gratis:
+ * Esto se documentaba como una palanca —"0 = pegado al medio, puntua el 100% en vez del 60%"— y no lo
+ * es. Barrido sobre todo el espacio de precios (2.196 medios, ticks de 0,01 y 0,001) el 2026-08-25:
  *
- * | | a 1 tick (por defecto) | pegado al medio |
- * |---|---|---|
- * | puntuacion con banda 4,5c | 60% del maximo | **100%** |
- * | puntuacion con banda 1,5c | 11% del maximo | **100%** |
- * | coste del par | $0,98 (margen de 2c) | $1,00 (sin margen) |
- * | probabilidad de llenarse | menor | **mayor**: quedas el mejor del libro |
+ * | | |
+ * |---|---|
+ * | medios donde `0` da un precio distinto de `1` | **1.098** de 2.196 (exactamente los que caen en un tick) |
+ * | de esos, cuantos BLOQUEAN el libro | **1.098 — el 100%** |
+ * | de esos, cuantos mejoran sin bloquear | **0** |
  *
- * Dos cosas que parecen atajos y no lo son:
+ * La razon es aritmetica y no admite matices: `precioObjetivo` con separacion 0 usa `floor`, que solo
+ * se aparta de `ceil - 1` cuando el medio cae JUSTO en un tick. Y ahi `p_up + p_down = 1` exacto, que
+ * es el par que se cruza consigo mismo (ver la guarda en `planificarDosLados`). Cuando el medio cae
+ * entre ticks —lo normal, porque el medio es `(bid+ask)/2`— los dos modos dan **el mismo precio**.
+ *
+ * Asi que `0` nunca gana nada: o no cambia nada, o produce un par que el exchange rechaza. La guarda
+ * lo bloquea y `settings.ts` lo normaliza a 1.
+ *
+ * Lo que SI sigue siendo cierto de la version anterior de esta nota:
  *
  *  - **Acercar UN solo lado no sirve.** `Q_min` toma el MINIMO de los dos lados, asi que la recompensa
  *    la limita el mas debil. O se acercan los dos o no se gana nada.
  *  - **El margen de 2 centavos no es una defensa.** Contra un llenado de un solo lado se pierde mucho
- *    mas que eso; lo que protege de verdad es la guarda de inventario y el suelo de saldo. Pero SI
- *    cuesta llenados: pegado al medio eres el mejor precio del libro y te eligen antes.
- *
- * Sale a 1 por defecto porque la seleccion adversa —lo unico que de verdad se comio dinero aqui— sigue
- * sin medirse. Con un dia de datos reales se decide con numeros en vez de con criterio.
+ *    mas que eso; lo que protege de verdad es la guarda de inventario y el suelo de saldo.
  */
 export const TICKS_DEL_MEDIO = 1;
 
@@ -268,17 +272,22 @@ export function planificarDosLados(args: {
 
   // Dos condiciones que hay que comprobar por separado, y ninguna sobra:
   //
-  //  - **El par no puede costar mas de $1.** Redime exactamente $1, asi que pagar mas es una perdida
-  //    garantizada. Costar $1 EXACTO si se permite: es lo que pasa al cotizar pegado al medio, y
-  //    entonces un par completo simplemente no gana ni pierde — el ingreso es la recompensa.
+  //  - **El par tiene que costar ESTRICTAMENTE menos de $1.** Redime exactamente $1, asi que pagar mas
+  //    es una perdida garantizada. Y pagar $1 EXACTO no es "no ganar ni perder", como decia aqui
+  //    antes: es que **las dos ordenes se cruzan entre si**. Comprar UP a `p` y DOWN a `q` deja, en el
+  //    libro fusionado, una compra en `p` y una venta en `1 - q`; con `p + q = 1` las dos caen en el
+  //    mismo precio y el libro queda BLOQUEADO. Polymarket casa compras complementarias acuñando un
+  //    par, asi que son ordenes que se comen la una a la otra — y con `postOnly` el exchange rechaza
+  //    la segunda, la guarda de atomicidad retira la primera y el maker se queda mudo en bucle.
   //  - **Ningun precio puede quedar POR ENCIMA de su medio.** En los extremos del libro no existe un
   //    tick por debajo de 0,005 y el tope de precio tiene que intervenir; ese lado pegado al tope
   //    podria cruzar el spread y convertirse en taker, que es justo lo que se viene a dejar de hacer.
   // La tolerancia no es cosmetica: `0,56 + 0,44` da `1,0000000000000002` en coma flotante, y sin ella
   // el guardian rechazaba mercados perfectamente validos como si el par costara mas de $1. Un tick
-  // vale 0,01 o 0,001, asi que 1e-9 no puede tapar un exceso real.
+  // vale 0,01 o 0,001, asi que un par sano suma como mucho `1 - 2*tick` = 0,998: 1e-9 no puede tapar
+  // ni un exceso real ni un bloqueo.
   const EPS = 1e-9;
-  if (precios.UP + precios.DOWN > 1 + EPS || precios.UP > medios.UP + EPS || precios.DOWN > medios.DOWN + EPS) {
+  if (precios.UP + precios.DOWN > 1 - EPS || precios.UP > medios.UP + EPS || precios.DOWN > medios.DOWN + EPS) {
     return { colocar: [], cancelar: vivas, motivo: "precio_extremo_sin_margen" };
   }
 

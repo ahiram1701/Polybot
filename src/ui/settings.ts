@@ -101,7 +101,11 @@ const settingsSchema = z.object({
   makerRetireSecondsBeforeClose: z.coerce.number().int().nonnegative().default(30),
   makerMarketSource: z.enum(["cripto5m", "recompensas"]).default("recompensas"),
   makerStopBelowUsd: z.coerce.number().nonnegative().default(0),
-  makerTicksDelMedio: z.coerce.number().int().min(0).max(5).default(1),
+  // El 0 se ACEPTA y se normaliza a 1 en vez de rechazarse: hay configuraciones guardadas con 0 y
+  // `settingsSchema.parse` lanza, asi que un `min(1)` dejaria la UI sin poder cargar sus ajustes. Y 0
+  // no es una opcion peor, es una que no funciona: produce un par que se cruza consigo mismo en todos
+  // los medios donde cambia algo, y en los demas da el mismo precio que 1. Ver `TICKS_DEL_MEDIO`.
+  makerTicksDelMedio: z.coerce.number().int().min(0).max(5).default(1).transform((v) => Math.max(1, v)),
   arbMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   directionalMode: z.enum(["heredado", "sim", "live"]).default("heredado"),
   arb15mEnabled: z.boolean().default(false),
