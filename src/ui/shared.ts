@@ -193,6 +193,20 @@ export interface UiStatus {
     colocadas: number;
     canceladas: number;
     comprometidoUsd: number;
+    /**
+     * Los tres numeros de RIESGO, que antes se calculaban y se tiraban aqui.
+     *
+     * El runner los publica desde el primer dia, pero este tipo solo declaraba lo colocado, asi que
+     * nada aguas abajo podia pintarlos. Son justo los que describen la seleccion adversa: `gastadoUsd`
+     * es dinero que ya salio a comprar un lado suelto —lo que costo $41,41 en 40 minutos el
+     * 2026-08-19— y `llenadas` es el aviso temprano de que esta pasando. `vivoUsd` es lo inmovilizado
+     * en ordenes en reposo, que NO es una perdida, y `paresUsd` lo que redime $1 el par gane quien
+     * gane. Separarlos es lo que distingue "el dinero cambio de forma" de "el dinero se va".
+     */
+    gastadoUsd?: number;
+    vivoUsd?: number;
+    paresUsd?: number;
+    llenadas?: number;
     mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
   };
   bankroll?: {
@@ -286,6 +300,13 @@ export interface FiscalFxPatch {
  * dos pintaban el codigo crudo (`arb_bankroll_exhausted`), que no le dice nada a nadie.
  */
 export const SKIP_REASON_LABELS = {
+  // Motivos del maker. Son los que explican "por que no esta ganando nada" cuando cotiza en pocos
+  // mercados o en ninguno, y sin traducir salian crudos en pantalla.
+  capital_dedicado_a_otro_mercado: "Sin capital (va a otro mercado)",
+  medio_ambiguo: "Medio ambiguo",
+  sin_punto_medio: "Sin punto medio",
+  relevado: "Relevado por uno mejor",
+  retirado_sin_relevo: "Retirado sin relevo",
   btc_distance_below_threshold: "Distancia insuficiente",
   no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",
   best_ask_above_cap: "Ask por encima del cap",

@@ -80,6 +80,15 @@ export interface CompactStatus {
   bankroll?: { usd: number; source: "onchain" | "declared" | "unknown"; atMs?: number };
   /** Decisiones del autoajuste con su prediccion y lo realmente entregado. */
   bandPrograms?: BandProgram[];
+  /**
+   * La ultima pasada del maker. Estaba solo en la API: ni la TUI ni la web ni los agentes lo veian.
+   *
+   * Con el maker como unica estrategia esto es LO que hay que mirar, y ademas es lo unico que puede
+   * enseñar la seleccion adversa mientras ocurre. El maker no escribe trades, asi que su actividad no
+   * sale por ninguna de las vias por las que se ve el resto del bot: sin esto, dinero real en el libro
+   * y un maker parado se ven exactamente igual.
+   */
+  makerSummary?: UiStatus["makerSummary"];
   recentActivity: RecentActivity;
 }
 
@@ -133,6 +142,7 @@ export function summarizeStatus(
     loopHealth: status.loopHealth,
     bankroll: status.bankroll,
     bandPrograms: status.bandPrograms,
+    makerSummary: status.makerSummary,
     recentActivity: summarizeLogs(status.logs ?? [], sampleSize),
   };
 }

@@ -96,6 +96,75 @@ function statusFixture(overrides: Partial<CompactStatus> = {}): CompactStatus {
   };
 }
 
+/**
+ * El maker no escribe trades, asi que su actividad no sale por el P&L ni por la pestaña de
+ * operaciones. Sin este panel, dinero real en el libro y un maker parado se ven exactamente igual —
+ * que es como los $41,41 del 2026-08-19 estuvieron 40 minutos a la vista de nadie.
+ */
+describe("renderDashboard: panel del maker", () => {
+  it("enseña el dinero separado por lo que significa y los mercados que cotiza", () => {
+    const out = stripAnsi(
+      renderDashboard({
+        tab: "dashboard",
+        width: 100,
+        status: statusFixture({
+          makerSummary: {
+            colocadas: 2,
+            canceladas: 2,
+            comprometidoUsd: 19.8,
+            vivoUsd: 19.8,
+            paresUsd: 0,
+            gastadoUsd: 0,
+            mercados: [
+              { slug: "lowest-temperature-in-seoul-2026", esperadoUsdDia: 105.08 },
+              { slug: "(+22 sin financiar)", motivo: "capital_dedicado_a_otro_mercado" },
+            ],
+          },
+        }),
+      } as ViewModel).join("\n"),
+    );
+
+    expect(out).toContain("Maker (recompensas)");
+    expect(out).toContain("en el libro");
+    expect(out).toContain("$19.80");
+    expect(out).toContain("lowest-temperature-in-seoul-2026");
+    // El motivo traducido: es la respuesta a "por que no gana mas".
+    expect(out).toContain("Sin capital (va a otro mercado)");
+  });
+
+  it("hace visible un llenado, que es una posicion direccional abierta", () => {
+    // Lo que hay que ver ANTES de que se convierta en perdida. Un maker de recompensas no quiere
+    // tener direccion; si `gastadoUsd` deja de ser cero, algo va mal y tiene que saltar a la vista.
+    const out = stripAnsi(
+      renderDashboard({
+        tab: "dashboard",
+        width: 100,
+        status: statusFixture({
+          makerSummary: {
+            colocadas: 1,
+            canceladas: 0,
+            comprometidoUsd: 10,
+            vivoUsd: 10,
+            gastadoUsd: 41.41,
+            llenadas: 650,
+            mercados: [],
+          },
+        }),
+      } as ViewModel).join("\n"),
+    );
+
+    expect(out).toContain("$41.41");
+    expect(out).toContain("650 participaciones llenadas");
+  });
+
+  it("no pinta el panel cuando el maker no ha corrido", () => {
+    const out = stripAnsi(
+      renderDashboard({ tab: "dashboard", width: 100, status: statusFixture() } as ViewModel).join("\n"),
+    );
+    expect(out).not.toContain("Maker (recompensas)");
+  });
+});
+
 function tradeFixture(overrides: Partial<CompactTrade> = {}): CompactTrade {
   return {
     id: "t1",

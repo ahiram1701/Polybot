@@ -229,6 +229,59 @@ export function renderDashboard(vm: ViewModel): string[] {
   }
   out.push(...boxed("P&L (post-reset)", pnlBody, width));
 
+  // Maker de recompensas
+  //
+  // Va justo detras del P&L y ANTES de los mercados cripto porque, con el maker como unica estrategia,
+  // es lo unico que esta pasando — y porque su resultado NO aparece en la caja de P&L: el maker no
+  // escribe trades, asi que ni el P&L ni la pestaña de operaciones saben que existe. Hasta ahora la
+  // unica forma de ver que hacia era leer el log. Con dinero real en el libro eso no basta: los $41,41
+  // del 2026-08-19 estuvieron 40 minutos a la vista de nadie.
+  if (s.makerSummary) {
+    const m = s.makerSummary;
+    const makerBody: string[] = [];
+
+    // Primero el dinero, y separado por lo que significa cada parte. `vivoUsd` es dinero inmovilizado
+    // que sigue siendo nuestro; `gastadoUsd` ya salio a comprar un lado suelto. Pintarlos juntos seria
+    // repetir el error que hacia saltar el suelo de saldo en operacion normal.
+    const dinero = [`${dim("en el libro")} ${fmtUsd(m.vivoUsd ?? 0)}`];
+    if (m.paresUsd) {
+      dinero.push(`${dim("pares")} ${green(fmtUsd(m.paresUsd))}`);
+    }
+    // En rojo SIEMPRE que haya algo: un llenado es una posicion direccional abierta, que es justo lo
+    // que un maker de recompensas no quiere tener. Cero es la operacion normal.
+    dinero.push(`${dim("llenado")} ${m.gastadoUsd ? red(bold(fmtUsd(m.gastadoUsd))) : gray("$0.00")}`);
+    makerBody.push(dinero.join("  "));
+
+    const actividad = `${dim("órdenes")} +${fmtInt(m.colocadas)} −${fmtInt(m.canceladas)}`;
+    const llenadas = m.llenadas
+      ? `  ${red(`${fmtInt(m.llenadas)} participaciones llenadas`)}`
+      : "";
+    makerBody.push(`${actividad}${llenadas}`);
+
+    // Un mercado con `motivo` no se esta cotizando, y el motivo es la respuesta a "por que no gana
+    // nada": sin capital, sin punto medio, medio ambiguo. Los que SI se cotizan llevan su estimacion.
+    const cotizados = m.mercados.filter((mm) => mm.esperadoUsdDia !== undefined);
+    const descartados = m.mercados.filter((mm) => mm.esperadoUsdDia === undefined);
+    for (const mercado of cotizados.slice(0, 3)) {
+      // La estimacion va marcada como tal a proposito: contra la unica medida real salio 10-30 veces
+      // alta, y sirve para ORDENAR mercados, no para prometer un ingreso.
+      makerBody.push(
+        `${green("●")} ${truncate(mercado.slug, width - 28)} ${dim(`~${fmtUsd(mercado.esperadoUsdDia ?? 0)}/día est.`)}`,
+      );
+    }
+    for (const mercado of descartados.slice(0, 2)) {
+      makerBody.push(`${gray("○")} ${gray(truncate(mercado.slug, width - 28))} ${dim(humanSkipReason(mercado.motivo ?? ""))}`);
+    }
+    if (cotizados.length === 0 && descartados.length === 0) {
+      makerBody.push(dim("sin mercados en la última pasada"));
+    }
+    // Sin esta linea la caja de P&L de arriba miente por omision: dira $0.00 con el maker cobrando,
+    // porque el maker no escribe trades y su ingreso no pasa por ahi. Quien lea las dos cajas juntas
+    // concluiria que no esta ganando nada.
+    makerBody.push(dim("las recompensas no salen en el P&L: se abonan ~00:45 UTC en la cuenta"));
+    out.push(...boxed("Maker (recompensas)", makerBody, width));
+  }
+
   // Mercados
   const marketLines = s.markets.length
     ? s.markets.map((m) => {
