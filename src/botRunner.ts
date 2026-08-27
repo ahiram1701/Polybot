@@ -475,7 +475,16 @@ export class BotRunner {
       30 * 60_000,
     );
     this.pruneTimer.unref?.();
-    this.deps.priceFeed.start();
+    // El feed, solo si alguien va a leer sus ticks — la MISMA pregunta que decide la captura.
+    //
+    // Este arranque se me escapo al gatear el feed en el controlador y lo dejaba encendido igual: el
+    // controlador se cree que esta parado y el runner lo levanta por detras. No es solo gasto de CPU,
+    // es peor: con el controlador creyendo que el feed esta apagado, `feedStalenessMs` devuelve
+    // `undefined` y `/api/health` deja de poder ver un feed CONGELADO. Justo la vigilancia que existe
+    // por las siete horas ciegas del 2026-08-08.
+    if (necesitaMercadosCripto(this.config)) {
+      this.deps.priceFeed.start();
+    }
     logger.info("Bot started.", {
       mode: this.config.mode,
       enabledMarkets: this.config.enabledMarkets,

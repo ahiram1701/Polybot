@@ -453,6 +453,86 @@ describe("BotRunner", () => {
     expect(analyticsRecorder.observeMarket).not.toHaveBeenCalled();
   });
 
+  it("no arranca el feed de precios cuando nadie va a leer sus ticks", async () => {
+    // El runner arrancaba el feed SIEMPRE, asi que gatearlo solo en el controlador lo dejaba
+    // encendido igual — y con el controlador creyendo lo contrario, `/api/health` perdia la vigilancia
+    // del feed congelado sin que el feed estuviera apagado.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const priceFeed = { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) };
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        makerEnabled: true,
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: priceFeed as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.start({ once: true });
+
+    expect(priceFeed.start).not.toHaveBeenCalled();
+  });
+
+  it("arranca el feed de precios cuando hay un mercado encendido", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const priceFeed = { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) };
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        arbEnabled: false,
+        enabledMarkets: ["BTC"],
+        enabledMarketOutcomes: {
+          BTC: { UP: true, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: priceFeed as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.start({ once: true });
+
+    expect(priceFeed.start).toHaveBeenCalledTimes(1);
+  });
+
   it("runs the maker pass even with an empty crypto market list", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
