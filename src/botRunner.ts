@@ -2533,6 +2533,21 @@ export class BotRunner {
   private async resolveCompletedTrades(nowMs: number): Promise<void> {
     const trades = this.deps.state.listTrades();
     for (const trade of trades) {
+      // El descarte BARATO va primero. `resolveTradeFromTick` ya comprueba las dos cosas, pero lo hacia
+      // DESPUES de que este bucle pagara las busquedas de precio — y esas no son gratis: son dos
+      // recorridos del historico del feed por trade.
+      //
+      // Medido en produccion: 1.362 operaciones en el estado, las 1.362 ya resueltas y ninguna
+      // pendiente. O sea ~4.000 busquedas por segundo para no resolver nada. Ese trabajo no se veia
+      // como un fallo, se veia como timeouts de 2 s leyendo libros en la pasada del maker: el bucle
+      // estaba demasiado ocupado para atender la respuesta antes de que saltara el temporizador.
+      // Un maker que no puede leer el libro es un maker que no recoloca.
+      //
+      // Las dos condiciones son exactamente las que aplica `resolveTradeFromTick`, solo que antes: no
+      // cambia lo que se resuelve, solo lo que cuesta no resolver.
+      if (trade.resolved || nowMs < trade.endMs) {
+        continue;
+      }
       const market = trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "BTC";
       const latestTick = this.deps.priceFeed.getLatestTick(market);
       if (!latestTick) {

@@ -453,6 +453,71 @@ describe("BotRunner", () => {
     expect(analyticsRecorder.observeMarket).not.toHaveBeenCalled();
   });
 
+  it("no consulta el historico de precios por operaciones ya resueltas", async () => {
+    // El estado real acumula 1.362 operaciones, TODAS resueltas y ninguna pendiente, y el bucle pagaba
+    // dos busquedas de historico por cada una en cada iteracion. No fallaba nada: se manifestaba como
+    // timeouts de 2 s leyendo libros en la pasada del maker, con el bucle demasiado ocupado para
+    // atender la respuesta a tiempo.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const nowMs = Date.UTC(2026, 4, 7, 4, 30, 0, 0);
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn(() => ({
+        market: "BTC" as const,
+        symbol: priceFeedSymbol("BTC"),
+        value: 130,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+      getTwapAtOrBefore: vi.fn(() => undefined),
+      getTickAtOrBefore: vi.fn(() => undefined),
+    };
+    const resueltos = Array.from({ length: 50 }, (_, i) => ({
+      slug: `btc-updown-5m-${i}`,
+      asset: "BTC" as const,
+      endMs: nowMs - 600_000,
+      resolved: true,
+      mode: "sim" as const,
+      twapWindowSeconds: 60,
+    }));
+
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: priceFeed as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => resueltos),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+      },
+    );
+
+    await runner.runOnce(nowMs);
+
+    expect(priceFeed.getTwapAtOrBefore).not.toHaveBeenCalled();
+    expect(priceFeed.getTickAtOrBefore).not.toHaveBeenCalled();
+  });
+
   it("no arranca el feed de precios cuando nadie va a leer sus ticks", async () => {
     // El runner arrancaba el feed SIEMPRE, asi que gatearlo solo en el controlador lo dejaba
     // encendido igual — y con el controlador creyendo lo contrario, `/api/health` perdia la vigilancia
