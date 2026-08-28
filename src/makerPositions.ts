@@ -46,6 +46,26 @@ interface FilaPosicion {
 }
 
 /**
+ * Cuando acaba el mercado, a partir de lo que trae la API.
+ *
+ * `positions` devuelve la fecha PELADA —"2026-08-28"— y `Date.parse` la interpreta como las 00:00Z de
+ * ese dia. O sea que durante las veinticuatro horas en que el mercado esta vivo, su "fin" ya es pasado,
+ * y quien filtre por el descarta justo las posiciones abiertas. Paso: la siembra tiro las dos patas de
+ * un par a las 20:06 de su propio dia y no sembro nada, sin decir una palabra.
+ *
+ * Ya estaba avisado en este proyecto para `end_date_iso`, que tampoco es la hora de cierre sino la
+ * medianoche de la fecha nominal. Una fecha sin hora significa "acaba ESE DIA", asi que se toma el
+ * final del dia y no el principio.
+ */
+function finDeMercadoMs(endDate: unknown): number {
+  if (typeof endDate !== "string") {
+    return Number.NaN;
+  }
+  const texto = endDate.trim();
+  return Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(texto) ? `${texto}T23:59:59.999Z` : texto);
+}
+
+/**
  * Agrupa las filas de la API en posiciones por mercado. Puro: la red se queda fuera para poder probar
  * esto sin ella.
  *
@@ -78,7 +98,7 @@ export function posicionesAbiertas(datos: unknown, limitePedido = LIMITE_POSICIO
     const slug = typeof fila.slug === "string" ? fila.slug : undefined;
     const size = Number(fila.size);
     const avgPrice = Number(fila.avgPrice);
-    const finMs = typeof fila.endDate === "string" ? Date.parse(fila.endDate) : Number.NaN;
+    const finMs = finDeMercadoMs(fila.endDate);
     const lado = fila.outcomeIndex === 0 ? "UP" : fila.outcomeIndex === 1 ? "DOWN" : undefined;
     // Sin fecha de fin no se sabe cuando olvidarla, y una posicion que nunca se olvida deja al maker
     // mudo para siempre. Se descarta, que es el lado seguro.

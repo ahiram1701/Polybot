@@ -40,6 +40,23 @@ describe("posicionesAbiertas", () => {
     expect(posicionesAbiertas(llena.slice(0, 9), 10)).toHaveLength(9);
   });
 
+  it("una fecha SIN HORA acaba al final de ese dia, no al principio", () => {
+    // El fallo real: `positions` devuelve "2026-08-28" pelado y `Date.parse` lo lee como las 00:00Z.
+    // Durante las 24 horas en que el mercado esta vivo su "fin" ya es pasado, asi que la siembra
+    // descartaba justo las posiciones abiertas — y en silencio, porque descartar no es un error.
+    const salida = posicionesAbiertas([fila({ endDate: "2026-08-28" })]);
+
+    expect(salida).toHaveLength(1);
+    expect(salida?.[0].finMs).toBe(Date.parse("2026-08-28T23:59:59.999Z"));
+    // Lo que importa: a media tarde de ese mismo dia, la posicion sigue viva.
+    expect(salida?.[0].finMs).toBeGreaterThan(Date.parse("2026-08-28T20:06:00Z"));
+  });
+
+  it("respeta la hora cuando la fecha si la trae", () => {
+    const salida = posicionesAbiertas([fila({ endDate: "2026-08-29T13:45:00Z" })]);
+    expect(salida?.[0].finMs).toBe(Date.parse("2026-08-29T13:45:00Z"));
+  });
+
   it("ignora lo ya resuelto, que o es efectivo o no vale nada", () => {
     // Contar una posicion redimible ademas del efectivo que produce seria contarla dos veces.
     const salida = posicionesAbiertas([
