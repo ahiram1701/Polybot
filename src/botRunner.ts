@@ -892,14 +892,19 @@ export class BotRunner {
       return;
     }
     try {
-      const mercados = await this.mercadosParaMaker(markets);
-
       // SUELO DE SALDO: la unica guarda que acota la perdida en vez del compromiso.
       //
       // `makerCapitalUsd` limita cuanto se pone a la vez, pero no cuanto se puede llegar a perder: una
       // posicion que resuelve a cero libera el tope y la pasada siguiente vuelve a comprometer. Asi se
       // fueron $41,41 en 40 minutos sin que ningun limite saltara. Solo en live: en sim el saldo real
       // no baja, y aplicarlo ahi congelaria las pruebas sin proteger nada.
+      //
+      // Se comprueba ANTES de buscar mercados, y no despues. El escaneo de recompensas son ~25
+      // mercados por red: 9,7 segundos medidos en produccion. Un maker DETENIDO los pagaba igual en
+      // cada pasada —53 avisos de iteracion lenta en catorce minutos— para acabar decidiendo que no
+      // iba a operar. Ademas de tirar el bucle, es martillear la API de quien no te ha hecho nada, que
+      // es como ya nos ganamos timeouts antes. El veredicto no necesita la lista: sale del saldo, de
+      // las ordenes vivas y de los pares.
       const suelo = this.config.makerStopBelowUsd ?? 0;
       if (suelo > 0 && this.modeFor("maker") === "live") {
         const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, nowMs);
@@ -925,7 +930,10 @@ export class BotRunner {
         const nuestro = veredicto.patrimonioUsd;
         const aCiegas = veredicto.motivo === "saldo_a_ciegas";
         if (veredicto.retirar) {
-          const retiradas = await loop.retirarTodo(mercados);
+          // La lista de mercados solo hace falta para RETIRAR, y retirar solo hace falta la primera
+          // vez: en las pasadas siguientes ya no queda nada puesto. Asi el escaneo caro se paga una
+          // vez por parada y no cada quince segundos mientras dure.
+          const retiradas = this.makerBajoSuelo ? 0 : await loop.retirarTodo(await this.mercadosParaMaker(markets));
           // Se avisa en la TRANSICION, no en cada pasada: un error cada tres segundos deja de leerse,
           // y lo que hay que ver es el momento en que paro y por que.
           const avisar = !this.makerBajoSuelo;
@@ -967,7 +975,8 @@ export class BotRunner {
         }
       }
 
-      this.ultimaPasadaMaker = await loop.runOnce(mercados, nowMs);
+      // Aqui si se va a cotizar, asi que ahora si toca pagar el escaneo.
+      this.ultimaPasadaMaker = await loop.runOnce(await this.mercadosParaMaker(markets), nowMs);
     } catch (error) {
       logger.warn("Pasada del maker fallida.", {
         error: error instanceof Error ? error.message : String(error),

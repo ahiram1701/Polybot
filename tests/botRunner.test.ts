@@ -518,6 +518,64 @@ describe("BotRunner", () => {
     expect(priceFeed.getTickAtOrBefore).not.toHaveBeenCalled();
   });
 
+  it("con el maker detenido por el suelo, no paga el escaneo de mercados", async () => {
+    // El escaneo son ~25 mercados por red: 9,7 s medidos en produccion, 53 avisos de iteracion lenta
+    // en catorce minutos. Un maker que no va a operar no puede pagarlos en cada pasada.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const nowMs = Date.UTC(2026, 4, 7, 4, 30, 0, 0);
+    const mejores = vi.fn(async () => []);
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        makerEnabled: true,
+        makerMode: "live",
+        // Suelo por encima del saldo: el veredicto sera "retirar" en todas las pasadas.
+        makerStopBelowUsd: 100,
+        liveBankrollUsd: 10,
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) } as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+        rewardParams: { paraMercado: vi.fn(async () => undefined) },
+        rewardScanner: { mejores },
+      },
+    );
+
+    // Primera pasada: es la TRANSICION a detenido, y ahi si hace falta la lista para retirar.
+    await runner.runOnce(nowMs);
+    const trasLaPrimera = mejores.mock.calls.length;
+    // Sin esto el test pasaria por vacio: si el escaneo no se llamara NUNCA, la comparacion de abajo
+    // seria 0 === 0 y no probaria nada.
+    expect(trasLaPrimera).toBeGreaterThan(0);
+
+    // Siguientes pasadas, ya detenido: no queda nada que retirar, asi que no se escanea.
+    await runner.runOnce(nowMs + 60_000);
+    await runner.runOnce(nowMs + 120_000);
+
+    expect(mejores.mock.calls.length).toBe(trasLaPrimera);
+  });
+
   it("no arranca el feed de precios cuando nadie va a leer sus ticks", async () => {
     // El runner arrancaba el feed SIEMPRE, asi que gatearlo solo en el controlador lo dejaba
     // encendido igual — y con el controlador creyendo lo contrario, `/api/health` perdia la vigilancia
