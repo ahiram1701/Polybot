@@ -59,6 +59,7 @@ import { dailySpendKey, sleep } from "./time.js";
 import { LiveMakerEngine, SimulationMakerEngine } from "./makerEngine.js";
 import type { MakerEngine } from "./makerEngine.js";
 import { MakerLoop } from "./makerLoop.js";
+import { leerPosicionesAbiertas } from "./makerPositions.js";
 import type { ResumenPasada } from "./makerLoop.js";
 import { RewardMarketScanner } from "./rewardMarketScanner.js";
 import type { CandidatoRecompensa } from "./rewardMarketScanner.js";
@@ -315,6 +316,9 @@ export class BotRunner {
 
   /** Si el suelo de saldo ya esta disparado, para avisar UNA vez y no cada tres segundos. */
   private makerBajoSuelo = false;
+  /** Si ya se recupero la posicion que el maker tenia antes de arrancar este proceso. */
+  private posicionesSembradas = false;
+  private intentosDeSiembra = 0;
 
   /** Cuando corrio la ultima pasada del maker, que va a su propio ritmo. */
   private ultimaVigilanciaArchivadorMs = 0;
@@ -886,12 +890,60 @@ export class BotRunner {
     return this.mercadosMaker;
   }
 
+  /**
+   * Le devuelve al maker la memoria de lo que ya tenia comprado antes de este proceso.
+   *
+   * Va ANTES del suelo de patrimonio porque es justo lo que el suelo necesita saber: sin esto, un
+   * reinicio con posicion abierta hace que el bot se crea mas pobre de lo que es y se detenga solo
+   * —medido el 2026-08-28: conto $17,05 teniendo $23,50—. Y en el otro sentido, `gastadoUsd` a cero le
+   * devuelve un tope de capital entero teniendo dinero fuera.
+   *
+   * Solo en LIVE: en simulacion las posiciones de la cuenta real no son suyas y sembrarlas mezclaria
+   * dinero de verdad en una prueba de papel.
+   *
+   * Se intenta unas pocas veces y se deja. Si no se puede leer, el maker sigue con su cuenta de
+   * siempre, que subestima y por tanto se para de mas: molesto, pero es el lado seguro.
+   */
+  private async sembrarPosicionesDelMaker(loop: MakerLoop, nowMs: number): Promise<void> {
+    if (this.posicionesSembradas || this.modeFor("maker") !== "live" || !this.config.funderAddress) {
+      return;
+    }
+    if (this.intentosDeSiembra >= 3) {
+      return;
+    }
+    this.intentosDeSiembra += 1;
+    try {
+      const posiciones = await leerPosicionesAbiertas({ proxyAddress: this.config.funderAddress });
+      if (!posiciones) {
+        logger.warn("No se pudieron leer las posiciones abiertas; el maker sigue sin memoria de ellas.", {
+          intento: this.intentosDeSiembra,
+        });
+        return;
+      }
+      this.posicionesSembradas = true;
+      const sembradas = loop.sembrarPosiciones(posiciones, nowMs);
+      if (sembradas > 0) {
+        logger.info("Maker: recuperada la posicion previa al arranque.", {
+          mercados: sembradas,
+          paresUsd: Math.round(loop.paresUsd() * 100) / 100,
+        });
+      }
+    } catch (error) {
+      logger.warn("Fallo al leer las posiciones abiertas del maker.", {
+        intento: this.intentosDeSiembra,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async runMaker(markets: MarketInfo[], nowMs: number): Promise<void> {
     const loop = this.makerLoop();
     if (!loop) {
       return;
     }
     try {
+      await this.sembrarPosicionesDelMaker(loop, nowMs);
+
       // SUELO DE SALDO: la unica guarda que acota la perdida en vez del compromiso.
       //
       // `makerCapitalUsd` limita cuanto se pone a la vez, pero no cuanto se puede llegar a perder: una

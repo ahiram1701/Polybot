@@ -25,6 +25,7 @@ import {
   puntuacionRecompensa,
 } from "./makerQuoting.js";
 import type { CandidatoMercado, Inventario, OrdenViva, ParametrosRecompensa } from "./makerQuoting.js";
+import type { PosicionAbierta } from "./makerPositions.js";
 import type { OrderbookService } from "./orderbookService.js";
 import type { RecompensaMercado, RewardParamsReader } from "./rewardParams.js";
 import { secondsToEnd } from "./time.js";
@@ -1190,6 +1191,40 @@ export class MakerLoop {
    * resumen se queda enganchada, porque el resumen de una pasada detenida trae ceros y la pasada
    * siguiente creeria que no hay patrimonio.
    */
+  /**
+   * Siembra el inventario y el gasto que ya existian ANTES de este proceso.
+   *
+   * El maker lleva su contabilidad en memoria, asi que un reinicio la borra y vuelve creyendo que no
+   * tiene nada. Eso rompe las dos guardas de dinero a la vez, y en direcciones opuestas: `paresUsd()`
+   * cae a cero y el suelo de patrimonio para al maker por pobre cuando no lo es; y `gastadoUsd` cae a
+   * cero, con lo que el tope de capital se cree entero teniendo dinero fuera.
+   *
+   * Solo siembra lo que NO conoce. Si el bucle ya tiene estado de un mercado —porque lleva rato
+   * corriendo— ese estado manda: es de esta sesion y es mas fresco que cualquier lectura externa.
+   *
+   * Se siembra en `gastoSinResolver` y no en `estados` a proposito: son posiciones sin ordenes vivas
+   * asociadas, y esa es exactamente la estructura que existe para "dinero fuera en un mercado que ya no
+   * recorro". Ademas hereda su olvido automatico al pasar `finMs`.
+   */
+  sembrarPosiciones(posiciones: readonly PosicionAbierta[], nowMs: number): number {
+    let sembradas = 0;
+    for (const posicion of posiciones) {
+      if (posicion.finMs <= nowMs) {
+        continue; // ya acabo: su dinero vuelve solo, contarlo dejaria al maker mudo de mas
+      }
+      if (this.estados.has(posicion.slug) || this.gastoSinResolver.has(posicion.slug)) {
+        continue; // lo de esta sesion manda
+      }
+      this.gastoSinResolver.set(posicion.slug, {
+        finMs: posicion.finMs,
+        gastadoUsd: posicion.gastadoUsd,
+        inventario: { ...posicion.inventario },
+      });
+      sembradas += 1;
+    }
+    return sembradas;
+  }
+
   paresUsd(): number {
     // Incluye los mercados que ya no se siguen pero siguen abiertos: un par completo redime $1 gane
     // quien gane, y sigue haciendolo aunque el escaner haya dejado de mirar ese mercado. Dejarlo fuera

@@ -74,6 +74,68 @@ describe("bucle maker", () => {
     expect(vivas.map((o) => o.outcome).sort()).toEqual(["DOWN", "UP"]);
   });
 
+  it("sembrar posiciones devuelve los pares que el reinicio borro", async () => {
+    // El fallo real del 2026-08-28: la PC se reinicio con 6,45 pares abiertos, el maker volvio creyendo
+    // que no tenia nada y se detuvo por un suelo de patrimonio que en realidad no habia cruzado.
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 40), rewards: recompensas(10000) as never, engine: new SimulationMakerEngine() },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    expect(loop.paresUsd()).toBe(0);
+
+    const sembradas = loop.sembrarPosiciones(
+      [
+        {
+          slug: "gta-vi",
+          finMs: AHORA + 3_600_000,
+          gastadoUsd: 8.1085,
+          inventario: { UP: 20, DOWN: 6.45 },
+        },
+      ],
+      AHORA,
+    );
+
+    expect(sembradas).toBe(1);
+    // min(20, 6.45) pares, a $1 el par.
+    expect(loop.paresUsd()).toBeCloseTo(6.45, 4);
+  });
+
+  it("no siembra posiciones de mercados ya acabados", async () => {
+    // Su dinero vuelve solo al redimirse; contarlo ademas dejaria al maker mudo de mas.
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 40), rewards: recompensas(10000) as never, engine: new SimulationMakerEngine() },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+
+    const sembradas = loop.sembrarPosiciones(
+      [{ slug: "vieja", finMs: AHORA - 1000, gastadoUsd: 5, inventario: { UP: 10, DOWN: 10 } }],
+      AHORA,
+    );
+
+    expect(sembradas).toBe(0);
+    expect(loop.paresUsd()).toBe(0);
+  });
+
+  it("lo que el bucle ya sabe manda sobre lo sembrado", async () => {
+    // El estado de ESTA sesion es mas fresco que cualquier lectura externa: pisarlo seria retroceder.
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 40), rewards: recompensas(10000) as never, engine: new SimulationMakerEngine() },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+    await loop.runOnce([market("BTC")], AHORA);
+
+    const sembradas = loop.sembrarPosiciones(
+      [{ slug: market("BTC").slug, finMs: AHORA + 3_600_000, gastadoUsd: 99, inventario: { UP: 99, DOWN: 99 } }],
+      AHORA,
+    );
+
+    expect(sembradas).toBe(0);
+    expect(loop.paresUsd()).toBe(0); // el mercado vivo no tiene llenados, no los 99 inventados
+  });
+
   it("NO compromete el mismo dolar en dos mercados", async () => {
     // Es la guarda que evita que el exchange rechace la segunda orden — o peor, que la acepte.
     const engine = new SimulationMakerEngine();
