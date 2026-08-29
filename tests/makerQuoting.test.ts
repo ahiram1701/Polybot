@@ -248,6 +248,28 @@ describe("a que mercados dedicar un capital escaso", () => {
     tickSize: 0.01,
   };
 
+  it("prefiere el mercado EQUILIBRADO cuando los dos pagan igual", () => {
+    // Las dos patas cuestan lo mismo en participaciones pero no en dolares. A 0,80 la cara vale cuatro
+    // veces la barata: si te llenan una sola, lo normal es acabar con la cara. A 0,50 las dos son
+    // iguales y la mitad de grandes.
+    //
+    // Paso el 2026-08-29 en un mercado a 0,77: llenaron la pata cara entera, $15,40 de $23,50 de
+    // capital en una sola direccion. En uno equilibrado habrian sido $10.
+    const elegidos = elegirMercados(
+      [
+        { ...base, slug: "extremo", mid: 0.8, poolDiaUsd: 100, qRivalBid: 0, qRivalAsk: 0 },
+        { ...base, slug: "equilibrado", mid: 0.5, poolDiaUsd: 100, qRivalBid: 0, qRivalAsk: 0 },
+      ],
+      1000,
+    );
+
+    expect(elegidos[0].slug).toBe("equilibrado");
+    // Y la exposicion de peor caso explica por que: es lo que puedes acabar teniendo de un solo lado.
+    const extremo = elegidos.find((e) => e.slug === "extremo");
+    const equilibrado = elegidos.find((e) => e.slug === "equilibrado");
+    expect(extremo!.exposicionPeorCasoUsd).toBeGreaterThan(equilibrado!.exposicionPeorCasoUsd);
+  });
+
   it("ordena por rendimiento POR DOLAR, no por tamano del bote", () => {
     // BTC reparte 12 veces mas que DOGE, pero con 400 de puntuacion compitiendo en los dos lados. En
     // DOGE no compite nadie. Como el par cuesta lo mismo (~$49) en los dos, gana DOGE: se lleva el

@@ -35,6 +35,15 @@ export interface OrdenDeseada {
   side: "BUY" | "SELL";
   price: number;
   size: number;
+  /**
+   * Deja que la orden CRUCE el libro en vez de rebotar por `postOnly`.
+   *
+   * Cotizar siempre es pasivo: ejecutar como taker rompe el negocio, porque las recompensas premian
+   * poner liquidez y no quitarla. La unica excepcion es el rebalanceo de emergencia, donde el objetivo
+   * no es cobrar sino QUITARSE una posicion direccional: ahi una orden en reposo que no se llena no
+   * sirve de nada, y pagar el spread es mas barato que el riesgo que se quita.
+   */
+  permitirCruce?: boolean;
 }
 
 export interface OrdenViva extends OrdenDeseada {
@@ -396,6 +405,8 @@ export interface MercadoElegido extends CandidatoMercado {
   costeUsd: number;
   /** Recompensa esperada AL DIA segun la formula oficial. */
   esperadoUsdDia: number;
+  /** Dolares que puedes acabar teniendo de UN SOLO lado si te llenan la pata cara. */
+  exposicionPeorCasoUsd: number;
 }
 
 /**
@@ -426,10 +437,21 @@ export interface MercadoElegido extends CandidatoMercado {
  * 25% mas para llevarse el capital. La ventaja se aplica al ORDEN y al reparto; la cifra reportada en
  * `esperadoUsdDia` sigue siendo la estimacion honesta.
  */
-/** Rendimiento por dolar con la ventaja del titular ya aplicada. Solo para ordenar. */
+/**
+ * Rendimiento por dolar EN RIESGO, con la ventaja del titular ya aplicada. Solo para ordenar.
+ *
+ * El denominador es la exposicion de peor caso y no el coste, y ese cambio es el que penaliza los
+ * precios extremos sin necesidad de ningun castigo inventado. En un mercado a 0,50 los dos son casi
+ * iguales; en uno a 0,77 la exposicion es 1,54 veces el coste equilibrado, asi que tiene que pagar
+ * 1,54 veces mas para merecer el mismo sitio en la cola.
+ *
+ * Es la leccion del 2026-08-29 escrita como formula: lo que te hace dano no es cuanto comprometes,
+ * es cuanto puedes acabar teniendo de un solo lado.
+ */
 function rendimientoOrdenado(c: MercadoElegido, margenRelevo: number): number {
   const ventaja = c.esTitular ? 1 + margenRelevo : 1;
-  return (c.esperadoUsdDia / c.costeUsd) * ventaja;
+  const enRiesgo = c.exposicionPeorCasoUsd > 0 ? c.exposicionPeorCasoUsd : c.costeUsd;
+  return (c.esperadoUsdDia / enRiesgo) * ventaja;
 }
 
 /**
@@ -468,13 +490,22 @@ export function elegirMercados(
       const precioUp = precioObjetivo(c.mid, "BUY", c.tickSize, ticksDelMedio);
       const precioDown = precioObjetivo(medioContrario(c.mid), "BUY", c.tickSize, ticksDelMedio);
       const costeUsd = (precioUp + precioDown) * c.params.minSize;
+      // LO QUE PUEDES ACABAR TENIENDO DE UN SOLO LADO, que no es lo mismo que lo que comprometes.
+      //
+      // Las dos patas cuestan lo mismo en participaciones pero NO en dolares. En un mercado a
+      // 0,77/0,22 la cara son $15,40 y la barata $4,40: si te llenan una sola, la exposicion depende
+      // de cual caiga, y de media es la peor. En uno a 0,50/0,50 las dos son $10 y da igual.
+      //
+      // Medido el 2026-08-29 en `shanghai-31c` (0,77): llenaron la pata cara entera, $15,40 de $23,50
+      // de capital en una sola direccion. En un mercado equilibrado el mismo suceso habrian sido $10.
+      const exposicionPeorCasoUsd = Math.max(precioUp, precioDown) * c.params.minSize;
 
       // Nuestra puntuacion: mismo tamano en los dos lados, a un tick del medio.
       const qPropia = puntuacionRecompensa(c.params.minSize, Math.abs(c.mid - precioUp), c.params);
       const nuestro = qMinOficial(qPropia, qPropia, c.mid);
       const rivales = qMinOficial(c.qRivalBid, c.qRivalAsk, c.mid);
       const cuota = nuestro + rivales > 0 ? nuestro / (nuestro + rivales) : 0;
-      return { ...c, costeUsd, esperadoUsdDia: cuota * c.poolDiaUsd };
+      return { ...c, costeUsd, exposicionPeorCasoUsd, esperadoUsdDia: cuota * c.poolDiaUsd };
     })
     // Un mercado que no puede cruzar el suelo de pago no es un mercado flojo: es uno que paga CERO.
     // Ver `MINIMO_PAGO_USD_DIA`.

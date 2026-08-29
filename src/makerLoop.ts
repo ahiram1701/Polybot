@@ -126,6 +126,35 @@ export interface ResumenPasada {
   mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
 }
 
+/**
+ * Cuanto se aparta el maker de un mercado que le rechazo una orden por CRUZAR EL LIBRO.
+ *
+ * Ese rechazo no es un fallo nuestro: dice que entre calcular el precio y colocar, el libro se movio lo
+ * bastante como para que la cotizacion dejara de ser pasiva. O sea, un libro que va mas rapido que las
+ * pasadas — que es justo donde un maker se lleva la peor parte.
+ *
+ * Medido el 2026-08-29: `shanghai-31c` rechazo por cruce a las 03:04:25 y otra vez a las 03:04:39. El
+ * maker entro igual a las 03:04:55 y catorce segundos despues le llenaron el lado caro entero, $15,40
+ * en una sola direccion. El mercado habia avisado dos veces.
+ *
+ * Tres minutos son ~12 pasadas: bastante para que un libro nervioso se calme, poco para perder un
+ * mercado bueno que tuvo un mal momento.
+ */
+const ENFRIAMIENTO_TRAS_CRUCE_MS = 3 * 60_000;
+
+/**
+ * Lo maximo que se paga por un par al rebalancear de emergencia.
+ *
+ * Un par redime $1 exacto, asi que pagar mas es perdida garantizada. Pero un poco por encima de la par
+ * puede compensar: el 2026-08-29 cerrar un par costaba $1,035 y quitaba $15,40 de riesgo direccional.
+ * Tres centimos y medio por quitarse eso es barato; quince no. El tope marca donde deja de serlo, y al
+ * pasarse se avisa y se deja la posicion en vez de comprar tranquilidad a cualquier precio.
+ */
+const TOPE_USD_POR_PAR = 1.05;
+
+/** Por debajo de esto, el desequilibrio es polvo y no merece cruzar un spread. */
+const MIN_USD_PARA_REBALANCEAR = 2;
+
 /** 15 s: recorta el ritmo ~10 veces y sigue reaccionando dentro de una ventana de 5 minutos. */
 const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
 
@@ -256,6 +285,9 @@ export class MakerLoop {
    * uno cree tener.
    */
   private readonly gastoSinResolver = new Map<string, { finMs: number; gastadoUsd: number; inventario: Inventario }>();
+
+  /** Mercados apartados por rechazar una orden al cruzar el libro: slug -> hasta cuando. */
+  private readonly enfriados = new Map<string, number>();
 
   constructor(
     private readonly deps: MakerLoopDeps,
@@ -715,6 +747,17 @@ export class MakerLoop {
         continue;
       }
 
+      const enfriadoHasta = this.enfriados.get(market.slug) ?? 0;
+      if (enfriadoHasta > nowMs) {
+        // Se retira lo que quede: apartarse y dejar ordenes ahi seria apartarse solo de palabra.
+        atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
+        resumen.mercados.push({ slug: market.slug, motivo: "enfriado_tras_cruce" });
+        continue;
+      }
+      if (enfriadoHasta > 0) {
+        this.enfriados.delete(market.slug); // cumplido: vuelve a competir como cualquiera
+      }
+
       if (!params) {
         atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
         resumen.mercados.push({ slug: market.slug, motivo: "sin_programa_de_recompensas" });
@@ -959,10 +1002,18 @@ export class MakerLoop {
         try {
           id = await this.deps.engine.colocar(candidato.market, orden);
         } catch (error) {
+          const mensaje = error instanceof Error ? error.message : String(error);
+          // Un rechazo por CRUCE aparta del mercado un rato; los demas no. Que no haya saldo, por
+          // ejemplo, no dice nada del libro y enfriarlo seria castigar al mercado equivocado.
+          const porCruce = /crosses book|post-only/i.test(mensaje);
+          if (porCruce) {
+            this.enfriados.set(candidato.slug, nowMs + ENFRIAMIENTO_TRAS_CRUCE_MS);
+          }
           logger.warn("Maker: el exchange rechazo una orden al colocarla.", {
             slug: candidato.slug,
             outcome: orden.outcome,
-            error: error instanceof Error ? error.message : String(error),
+            error: mensaje,
+            ...(porCruce ? { enfriadoHasta: nowMs + ENFRIAMIENTO_TRAS_CRUCE_MS } : {}),
           });
           id = undefined;
         }
@@ -1244,6 +1295,128 @@ export class MakerLoop {
       sembradas += 1;
     }
     return sembradas;
+  }
+
+/**
+   * Compra el lado que falta para cerrar pares, aunque el suelo de patrimonio haya parado al maker.
+   *
+   * ## Por que es seguro hacerlo con el suelo saltado
+   *
+   * Parece un agujero en la guarda y es lo contrario. El patrimonio valora las participaciones sueltas
+   * a CERO y los pares a $1. Asi que cerrar un par **no puede empeorar la metrica del propio suelo**:
+   * convierte algo que la cuenta valora en 0 en algo que vale $1. El patrimonio sube, nunca baja. Y el
+   * riesgo real baja con el, de "esto puede irse a cero" a "esto vale exactamente esto".
+   *
+   * Es la unica compra que cumple las dos cosas, y por eso es la unica que se permite estando parado.
+   * Abrir exposicion nueva sigue prohibido.
+   *
+   * ## Por que existe
+   *
+   * 2026-08-29: llenaron 20 participaciones de un lado por $15,40 de $23,50 de capital. El patrimonio
+   * cayo a $8,06 —las sueltas valen 0—, el suelo salto y el maker se congelo. Pero lo unico que
+   * arreglaba la situacion era comprar el lado que faltaba por $4,30, y estando congelado no podia. La
+   * guarda frenaba justo el movimiento que la habria desactivado.
+   *
+   * ## Por que CRUZA el libro
+   *
+   * Aqui no se cotiza para cobrar, se compra para dejar de tener direccion. Una orden en reposo que no
+   * se llena no quita ningun riesgo, y el mercado cierra. Pagar el spread es mas barato que la
+   * posicion abierta — pero solo hasta el tope: por encima de `TOPE_USD_POR_PAR` se estaria destruyendo
+   * dinero para comprar tranquilidad, asi que ahi se avisa y no se compra.
+   */
+  async rebalancearParaCerrarPares(
+    mercados: readonly MercadoMaker[],
+    nowMs: number,
+  ): Promise<{ cerrados: number; gastadoUsd: number }> {
+    let cerrados = 0;
+    let gastadoUsd = 0;
+    for (const market of mercados) {
+      const estado = this.estados.get(market.slug) ?? this.gastoSinResolver.get(market.slug);
+      if (!estado) {
+        continue;
+      }
+      const { UP, DOWN } = estado.inventario;
+      const falta = UP > DOWN ? "DOWN" : "UP";
+      const deficit = Math.abs(UP - DOWN);
+      const tenemos = Math.max(UP, DOWN);
+      if (deficit <= 0 || tenemos <= 0) {
+        continue;
+      }
+      // El polvo no merece cruzar un spread: un llenado de 0,19 participaciones no es una posicion.
+      const yaPagadoPorParticipacion = estado.gastadoUsd / tenemos;
+      if (deficit * yaPagadoPorParticipacion < MIN_USD_PARA_REBALANCEAR) {
+        continue;
+      }
+      // Lo maximo que se puede pagar sin que el par salga por encima del tope.
+      const precioMaximo = TOPE_USD_POR_PAR - yaPagadoPorParticipacion;
+      if (precioMaximo <= 0) {
+        logger.warn("Maker: no se puede cerrar el par sin pasarse del tope; se deja la posicion.", {
+          slug: market.slug,
+          falta,
+          yaPagadoPorParticipacion: Number(yaPagadoPorParticipacion.toFixed(4)),
+          topeUsdPorPar: TOPE_USD_POR_PAR,
+        });
+        continue;
+      }
+      let precio: number | undefined;
+      try {
+        const libro = await this.deps.orderbook.getQuote(market.outcomes[falta].tokenId, 25, 0.99);
+        precio = libro?.bestAsk;
+      } catch (error) {
+        logger.warn("Maker: no se pudo leer el libro para rebalancear.", {
+          slug: market.slug,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+      if (!precio || precio <= 0) {
+        continue;
+      }
+      if (precio > precioMaximo) {
+        logger.warn("Maker: cerrar el par saldria por encima del tope; se deja la posicion.", {
+          slug: market.slug,
+          falta,
+          precioPedido: precio,
+          precioMaximo: Number(precioMaximo.toFixed(4)),
+          topeUsdPorPar: TOPE_USD_POR_PAR,
+        });
+        continue;
+      }
+      try {
+        const id = await this.deps.engine.colocar(market, {
+          outcome: falta,
+          side: "BUY",
+          price: precio,
+          size: deficit,
+          permitirCruce: true,
+        });
+        if (!id) {
+          continue;
+        }
+        const coste = precio * deficit;
+        estado.gastadoUsd += coste;
+        estado.inventario[falta] += deficit;
+        cerrados += 1;
+        gastadoUsd += coste;
+        this.tamanoConocido.set(`${market.slug}|${id}`, deficit);
+        this.datosOrden.set(`${market.slug}|${id}`, { price: precio, outcome: falta });
+        logger.info("Maker: par cerrado para quitarse la direccion.", {
+          slug: market.slug,
+          compradas: deficit,
+          lado: falta,
+          precio,
+          costeUsd: Number(coste.toFixed(4)),
+          parUsd: Number((yaPagadoPorParticipacion + precio).toFixed(4)),
+        });
+      } catch (error) {
+        logger.warn("Maker: fallo al cerrar el par.", {
+          slug: market.slug,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    void nowMs;
+    return { cerrados, gastadoUsd: Number(gastadoUsd.toFixed(4)) };
   }
 
   paresUsd(): number {

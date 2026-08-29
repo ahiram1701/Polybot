@@ -306,6 +306,7 @@ export const SKIP_REASON_LABELS = {
   medio_ambiguo: "Medio ambiguo",
   sin_punto_medio: "Sin punto medio",
   relevado: "Relevado por uno mejor",
+  enfriado_tras_cruce: "Apartado (el libro se movia)",
   retirado_sin_relevo: "Retirado sin relevo",
   btc_distance_below_threshold: "Distancia insuficiente",
   no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",

@@ -117,8 +117,11 @@ export class LiveMakerEngine implements MakerEngine {
       },
       { tickSize: market.tickSize as never, negRisk: market.negRisk },
     );
-    // GTC = se queda en el libro. `postOnly` en true: antes ejecutar como taker que colocar, NO.
-    const respuesta = (await client.postOrder(firmada, OrderType.GTC, true)) as { orderID?: string; status?: string };
+    // GTC = se queda en el libro. `postOnly` en true: antes ejecutar como taker que colocar, NO — salvo
+    // en el rebalanceo de emergencia, que pide cruzar a proposito porque ahi el objetivo es quitarse
+    // una posicion direccional y una orden que no se llena no la quita.
+    const postOnly = orden.permitirCruce !== true;
+    const respuesta = (await client.postOrder(firmada, OrderType.GTC, postOnly)) as { orderID?: string; status?: string };
     if (!respuesta?.orderID) {
       logger.warn("Orden maker rechazada por el exchange.", {
         slug: market.slug,

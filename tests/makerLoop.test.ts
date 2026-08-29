@@ -427,6 +427,41 @@ describe("dos lados o ninguno, tambien cuando el exchange rechaza", () => {
     expect(r.comprometidoUsd).toBeCloseTo(0, 6);
   });
 
+  it("se aparta de un mercado que rechazo por cruzar el libro", async () => {
+    // El rechazo por cruce dice que el libro va mas rapido que las pasadas, y ahi el maker se lleva la
+    // peor parte. Medido el 2026-08-29: shanghai-31c rechazo por cruce dos veces, el maker entro igual
+    // y catorce segundos despues le llenaron el lado caro entero — $15,40 en una sola direccion.
+    const engine = {
+      ordenesVivas: vi.fn(async () => []),
+      colocar: vi.fn(async (_m: MarketInfo, o: { outcome: "UP" | "DOWN" }) => {
+        if (o.outcome === "DOWN") {
+          throw new Error("invalid post-only order: order crosses book");
+        }
+        return "u1";
+      }),
+      cancelar: vi.fn(async (ids: string[]) => ids),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 40), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+
+    // Pasada 1: el rechazo por cruce lo aparta.
+    await loop.runOnce([market("BTC")], AHORA);
+    const intentosTrasElRechazo = engine.colocar.mock.calls.length;
+    expect(intentosTrasElRechazo).toBeGreaterThan(0);
+
+    // Pasada 2, un minuto despues: sigue apartado, no se intenta cotizar ahi.
+    const r2 = await loop.runOnce([market("BTC", 4000)], AHORA + 60_000);
+    expect(engine.colocar.mock.calls.length).toBe(intentosTrasElRechazo);
+    expect(r2.mercados.some((m) => m.motivo === "enfriado_tras_cruce")).toBe(true);
+
+    // Pasada 3, pasados los tres minutos: vuelve a competir.
+    await loop.runOnce([market("BTC", 4000)], AHORA + 200_000);
+    expect(engine.colocar.mock.calls.length).toBeGreaterThan(intentosTrasElRechazo);
+  });
+
   it("un lado intencionado por inventario NO se retira", async () => {
     // Con inventario desequilibrado se cotiza un lado a proposito para COMPLETAR el par. Eso es lo
     // correcto y no debe confundirse con quedarse direccional por un rechazo.
@@ -1504,5 +1539,92 @@ describe("se coloca contra el medio que REPARTE, no contra el del libro entero",
     // Sigue cotizando: quedarse quieto porque nadie llega al minimo seria renunciar justo a los
     // mercados vacios, que son los que mas pagan.
     expect(r.colocadas).toBe(2);
+  });
+});
+
+describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
+  /** Un bucle con inventario de UN SOLO lado ya dentro, como despues de un llenado adverso. */
+  function loopConPosicion(bestAsk: number, engineExtra: Record<string, unknown> = {}) {
+    const colocadas: Array<{ outcome: string; price: number; size: number; permitirCruce?: boolean }> = [];
+    const engine = {
+      ordenesVivas: vi.fn(async () => []),
+      cancelar: vi.fn(async (ids: string[]) => ids),
+      colocar: vi.fn(async (_m: MarketInfo, o: { outcome: string; price: number; size: number; permitirCruce?: boolean }) => {
+        colocadas.push(o);
+        return "nueva";
+      }),
+      ...engineExtra,
+    };
+    const loop = new MakerLoop(
+      {
+        orderbook: { getQuote: vi.fn(async () => ({ bestAsk, bestBid: bestAsk - 0.01 })) } as never,
+        rewards: recompensas(10000) as never,
+        engine: engine as never,
+      },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    // 20 participaciones de UP a $0,77, que es el caso real del 2026-08-29.
+    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
+      gastadoUsd: 15.4,
+      inventario: { UP: 20, DOWN: 0 },
+    });
+    return { loop, engine, colocadas };
+  }
+
+  it("compra el lado que falta y CRUZA el libro para que se llene", async () => {
+    // Una orden en reposo que no se llena no quita ningun riesgo, y el mercado cierra.
+    const { loop, colocadas } = loopConPosicion(0.265);
+    callar();
+
+    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+
+    expect(r.cerrados).toBe(1);
+    expect(colocadas).toHaveLength(1);
+    expect(colocadas[0].outcome).toBe("DOWN"); // el lado que falta, no mas del que ya sobra
+    expect(colocadas[0].size).toBe(20);
+    expect(colocadas[0].permitirCruce).toBe(true);
+    // Y ahora el par esta cerrado: 20 pares que redimen $1 cada uno.
+    expect(loop.paresUsd()).toBeCloseTo(20, 4);
+  });
+
+  it("NO compra si el par saldria por encima del tope", async () => {
+    // Un par redime $1 exacto. Pagar $1,30 por el seria comprar tranquilidad destruyendo dinero.
+    const { loop, colocadas } = loopConPosicion(0.55); // 0,77 ya pagado + 0,55 = $1,32
+    callar();
+
+    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+
+    expect(r.cerrados).toBe(0);
+    expect(colocadas).toHaveLength(0);
+    expect(loop.paresUsd()).toBe(0); // sigue direccional, y eso se avisa por log
+  });
+
+  it("ignora el polvo", async () => {
+    // Un llenado de 0,19 participaciones no es una posicion y no merece cruzar un spread.
+    const { loop, colocadas } = loopConPosicion(0.265);
+    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
+      gastadoUsd: 0.0361,
+      inventario: { UP: 0.19, DOWN: 0 },
+    });
+    callar();
+
+    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+
+    expect(r.cerrados).toBe(0);
+    expect(colocadas).toHaveLength(0);
+  });
+
+  it("no hace nada si el inventario ya esta equilibrado", async () => {
+    const { loop, colocadas } = loopConPosicion(0.265);
+    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
+      gastadoUsd: 20,
+      inventario: { UP: 20, DOWN: 20 },
+    });
+    callar();
+
+    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+
+    expect(r.cerrados).toBe(0);
+    expect(colocadas).toHaveLength(0);
   });
 });

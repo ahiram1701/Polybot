@@ -985,7 +985,30 @@ export class BotRunner {
           // La lista de mercados solo hace falta para RETIRAR, y retirar solo hace falta la primera
           // vez: en las pasadas siguientes ya no queda nada puesto. Asi el escaneo caro se paga una
           // vez por parada y no cada quince segundos mientras dure.
-          const retiradas = this.makerBajoSuelo ? 0 : await loop.retirarTodo(await this.mercadosParaMaker(markets));
+          const mercadosParaRetirar = this.makerBajoSuelo ? [] : await this.mercadosParaMaker(markets);
+          const retiradas = this.makerBajoSuelo ? 0 : await loop.retirarTodo(mercadosParaRetirar);
+
+          // ANTES de rendirse: cerrar los pares que se puedan cerrar.
+          //
+          // Parar con una posicion direccional a medias es lo peor de los dos mundos — no cotizas y
+          // sigues expuesto. Y cerrar un par no puede empeorar el patrimonio que mide esta misma
+          // guarda: convierte sueltas (valen 0 en la cuenta) en pares (valen $1). Sube, nunca baja.
+          //
+          // No se hace a ciegas: si el saldo no se puede LEER no se compra nada, porque entonces no se
+          // sabe si hay con que pagarlo.
+          if (!aCiegas) {
+            // La lista fresca si la hay; si no, la ultima conocida. Sin esto, un rebalanceo que falla
+            // al primer intento —libro ilegible, precio por encima del tope— no se reintentaria jamas,
+            // porque las pasadas siguientes ya no escanean. Y usar la ultima conocida no cuesta red.
+            const paraRebalancear = mercadosParaRetirar.length > 0 ? mercadosParaRetirar : this.mercadosMaker;
+            const rebalanceo = await loop.rebalancearParaCerrarPares(paraRebalancear, nowMs);
+            if (rebalanceo.cerrados > 0) {
+              logger.info("Maker: pares cerrados antes de detenerse.", {
+                mercados: rebalanceo.cerrados,
+                gastadoUsd: rebalanceo.gastadoUsd,
+              });
+            }
+          }
           // Se avisa en la TRANSICION, no en cada pasada: un error cada tres segundos deja de leerse,
           // y lo que hay que ver es el momento en que paro y por que.
           const avisar = !this.makerBajoSuelo;
