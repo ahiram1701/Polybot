@@ -307,6 +307,7 @@ export const SKIP_REASON_LABELS = {
   sin_punto_medio: "Sin punto medio",
   relevado: "Relevado por uno mejor",
   enfriado_tras_cruce: "Apartado (el libro se movia)",
+  sin_mercado_real: "Libro vacío (el medio es ficción)",
   retirado_sin_relevo: "Retirado sin relevo",
   btc_distance_below_threshold: "Distancia insuficiente",
   no_ask_liquidity_under_cap: "Sin liquidez bajo el cap",

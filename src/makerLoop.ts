@@ -786,6 +786,29 @@ export class MakerLoop {
         continue;
       }
       const parametros = { minSize: params.minSize, maxSpreadCents: params.maxSpreadCents };
+
+      // ¿HAY MERCADO DE VERDAD? El punto medio de un libro vacio es una ficcion aritmetica.
+      //
+      // El umbral sale de las reglas del propio programa: una orden solo puntua si esta a menos de
+      // `max_spread` del medio. Asi que en un libro con ordenes que puntuan en los DOS lados, el spread
+      // no puede pasar de 2x max_spread. Si lo pasa, no hay nadie cotizando de verdad y el medio se
+      // apoya en aire.
+      //
+      // Medido el 2026-08-29 en `lowest-temperature-in-london-18c`: mejor compra 0,11, mejor venta
+      // 0,94 — 83 centavos de spread. El medio salia 0,52 y el bot puso una compra a $0,49 donde la
+      // mejor compra real era $0,06. Ofrecio ocho veces el precio de mercado y se lo vendieron. No fue
+      // seleccion adversa sutil: fue regalar dinero.
+      //
+      // El guardia de `ambiguo` no lo veia porque compara dos definiciones de medio, y en un libro
+      // muerto las dos estan igual de equivocadas.
+      const spreadDelLibro = libro.asks[0]!.price - libro.bids[0]!.price;
+      const spreadMaximoCreible = (2 * parametros.maxSpreadCents) / 100;
+      if (spreadDelLibro > spreadMaximoCreible) {
+        atadoUsd -= await this.retirarYLiberar(vivas, market.slug, resumen);
+        resumen.mercados.push({ slug: market.slug, motivo: "sin_mercado_real" });
+        continue;
+      }
+
       const { mid, ambiguo } = this.medioParaPuntuar(libro, parametros);
       if (ambiguo) {
         // No hay precio que puntue con los dos medios candidatos. Se retira: dejar ordenes aqui es

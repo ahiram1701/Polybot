@@ -450,6 +450,48 @@ describe("dos lados o ninguno, tambien cuando el exchange rechaza", () => {
     expect(r.comprometidoUsd).toBeCloseTo(0, 6);
   });
 
+  it("no cotiza donde el libro esta vacio, por mucho que el medio parezca sano", async () => {
+    // El caso real del 2026-08-29 en Londres: mejor compra 0,11, mejor venta 0,94. El medio sale 0,52
+    // y parece un mercado a moneda al aire, pero no hay NADA entre medias. El bot puso una compra a
+    // $0,49 donde la mejor compra real era $0,06 — ocho veces el precio de mercado— y se lo vendieron.
+    //
+    // El guardia de `ambiguo` no lo veia: compara dos definiciones de medio y en un libro muerto las
+    // dos coinciden en el mismo sitio equivocado.
+    const engine = {
+      ordenesVivas: vi.fn(async () => []),
+      colocar: vi.fn(async () => "x"),
+      cancelar: vi.fn(async (ids: string[]) => ids),
+    };
+    // El libro se arma juntando los dos tokens: las ventas de UP viven como compras de DOWN. Por eso
+    // se dan los niveles crudos y no un `bids/asks` ya montado.
+    const libroMuerto = {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const esDown = String(tokenId).endsWith("-down");
+        return {
+          tokenId,
+          bestAsk: esDown ? 0.89 : 0.94,
+          bestBid: esDown ? 0.06 : 0.11,
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          availableBidUsdAllLevels: 100,
+          estimatedSharesForAmount: 10,
+          rawAskLevels: [{ price: esDown ? 0.89 : 0.94, size: 16.7 }],
+          rawBidLevels: [{ price: esDown ? 0.06 : 0.11, size: 7.4 }],
+        };
+      }),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libroMuerto as never, rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+
+    const r = await loop.runOnce([market("BTC")], AHORA);
+
+    expect(engine.colocar).not.toHaveBeenCalled();
+    expect(r.mercados.some((m) => m.motivo === "sin_mercado_real")).toBe(true);
+  });
+
   it("se aparta de un mercado que rechazo por cruzar el libro", async () => {
     // El rechazo por cruce dice que el libro va mas rapido que las pasadas, y ahi el maker se lleva la
     // peor parte. Medido el 2026-08-29: shanghai-31c rechazo por cruce dos veces, el maker entro igual
