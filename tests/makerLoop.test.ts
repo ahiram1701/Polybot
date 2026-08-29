@@ -382,6 +382,51 @@ describe("dos lados o ninguno, tambien cuando el exchange rechaza", () => {
     expect(r.comprometidoUsd).toBeCloseTo(0, 6);
   });
 
+  it("si el exchange LANZA al rechazar un lado, tambien retira el otro", async () => {
+    // El gemelo del test de arriba, y el que faltaba. Aquel cubria el rechazo que devuelve `undefined`,
+    // que es lo que dice el contrato; pero el motor LIVE no devuelve, LANZA, porque el rechazo llega
+    // como un 400 del CLOB. Y la excepcion se salia de `runOnce` entera, saltandose la atomicidad.
+    //
+    // Real, 2026-08-29 00:00:08: "not enough balance", $6,80 de un solo lado vivos en el libro y sin
+    // registrar —el resumen se pierde con la excepcion—. Los limpio 25 segundos despues una guarda que
+    // miraba otra cosa.
+    const vivas: Array<{ id: string; outcome: "UP" | "DOWN"; side: "BUY"; price: number; size: number }> = [];
+    const canceladas: string[] = [];
+    const engine = {
+      ordenesVivas: vi.fn(async () => [...vivas]),
+      colocar: vi.fn(async (_m: MarketInfo, o: { outcome: "UP" | "DOWN"; price: number; size: number }) => {
+        if (o.outcome === "DOWN") {
+          throw new Error(
+            "not enough balance / allowance: the balance is not enough -> balance: 17046831, sum of active orders: 6800000",
+          );
+        }
+        vivas.push({ id: "u1", outcome: "UP", side: "BUY", price: o.price, size: o.size });
+        return "u1";
+      }),
+      cancelar: vi.fn(async (ids: string[]) => {
+        canceladas.push(...ids);
+        for (const id of ids) {
+          const i = vivas.findIndex((v) => v.id === id);
+          if (i >= 0) vivas.splice(i, 1);
+        }
+        return ids;
+      }),
+    };
+    const loop = new MakerLoop(
+      { orderbook: libro(0.5, 0), rewards: recompensas(10000) as never, engine: engine as never },
+      { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
+    );
+    callar();
+
+    // Lo primero: la pasada NO puede lanzar, o el resumen se pierde y nadie se entera de nada.
+    const r = await loop.runOnce([market("BTC")], AHORA);
+
+    expect(canceladas).toEqual(["u1"]);
+    expect(vivas).toHaveLength(0); // sin patas huerfanas en el libro
+    expect(r.colocadas).toBe(0);
+    expect(r.comprometidoUsd).toBeCloseTo(0, 6);
+  });
+
   it("un lado intencionado por inventario NO se retira", async () => {
     // Con inventario desequilibrado se cotiza un lado a proposito para COMPLETAR el par. Eso es lo
     // correcto y no debe confundirse con quedarse direccional por un rechazo.

@@ -944,7 +944,28 @@ export class MakerLoop {
       let nuevoUsd = 0;
       let falloAlguna = false;
       for (const orden of plan.colocar) {
-        const id = await this.deps.engine.colocar(candidato.market, orden);
+        // Un rechazo puede llegar de DOS formas y las dos tienen que acabar igual.
+        //
+        // El contrato de `colocar` dice `string | undefined`, y la guarda de atomicidad de mas abajo
+        // esta escrita para el `undefined`. Pero el motor LIVE no devuelve: LANZA, porque el rechazo
+        // viene como un 400 del CLOB. Y una excepcion aqui se sale de `runOnce` entera, saltandose la
+        // atomicidad y dejando viva la pata que si entro.
+        //
+        // Paso el 2026-08-29 a las 00:00:08: "not enough balance", $6,80 de un lado se quedaron en el
+        // libro y ni siquiera se registraron —el resumen se pierde con la excepcion—, asi que hubo
+        // dinero real expuesto en una sola direccion sin que nada lo dijera. Lo limpio 25 segundos
+        // despues el suelo de patrimonio, que miraba otra cosa: suerte, no diseno.
+        let id: string | undefined;
+        try {
+          id = await this.deps.engine.colocar(candidato.market, orden);
+        } catch (error) {
+          logger.warn("Maker: el exchange rechazo una orden al colocarla.", {
+            slug: candidato.slug,
+            outcome: orden.outcome,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          id = undefined;
+        }
         if (!id) {
           falloAlguna = true;
           continue;
