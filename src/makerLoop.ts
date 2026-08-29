@@ -155,6 +155,17 @@ const TOPE_USD_POR_PAR = 1.05;
 /** Por debajo de esto, el desequilibrio es polvo y no merece cruzar un spread. */
 const MIN_USD_PARA_REBALANCEAR = 2;
 
+/** Resumen de usar y tirar para el detector de llenados fuera de una pasada normal. */
+const VACIO: ResumenPasada = {
+  colocadas: 0,
+  canceladas: 0,
+  comprometidoUsd: 0,
+  gastadoUsd: 0,
+  vivoUsd: 0,
+  paresUsd: 0,
+  mercados: [],
+};
+
 /** 15 s: recorta el ritmo ~10 veces y sigue reaccionando dentro de una ventana de 5 minutos. */
 const MIN_MS_ENTRE_RECOLOCACIONES = 15_000;
 
@@ -1349,9 +1360,24 @@ export class MakerLoop {
     // apartaste de el. Lo que hay que rebalancear es la posicion, asi que manda la posicion.
     const slugs = new Set([...this.estados.keys(), ...this.gastoSinResolver.keys()]);
     for (const slug of slugs) {
-      const estado = this.estados.get(slug) ?? this.gastoSinResolver.get(slug);
       const market = this.cotizados.get(slug) ?? this.mercadosDePosiciones.get(slug);
-      if (!estado || !market) {
+      if (!market) {
+        continue;
+      }
+      // La posicion se MUDA a `estados` antes de tocarla, si estaba sembrada.
+      //
+      // Son dos registros distintos y el llenado siempre aterriza en `estados` —lo apunta
+      // `detectarLlenados`, que es quien lleva esa cuenta—. Dejar la posicion en el otro partia el
+      // inventario en dos: `{UP:20}` en un sitio y `{DOWN:20}` en el otro, con lo que los pares salian
+      // 0 en cada uno. Y el gasto se contaba DOS veces, una por registro: paso el 2026-08-29, $25,80
+      // apuntados habiendo gastado $20,60.
+      const sembrada = this.gastoSinResolver.get(slug);
+      if (sembrada && !this.estados.has(slug)) {
+        this.estados.set(slug, { gastadoUsd: sembrada.gastadoUsd, inventario: { ...sembrada.inventario } });
+        this.gastoSinResolver.delete(slug);
+      }
+      const estado = this.estados.get(slug);
+      if (!estado) {
         continue;
       }
       if (market.endMs <= nowMs) {
@@ -1416,12 +1442,16 @@ export class MakerLoop {
           continue;
         }
         const coste = precio * deficit;
-        estado.gastadoUsd += coste;
-        estado.inventario[falta] += deficit;
-        cerrados += 1;
-        gastadoUsd += coste;
         this.tamanoConocido.set(`${market.slug}|${id}`, deficit);
         this.datosOrden.set(`${market.slug}|${id}`, { price: precio, outcome: falta });
+        // El llenado lo apunta `detectarLlenados` y NADIE MAS. Apuntarlo tambien aqui era contarlo dos
+        // veces; y darlo por llenado sin comprobar seria peor, porque una orden que cruza puede
+        // llenarse a medias si no hay profundidad. Se le pregunta al exchange y se usa el mismo camino
+        // de siempre, que ademas ajusta el importe a lo que de verdad entro.
+        const vivas = await this.deps.engine.ordenesVivas(market);
+        this.detectarLlenados(market, vivas, { ...VACIO } as ResumenPasada);
+        cerrados += 1;
+        gastadoUsd += coste;
         logger.info("Maker: par cerrado para quitarse la direccion.", {
           slug: market.slug,
           compradas: deficit,
@@ -1438,6 +1468,18 @@ export class MakerLoop {
       }
     }
     return { cerrados, gastadoUsd: Number(gastadoUsd.toFixed(4)) };
+  }
+
+/**
+   * Todo el dinero que ha salido a comprar y sigue sin resolver, en los dos registros.
+   *
+   * Es la misma suma que descuenta el tope de capital, expuesta para poder comprobarla: contar el
+   * mismo apunte dos veces no rompe nada visible —el tope solo se cree mas pobre— y por eso conviene
+   * que un test lo vigile.
+   */
+  gastadoTotalUsd(): number {
+    const de = (fuente: Iterable<{ gastadoUsd: number }>) => [...fuente].reduce((s, e) => s + e.gastadoUsd, 0);
+    return Number((de(this.estados.values()) + de(this.gastoSinResolver.values())).toFixed(4));
   }
 
   paresUsd(): number {

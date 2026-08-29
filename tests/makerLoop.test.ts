@@ -1575,6 +1575,8 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
   ) {
     const colocadas: Array<{ outcome: string; price: number; size: number; permitirCruce?: boolean }> = [];
     const engine = {
+      // Vacio: una orden que cruza se llena en el acto, asi que cuando se pregunta ya no esta viva. Es
+      // justo lo que el detector interpreta como llenado.
       ordenesVivas: vi.fn(async () => []),
       cancelar: vi.fn(async (ids: string[]) => ids),
       colocar: vi.fn(async (_m: MarketInfo, o: { outcome: string; price: number; size: number; permitirCruce?: boolean }) => {
@@ -1627,6 +1629,22 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
     expect(colocadas[0].size).toBe(20);
     expect(colocadas[0].permitirCruce).toBe(true);
     // Y ahora el par esta cerrado: 20 pares que redimen $1 cada uno.
+    expect(loop.paresUsd()).toBeCloseTo(20, 4);
+  });
+
+  it("no cuenta el gasto dos veces al cerrar el par", async () => {
+    // La posicion sembrada y los llenados vivian en registros distintos, asi que el mismo apunte
+    // entraba dos veces: el 2026-08-29 quedaron $25,80 anotados habiendo gastado $20,60. Y de paso el
+    // inventario salia partido —UP en un registro, DOWN en el otro— con lo que los pares daban 0.
+    const { loop, colocadas } = loopConPosicion(0.26);
+    callar();
+
+    await loop.rebalancearParaCerrarPares(AHORA);
+
+    expect(colocadas).toHaveLength(1);
+    // $15,40 de la posicion + $5,20 de la compra = $20,60. Ni un centimo mas.
+    expect(loop.gastadoTotalUsd()).toBeCloseTo(20.6, 2);
+    // Y el inventario queda entero en un solo sitio: 20 pares, no 0.
     expect(loop.paresUsd()).toBeCloseTo(20, 4);
   });
 
