@@ -1660,6 +1660,24 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
     expect(loop.paresUsd()).toBe(0); // sigue direccional, y eso se avisa por log
   });
 
+  it("avisa UNA vez de que el par sale caro, no en cada pasada", async () => {
+    // El rebalanceo reintenta cada 15 s —y debe, porque el precio se mueve: asi acabo cerrandose el par
+    // de Shanghai—. Pero repetir el aviso son ~3.500 lineas al dia que entierran cualquier señal real.
+    const { loop } = loopConPosicion(0.55); // 0,77 ya pagado + 0,55 = $1,32, por encima del tope
+    const avisos: string[] = [];
+    const spy = vi.spyOn(logger, "warn").mockImplementation((msg: string) => {
+      avisos.push(msg);
+    });
+
+    await loop.rebalancearParaCerrarPares(AHORA);
+    await loop.rebalancearParaCerrarPares(AHORA + 15_000);
+    await loop.rebalancearParaCerrarPares(AHORA + 30_000);
+
+    const delTope = avisos.filter((m) => m.includes("por encima del tope"));
+    expect(delTope).toHaveLength(1);
+    spy.mockRestore();
+  });
+
   it("ignora el polvo", async () => {
     // Un llenado de 0,19 participaciones no es una posicion y no merece cruzar un spread.
     const { loop, colocadas } = loopConPosicion(0.265, {}, { UP: 0.19, DOWN: 0 }, 0.0361);

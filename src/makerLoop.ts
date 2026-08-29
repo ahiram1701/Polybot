@@ -303,6 +303,9 @@ export class MakerLoop {
   /** Mercados reconstruidos desde las posiciones sembradas, para poder rebalancearlas. */
   private readonly mercadosDePosiciones = new Map<string, MercadoMaker>();
 
+  /** Mercados de los que ya se aviso que cerrar el par sale caro. Evita repetir el aviso cada pasada. */
+  private readonly avisadosPorTope = new Set<string>();
+
   constructor(
     private readonly deps: MakerLoopDeps,
     private readonly config: MakerLoopConfig,
@@ -1421,15 +1424,24 @@ export class MakerLoop {
         continue;
       }
       if (precio > precioMaximo) {
-        logger.warn("Maker: cerrar el par saldria por encima del tope; se deja la posicion.", {
-          slug: market.slug,
-          falta,
-          precioPedido: precio,
-          precioMaximo: Number(precioMaximo.toFixed(4)),
-          topeUsdPorPar: TOPE_USD_POR_PAR,
-        });
+        // Se avisa al ENTRAR en esta situacion, no en cada pasada. El rebalanceo reintenta cada 15
+        // segundos —y debe hacerlo, porque el precio se mueve y por eso acabo cerrando el par de
+        // Shanghai— pero repetir el aviso son ~3.500 lineas al dia que entierran cualquier señal de
+        // verdad en un log que ya pesa mas de 100 MB.
+        if (!this.avisadosPorTope.has(slug)) {
+          this.avisadosPorTope.add(slug);
+          logger.warn("Maker: cerrar el par saldria por encima del tope; se deja la posicion.", {
+            slug: market.slug,
+            falta,
+            precioPedido: precio,
+            precioMaximo: Number(precioMaximo.toFixed(4)),
+            topeUsdPorPar: TOPE_USD_POR_PAR,
+            reintentando: "cada pasada, en silencio, hasta que el precio entre",
+          });
+        }
         continue;
       }
+      this.avisadosPorTope.delete(slug); // el precio entro: si vuelve a salirse, se avisa otra vez
       try {
         const id = await this.deps.engine.colocar(market, {
           outcome: falta,

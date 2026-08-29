@@ -1029,13 +1029,21 @@ export class BotRunner {
               },
             );
           }
+          // El dinero se reporta COMO ESTA, no en ceros.
+          //
+          // Estos campos son hechos sobre tu dinero y no dejan de ser ciertos porque el maker se haya
+          // parado: `gastadoUsd` es lo que hay fuera en posiciones y `paresUsd` lo que redime $1. Al
+          // ponerlos a cero, el panel enseñaba "llenado $0.00" teniendo $9,80 en una posicion
+          // direccional — justo la cifra que el panel existe para hacer visible, escondida justo
+          // cuando hay algo que ver. Lo unico que si es cero es lo que hay EN EL LIBRO, porque se
+          // acaba de retirar.
           this.ultimaPasadaMaker = {
             colocadas: 0,
             canceladas: retiradas,
             comprometidoUsd: 0,
-            gastadoUsd: 0,
+            gastadoUsd: loop.gastadoTotalUsd(),
             vivoUsd: 0,
-            paresUsd: 0,
+            paresUsd: loop.paresUsd(),
             mercados: [{ slug: "(todos)", motivo: `saldo_bajo_suelo_${suelo}` }],
           };
           return;

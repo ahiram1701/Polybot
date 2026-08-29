@@ -576,6 +576,59 @@ describe("BotRunner", () => {
     expect(mejores.mock.calls.length).toBe(trasLaPrimera);
   });
 
+  it("al pararse por el suelo, sigue reportando el dinero que hay fuera", async () => {
+    // El resumen de parada ponia `gastadoUsd` y `paresUsd` a CERO, asi que el panel enseñaba
+    // "llenado $0.00" con $9,80 en una posicion direccional abierta — justo la cifra que el panel
+    // existe para hacer visible, escondida justo cuando hay algo que ver.
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const nowMs = Date.UTC(2026, 4, 7, 4, 30, 0, 0);
+    const runner = new BotRunner(
+      {
+        ...baseConfig(),
+        makerEnabled: true,
+        makerMode: "live",
+        makerStopBelowUsd: 100, // por encima del saldo: se para seguro
+        liveBankrollUsd: 10,
+        arbEnabled: false,
+        enabledMarkets: [],
+        enabledMarketOutcomes: {
+          BTC: { UP: false, DOWN: false },
+          ETH: { UP: false, DOWN: false },
+          DOGE: { UP: false, DOWN: false },
+        },
+      },
+      {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => []),
+          getCurrentMarket: vi.fn(async () => null),
+        } as unknown as MarketWatcher,
+        orderbook: fakeOrderbook(),
+        priceFeed: { start: vi.fn(), stop: vi.fn(), getLatestTick: vi.fn(() => undefined) } as unknown as ChainlinkPriceFeed,
+        state: {
+          load: vi.fn(async () => undefined),
+          listTrades: vi.fn(() => []),
+          getOpening: vi.fn(() => undefined),
+          hasTraded: vi.fn(() => false),
+          getDailySpend: vi.fn(() => 0),
+        } as unknown as StateStore,
+        executor: { execute: vi.fn(async () => { throw new Error("should not execute"); }) } satisfies TradeExecutor,
+        reconciler: fakeReconciler(),
+        rewardParams: { paraMercado: vi.fn(async () => undefined) },
+        rewardScanner: { mejores: vi.fn(async () => []) },
+      },
+    );
+
+    await runner.runOnce(nowMs);
+    const resumen = runner.getMakerSummary();
+
+    // Detenido, si; pero el dinero de fuera se sigue diciendo. Lo unico que si es cero es el libro.
+    expect(resumen?.mercados?.[0]?.motivo).toContain("saldo_bajo_suelo");
+    expect(resumen?.vivoUsd).toBe(0);
+    expect(resumen?.gastadoUsd).toBeDefined();
+    expect(resumen?.paresUsd).toBeDefined();
+  });
+
   it("no arranca el feed de precios cuando nadie va a leer sus ticks", async () => {
     // El runner arrancaba el feed SIEMPRE, asi que gatearlo solo en el controlador lo dejaba
     // encendido igual — y con el controlador creyendo lo contrario, `/api/health` perdia la vigilancia
