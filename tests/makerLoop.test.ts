@@ -91,6 +91,9 @@ describe("bucle maker", () => {
           finMs: AHORA + 3_600_000,
           gastadoUsd: 8.1085,
           inventario: { UP: 20, DOWN: 6.45 },
+          conditionId: "0xgta",
+          negRisk: false,
+          tokenIds: { UP: "gta-up", DOWN: "gta-down" },
         },
       ],
       AHORA,
@@ -110,7 +113,17 @@ describe("bucle maker", () => {
     callar();
 
     const sembradas = loop.sembrarPosiciones(
-      [{ slug: "vieja", finMs: AHORA - 1000, gastadoUsd: 5, inventario: { UP: 10, DOWN: 10 } }],
+      [
+        {
+          slug: "vieja",
+          finMs: AHORA - 1000,
+          gastadoUsd: 5,
+          inventario: { UP: 10, DOWN: 10 },
+          conditionId: "0xvieja",
+          negRisk: false,
+          tokenIds: { UP: "v-up", DOWN: "v-down" },
+        },
+      ],
       AHORA,
     );
 
@@ -128,7 +141,17 @@ describe("bucle maker", () => {
     await loop.runOnce([market("BTC")], AHORA);
 
     const sembradas = loop.sembrarPosiciones(
-      [{ slug: market("BTC").slug, finMs: AHORA + 3_600_000, gastadoUsd: 99, inventario: { UP: 99, DOWN: 99 } }],
+      [
+        {
+          slug: market("BTC").slug,
+          finMs: AHORA + 3_600_000,
+          gastadoUsd: 99,
+          inventario: { UP: 99, DOWN: 99 },
+          conditionId: "0xbtc",
+          negRisk: false,
+          tokenIds: { UP: "b-up", DOWN: "b-down" },
+        },
+      ],
       AHORA,
     );
 
@@ -1544,7 +1567,12 @@ describe("se coloca contra el medio que REPARTE, no contra el del libro entero",
 
 describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
   /** Un bucle con inventario de UN SOLO lado ya dentro, como despues de un llenado adverso. */
-  function loopConPosicion(bestAsk: number, engineExtra: Record<string, unknown> = {}) {
+  function loopConPosicion(
+    bestAsk: number,
+    engineExtra: Record<string, unknown> = {},
+    inventario: { UP: number; DOWN: number } = { UP: 20, DOWN: 0 },
+    gastadoUsd = 15.4,
+  ) {
     const colocadas: Array<{ outcome: string; price: number; size: number; permitirCruce?: boolean }> = [];
     const engine = {
       ordenesVivas: vi.fn(async () => []),
@@ -1563,12 +1591,27 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
       },
       { capitalUsd: CAPITAL, retirarSegundosAntesDelCierre: 30 },
     );
-    // 20 participaciones de UP a $0,77, que es el caso real del 2026-08-29.
-    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
-      gastadoUsd: 15.4,
-      inventario: { UP: 20, DOWN: 0 },
-    });
-    return { loop, engine, colocadas };
+    // Se siembra por la via REAL —como tras un reinicio— para que el test cubra la cadena entera:
+    // leer la posicion, reconstruir su mercado y poder actuar sobre el. El mercado donde te llenaron
+    // casi nunca esta entre los candidatos del escaner, asi que esta es la unica via que importa.
+    const sembrar = (inventario: { UP: number; DOWN: number }, gastadoUsd: number) =>
+      loop.sembrarPosiciones(
+        [
+          {
+            slug: "mercado-con-posicion",
+            finMs: AHORA + 3_600_000,
+            gastadoUsd,
+            inventario,
+            conditionId: "0xpos",
+            negRisk: false,
+            tokenIds: { UP: "pos-up", DOWN: "pos-down" },
+          },
+        ],
+        AHORA,
+      );
+    // Por defecto, 20 participaciones de UP a $0,77: el caso real del 2026-08-29.
+    sembrar(inventario, gastadoUsd);
+    return { loop, engine, colocadas, sembrar };
   }
 
   it("compra el lado que falta y CRUZA el libro para que se llene", async () => {
@@ -1576,7 +1619,7 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
     const { loop, colocadas } = loopConPosicion(0.265);
     callar();
 
-    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+    const r = await loop.rebalancearParaCerrarPares(AHORA);
 
     expect(r.cerrados).toBe(1);
     expect(colocadas).toHaveLength(1);
@@ -1592,7 +1635,7 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
     const { loop, colocadas } = loopConPosicion(0.55); // 0,77 ya pagado + 0,55 = $1,32
     callar();
 
-    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+    const r = await loop.rebalancearParaCerrarPares(AHORA);
 
     expect(r.cerrados).toBe(0);
     expect(colocadas).toHaveLength(0);
@@ -1601,28 +1644,20 @@ describe("rebalanceo de emergencia: cerrar el par estando parado", () => {
 
   it("ignora el polvo", async () => {
     // Un llenado de 0,19 participaciones no es una posicion y no merece cruzar un spread.
-    const { loop, colocadas } = loopConPosicion(0.265);
-    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
-      gastadoUsd: 0.0361,
-      inventario: { UP: 0.19, DOWN: 0 },
-    });
+    const { loop, colocadas } = loopConPosicion(0.265, {}, { UP: 0.19, DOWN: 0 }, 0.0361);
     callar();
 
-    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+    const r = await loop.rebalancearParaCerrarPares(AHORA);
 
     expect(r.cerrados).toBe(0);
     expect(colocadas).toHaveLength(0);
   });
 
   it("no hace nada si el inventario ya esta equilibrado", async () => {
-    const { loop, colocadas } = loopConPosicion(0.265);
-    (loop as unknown as { estados: Map<string, unknown> }).estados.set(market("BTC").slug, {
-      gastadoUsd: 20,
-      inventario: { UP: 20, DOWN: 20 },
-    });
+    const { loop, colocadas } = loopConPosicion(0.265, {}, { UP: 20, DOWN: 20 }, 20);
     callar();
 
-    const r = await loop.rebalancearParaCerrarPares([market("BTC")], AHORA);
+    const r = await loop.rebalancearParaCerrarPares(AHORA);
 
     expect(r.cerrados).toBe(0);
     expect(colocadas).toHaveLength(0);

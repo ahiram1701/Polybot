@@ -108,14 +108,19 @@ export class LiveMakerEngine implements MakerEngine {
 
   async colocar(market: MercadoMaker, orden: OrdenDeseada): Promise<string | undefined> {
     const client = await this.clientProvider.getClient();
+    const tokenId = market.outcomes[orden.outcome].tokenId;
+    // Un mercado reconstruido desde las POSICIONES no trae `tickSize`: esa API no lo da. Se pregunta
+    // aqui, que es donde esta el cliente, y solo en ese caso — el camino normal ya lo trae del escaner
+    // y no paga ninguna llamada de mas.
+    const tickSize = market.tickSize || (await client.getTickSize(tokenId));
     const firmada = await client.createOrder(
       {
-        tokenID: market.outcomes[orden.outcome].tokenId,
+        tokenID: tokenId,
         price: orden.price,
         size: orden.size,
         side: orden.side === "BUY" ? Side.BUY : Side.SELL,
       },
-      { tickSize: market.tickSize as never, negRisk: market.negRisk },
+      { tickSize: tickSize as never, negRisk: market.negRisk },
     );
     // GTC = se queda en el libro. `postOnly` en true: antes ejecutar como taker que colocar, NO — salvo
     // en el rebalanceo de emergencia, que pide cruzar a proposito porque ahi el objetivo es quitarse

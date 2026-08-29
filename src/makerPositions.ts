@@ -27,6 +27,19 @@ export interface PosicionAbierta {
   /** Dolares que costo la posicion. Cuentan contra el tope igual que un llenado de esta sesion. */
   gastadoUsd: number;
   inventario: Inventario;
+  /**
+   * Lo necesario para PODER ACTUAR sobre la posicion, no solo contarla.
+   *
+   * Sin esto la posicion se puede sumar al patrimonio pero no se puede rebalancear: para colocar la
+   * orden que cierra el par hacen falta los token ids de los dos lados. Y el mercado donde tienes la
+   * posicion puede no estar entre los candidatos del escaner —de hecho, si te llenaron y te apartaste
+   * de el, lo normal es que NO este—, asi que no vale con buscarlo alli.
+   *
+   * La API los da: `asset` es el lado que tienes y `oppositeAsset` el contrario.
+   */
+  conditionId: string;
+  negRisk: boolean;
+  tokenIds: Record<"UP" | "DOWN", string>;
 }
 
 /**
@@ -43,6 +56,10 @@ interface FilaPosicion {
   avgPrice?: unknown;
   redeemable?: unknown;
   endDate?: unknown;
+  asset?: unknown;
+  oppositeAsset?: unknown;
+  conditionId?: unknown;
+  negativeRisk?: unknown;
 }
 
 /**
@@ -100,14 +117,36 @@ export function posicionesAbiertas(datos: unknown, limitePedido = LIMITE_POSICIO
     const avgPrice = Number(fila.avgPrice);
     const finMs = finDeMercadoMs(fila.endDate);
     const lado = fila.outcomeIndex === 0 ? "UP" : fila.outcomeIndex === 1 ? "DOWN" : undefined;
+    const propio = typeof fila.asset === "string" ? fila.asset : undefined;
+    const contrario = typeof fila.oppositeAsset === "string" ? fila.oppositeAsset : undefined;
+    const conditionId = typeof fila.conditionId === "string" ? fila.conditionId : undefined;
     // Sin fecha de fin no se sabe cuando olvidarla, y una posicion que nunca se olvida deja al maker
     // mudo para siempre. Se descarta, que es el lado seguro.
-    if (!slug || !lado || !Number.isFinite(size) || size <= 0 || !Number.isFinite(avgPrice) || !Number.isFinite(finMs)) {
+    if (
+      !slug ||
+      !lado ||
+      !propio ||
+      !contrario ||
+      !conditionId ||
+      !Number.isFinite(size) ||
+      size <= 0 ||
+      !Number.isFinite(avgPrice) ||
+      !Number.isFinite(finMs)
+    ) {
       continue;
     }
     let entrada = porSlug.get(slug);
     if (!entrada) {
-      entrada = { slug, finMs, gastadoUsd: 0, inventario: { UP: 0, DOWN: 0 } };
+      entrada = {
+        slug,
+        finMs,
+        gastadoUsd: 0,
+        inventario: { UP: 0, DOWN: 0 },
+        conditionId,
+        negRisk: fila.negativeRisk === true,
+        // `asset` es el lado de ESTA fila y `oppositeAsset` el otro. Con una fila basta para los dos.
+        tokenIds: lado === "UP" ? { UP: propio, DOWN: contrario } : { UP: contrario, DOWN: propio },
+      };
       porSlug.set(slug, entrada);
     }
     entrada.inventario[lado] += size;

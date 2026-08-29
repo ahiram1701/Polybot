@@ -997,11 +997,10 @@ export class BotRunner {
           // No se hace a ciegas: si el saldo no se puede LEER no se compra nada, porque entonces no se
           // sabe si hay con que pagarlo.
           if (!aCiegas) {
-            // La lista fresca si la hay; si no, la ultima conocida. Sin esto, un rebalanceo que falla
-            // al primer intento —libro ilegible, precio por encima del tope— no se reintentaria jamas,
-            // porque las pasadas siguientes ya no escanean. Y usar la ultima conocida no cuesta red.
-            const paraRebalancear = mercadosParaRetirar.length > 0 ? mercadosParaRetirar : this.mercadosMaker;
-            const rebalanceo = await loop.rebalancearParaCerrarPares(paraRebalancear, nowMs);
+            // Sin lista: el bucle recorre sus propias posiciones. Pasarle la del escaner fue un error
+            // —llegaba vacia a los 3 segundos del arranque, y el mercado donde te llenaron casi nunca
+            // esta entre los candidatos— y ademas no hacia falta.
+            const rebalanceo = await loop.rebalancearParaCerrarPares(nowMs);
             if (rebalanceo.cerrados > 0) {
               logger.info("Maker: pares cerrados antes de detenerse.", {
                 mercados: rebalanceo.cerrados,

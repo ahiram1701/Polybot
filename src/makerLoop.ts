@@ -289,6 +289,9 @@ export class MakerLoop {
   /** Mercados apartados por rechazar una orden al cruzar el libro: slug -> hasta cuando. */
   private readonly enfriados = new Map<string, number>();
 
+  /** Mercados reconstruidos desde las posiciones sembradas, para poder rebalancearlas. */
+  private readonly mercadosDePosiciones = new Map<string, MercadoMaker>();
+
   constructor(
     private readonly deps: MakerLoopDeps,
     private readonly config: MakerLoopConfig,
@@ -1292,6 +1295,16 @@ export class MakerLoop {
         gastadoUsd: posicion.gastadoUsd,
         inventario: { ...posicion.inventario },
       });
+      // El mercado reconstruido, para poder ACTUAR y no solo contar. `tickSize` vacio a proposito: la
+      // API de posiciones no lo da y el motor lo resuelve al firmar, que es quien tiene el cliente.
+      this.mercadosDePosiciones.set(posicion.slug, {
+        slug: posicion.slug,
+        conditionId: posicion.conditionId,
+        endMs: posicion.finMs,
+        tickSize: "",
+        negRisk: posicion.negRisk,
+        outcomes: { UP: { tokenId: posicion.tokenIds.UP }, DOWN: { tokenId: posicion.tokenIds.DOWN } },
+      });
       sembradas += 1;
     }
     return sembradas;
@@ -1324,16 +1337,25 @@ export class MakerLoop {
    * posicion abierta — pero solo hasta el tope: por encima de `TOPE_USD_POR_PAR` se estaria destruyendo
    * dinero para comprar tranquilidad, asi que ahi se avisa y no se compra.
    */
-  async rebalancearParaCerrarPares(
-    mercados: readonly MercadoMaker[],
-    nowMs: number,
-  ): Promise<{ cerrados: number; gastadoUsd: number }> {
+  async rebalancearParaCerrarPares(nowMs: number): Promise<{ cerrados: number; gastadoUsd: number }> {
     let cerrados = 0;
     let gastadoUsd = 0;
-    for (const market of mercados) {
-      const estado = this.estados.get(market.slug) ?? this.gastoSinResolver.get(market.slug);
-      if (!estado) {
+    // Se recorren LAS POSICIONES, no la lista del escaner.
+    //
+    // Conducirlo desde el escaner tenia tres agujeros y los tres se vieron en produccion el
+    // 2026-08-29: el suelo salta a los 3 segundos del arranque y el escaner tarda 56, asi que la lista
+    // llegaba vacia; una vez detenido ya no se volvia a pedir, asi que seguia vacia para siempre; y el
+    // mercado donde te llenaron normalmente ya NO esta entre los candidatos, precisamente porque te
+    // apartaste de el. Lo que hay que rebalancear es la posicion, asi que manda la posicion.
+    const slugs = new Set([...this.estados.keys(), ...this.gastoSinResolver.keys()]);
+    for (const slug of slugs) {
+      const estado = this.estados.get(slug) ?? this.gastoSinResolver.get(slug);
+      const market = this.cotizados.get(slug) ?? this.mercadosDePosiciones.get(slug);
+      if (!estado || !market) {
         continue;
+      }
+      if (market.endMs <= nowMs) {
+        continue; // ya acabo: no hay par que cerrar, el dinero vuelve al redimir
       }
       const { UP, DOWN } = estado.inventario;
       const falta = UP > DOWN ? "DOWN" : "UP";
@@ -1415,7 +1437,6 @@ export class MakerLoop {
         });
       }
     }
-    void nowMs;
     return { cerrados, gastadoUsd: Number(gastadoUsd.toFixed(4)) };
   }
 

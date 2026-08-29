@@ -11,6 +11,13 @@ function fila(over: Record<string, unknown> = {}) {
     avgPrice: 0.17,
     redeemable: false,
     endDate: "2026-08-29T23:59:00Z",
+    // Sin estos no se puede COLOCAR la orden que cierra el par, solo contarla. Por eso una fila que no
+    // los traiga se descarta: contar una posicion sobre la que no se puede actuar es peor que no
+    // verla, porque el suelo la sumaria al patrimonio y luego no habria como rebalancearla.
+    asset: "token-propio",
+    oppositeAsset: "token-contrario",
+    conditionId: "0xcondicion",
+    negativeRisk: false,
     ...over,
   };
 }
@@ -71,6 +78,24 @@ describe("posicionesAbiertas", () => {
     // Sin `finMs` la posicion no se olvidaria nunca y dejaria al maker mudo para siempre.
     expect(posicionesAbiertas([fila({ endDate: undefined })])).toEqual([]);
     expect(posicionesAbiertas([fila({ endDate: "no es una fecha" })])).toEqual([]);
+  });
+
+  it("saca los token ids de los DOS lados de una sola fila", () => {
+    // `asset` es el lado de la fila y `oppositeAsset` el contrario, asi que con una basta. Sin esto la
+    // posicion se puede contar pero no rebalancear, que fue el agujero del 2026-08-29.
+    const salida = posicionesAbiertas([
+      fila({ outcomeIndex: 1, asset: "el-down", oppositeAsset: "el-up" }),
+    ]);
+
+    expect(salida?.[0].tokenIds).toEqual({ UP: "el-up", DOWN: "el-down" });
+    expect(salida?.[0].conditionId).toBe("0xcondicion");
+  });
+
+  it("descarta una fila sin los datos para poder actuar", () => {
+    // Contarla sin poder actuar sobre ella es peor que no verla: el suelo la sumaria al patrimonio y
+    // luego no habria forma de cerrar el par.
+    expect(posicionesAbiertas([fila({ oppositeAsset: undefined })])).toEqual([]);
+    expect(posicionesAbiertas([fila({ conditionId: undefined })])).toEqual([]);
   });
 
   it("dice NO SE ante una respuesta que no es una lista", () => {
