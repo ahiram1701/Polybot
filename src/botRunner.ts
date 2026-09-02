@@ -9,7 +9,7 @@ import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
-import { evaluateRiskCircuitBreaker, type RiskHaltStatus } from "./riskCircuitBreaker.js";
+import { evaluateDirectionalRiskHalt, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
   LiveOrderError,
@@ -646,24 +646,21 @@ export class BotRunner {
     const directionalMode = this.modeFor("dir");
     const dailySpendUsd = this.deps.state.getDailySpend(nowMs, undefined, directionalMode);
     let reservedSpendUsd = 0;
-    // Cortacircuitos SOLO del direccional, con el modo del direccional y sus propias operaciones.
-    //
-    // Las dos exclusiones son deliberadas. El arbitraje queda fuera porque un par completo redime $1/set
-    // gane quien gane: pararlo por una racha ajena seria dejar de recoger dinero sin riesgo. Y el modo es
-    // el suyo, no el global, porque si no una racha de perdidas en papel podria frenar dinero real —o al
-    // reves, y eso es peor: unas ganancias simuladas tapando perdidas reales.
-    const riskHalt = evaluateRiskCircuitBreaker(
-      this.deps.state.listTrades().filter((trade) => trade.kind !== "arb"),
+    // Cortacircuitos SOLO del direccional. La politica (fuera el arbitraje, su modo y no el global)
+    // vive en `evaluateDirectionalRiskHalt`, compartida con la UI: cuando cada uno la escribia por su
+    // cuenta, el chip y el bucle llegaron a decir cosas distintas.
+    const riskHalt = evaluateDirectionalRiskHalt({
+      trades: this.deps.state.listTrades(),
       directionalMode,
-      {
+      limits: {
         maxDailyLossUsd: this.config.maxDailyLossUsd,
         maxConsecutiveLosses: this.config.maxConsecutiveLosses,
         cooldownHours: this.config.riskHaltCooldownHours,
         timeZone: this.config.timezone,
       },
       nowMs,
-      this.deps.state.getRiskHaltResetAtMs?.()?.[directionalMode] ?? 0,
-    );
+      haltResetAtMsByMode: this.deps.state.getRiskHaltResetAtMs?.(),
+    });
     if (riskHalt.tripped) {
       this.notifyRiskHalt(riskHalt, nowMs);
     }

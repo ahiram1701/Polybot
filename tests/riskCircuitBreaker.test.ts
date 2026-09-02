@@ -181,3 +181,92 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(fullReset.tripped).toBe(false);
   });
 });
+
+/**
+ * El cortacircuitos del direccional, compartido por el bucle y por la UI.
+ *
+ * Existe porque los dos lo calculaban por separado y se desincronizaron: el bucle excluia los trades
+ * de arbitraje y usaba el modo del direccional, mientras `buildSnapshot` pasaba TODOS los trades y el
+ * modo GLOBAL. Con arbitraje en live y direccional en sim —el reparto que recomienda el manual— el
+ * chip podia anunciar un halt que el bucle no estaba aplicando.
+ */
+describe("evaluateDirectionalRiskHalt", () => {
+  it("no cuenta los trades de arbitraje", async () => {
+    const { evaluateDirectionalRiskHalt } = await import("../src/riskCircuitBreaker.js");
+    const arbPerdedor = { ...trade({ id: "a1", mode: "live", won: false, amountUsd: 50 }), kind: "arb" as const };
+
+    const halt = evaluateDirectionalRiskHalt({
+      trades: [arbPerdedor],
+      directionalMode: "live",
+      limits: { maxDailyLossUsd: 1 },
+      nowMs: NOW,
+    });
+
+    // Un par completo redime $1/set gane quien gane: pararlo por una racha ajena seria dejar de
+    // recoger dinero sin riesgo.
+    expect(halt.tripped).toBe(false);
+  });
+
+  it("usa el modo del direccional, no el global", async () => {
+    const { evaluateDirectionalRiskHalt } = await import("../src/riskCircuitBreaker.js");
+    const perdidaEnPapel = trade({ id: "s1", mode: "sim", won: false, amountUsd: 50 });
+
+    // Direccional en live: una racha en PAPEL no puede frenar el dinero real.
+    expect(
+      evaluateDirectionalRiskHalt({
+        trades: [perdidaEnPapel],
+        directionalMode: "live",
+        limits: { maxDailyLossUsd: 1 },
+        nowMs: NOW,
+      }).tripped,
+    ).toBe(false);
+
+    // Y con el direccional en sim, esa misma perdida si cuenta: es la suya.
+    expect(
+      evaluateDirectionalRiskHalt({
+        trades: [perdidaEnPapel],
+        directionalMode: "sim",
+        limits: { maxDailyLossUsd: 1 },
+        nowMs: NOW,
+      }).tripped,
+    ).toBe(true);
+  });
+
+  it("si dispara con las perdidas del direccional", async () => {
+    const { evaluateDirectionalRiskHalt } = await import("../src/riskCircuitBreaker.js");
+    // En `sim` a proposito: un trade `live` sin posicion resoluble tiene stake 0 por diseno
+    // (`getStakeUsd`, para no contar ordenes FAK sin llenado), y entonces no habria perdida que medir.
+    const halt = evaluateDirectionalRiskHalt({
+      trades: [trade({ id: "d1", mode: "sim", won: false, amountUsd: 50 })],
+      directionalMode: "sim",
+      limits: { maxDailyLossUsd: 1 },
+      nowMs: NOW,
+    });
+    expect(halt.tripped).toBe(true);
+    expect(halt.reason).toBe("daily_loss_limit");
+  });
+
+  it("lee el marcador de re-armado del modo que toca", async () => {
+    const { evaluateDirectionalRiskHalt } = await import("../src/riskCircuitBreaker.js");
+    // Un reset del OTRO modo no puede desarmar este freno: los marcadores van por modo.
+    const halt = evaluateDirectionalRiskHalt({
+      trades: [trade({ id: "d1", mode: "sim", won: false, amountUsd: 50 })],
+      directionalMode: "sim",
+      limits: { maxDailyLossUsd: 1 },
+      nowMs: NOW,
+      haltResetAtMsByMode: { live: NOW + 1 },
+    });
+    expect(halt.tripped).toBe(true);
+
+    // Y el marcador de SU modo si lo desarma.
+    expect(
+      evaluateDirectionalRiskHalt({
+        trades: [trade({ id: "d1", mode: "sim", won: false, amountUsd: 50 })],
+        directionalMode: "sim",
+        limits: { maxDailyLossUsd: 1 },
+        nowMs: NOW,
+        haltResetAtMsByMode: { sim: NOW + 1 },
+      }).tripped,
+    ).toBe(false);
+  });
+});

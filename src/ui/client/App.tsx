@@ -72,12 +72,28 @@ import type {
   FiscalSummaryResponse,
   MarketStatusSnapshot,
   StartBotRequest,
+  StrategyModeKey,
+  SupervisorKind,
   TelegramNotificationPatch,
   TelegramNotificationSettings,
   UiSettings,
   UiStatus,
 } from "../shared.js";
-import { humanSkipReason } from "../shared.js";
+import {
+  humanSkipReason,
+  LIVE_PHRASE,
+  MODE_KEYS,
+  modosQueEntranEnLive,
+  SUPERVISOR_LABELS,
+  watchdogToggleAplica,
+} from "../shared.js";
+
+/** Nombre de cada estrategia en los avisos de live. Se recorre con `MODE_KEYS`, nunca a mano. */
+const ETIQUETA_MODO: Record<StrategyModeKey, string> = {
+  arbMode: "Arbitraje",
+  directionalMode: "Direccional",
+  makerMode: "Maker",
+};
 
 type Tab = "dashboard" | "trades" | "fiscal" | "analysis" | "settings" | "telegram" | "logs";
 type Theme = "light" | "dark";
@@ -649,6 +665,7 @@ export function App() {
           <SettingsPanel
             settings={settings}
             running={Boolean(status?.running)}
+            supervisor={status?.supervisor}
             busy={busy}
             onSave={saveSettings}
             onOpenReset={() => setResetModal(true)}
@@ -1718,9 +1735,20 @@ export function TradesTable({
   );
 }
 
-export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: {
+export function SettingsPanel({
+  settings,
+  running,
+  // Mismo repliegue que `resolveSupervisor`: sin dato, se asume el despliegue historico. Ausencia de
+  // informacion no puede convertirse en "no hay supervisor", que apagaria un ajuste que si funciona.
+  supervisor = "windows-watchdog",
+  busy,
+  onSave,
+  onOpenReset,
+}: {
   settings: UiSettings;
   running: boolean;
+  /** Quien relanza el proceso. Decide si el toggle del watchdog hace algo o es decorativo. */
+  supervisor?: SupervisorKind;
   busy: boolean;
   onSave: (settings: UiSettings) => Promise<void>;
   onOpenReset?: () => void;
@@ -1730,6 +1758,26 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
   const selectedMarketOption = marketOptions.find((market) => market.symbol === selectedMarket) ?? marketOptions[0];
   const activeLabels = enabledOutcomeLabels(draft.enabledMarketOutcomes);
   useEffect(() => setDraft(settings), [settings]);
+
+  /**
+   * Estrategias que este borrador ENCIENDE en live, y la frase tecleada para confirmarlo.
+   *
+   * La TUI ya exigia teclear la frase; la web cambiaba de modo con un `<select>` y un boton de
+   * guardar. La misma palanca, con dinero real detras, pedia dos gestos en una interfaz y ninguno en
+   * la otra. Aqui se pide en el GUARDADO y no en el `<select>`: en la web el cambio no se aplica hasta
+   * guardar, asi que preguntar antes seria preguntar por algo que todavia puede deshacerse.
+   */
+  const entrantesEnLive = modosQueEntranEnLive(settings, draft);
+  const [fraseLive, setFraseLive] = useState("");
+  const [pidiendoFrase, setPidiendoFrase] = useState(false);
+  // Si el borrador deja de encender live (lo revirtio, o llegaron ajustes nuevos del servidor), la
+  // confirmacion pendiente ya no tiene objeto y desaparece con lo tecleado.
+  useEffect(() => {
+    if (entrantesEnLive.length === 0) {
+      setPidiendoFrase(false);
+      setFraseLive("");
+    }
+  }, [entrantesEnLive.length]);
 
   const commonAskCap = commonOutcomeValue(draft.maxAskPriceByMarketOutcome);
   const commonAskFloor = commonOutcomeValue(draft.minAskPriceByMarketOutcome);
@@ -1895,7 +1943,22 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    // Nada que encienda live: se guarda como siempre. Solo se pone friccion al lado que cuesta dinero;
+    // APAGAR live sigue siendo un gesto simple, a proposito.
+    if (entrantesEnLive.length === 0) {
+      await onSave(draft);
+      return;
+    }
+    if (!pidiendoFrase) {
+      setPidiendoFrase(true);
+      return;
+    }
+    if (fraseLive !== LIVE_PHRASE) {
+      return;
+    }
     await onSave(draft);
+    setPidiendoFrase(false);
+    setFraseLive("");
   }
 
   return (
@@ -2370,12 +2433,18 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
             </select>
           </label>
         </div>
-        {(draft.arbMode === "live" || draft.directionalMode === "live") && (
+        {MODE_KEYS.some((clave) => draft[clave] === "live") && (
           <p className="settings-hint settings-hint-warn">
-            <strong>Ojo:</strong> el ajuste basta por sí solo, no hay confirmación al arrancar. Eso
-            significa que cualquier reinicio —incluido el automático del watchdog— reanuda esa
-            estrategia con dinero real sin que nadie lo apruebe. Sigue haciendo falta la clave privada
-            configurada en <code>.env</code>.
+            <strong>Ojo:</strong> una vez guardado, el ajuste basta por sí solo y no hay confirmación al
+            arrancar. Eso significa que <strong>cualquier reinicio —incluido el automático del
+            supervisor— reanuda esa estrategia con dinero real</strong> sin que nadie lo apruebe. Sigue
+            haciendo falta la clave privada configurada en <code>.env</code>. En live:{" "}
+            <strong>
+              {MODE_KEYS.filter((clave) => draft[clave] === "live")
+                .map((clave) => ETIQUETA_MODO[clave])
+                .join(", ")}
+            </strong>
+            .
           </p>
         )}
       </section>
@@ -2484,23 +2553,38 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
           <span>Reanudar sim al reiniciar el proceso</span>
         </label>
         <p className="settings-hint">
-          Si el proceso se reinicia solo (el watchdog, una actualizacion, un reinicio de Windows), vuelve a arrancar en
-          <strong> simulacion</strong> en vez de quedarse detenido. Nunca arranca en live: ese modo lo activas tu.
+          Si el proceso se reinicia solo (el supervisor, una actualizacion, un reinicio de la maquina),
+          vuelve a arrancar en <strong>simulacion</strong> en vez de quedarse detenido. Nunca arranca en
+          live: ese modo lo activas tu. Supervisor actual: <strong>{SUPERVISOR_LABELS[supervisor]}</strong>.
         </p>
         <label className="switch-row">
           <input
             type="checkbox"
             checked={draft.watchdogEnabled}
             onChange={(event) => update("watchdogEnabled", event.target.checked)}
-            disabled={running}
+            disabled={running || !watchdogToggleAplica(supervisor)}
           />
           <span>Watchdog (auto-reinicio de la UI)</span>
         </label>
-        <p className="settings-hint">
-          Cada 5 minutos comprueba que la UI responda y la relanza si no. Al desmarcarlo la tarea sigue registrada pero
-          no hace nada; el cambio tarda hasta 5 minutos en notarse. Solo aplica si instalaste la tarea de Windows
-          (<code>scripts\install-watchdog.ps1</code>).
-        </p>
+        {watchdogToggleAplica(supervisor) ? (
+          <p className="settings-hint">
+            Cada 5 minutos comprueba que la UI responda y la relanza si no. Al desmarcarlo la tarea sigue registrada pero
+            no hace nada; el cambio tarda hasta 5 minutos en notarse. Solo aplica si instalaste la tarea de Windows
+            (<code>scripts\install-watchdog.ps1</code>).
+          </p>
+        ) : (
+          <p className="settings-hint settings-hint-warn">
+            <strong>No aplica con este supervisor.</strong> Esta casilla no la lee el bot: la lee{" "}
+            <code>scripts\watchdog.ps1</code> desde <code>data/ui-config.json</code>, y ese script solo corre
+            con la tarea programada de Windows. Aqui supervisa{" "}
+            <strong>{SUPERVISOR_LABELS[supervisor]}</strong>, asi que se deja visible pero desactivada:
+            una casilla marcable que no hace nada es peor que no tenerla.
+            {supervisor === "compose" && (
+              <> Con Compose el reinicio por proceso muerto es automatico; lo que <em>no</em> cubre es un bot
+              vivo pero ciego — ver <code>docs/docker.md</code>.</>
+            )}
+          </p>
+        )}
         <label className="switch-row">
           <input
             type="checkbox"
@@ -2589,9 +2673,54 @@ export function SettingsPanel({ settings, running, busy, onSave, onOpenReset }: 
         </p>
       </section>
 
+      {entrantesEnLive.length > 0 && (
+        <section className="settings-advanced settings-live-confirm">
+          <div className="section-heading">
+            <AlertTriangle size={18} />
+            <h2>Vas a encender DINERO REAL</h2>
+          </div>
+          <p className="settings-hint settings-hint-warn">
+            Este guardado pone en <strong>live</strong>:{" "}
+            <strong>{entrantesEnLive.map((clave) => ETIQUETA_MODO[clave]).join(", ")}</strong>. A partir
+            de ahi el ajuste basta por si solo: <strong>cualquier reinicio reanuda esa estrategia con
+            dinero real</strong> sin volver a preguntar, porque el supervisor tiene que poder relanzar
+            sin nadie delante. Sigue haciendo falta la clave privada en <code>.env</code>.
+          </p>
+          {pidiendoFrase ? (
+            <label className="field">
+              <span>Escribe «{LIVE_PHRASE}» para confirmar</span>
+              <input
+                type="text"
+                value={fraseLive}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={LIVE_PHRASE}
+                aria-label={`Escribe ${LIVE_PHRASE} para confirmar`}
+                onChange={(event) => setFraseLive(event.target.value)}
+                disabled={running || busy}
+              />
+            </label>
+          ) : (
+            <p className="settings-hint">
+              Al pulsar «Guardar» se te pedira teclear la frase. Cambiar el modo a{" "}
+              <code>sim</code> o <code>heredado</code> cancela esto sin escribir nada.
+            </p>
+          )}
+        </section>
+      )}
+
       <div className="form-actions settings-save-actions">
-        <button className="command primary" disabled={running || busy} type="submit">
-          <Save size={18} /> Guardar
+        <button
+          className="command primary"
+          disabled={running || busy || (pidiendoFrase && fraseLive !== LIVE_PHRASE)}
+          type="submit"
+        >
+          <Save size={18} />{" "}
+          {entrantesEnLive.length === 0
+            ? "Guardar"
+            : pidiendoFrase
+              ? "Guardar y encender LIVE"
+              : "Guardar (pedira confirmacion)"}
         </button>
       </div>
 

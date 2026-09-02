@@ -11,6 +11,7 @@ import { createPolybotMcpServer } from "../mcp/server.js";
 import { ControllerError, type BotController } from "./controller.js";
 import { patchSettingsSchema } from "./settings.js";
 import type { StartBotRequest, UiEvent, UiSettings } from "./shared.js";
+import { mensajeDeReinicio } from "./shared.js";
 
 const ANALYSIS_IMPORT_LIMIT = "512mb";
 
@@ -224,18 +225,22 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
   }));
 
   /**
-   * Termina el proceso para que el watchdog lo levante con el codigo nuevo.
+   * Termina el proceso para que el SUPERVISOR lo levante con el codigo nuevo.
    *
-   * Existe porque el watchdog corre como tarea S4U, o sea en la SESION 0, y sus procesos hijo tambien.
-   * Un terminal normal vive en la sesion 1 y Windows no le deja matar procesos de la 0: sin esto, la
-   * unica forma de desplegar un cambio era abrir PowerShell como administrador. El proceso ya esta
-   * supervisado, asi que pedirle que salga es la forma limpia de reiniciarlo.
+   * Nacio para el watchdog de Windows, que corre como tarea S4U —o sea en la SESION 0, igual que sus
+   * procesos hijo—. Un terminal normal vive en la sesion 1 y Windows no le deja matar procesos de la 0:
+   * sin esto, la unica forma de desplegar un cambio era abrir PowerShell como administrador.
+   *
+   * Bajo Docker el supervisor es `restart: unless-stopped` y el mismo gesto vale, solo que tarda
+   * segundos en vez de minutos. Por eso el mensaje NO dice "el watchdog": nombra al supervisor real y
+   * su plazo real. Un mensaje que promete un relanzamiento que no va a ocurrir —porque no hay
+   * supervisor ninguno— es peor que no responder nada.
    *
    * Primero detiene el bot: asi no se corta una iteracion a media escritura del estado.
    */
   app.post("/api/system/restart", asyncHandler(async (_req, res) => {
     await controller.stop();
-    res.json({ ok: true, mensaje: "Saliendo; el watchdog relanzara en <=5 min con el codigo actual." });
+    res.json({ ok: true, mensaje: mensajeDeReinicio(controller.getSupervisor()) });
     // Se responde ANTES de salir: si no, quien llama ve una conexion cortada y no sabe si funciono.
     setTimeout(() => process.exit(0), 250).unref?.();
   }));

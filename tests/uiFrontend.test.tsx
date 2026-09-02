@@ -923,6 +923,7 @@ function status(args: { liveReady: boolean }): UiStatus {
   return {
     running: false,
   effectiveModes: { arb: "sim", directional: "sim", maker: "sim" },
+  supervisor: "windows-watchdog",
     settings: settings(),
     config: {
       ...settings(),
@@ -1186,5 +1187,133 @@ describe("validationProgressByKind", () => {
     const r = validationProgressByKind(trades);
     expect(r.arb.netUsd).toBeGreaterThan(0);
     expect(r.dir.netUsd).toBeLessThan(0);
+  });
+});
+
+/**
+ * Encender dinero real cuesta lo mismo en las dos interfaces.
+ *
+ * La TUI ya exigia teclear «ARRANCAR LIVE» al cambiar un modo (src/tui/runtime.ts). La web lo hacia
+ * con un `<select>` y un boton de guardar: la misma palanca, con dinero real detras, pedia dos gestos
+ * en una interfaz y ninguno en la otra.
+ */
+describe("SettingsPanel: pasar una estrategia a live", () => {
+  function ponerModoEnLive(etiqueta: string) {
+    fireEvent.change(screen.getByLabelText(etiqueta), { target: { value: "live" } });
+  }
+
+  it("no guarda al primer clic: pide la frase", async () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    ponerModoEnLive("Arbitraje");
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Escribe ARRANCAR LIVE para confirmar/i)).toBeInTheDocument();
+  });
+
+  it("una frase equivocada no guarda", async () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    ponerModoEnLive("Arbitraje");
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+    fireEvent.change(screen.getByLabelText(/Escribe ARRANCAR LIVE para confirmar/i), {
+      target: { value: "arrancar live" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("con la frase exacta, guarda", async () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    ponerModoEnLive("Arbitraje");
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+    fireEvent.change(screen.getByLabelText(/Escribe ARRANCAR LIVE para confirmar/i), {
+      target: { value: "ARRANCAR LIVE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].arbMode).toBe("live");
+  });
+
+  it("el maker tambien pasa por la frase", async () => {
+    // Es la estrategia que deja ordenes VIVAS en el libro, y la que llevaba mas tiempo sin puerta.
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    ponerModoEnLive("Modo");
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Escribe ARRANCAR LIVE para confirmar/i)).toBeInTheDocument();
+  });
+
+  it("APAGAR live no pide nada: la friccion es solo del lado que cuesta dinero", async () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsPanel
+        settings={{ ...settings(), arbMode: "live" }}
+        running={false}
+        busy={false}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Arbitraje"), { target: { value: "sim" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+  });
+
+  it("revertir el borrador retira la peticion de frase", async () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    ponerModoEnLive("Arbitraje");
+    fireEvent.click(screen.getByRole("button", { name: /guardar/i }));
+    expect(screen.getByLabelText(/Escribe ARRANCAR LIVE para confirmar/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Arbitraje"), { target: { value: "sim" } });
+    expect(screen.queryByLabelText(/Escribe ARRANCAR LIVE para confirmar/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * El toggle del watchdog no lo lee el bot: lo lee `scripts/watchdog.ps1` desde data/ui-config.json.
+ * Bajo Docker ese script no corre, asi que la casilla quedaba marcable y sin efecto — un valor creible
+ * pero falso, que es la trampa que este proyecto ya pago varias veces.
+ */
+describe("SettingsPanel: el toggle del watchdog dice si aplica", () => {
+  const casilla = () => screen.getByRole("checkbox", { name: /Watchdog \(auto-reinicio de la UI\)/i });
+
+  it("con el watchdog de Windows, se puede tocar", () => {
+    render(
+      <SettingsPanel
+        settings={settings()}
+        running={false}
+        supervisor="windows-watchdog"
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(casilla()).toBeEnabled();
+    expect(screen.getByText(/Watchdog de Windows/i)).toBeInTheDocument();
+  });
+
+  it("bajo compose, sale deshabilitada y explica por que", () => {
+    render(
+      <SettingsPanel settings={settings()} running={false} supervisor="compose" busy={false} onSave={vi.fn()} />,
+    );
+    expect(casilla()).toBeDisabled();
+    expect(screen.getByText(/No aplica con este supervisor/i)).toBeInTheDocument();
+    // Visible, no escondida: quien la busque tiene que encontrar la explicacion.
+    expect(casilla()).toBeInTheDocument();
+    expect(screen.getAllByText(/Docker Compose/i).length).toBeGreaterThan(0);
   });
 });

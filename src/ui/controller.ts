@@ -93,13 +93,15 @@ import type {
   WindowOpening,
 } from "../types.js";
 import { BotRunner } from "../botRunner.js";
-import { evaluateRiskCircuitBreaker } from "../riskCircuitBreaker.js";
+import { evaluateDirectionalRiskHalt } from "../riskCircuitBreaker.js";
 import type {
   AnalysisImportResponse,
+  EffectiveModes,
   FiscalFxPatch,
   FiscalSummaryResponse,
   MarketStatusSnapshot,
   SanitizedConfig,
+  SupervisorKind,
   TelegramNotificationPatch,
   TelegramNotificationSettings,
   TelegramNotificationTestResponse,
@@ -107,6 +109,7 @@ import type {
   UiSettings,
   UiStatus,
 } from "./shared.js";
+import { MODE_KEYS, resolveSupervisor } from "./shared.js";
 import { applySettings, UiSettingsStore } from "./settings.js";
 
 const DEFAULT_OLLAMA_HOST = "https://ollama.com";
@@ -238,6 +241,11 @@ export class BotController {
   private readonly snapshotProvider?: () => Promise<Partial<UiStatus>>;
   private readonly fetchImpl: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
+  /**
+   * Quien relanza el proceso si muere. Se lee UNA vez del entorno: cambiarlo en caliente no tendria
+   * sentido, porque quien supervisa ya arranco el proceso.
+   */
+  private readonly supervisor: SupervisorKind;
   private readonly unsubscribeLogger: () => boolean;
   private stateSummaryCache?: CachedUiStateSummary;
   private aiAutoApplyTimer?: ReturnType<typeof setInterval>;
@@ -260,6 +268,7 @@ export class BotController {
     deps: BotControllerDeps = {},
   ) {
     this.env = deps.env ?? process.env;
+    this.supervisor = resolveSupervisor(this.env.POLYBOT_SUPERVISOR);
     this.settingsStore = deps.settingsStore ?? new UiSettingsStore(baseConfig.dataDir);
     this.stateFactory = deps.stateFactory ?? (() => new StateStore(baseConfig.dataDir, baseConfig.timezone));
     this.watcher = deps.watcher ?? new MarketWatcher(baseConfig.gammaHost);
@@ -335,18 +344,18 @@ export class BotController {
           dayKeyInTimeZone(trade.resolved.resolvedAtMs, settings.timezone) === todayKey,
       );
       const progress = validationProgress(postReset);
-      const riskHalt = evaluateRiskCircuitBreaker(
-        stateSummary.tradesSorted,
-        this.mode ?? this.baseConfig.mode,
-        {
+      const riskHalt = evaluateDirectionalRiskHalt({
+        trades: stateSummary.tradesSorted,
+        directionalMode: this.effectiveDirectionalMode(settings, config),
+        limits: {
           maxDailyLossUsd: config.maxDailyLossUsd,
           maxConsecutiveLosses: config.maxConsecutiveLosses,
           cooldownHours: config.riskHaltCooldownHours,
           timeZone: config.timezone,
         },
         nowMs,
-        stateSummary.state.getRiskHaltResetAtMs()[this.mode ?? this.baseConfig.mode] ?? 0,
-      );
+        haltResetAtMsByMode: stateSummary.state.getRiskHaltResetAtMs(),
+      });
       const capTuner = SUPPORTED_MARKETS.map((market) => {
         const bands = summarizeAskBands(stateSummary.tradesSorted, reportMode, {}, { market });
         const current = settings.maxAskPriceByMarketOutcome[market].UP;
@@ -487,11 +496,15 @@ export class BotController {
     const config = this.buildRuntimeConfig(mode, confirmLive, settings);
     if (mode === "live") {
       this.assertLiveAllowed(confirmLive);
-    } else if (config.arbMode === "live" || config.directionalMode === "live") {
+    } else if (MODE_KEYS.some((key) => config[key] === "live")) {
       // Una estrategia en live dentro de un arranque en sim. Por decision explicita del usuario el
-      // ajuste basta y NO se pide confirmacion aqui: asi el watchdog puede reiniciar solo. Lo que no se
-      // salta es la comprobacion de credenciales — sin ellas cada oportunidad fallaria al ejecutar, que
-      // es la peor forma de enterarse.
+      // ajuste basta y NO se pide confirmacion aqui: asi el supervisor puede reiniciar solo. Lo que no
+      // se salta es la comprobacion de credenciales — sin ellas cada oportunidad fallaria al ejecutar,
+      // que es la peor forma de enterarse.
+      //
+      // Se recorre `MODE_KEYS` y no una lista escrita a mano porque la escrita a mano se quedo corta:
+      // miraba `arbMode` y `directionalMode` pero no `makerMode`, y el maker es el que deja ordenes
+      // VIVAS en el libro. Un maker en live arrancaba sin que nadie comprobara que habia con que firmar.
       this.assertLiveReady();
     }
 
@@ -1325,14 +1338,8 @@ export class BotController {
     return {
       running: this.runnerPromise !== undefined,
       mode: this.mode,
-      effectiveModes: {
-        // Con el bot parado `this.mode` no existe todavia; el heredado es entonces el de la config.
-        arb: settings.arbMode === "heredado" ? this.mode ?? config.mode : settings.arbMode,
-        directional:
-          settings.directionalMode === "heredado" ? this.mode ?? config.mode : settings.directionalMode,
-        // El maker NO hereda: cae a "sim" por diseno, porque es el unico que deja ordenes vivas.
-        maker: settings.makerMode === "heredado" ? "sim" : settings.makerMode,
-      },
+      effectiveModes: this.effectiveModes(settings, config),
+      supervisor: this.supervisor,
       startedAtMs: this.startedAtMs,
       lastError: this.lastError,
       config: this.sanitizeConfig(config, settings),
@@ -1359,24 +1366,45 @@ export class BotController {
     };
   }
 
+  /**
+   * Modo ya resuelto de cada estrategia: lo que de verdad va a pasar, no lo que dice el ajuste.
+   *
+   * Un solo sitio lo calcula. Cuando cada pantalla lo deducia por su cuenta, el chip de riesgo acabo
+   * evaluando el cortacircuitos con el modo GLOBAL mientras el bucle usaba el del direccional.
+   */
+  private effectiveModes(settings: UiSettings, config: BotConfig): EffectiveModes {
+    // Con el bot parado `this.mode` no existe todavia; el heredado es entonces el de la config.
+    const heredado = this.mode ?? config.mode;
+    return {
+      arb: settings.arbMode === "heredado" ? heredado : settings.arbMode,
+      directional: settings.directionalMode === "heredado" ? heredado : settings.directionalMode,
+      // El maker NO hereda: cae a "sim" por diseno, porque es el unico que deja ordenes vivas.
+      maker: settings.makerMode === "heredado" ? "sim" : settings.makerMode,
+    };
+  }
+
+  private effectiveDirectionalMode(settings: UiSettings, config: BotConfig): Mode {
+    return this.effectiveModes(settings, config).directional;
+  }
+
   private async buildSnapshot(settings: UiSettings, config: BotConfig): Promise<Partial<UiStatus>> {
     const nowMs = Date.now();
     const stateSummary = await this.getStateSummary(nowMs);
     const { state, tradesSorted, dailySpendUsd, pnl, pnlByMode, pnlHistoricalByMode, pnlResetAtMs } = stateSummary;
     const enabledMarkets = getEnabledMarketsFromOutcomes(settings.enabledMarketOutcomes);
     // Reuse the already-fetched trades (respects the state-summary cache; no extra listTrades call).
-    const riskHalt = evaluateRiskCircuitBreaker(
-      tradesSorted,
-      config.mode,
-      {
+    const riskHalt = evaluateDirectionalRiskHalt({
+      trades: tradesSorted,
+      directionalMode: this.effectiveDirectionalMode(settings, config),
+      limits: {
         maxDailyLossUsd: config.maxDailyLossUsd,
         maxConsecutiveLosses: config.maxConsecutiveLosses,
         cooldownHours: config.riskHaltCooldownHours,
         timeZone: config.timezone,
       },
       nowMs,
-      state.getRiskHaltResetAtMs()[config.mode] ?? 0,
-    );
+      haltResetAtMsByMode: state.getRiskHaltResetAtMs(),
+    });
 
     if (enabledMarkets.length === 0) {
       return {
@@ -1738,6 +1766,15 @@ export class BotController {
       hasFunderAddress: Boolean(config.funderAddress),
       hasSignatureType: this.hasConfiguredSignatureType(),
     };
+  }
+
+  /**
+   * Quien relanza este proceso si muere. Lo consulta `/api/system/restart` para decir la verdad sobre
+   * lo que va a pasar despues de salir: con compose son segundos, con el watchdog de Windows hasta
+   * cinco minutos, y sin supervisor no vuelve solo.
+   */
+  getSupervisor(): SupervisorKind {
+    return this.supervisor;
   }
 
   private getLiveReadiness() {

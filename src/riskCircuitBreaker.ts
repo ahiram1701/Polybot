@@ -114,3 +114,39 @@ function evaluateFromBaseline(
 
   return { reason, trippedAtMs, dailyLossUsd: Math.max(0, -netUsd), consecutiveLosses };
 }
+
+/**
+ * El cortacircuitos del DIRECCIONAL, tal y como lo aplica el bucle.
+ *
+ * Existe porque la UI y el runner lo calculaban por separado y decian cosas distintas: el runner
+ * excluia los trades de arbitraje y usaba el modo del direccional (`modeFor("dir")`), mientras
+ * `buildSnapshot` pasaba TODOS los trades y el modo GLOBAL. Con arbitraje en live y direccional en sim
+ * —que es justo el reparto que recomienda el manual— el chip de riesgo podia anunciar un halt que el
+ * bucle no estaba aplicando, o callar uno que si.
+ *
+ * Las dos exclusiones no son un detalle de implementacion, son la politica:
+ *
+ * - **Fuera el arbitraje.** Un par completo redime $1/set gane quien gane; pararlo por una racha ajena
+ *   seria dejar de recoger dinero sin riesgo por un motivo que no le toca.
+ * - **Su modo, no el global.** Si no, una racha de perdidas en PAPEL podria frenar dinero real; y al
+ *   reves es peor todavia: unas ganancias simuladas tapando perdidas reales.
+ *
+ * Quien lo dibuje y quien lo aplique tienen que llamar aqui. Duplicar la condicion es como se produjo
+ * la divergencia.
+ */
+export function evaluateDirectionalRiskHalt(args: {
+  trades: TradeAttempt[];
+  directionalMode: Mode;
+  limits: RiskLimits;
+  nowMs?: number;
+  /** Marcadores de re-armado por modo (`state.getRiskHaltResetAtMs()`). */
+  haltResetAtMsByMode?: Partial<Record<Mode, number>>;
+}): RiskHaltStatus {
+  return evaluateRiskCircuitBreaker(
+    args.trades.filter((trade) => trade.kind !== "arb"),
+    args.directionalMode,
+    args.limits,
+    args.nowMs ?? Date.now(),
+    args.haltResetAtMsByMode?.[args.directionalMode] ?? 0,
+  );
+}

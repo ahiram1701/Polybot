@@ -161,6 +161,14 @@ export interface UiStatus {
   running: boolean;
   mode?: Mode;
   effectiveModes: EffectiveModes;
+  /**
+   * Quien relanza el proceso si muere. Lo declara el entorno; ver `SupervisorKind`.
+   *
+   * Lo publica el estado —y no lo deduce cada pantalla— porque de el depende si el ajuste
+   * `watchdogEnabled` hace algo o es decorativo, y una casilla decorativa que parece un control es
+   * peor que no tenerla.
+   */
+  supervisor: SupervisorKind;
   startedAtMs?: number;
   lastError?: string;
   config: SanitizedConfig;
@@ -363,4 +371,122 @@ export type SkipReason = keyof typeof SKIP_REASON_LABELS;
 
 export function humanSkipReason(reason: string): string {
   return (SKIP_REASON_LABELS as Record<string, string>)[reason] ?? reason;
+}
+
+// ---------------------------------------------------------------------------
+// Modos por estrategia
+// ---------------------------------------------------------------------------
+
+/**
+ * Las estrategias que tienen modo propio.
+ *
+ * Vive aqui, y no en la TUI, porque hay TRES superficies que deciden sobre estos modos —web, TUI y el
+ * controlador— y cuando cada una llevaba su propia lista se desincronizaron: la TUI ya pedia la frase
+ * para los tres, la web no la pedia para ninguno, y `controller.ts` solo vigilaba dos de los tres.
+ * `makerMode` en live se colaba sin comprobar credenciales, y el maker mueve dinero real.
+ */
+export const MODE_KEYS = ["arbMode", "directionalMode", "makerMode"] as const;
+export type StrategyModeKey = (typeof MODE_KEYS)[number];
+
+/** Orden del ciclo en la TUI y de las opciones en la web. `heredado` = el modo del arranque. */
+export const MODE_CYCLE = ["heredado", "sim", "live"] as const;
+export type StrategyMode = (typeof MODE_CYCLE)[number];
+
+export function isStrategyModeKey(id: string): id is StrategyModeKey {
+  return (MODE_KEYS as readonly string[]).includes(id);
+}
+
+/**
+ * La frase que hay que teclear para poner una estrategia en live.
+ *
+ * No contradice la decision de "sin confirmacion al arrancar": aquello era el ARRANQUE —que el
+ * supervisor debe poder repetir sin un humano delante—, esto es el GESTO DE EDICION que enciende el
+ * dinero real por primera vez. Solo se pone friccion al lado que cuesta dinero: salir de live sigue
+ * siendo un gesto simple.
+ */
+export const LIVE_PHRASE = "ARRANCAR LIVE";
+
+/**
+ * Si este cambio ENCIENDE el live de una estrategia.
+ *
+ * Solo la transicion hacia live cuenta. Ya estar en live y tocar otra cosa no vuelve a preguntar, o la
+ * frase se convertiria en un tramite que se teclea sin leer.
+ */
+export function entraEnLive(antes: UiSettings, despues: UiSettings, id: string): boolean {
+  if (!isStrategyModeKey(id)) {
+    return false;
+  }
+  return despues[id] === "live" && antes[id] !== "live";
+}
+
+/** Las estrategias que este cambio pone en live, si es que alguna. */
+export function modosQueEntranEnLive(antes: UiSettings, despues: UiSettings): StrategyModeKey[] {
+  return MODE_KEYS.filter((key) => entraEnLive(antes, despues, key));
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor del proceso
+// ---------------------------------------------------------------------------
+
+/**
+ * Quien relanza el proceso cuando muere. Lo declara el entorno (`POLYBOT_SUPERVISOR`), no se adivina.
+ *
+ * Se publica porque hay ajustes que solo existen para UN supervisor: `watchdogEnabled` lo lee
+ * `scripts/watchdog.ps1` desde `data/ui-config.json`, y bajo Docker ese script no corre. Sin este
+ * dato la casilla seguiria en pantalla, marcable y sin efecto — un valor creible pero falso, que es
+ * la trampa que este proyecto ya pago varias veces.
+ *
+ * Deliberadamente NO se detecta mirando `/.dockerenv` o similares: una deteccion que falla en silencio
+ * produce exactamente la mentira que este campo viene a evitar.
+ */
+export type SupervisorKind = "compose" | "windows-watchdog" | "systemd" | "ninguno";
+
+export const SUPERVISOR_LABELS: Record<SupervisorKind, string> = {
+  compose: "Docker Compose",
+  "windows-watchdog": "Watchdog de Windows",
+  systemd: "systemd",
+  ninguno: "ninguno (arranque manual)",
+};
+
+const SUPERVISORES = new Set<string>(["compose", "windows-watchdog", "systemd", "ninguno"]);
+
+/**
+ * Lee el supervisor declarado.
+ *
+ * Sin variable, o con un valor desconocido, cae a `windows-watchdog`: es el despliegue historico del
+ * proyecto, y ausencia de informacion no puede convertirse en "no hay supervisor" — eso desactivaria
+ * en la UI un ajuste que si funciona. Tampoco lanza: equivocarse de etiqueta no puede impedir que el
+ * bot arranque.
+ */
+export function resolveSupervisor(raw: string | undefined): SupervisorKind {
+  const valor = raw?.trim();
+  if (valor && SUPERVISORES.has(valor)) {
+    return valor as SupervisorKind;
+  }
+  return "windows-watchdog";
+}
+
+/** Si el toggle `watchdogEnabled` hace algo con este supervisor. */
+export function watchdogToggleAplica(supervisor: SupervisorKind): boolean {
+  return supervisor === "windows-watchdog";
+}
+
+/**
+ * Lo que de verdad va a pasar tras salir del proceso, segun quien lo supervise.
+ *
+ * El mensaje decia siempre «el watchdog relanzara en <=5 min». Bajo compose son segundos, y sin
+ * supervisor no vuelve nunca: prometer un relanzamiento que no llega deja al operador esperando una UI
+ * que ya no existe.
+ */
+export function mensajeDeReinicio(supervisor: SupervisorKind): string {
+  switch (supervisor) {
+    case "compose":
+      return "Saliendo; Docker Compose lo relanzara en segundos con el codigo actual.";
+    case "systemd":
+      return "Saliendo; systemd lo relanzara en segundos con el codigo actual.";
+    case "windows-watchdog":
+      return "Saliendo; el watchdog relanzara en <=5 min con el codigo actual.";
+    case "ninguno":
+      return "Saliendo. NO hay supervisor configurado: tendras que arrancarlo tu.";
+  }
 }

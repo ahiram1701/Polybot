@@ -4,7 +4,8 @@
 // are easy to get subtly wrong, so mirroring the web (edit a full draft, PUT it whole) is the safe path.
 
 import type { MarketSymbol, Outcome } from "../types.js";
-import type { UiSettings } from "../ui/shared.js";
+import type { StrategyModeKey, UiSettings } from "../ui/shared.js";
+import { isStrategyModeKey, MODE_CYCLE, MODE_KEYS } from "../ui/shared.js";
 import { fmtUsd } from "./theme.js";
 
 export type FieldKind = "header" | "toggle" | "number";
@@ -53,7 +54,7 @@ const TOGGLE_HELP: Record<string, string> = {
   requirePositiveEv: "Solo opera setups con valor esperado positivo tras comisiones.",
   explorationEnabled: "Deja probar setups sin historial suficiente, con presupuesto acotado por mercado y día.",
   autoStartSimOnBoot: "Al arrancar el proceso, empieza a operar en simulación sin que nadie lo pida.",
-  watchdogEnabled: "Relanza la UI si el proceso muere. No arranca el bot; lo lee la tarea de Windows.",
+  watchdogEnabled: "Solo con la tarea de Windows: la lee watchdog.ps1, no el bot. Bajo Docker no hace nada.",
   evUseSimilarity: "Estima la probabilidad con los k vecinos más parecidos en vez del agregado simple.",
   evCalibration: "Corrige la probabilidad estimada contra lo que de verdad pasó, por mercado.",
   autoMinLive: "Dimensiona al mínimo del exchange ($5) en vez del monto pedido. Igual en sim y en live.",
@@ -71,14 +72,15 @@ const TOGGLE_KEYS = Object.keys(TOGGLE_LABELS) as (keyof UiSettings)[];
  * Modos por estrategia. No son booleanos, asi que en vez de alternar CICLAN por los tres valores. Se
  * reaprovecha la fila de tipo "toggle" para no inventar un tipo de campo nuevo con su navegacion y sus
  * teclas: lo que importa es que la fila muestre siempre el valor actual, y lo hace.
+ *
+ * La LISTA de modos y su ciclo viven en `ui/shared.ts`, no aqui: cuando cada superficie llevaba la
+ * suya, la web se quedo sin `makerMode` y el controlador tampoco lo vigilaba.
  */
-const MODE_KEYS = ["arbMode", "directionalMode", "makerMode"] as const;
-const MODE_LABELS: Record<(typeof MODE_KEYS)[number], string> = {
+const MODE_LABELS: Record<StrategyModeKey, string> = {
   arbMode: "Modo del arbitraje",
   directionalMode: "Modo del direccional",
   makerMode: "Modo del maker",
 };
-const MODE_CYCLE = ["heredado", "sim", "live"] as const;
 
 /**
  * Los ajustes que acotan DINERO. Se listan en una tabla y no a mano porque el test de paridad recorre
@@ -275,9 +277,14 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   return fields;
 }
 
-/** Si el campo es el modo de una estrategia. Esos ciclan en vez de alternar, y pueden entrar en live. */
+/**
+ * Si el campo es el modo de una estrategia. Esos ciclan en vez de alternar, y pueden entrar en live.
+ *
+ * Alias del predicado compartido: la TUI lo llama por id de campo, pero la lista de modos es una sola
+ * y vive en `ui/shared.ts`.
+ */
 export function isModeId(id: string): boolean {
-  return (MODE_KEYS as readonly string[]).includes(id);
+  return isStrategyModeKey(id);
 }
 
 export function isToggleId(id: string): boolean {

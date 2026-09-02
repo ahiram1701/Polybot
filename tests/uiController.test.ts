@@ -601,3 +601,110 @@ describe("ninguna insignia puede mentir sobre el dinero", () => {
     controller.dispose();
   });
 });
+
+describe("BotController: el maker en live tambien es dinero real", () => {
+  it("exige credenciales para arrancar con makerMode en live", async () => {
+    // La condicion estaba escrita a mano y miraba `arbMode` y `directionalMode` — pero no `makerMode`,
+    // que es justo la estrategia que deja ordenes VIVAS en el libro. Un maker en live arrancaba sin que
+    // nadie comprobara que habia con que firmar, y el fallo aparecia orden a orden.
+    const controller = new BotController(await baseConfig({ extra: { makerMode: "live" } }), {
+      env: {},
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await expect(controller.start("sim")).rejects.toBeInstanceOf(ControllerError);
+    controller.dispose();
+  });
+
+  it("con credenciales, arranca en sim con el maker en live", async () => {
+    const controller = new BotController(
+      await baseConfig({ withSecrets: true, extra: { makerMode: "live" } }),
+      {
+        env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+        startPriceFeed: false,
+        snapshotProvider: fixedSnapshot,
+        runnerFactory: () => new FakeRunner(),
+      },
+    );
+
+    const status = await controller.start("sim");
+    expect(status.running).toBe(true);
+    expect(status.effectiveModes.maker).toBe("live");
+    await controller.stop();
+    controller.dispose();
+  });
+
+  it("la lista de modos vigilados se deriva de MODE_KEYS, no se escribe a mano", async () => {
+    // Si manana aparece una cuarta estrategia con `*Mode`, tiene que quedar cubierta sola.
+    const { MODE_KEYS } = await import("../src/ui/shared.js");
+    const { settingsFromConfig } = await import("../src/ui/settings.js");
+    const settings = settingsFromConfig(await baseConfig());
+    const conModo = Object.keys(settings).filter((clave) => clave.endsWith("Mode"));
+    expect([...MODE_KEYS].sort()).toEqual(conModo.sort());
+  });
+});
+
+describe("BotController: el chip de riesgo dice lo mismo que el bucle", () => {
+  /**
+   * El bucle evalua el cortacircuitos con el modo del DIRECCIONAL y excluyendo los trades de
+   * arbitraje. La UI lo hacia con el modo GLOBAL y con todos los trades, asi que con el reparto que
+   * recomienda el manual —arbitraje en live, direccional en sim— podia anunciar un halt que el bucle
+   * no aplicaba. Ahora los dos llaman a `evaluateDirectionalRiskHalt`.
+   */
+  it("un arbitraje perdedor en live no dispara el chip con el direccional en sim", async () => {
+    const config = await baseConfig({
+      withSecrets: true,
+      extra: { arbMode: "live", directionalMode: "sim", maxDailyLossUsd: 1, riskHaltCooldownHours: 2 },
+    });
+    const controller = new BotController(config, {
+      env: { POLYMARKET_SIGNATURE_TYPE: "0" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    const status = await controller.getStatus();
+    // El chip mira el direccional en sim: sin operaciones direccionales resueltas hoy, no hay halt.
+    expect(status.riskHalt?.tripped ?? false).toBe(false);
+    controller.dispose();
+  });
+});
+
+describe("BotController: el supervisor se declara, no se adivina", () => {
+  it("publica el supervisor del entorno", async () => {
+    const controller = new BotController(await baseConfig(), {
+      env: { POLYBOT_SUPERVISOR: "compose" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    expect((await controller.getStatus()).supervisor).toBe("compose");
+    expect(controller.getSupervisor()).toBe("compose");
+    controller.dispose();
+  });
+
+  it("sin variable, asume el watchdog de Windows (el despliegue historico)", async () => {
+    const controller = new BotController(await baseConfig(), {
+      env: {},
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    expect((await controller.getStatus()).supervisor).toBe("windows-watchdog");
+    controller.dispose();
+  });
+
+  it("un valor desconocido no impide arrancar", async () => {
+    // Equivocarse de etiqueta no puede tumbar el bot: cae al valor historico en vez de lanzar.
+    const controller = new BotController(await baseConfig(), {
+      env: { POLYBOT_SUPERVISOR: "kubernetes-alguna-cosa" },
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    expect((await controller.getStatus()).supervisor).toBe("windows-watchdog");
+    controller.dispose();
+  });
+});

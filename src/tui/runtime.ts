@@ -11,12 +11,12 @@ import readline from "node:readline";
 import { PolybotClient, PolybotApiError } from "../agent/client.js";
 import { summarizeStatus, summarizeStrategyAnalysis, summarizeTrade } from "../agent/statusSummary.js";
 import type { UiSettings } from "../ui/shared.js";
+import { entraEnLive, LIVE_PHRASE } from "../ui/shared.js";
 import { applyNumber, applyToggle, buildSettingsFields, isModeId } from "./settingsModel.js";
 import type { SettingsField } from "./settingsModel.js";
 import type { AnalysisData, Message, Tab, ViewModel } from "./render.js";
 import { renderScreen, TABS } from "./render.js";
 
-const LIVE_PHRASE = "ARRANCAR LIVE";
 const RESET_STATE_PHRASE = "RESET";
 const POLL_MS = 2000;
 const MAX_WIDTH = 120;
@@ -383,12 +383,6 @@ export function startTui(client: PolybotClient): void {
         },
       });
     }
-  }
-
-  /** Si el cambio mete a esa estrategia en live viniendo de otra cosa. */
-  function entraEnLive(antes: UiSettings, despues: UiSettings, id: string): boolean {
-    const clave = id as keyof UiSettings;
-    return despues[clave] === "live" && antes[clave] !== "live";
   }
 
   // ---- tab switching -------------------------------------------------------

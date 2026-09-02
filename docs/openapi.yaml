@@ -271,12 +271,18 @@ paths:
   /api/system/restart:
     post:
       tags: [estado]
-      summary: Termina el proceso para que el watchdog lo relance con el codigo actual
+      summary: Termina el proceso para que el SUPERVISOR lo relance con el codigo actual
       description: >-
-        El watchdog corre como tarea S4U, o sea en la SESION 0, y sus procesos hijo tambien. Un terminal
-        normal vive en la sesion 1 y Windows no le deja matarlos, asi que sin este endpoint desplegar un
-        cambio exige PowerShell como administrador. Detiene el bot antes de salir y responde ANTES de
-        terminar. El watchdog levanta el proceso en <=5 min.
+        Detiene el bot (para no cortar una iteracion a media escritura del estado), responde ANTES de
+        salir y hace process.exit(0) contando con que alguien lo levante. Quien lo levanta depende del
+        despliegue: con Docker Compose son segundos, con el watchdog de Windows hasta 5 minutos, y sin
+        supervisor NO vuelve solo. El campo `mensaje` lo dice segun el supervisor declarado, en vez de
+        prometer siempre el plazo del watchdog.
+
+
+        Nacio para Windows: el watchdog corre como tarea S4U, o sea en la SESION 0, y un terminal de la
+        sesion 1 no puede matar sus procesos — sin este endpoint, desplegar exigia PowerShell como
+        administrador.
       responses:
         "200":
           description: Saliendo
@@ -343,10 +349,20 @@ components:
           type: object
           description: >-
             Modo ya resuelto de cada estrategia. Es la fuente de verdad sobre si se mueve dinero real:
-            un bot arrancado en sim puede tener el arbitraje en live.
+            un bot arrancado en sim puede tener el arbitraje o el maker en live. Toda estrategia con
+            modo propio aparece aqui; el maker se anadio despues y quedo fuera una vez, y la insignia
+            decia SIM con ordenes reales en el libro.
           properties:
             arb: { type: string, enum: [sim, live] }
             directional: { type: string, enum: [sim, live] }
+            maker: { type: string, enum: [sim, live] }
+        supervisor:
+          type: string
+          enum: [compose, windows-watchdog, systemd, ninguno]
+          description: >-
+            Quien relanza el proceso si muere. Lo DECLARA el entorno (POLYBOT_SUPERVISOR), no se
+            detecta. De el depende si el ajuste watchdogEnabled hace algo: solo lo lee
+            scripts/watchdog.ps1, con la tarea programada de Windows.
         startedAtMs: { type: number }
         lastError: { type: string }
         settings: { $ref: "#/components/schemas/Settings" }
