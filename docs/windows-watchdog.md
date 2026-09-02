@@ -1,5 +1,11 @@
 # Watchdog en Windows (auto-reinicio de Polybot)
 
+> **Alcance: despliegue nativo de Windows.** Bajo Docker el supervisor es Compose y nada de esta guía
+> interviene — ni la tarea programada, ni `watchdog.ps1`, ni el ajuste «Watchdog (auto-reinicio)», que
+> allí sale deshabilitado en la UI. Ver [docker.md](docker.md), y en particular
+> [la brecha del healthcheck](docker.md#la-brecha-del-healthcheck): compose **no** relanza un bot vivo
+> pero ciego, cosa que esta tarea sí hacía.
+
 Polybot corre como un proceso de Node (`npm run ui`). Si ese proceso muere —se quedó sin memoria,
 Windows se reinició por una actualización, o lo cerraste sin querer— la UI deja de responder y el bot
 deja de observar el mercado **hasta que alguien lo levante a mano**.

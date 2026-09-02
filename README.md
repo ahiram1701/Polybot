@@ -4,16 +4,65 @@ Bot TypeScript para mercados `BTC/ETH/DOGE Up or Down 5m` de Polymarket, con mod
 
 - **[Manual de uso](docs/MANUAL.md)** — como operarlo: que mirar, como decidir, problemas comunes.
 - **[Arquitectura](docs/ARQUITECTURA.md)** — como funciona por dentro, invariantes y trampas conocidas.
+- **[Docker](docs/docker.md)** — el despliegue recomendado: supervisor, volumen de datos y sus trampas.
 - **[Uso por agentes IA](AGENTS.md)** — MCP, CLI y API.
 - Este README es **instalacion y arranque**. La referencia de cada ajuste vive en la propia interfaz y en el Manual.
 
-## Requisitos
+## Dos formas de desplegarlo
+
+| | **Docker** (recomendado) | **Windows nativo** |
+|---|---|---|
+| Supervisor | `restart: unless-stopped` | tarea programada `PolybotWatchdog` |
+| Reinicio para desplegar | segundos | ≤ 5 min, y a veces exige administrador |
+| Requiere | Docker Compose v2 | Node.js 20+, permisos de administrador para las tareas |
+| Arranque | `docker compose up -d --build` | doble clic en `INICIAR-POLYBOT.cmd` |
+
+Las dos vias siguen soportadas y **el bot es el mismo**: cambia quien lo supervisa y como se instala. Si
+no tienes un motivo para lo contrario, usa Docker — el watchdog de Windows costo 45 horas de datos en 10
+dias y mato bots sanos en 52 de 59 reinicios, y ese es justamente el problema que compose no tiene.
+
+---
+
+## Docker (recomendado)
+
+Requisitos: Docker con Compose v2. En Windows, Docker Desktop con back-end WSL2, y el repo **dentro del
+sistema de archivos de WSL** (`~/Polybot`), no en `/mnt/c/...`.
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+La UI queda en `http://127.0.0.1:8787`, alcanzable tambien desde el navegador de Windows.
+
+```bash
+docker compose logs -f polybot
+docker compose ps
+docker compose down
+```
+
+Levanta dos servicios: `polybot` (la UI y el bot) y `polybot-archivador`, que archiva la analitica cada
+12 h. El archivador **no es opcional si quieres validar algo**: `analytics.jsonl` esta topado a 10.000
+muestras con borrado FIFO, o sea ~2 semanas, y a partir de ahi recicla en vez de acumular.
+
+Tres cosas que conviene leer antes de dejarlo corriendo, todas en **[docs/docker.md](docs/docker.md)**:
+
+- **Permisos de `data/`.** Si el UID no coincide, el bot *parece sano y no guarda nada*.
+- **La brecha del healthcheck.** Docker no reinicia contenedores `unhealthy` por si solo, asi que un bot
+  vivo pero ciego no se relanza — el watchdog de Windows si lo hacia.
+- **El puerto va a loopback a proposito.** La UI no tiene autenticacion.
+
+---
+
+## Windows nativo
+
+### Requisitos
 
 - Node.js 20 o superior.
 - Conexion a internet para Gamma API, CLOB API y RTDS Chainlink de Polymarket.
 - Wallet y permisos de Polymarket solo si vas a usar live.
 
-## Instalacion
+### Instalacion
 
 ```bash
 npm install
@@ -22,7 +71,7 @@ Copy-Item .env.example .env
 
 Edita `.env` si quieres cambiar montos, limites o credenciales. El modo por defecto es simulacion.
 
-## Uso Rapido Con Interfaz
+### Uso Rapido Con Interfaz
 
 La forma mas facil en Windows es doble clic:
 
@@ -47,6 +96,9 @@ ABRIR-POLYBOT.cmd
 Usa `ABRIR-POLYBOT.cmd` despues de editar `.env` para que la UI recargue credenciales live.
 
 ### Si el reinicio no surte efecto
+
+> Nada de esto aplica bajo Docker: ahi el supervisor es compose, `docker compose up -d --build`
+> despliega en segundos y no hace falta administrador. Ver [docs/docker.md](docs/docker.md).
 
 `INICIAR-POLYBOT.cmd` mata el Polybot que ya corria y lo relanza. Pero cuando el proceso viejo lo lanzo
 la tarea programada `PolybotWatchdog` —que corre "tanto si el usuario inicio sesion como si no"— ese
@@ -90,7 +142,10 @@ La UI escucha solo en `127.0.0.1:8787`.
 
 Para verla desde el celular por Tailscale con Polybot en tu PC Windows: doble clic en `INICIAR-POLYBOT.cmd` (con `POLYBOT_UI_HOST=0.0.0.0` en `.env`) y en el celular, con Tailscale activo, abre la direccion `http://100.x:8787` que muestra la ventana. Guia: [`docs/windows-tailscale.md`](docs/windows-tailscale.md).
 
-## TUI (panel en terminal)
+### TUI (panel en terminal)
+
+> Bajo Docker no hay lanzador `.cmd`: la TUI se abre con
+> `docker compose exec polybot node dist/src/tui/index.js`.
 
 Si prefieres un panel en vivo dentro de una ventana de terminal (sin navegador), doble clic en:
 
@@ -119,7 +174,13 @@ Para un vistazo puntual sin abrir la interfaz interactiva:
 npm run tui -- --once
 ```
 
-## Watchdog En Windows
+### Watchdog En Windows
+
+> Bajo Docker esto **no aplica**: el supervisor es compose y el ajuste «Watchdog (auto-reinicio)» sale
+> deshabilitado en la UI, con el motivo. Pero ojo con la diferencia real: `watchdog.ps1` relanzaba
+> tambien un bot **vivo pero ciego** (sondeaba `/api/health`, que da 503 con el feed rancio), y Docker
+> **no** reinicia contenedores `unhealthy` por si solo. Ver
+> [docs/docker.md](docs/docker.md#la-brecha-del-healthcheck).
 
 Si el proceso de Polybot muere (falta de memoria, reinicio de Windows, cierre accidental), la UI deja de responder y el bot deja de observar el mercado hasta que alguien lo levante. `scripts/watchdog.ps1` lo revisa cada 5 minutos y lo relanza solo. Revive unicamente la UI/API: el bot queda detenido y Live siempre lo arrancas tu.
 
@@ -268,6 +329,11 @@ El bot escribe:
 - `data/ui-config.json`: settings no secretos guardados desde la UI.
 
 `data/` esta ignorado por Git.
+
+Bajo Docker, `data/` se monta desde el host (`./data:/app/data`), asi que sobrevive a
+`docker compose up --build`. Si el UID del contenedor no coincide con el tuyo, el bot **parece sano y
+no guarda nada**: es el fallo mas traicionero del montaje y esta explicado en
+[docs/docker.md](docs/docker.md#permisos-de-data).
 
 ## Resultados De Trades
 

@@ -127,8 +127,15 @@ describe("cuando el archivador falla, avisa por Telegram", () => {
   });
 
   it("NO avisa cuando la pasada va bien: un canal que habla siempre se deja de leer", async () => {
+    // Directorio de VERDAD, y no el `/no/importa` de los casos de fallo: el camino de exito escribe el
+    // latido (`escribirLatido`), asi que aqui el dataDir si importa. Con una ruta no escribible el
+    // latido lanza, `ejecutarArchivado` lo cuenta como pasada fallida y manda el aviso que este test
+    // dice que no debe existir — un falso rojo que solo aparece donde `/no` no se puede crear, o sea en
+    // Linux (Docker y WSL) y no en el Windows donde se escribio.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-archivo-ok-"));
+    temps.push(dataDir);
     const { enviados, notifier } = notificadorFalso();
-    const ok = await ejecutarArchivado(config, {
+    const ok = await ejecutarArchivado({ dataDir }, {
       archivar: async () => ({ nuevas: 12, total: 10_000 }),
       notifier: notifier as never,
     });

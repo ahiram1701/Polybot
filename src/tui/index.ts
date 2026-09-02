@@ -109,7 +109,9 @@ async function main(): Promise<void> {
   if (typeof process.stdin.setRawMode !== "function") {
     process.stdout.write(
       "La TUI necesita una terminal interactiva (no detecté teclado).\n" +
-        'Ábrela con doble clic en TUI-POLYBOT.cmd, o usa "npm run tui -- --once" para un vistazo.\n',
+        'Ábrela con doble clic en TUI-POLYBOT.cmd (Windows nativo) o, bajo Docker, con\n' +
+        '"docker compose exec polybot node dist/src/tui/index.js".\n' +
+        'Para un vistazo puntual sin terminal interactiva: "npm run tui -- --once".\n',
     );
     process.exitCode = 1;
     return;

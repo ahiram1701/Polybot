@@ -17,7 +17,9 @@ Polybot es un bot de trading de Polymarket (mercados cripto Up/Down 5m). Este do
 
 ## Prerrequisito: el servidor debe estar corriendo
 
-Arranca Polybot (doble clic en `INICIAR-POLYBOT.cmd`, o `npm run ui`, o `npm start`). Por defecto escucha en `http://127.0.0.1:8787`. Override con `POLYBOT_API_URL`.
+Arranca Polybot. Bajo Docker: `docker compose up -d`. En Windows nativo: doble clic en
+`INICIAR-POLYBOT.cmd`, o `npm run ui`, o `npm start`. En los dos casos escucha en
+`http://127.0.0.1:8787`; override con `POLYBOT_API_URL`.
 
 Comprobación: `curl http://127.0.0.1:8787/api/status` → `200`.
 
@@ -54,6 +56,14 @@ Tools expuestas (prefijo `polybot_`): `get_status`, `list_trades`, `get_settings
 Restricciones opcionales por entorno:
 - `POLYBOT_MCP_ALLOW_WRITE=false` → solo herramientas de lectura.
 - `POLYBOT_MCP_ALLOW_LIVE=false` → bloquea `start_bot` con `mode:"live"`.
+
+**Los dos vienen en `true` por defecto**, así que de fábrica un agente puede escribir ajustes y pedir
+`mode:"live"`. Bajo Docker se ponen en `.env`, que compose pasa al contenedor con `env_file`; el
+servicio MCP por HTTP vive dentro del mismo proceso, así que el cambio requiere reiniciar
+(`docker compose up -d` o `POST /api/system/restart`).
+
+Lo que un agente **no** puede saltarse en ningún caso: sin `POLYMARKET_PRIVATE_KEY` en `.env`, cualquier
+arranque en live falla en el acto.
 
 ## Vía 2 — CLI (salida JSON)
 

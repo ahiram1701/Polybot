@@ -1,0 +1,22 @@
+# Lo que NO debe entrar en la imagen.
+#
+# `.env` es la linea importante: lleva POLYMARKET_PRIVATE_KEY. Una capa de imagen es inmutable y se
+# comparte al publicarla, asi que una clave copiada aqui no se borra con un `rm` en una capa posterior
+# — sigue estando en la capa donde entro. El fichero se monta en tiempo de ejecucion (`env_file`), no
+# se hornea.
+.env
+.env.*
+!.env.example
+
+# Se reconstruyen dentro de la imagen. Copiarlos ademas de reconstruirlos mezcla binarios compilados
+# para Windows con un runtime Linux, que es un fallo dificil de leer.
+node_modules/
+dist/
+
+# Estado de operacion: vive en un volumen, no en la imagen. Si se copiara, cada `build` reintroduciria
+# un ledger viejo y el P&L mentiria.
+data/
+
+.git/
+.mcp.json
+*.log

@@ -1,5 +1,10 @@
 # Ver la UI de Polybot en el celular por Tailscale (Windows)
 
+> **Alcance: despliegue nativo de Windows.** Con Docker el arranque es `docker compose up -d` en vez del
+> doble clic, y `POLYBOT_UI_HOST` ya vale `0.0.0.0` dentro del contenedor: lo que hay que cambiar es la
+> publicación del puerto en `docker-compose.yml`. El resto de la guía (instalar Tailscale, la dirección
+> `100.x`) vale igual. Ver [docker.md](docker.md).
+
 Objetivo: ejecutar Polybot en tu PC con un **doble clic** y abrir la UI desde el celular. Polybot corre en tu PC Windows y la UI se ve desde otro dispositivo por Tailscale.
 
 > La UI **no tiene login**. Con la configuración de abajo escucha en todas las interfaces, así que es accesible tanto desde esta PC como desde tu tailnet (y tu LAN). Si tu red local no es de confianza, mirá la sección "Solo tailnet" al final.

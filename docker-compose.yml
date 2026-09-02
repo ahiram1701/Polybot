@@ -1,0 +1,86 @@
+# Polybot bajo Docker. Guia completa y trampas: docs/docker.md
+#
+# Arranque:  docker compose up -d --build
+# Logs:      docker compose logs -f polybot
+# UI:        http://127.0.0.1:8787
+
+services:
+  polybot:
+    build:
+      context: .
+    image: polybot:local
+    container_name: polybot
+
+    # ESTE es el supervisor. Sustituye a la tarea programada `PolybotWatchdog` de Windows, que corria
+    # en la sesion 0 y por eso no se podia matar desde un terminal normal. `POST /api/system/restart`
+    # hace `process.exit(0)` contando con que alguien lo levante: aqui ese alguien es Docker, y tarda
+    # segundos en vez de los <=5 min del watchdog.
+    #
+    # `unless-stopped` y no `always`: si lo paras a mano, se queda parado aunque reinicies la maquina.
+    restart: unless-stopped
+
+    env_file:
+      # El codigo hace `import "dotenv/config"` (src/config.ts:1), asi que tambien leeria un .env
+      # montado. Se pasa por `env_file` para que las variables existan ANTES de que Node arranque y
+      # para no montar la clave privada como fichero dentro del contenedor.
+      - .env
+
+    environment:
+      # Repetidas aunque el Dockerfile ya las fija: aqui se ven al leer el compose, que es donde se
+      # mira cuando algo va mal. `env_file` NO puede pisarlas — `environment` gana.
+      - TZ=UTC
+      - POLYBOT_UI_HOST=0.0.0.0
+      - POLYBOT_SUPERVISOR=compose
+
+    ports:
+      # 127.0.0.1 EN EL HOST, a proposito. La UI no tiene autenticacion y expone endpoints que mueven
+      # dinero real (arrancar en live, cambiar modos, resetear estado). Publicar "8787:8787" a secas
+      # la deja escuchando en todas las interfaces de la maquina.
+      #
+      # Con WSL2 y localhostForwarding, el navegador de Windows la alcanza igual en 127.0.0.1:8787.
+      # Para verla desde el movil, Tailscale — nunca abriendo el puerto (docs/windows-tailscale.md).
+      - "127.0.0.1:8787:8787"
+
+    volumes:
+      # TODO el estado vive aqui: trades.jsonl (la fuente de verdad del P&L), state.json, analytics y
+      # el archivo historico. Sin este montaje, cada `docker compose up --build` borra el ledger.
+      - ./data:/app/data
+
+    # Si tu usuario de WSL no es UID 1000, descomenta esto o `./data` acabara siendo de otro usuario y
+    # el bot no podra escribir. Comprueba con: id -u; id -g
+    # user: "${UID:-1000}:${GID:-1000}"
+
+  # ---------------------------------------------------------------------------
+  # Archivador de analitica. Sustituye la tarea `PolybotArchivoAnalitica` de Windows.
+  #
+  # No es opcional si se quiere validar algo: `data/analytics.jsonl` esta topado a 10.000 muestras con
+  # borrado FIFO, o sea ~2 semanas a 730/dia. A partir de ahi RECICLA en vez de acumular, y una
+  # validacion fuera de muestra necesita mas historia que eso.
+  #
+  # Lee el FICHERO, no la API, asi que funciona con el bot parado — que es justo cuando mas urge no
+  # perder lo que ya hay.
+  # ---------------------------------------------------------------------------
+  polybot-archivador:
+    build:
+      context: .
+    image: polybot:local
+    container_name: polybot-archivador
+    # La imagen trae un HEALTHCHECK que sondea la UI en 8787, pero este contenedor no levanta ningun
+    # servidor: heredarlo lo dejaria `unhealthy` para siempre y convertiria `docker compose ps` en ruido
+    # —justo la columna donde hay que poder ver de un vistazo si el bot esta ciego—.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      - polybot
+    env_file:
+      - .env
+    environment:
+      - TZ=UTC
+    volumes:
+      - ./data:/app/data
+    # Cada 12 h, igual que la tarea de Windows. Deja rastro en data/archive/archive.log salga bien o
+    # mal: un archivador que falla en silencio es indistinguible de uno que no tenia nada que hacer, y
+    # esa ambiguedad ya costo datos una vez.
+    command: >
+      sh -c 'while true; do node dist/src/archiveAnalytics.js || echo "[archivador] la pasada fallo"; sleep 43200; done'

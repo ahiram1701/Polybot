@@ -340,13 +340,24 @@ motor que la ejecutó), su propio contador de gasto diario y su propio freno de 
 mala en papel no puede parar el dinero real. El arbitraje además nunca pasa por el cortacircuitos, por
 la razón de siempre: un par completo redime $1/set gane quien gane.
 
-**Lo que hay que tener claro antes de ponerlo en `live`:** aquí el ajuste basta por sí solo, no hay
-confirmación al arrancar. Eso es deliberado —permite que el watchdog reinicie sin intervención—, pero
-significa que **cualquier reinicio reanuda esa estrategia con dinero real** sin que nadie lo apruebe. Lo
-único que sigue siendo obligatorio es la clave privada en `.env`: sin ella el arranque falla en el acto,
-en vez de fallar oportunidad a oportunidad.
+**Encenderlo cuesta teclear una frase, en las dos interfaces.** Al cambiar cualquiera de los tres modos
+a `live` —arbitraje, direccional o maker— hay que escribir **`ARRANCAR LIVE`** para que el cambio se
+guarde. En la TUI se pide al editar el campo; en la web, al pulsar «Guardar», porque allí el cambio no
+se aplica hasta guardarlo y preguntar antes sería preguntar por algo que aún puede deshacerse. Apagar
+live no pide nada: la fricción es solo del lado que cuesta dinero.
 
-En la cabecera (web y TUI) las dos estrategias aparecen por separado en cuanto sus modos difieren
+**Lo que hay que tener claro antes de ponerlo en `live`:** una vez guardado, el ajuste basta por sí
+solo y no hay confirmación al arrancar. Eso es deliberado —permite que el supervisor reinicie sin
+intervención—, pero significa que **cualquier reinicio reanuda esa estrategia con dinero real** sin que
+nadie lo apruebe. Bajo Docker esto pesa más, no menos: compose relanza en segundos y de forma más
+fiable que el watchdog. Lo único que sigue siendo obligatorio es la clave privada en `.env`: sin ella el
+arranque falla en el acto, en vez de fallar oportunidad a oportunidad.
+
+Los tres modos van juntos en esa comprobación. `makerMode` se quedaba fuera —el maker arrancaba en live
+sin que nadie mirase si había con qué firmar—, y es justo la estrategia que deja órdenes **vivas** en el
+libro.
+
+En la cabecera (web y TUI) las estrategias aparecen por separado en cuanto sus modos difieren
 (`arb LIVE · dir SIM`). Una sola insignia diría «SIM» con el arbitraje moviendo dinero real.
 
 ---
@@ -364,3 +375,17 @@ En la cabecera (web y TUI) las dos estrategias aparecen por separado en cuanto s
 **Cambié un ajuste y no pasó nada.** ¿Estaba el bot parado al guardarlo? Con el bot corriendo, la API responde `409` y el cambio no se aplica.
 
 **El arbitraje detecta oportunidades pero nunca entra.** Mira la columna «capital necesario» del panel: cada pata es una orden independiente y ambas deben superar los $5 del exchange. Con precios equilibrados eso exige bastante más capital del que sugiere el neto por set.
+
+**Marqué «Watchdog (auto-reinicio)» y la casilla está gris.** Correcto: esa casilla no la lee el bot, la
+lee `scripts/watchdog.ps1` desde `data/ui-config.json`, y ese script solo corre con la tarea programada
+de Windows. Bajo Docker supervisa compose, así que la casilla sale visible pero deshabilitada con el
+motivo — antes se quedaba marcable y sin efecto. El supervisor activo se muestra encima, en «Supervisor
+actual».
+
+**Guardé un cambio de modo a live y no se guardó.** Falta la frase. Cambiar cualquiera de los tres modos
+a `live` exige teclear `ARRANCAR LIVE` (§7); el botón de guardar se queda deshabilitado hasta que la
+frase sea exacta. Volver el modo a `sim` o `heredado` cancela la petición sin escribir nada.
+
+**Bajo Docker, `data/` no crece.** Permisos del volumen: si el UID del contenedor no coincide con el
+tuyo, el bot parece sano y no persiste nada. Ver
+[docs/docker.md](docker.md#permisos-de-data).

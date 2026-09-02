@@ -227,6 +227,10 @@ Usa el mismo serializador que la exportación de la UI, así que el archivo se p
 mismo patrón que el watchdog: sin ventana, sin permisos de administrador). Deja rastro en
 `data/archive/archive.log` para poder auditar si alguna pasada falló.
 
+Bajo Docker el mismo trabajo lo hace el servicio `polybot-archivador` de `docker-compose.yml`, que
+ejecuta `dist/src/archiveAnalytics.js` en un bucle de 12 h sobre el mismo volumen `data/`. La tarea de
+Windows no interviene.
+
 ## El maker: cobrar por dar liquidez
 
 Es el cambio de modelo de negocio del 2026-08-19, y la primera estrategia del proyecto **que no exige
@@ -420,7 +424,44 @@ El rendimiento. La estimación de `elegirMercados` es **lineal** y por tanto opt
 es cuadrático— y sirve para *ordenar* mercados, no para prometer cuánto se cobrará. Eso solo lo dice
 una orden real y su pago a 24 h.
 
+## Quién relanza el proceso
+
+Polybot **cuenta con que alguien lo supervise**: `POST /api/system/restart` detiene el bot y hace
+`process.exit(0)` esperando que un tercero lo levante con el código nuevo. Sin supervisor, ese endpoint
+apaga el bot y ya está.
+
+Hay dos vías soportadas y no son intercambiables:
+
+| | Windows nativo | Docker Compose |
+|---|---|---|
+| Supervisor | tarea `PolybotWatchdog`, cada 5 min | `restart: unless-stopped` |
+| Reinicio tras `/api/system/restart` | ≤ 5 min | segundos |
+| Reinicia un proceso **muerto** | sí | sí |
+| Reinicia un bot **vivo pero ciego** | **sí** (sondea `/api/health`, que da 503 con el feed rancio) | **no** — Docker no reinicia contenedores `unhealthy` por sí solo |
+| Archivado de analítica | tarea `PolybotArchivoAnalitica` | servicio `polybot-archivador` |
+| Ajuste `watchdogEnabled` | lo lee `watchdog.ps1` | **no lo lee nadie** |
+
+Cuál está activo **se declara, no se adivina**: `POLYBOT_SUPERVISOR` (`compose` | `windows-watchdog` |
+`systemd` | `ninguno`), y el estado lo publica en `UiStatus.supervisor`. Deliberadamente no se detecta
+mirando `/.dockerenv` ni similares: una detección que falla en silencio produce exactamente la mentira
+que este campo viene a evitar.
+
+De ahí salen dos consecuencias visibles:
+
+1. **El mensaje de `/api/system/restart` nombra al supervisor real y su plazo real.** Decía siempre «el
+   watchdog relanzará en ≤5 min»; bajo compose son segundos y sin supervisor no vuelve nunca. Prometer
+   un relanzamiento que no llega deja al operador esperando una UI que ya no existe.
+2. **El ajuste «Watchdog (auto-reinicio)» sale deshabilitado donde no aplica**, con el motivo, en vez de
+   quedarse marcable y sin efecto. No se oculta: quien lo busque tiene que encontrar la explicación.
+
+La brecha del healthcheck bajo Docker es real y está sin cerrar. Se documenta en
+[`docker.md`](docker.md#la-brecha-del-healthcheck) en vez de fingir equivalencia: dar por cubierto algo
+que no lo está es peor que la brecha misma.
+
 ## Las tareas programadas viven en la sesión 0
+
+> Solo aplica a la vía **Windows nativo**. Bajo Docker no hay tareas programadas y nada de esta sección
+> interviene.
 
 `PolybotWatchdog` y `PolybotArchivoAnalitica` se registran con **`LogonType: S4U`**, que las hace correr
 haya o no sesión iniciada. Antes eran `Interactive` y eso costó **45 horas de datos en 10 días**: el

@@ -1,0 +1,5 @@
+# Marcador para que 'data/' exista tras un git clone.
+#
+# Docker crea el origen de un bind mount como ROOT cuando no existe en el host, y el contenedor corre
+# como uid 1000: sin este fichero, la primera pasada muere con EACCES al escribir el archivo de
+# analitica, y el sintoma es el peor posible — el bot parece sano y no guarda nada.
