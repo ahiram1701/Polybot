@@ -235,7 +235,7 @@ const emptySettings: UiSettings = {
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   liveBankrollUsd: 0,
-  minBankrollForDirectionalUsd: 50,
+  minBankrollForDirectionalUsd: 10,
   maxConsecutiveLosses: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,

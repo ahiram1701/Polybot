@@ -270,3 +270,37 @@ describe("evaluateDirectionalRiskHalt", () => {
     ).toBe(false);
   });
 });
+
+/**
+ * La guardia de capital del direccional, fijada por un test porque su valor es una DECISION, no un
+ * detalle: se bajo de 50 a 10 el 2026-09-03 para poder operar con $12, en contra de lo que dice la
+ * simulacion de ruina (67,6% de probabilidad de quedarse sin poder operar en un mes con $10, y eso
+ * asumiendo un edge ganador). Si alguien lo cambia, que sea a sabiendas y no por arrastre.
+ */
+describe("guardia de capital para el direccional", () => {
+  it("el default es 10 y coincide en las tres capas que lo declaran", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const leer = (p: string) => readFile(join(process.cwd(), p), "utf8");
+
+    // Esquema de entorno, esquema de la UI y el fallback del cliente. Cuando divergen, el valor que
+    // manda depende de por donde arranques — que es como `.env.example` acabo contradiciendo al codigo
+    // en `ASK_WINDOW_BASELINE`.
+    expect(await leer("src/config.ts")).toContain(
+      "MIN_BANKROLL_FOR_DIRECTIONAL_USD: z.coerce.number().nonnegative().default(10)",
+    );
+    expect(await leer("src/ui/settings.ts")).toContain(
+      "minBankrollForDirectionalUsd: z.coerce.number().nonnegative().default(10)",
+    );
+    expect(await leer(".env.example")).toMatch(/^MIN_BANKROLL_FOR_DIRECTIONAL_USD=10$/m);
+  });
+
+  it("la documentacion no promete un valor que el codigo ya no usa", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const manual = await readFile(join(process.cwd(), "docs/MANUAL.md"), "utf8");
+    expect(manual).not.toContain("`minBankrollForDirectionalUsd`, por defecto 50");
+    // Y la tabla de ruina sigue ahi: bajar la guardia no la invalida, y borrarla seria tapar el motivo.
+    expect(manual).toContain("67,6%");
+  });
+});

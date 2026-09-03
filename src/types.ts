@@ -92,6 +92,16 @@ export interface BotConfig {
    * probabilidad de quedarse sin poder operar es del 67.6% y el capital mediano baja a $4.88; con $50
    * cae al 4.8%; con $100, al 0.1%. Es decir, se pierde dinero TENIENDO RAZON.
    *
+   * **El default es 10 por decision explicita del operador (2026-09-03), bajado desde 50 para poder
+   * operar con un capital de $12.** La tabla de arriba no ha cambiado: a este nivel la ruina no es el
+   * riesgo de cola, es el resultado esperado. Queda escrito aqui para que nadie lo lea como una
+   * recomendacion respaldada por la medicion, porque no lo es.
+   *
+   * Consecuencia aritmetica que conviene tener presente: la guardia mide el colateral LIBRE, y una
+   * orden de $5 lo baja en el acto. Con $12 de capital y la guardia en $10, la primera entrada deja
+   * $7 y la guardia se cierra otra vez hasta que esa posicion resuelva GANANDO. O sea que a este
+   * capital el direccional opera de una en una, y una sola perdida lo bloquea indefinidamente.
+   *
    * El arbitraje NO pasa por esta guardia: un par completo redime $1/set gane quien gane, asi que no
    * tiene riesgo direccional ni ruina posible — es precisamente con lo que se hace crecer el capital
    * hasta cruzar este umbral.

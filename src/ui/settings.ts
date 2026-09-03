@@ -88,7 +88,7 @@ const settingsSchema = z.object({
   dailySpendLimitUsd: z.coerce.number().positive(),
   maxDailyLossUsd: z.coerce.number().nonnegative().default(0),
   liveBankrollUsd: z.coerce.number().nonnegative().default(0),
-  minBankrollForDirectionalUsd: z.coerce.number().nonnegative().default(50),
+  minBankrollForDirectionalUsd: z.coerce.number().nonnegative().default(10),
   riskHaltCooldownHours: z.coerce.number().nonnegative().default(2),
   arbEnabled: z.boolean().default(false),
   /**
@@ -250,7 +250,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     dailySpendLimitUsd: config.dailySpendLimitUsd,
     maxDailyLossUsd: config.maxDailyLossUsd ?? 0,
     liveBankrollUsd: config.liveBankrollUsd ?? 0,
-    minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? 50,
+    minBankrollForDirectionalUsd: config.minBankrollForDirectionalUsd ?? 10,
     riskHaltCooldownHours: config.riskHaltCooldownHours ?? 2,
     arbEnabled: config.arbEnabled ?? false,
     makerEnabled: Boolean(config.makerEnabled ?? false),

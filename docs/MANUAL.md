@@ -143,7 +143,7 @@ simuladas tapar pérdidas reales. Ver la sección 7.
 
 **Cortacircuitos** (`maxDailyLossUsd`, `maxConsecutiveLosses`). Detiene el trading —no el bot ni la analítica— cuando la pérdida del día o la racha de pérdidas cruza el límite. Se rearma solo tras `riskHaltCooldownHours`. **Con ambos valores a 0 nunca corta.**
 
-**Guardia de capital** (`minBankrollForDirectionalUsd`, por defecto 50). Apaga el direccional **en live** mientras el capital real esté por debajo. No es prudencia, es aritmética: el mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme y la ruina llega antes que el edge.
+**Guardia de capital** (`minBankrollForDirectionalUsd`, **por defecto 10**). Apaga el direccional **en live** mientras el capital real esté por debajo. El mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme y la ruina llega antes que el edge.
 
 Simulado con el edge **real** (83% de aciertos, ROI +4,3% por operación — una estrategia **ganadora**), a un mes:
 
@@ -154,7 +154,13 @@ Simulado con el edge **real** (83% de aciertos, ROI +4,3% por operación — una
 | $50 | 4,8% | — |
 | $100 | 0,1% | $153,90 |
 
-Con $10 se pierde dinero **teniendo razón**. El arbitraje **no pasa por esta guardia** porque no puede arruinar: es justamente con lo que se hace crecer el capital hasta cruzar el umbral.
+Con $10 se pierde dinero **teniendo razón**.
+
+> **El valor por defecto se bajó de 50 a 10 el 2026-09-03**, por decisión explícita, para poder operar con un capital de $12. La tabla de arriba sigue siendo válida: a ese nivel la ruina es el resultado esperado, no el riesgo de cola. No es una recomendación respaldada por la medición.
+>
+> Y hay una consecuencia aritmética que sorprende: la guardia mide el colateral **libre**, y una orden de $5 lo baja en el acto. Con $12 y la guardia en $10, la primera entrada deja $7 y la guardia se vuelve a cerrar hasta que esa posición resuelva **ganando**. A ese capital el direccional opera **de una en una**, y una sola pérdida lo bloquea indefinidamente. Si quieres operación continua con $12, la guardia tendría que bajar aún más — y eso es exactamente lo que la tabla desaconseja.
+
+El arbitraje **no pasa por esta guardia** porque no puede arruinar: es justamente con lo que se hace crecer el capital hasta cruzar el umbral.
 
 **Límite de gasto diario** (`dailySpendLimitUsd`). Tope bruto del día, **contado por modo**: las
 operaciones de papel no consumen el presupuesto del dinero real. Si se agota, el bot deja de operar

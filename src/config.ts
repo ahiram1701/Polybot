@@ -156,7 +156,7 @@ const envSchema = z.object({
   DAILY_SPEND_LIMIT_USD: z.coerce.number().positive().default(50),
   MAX_DAILY_LOSS_USD: z.coerce.number().nonnegative().default(0),
   LIVE_BANKROLL_USD: z.coerce.number().nonnegative().default(0),
-  MIN_BANKROLL_FOR_DIRECTIONAL_USD: z.coerce.number().nonnegative().default(50),
+  MIN_BANKROLL_FOR_DIRECTIONAL_USD: z.coerce.number().nonnegative().default(10),
   MAX_CONSECUTIVE_LOSSES: z.coerce.number().int().nonnegative().default(0),
   RISK_HALT_COOLDOWN_HOURS: z.coerce.number().nonnegative().default(2),
   ARB_ENABLED: z
