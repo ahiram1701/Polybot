@@ -46,6 +46,7 @@ import {
   getMinDistanceUsd,
   necesitaMercadosCripto,
   normalizeEnabledMarkets,
+  resolveOpeningTick,
   SUPPORTED_MARKETS,
 } from "../markets.js";
 import { MarketWatcher } from "../marketWatcher.js";
@@ -82,6 +83,7 @@ import type {
   BotConfig,
   MarketInfo,
   MarketOutcomeNumberSettings,
+  OrderbookQuote,
   MarketSymbol,
   Mode,
   OllamaTradeAnalysisResponse,
@@ -92,7 +94,8 @@ import type {
   TradeAttempt,
   WindowOpening,
 } from "../types.js";
-import { BotRunner } from "../botRunner.js";
+import { BotRunner, FAVORITE_SKIP_REASONS } from "../botRunner.js";
+import { selectFavoriteOutcome } from "../favoriteSelector.js";
 import { evaluateDirectionalRiskHalt } from "../riskCircuitBreaker.js";
 import type {
   AnalysisImportResponse,
@@ -101,6 +104,7 @@ import type {
   FiscalSummaryResponse,
   MarketStatusSnapshot,
   SanitizedConfig,
+  SkipReason,
   SupervisorKind,
   TelegramNotificationPatch,
   TelegramNotificationSettings,
@@ -183,7 +187,7 @@ export interface BotControllerDeps {
   watcher?: Pick<MarketWatcher, "getCurrentMarket">;
   orderbook?: Pick<OrderbookService, "getQuote">;
   priceFeed?: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick"> &
-    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick">>;
+    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick" | "getLatestTwapTick" | "getTwapAtOrBefore" | "getTickInRange">>;
   strategyAnalysisEngine?: StrategyAnalysisEngine;
   recommendationEngine?: Pick<RecommendationEngine, "recommend">;
   notifier?: Notifier;
@@ -232,7 +236,7 @@ export class BotController {
   private readonly watcher: Pick<MarketWatcher, "getCurrentMarket">;
   private readonly orderbook: Pick<OrderbookService, "getQuote">;
   private readonly priceFeed: Pick<ChainlinkPriceFeed, "start" | "stop" | "getLatestTick" | "getOpeningTick"> &
-    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick">>;
+    Partial<Pick<ChainlinkPriceFeed, "msSinceLastTick" | "getLatestTwapTick" | "getTwapAtOrBefore" | "getTickInRange">>;
   private readonly strategyAnalysisEngine: StrategyAnalysisEngine;
   private readonly recommendationEngine: Pick<RecommendationEngine, "recommend">;
   private readonly telegramStore: TelegramNotificationStore;
@@ -1493,15 +1497,33 @@ export class BotController {
       quoteMap.DOWN = quotes[1].value;
     }
 
+    // El precio que Polymarket enseña y con el que RESUELVE es la serie TWAP, no el spot. Los dos
+    // viajan al panel: el spot porque es con el que el bot mide la distancia, el TWAP porque es el
+    // unico comparable con la web. Antes solo iba el spot bajo la etiqueta "Precio", al lado de una
+    // "Apertura" que ya era TWAP.
+    const twapWindowSeconds = market.twapLookbackSeconds;
+    const twapTick = twapWindowSeconds
+      ? this.priceFeed.getLatestTwapTick?.(marketSymbol, twapWindowSeconds)
+      : undefined;
+
     return {
       marketSymbol,
       market,
       tick,
+      twapTick,
+      twapWindowSeconds,
       opening,
       quotes: quoteMap,
       signal: this.buildSignalReason({
         market: marketSymbol,
         marketActive: market.active && !market.closed && market.acceptingOrders,
+        quotes: quoteMap,
+        // Presente solo con la estrategia encendida: es la señal de que es ELLA quien elige lado, y de
+        // que la distancia pasa a ser informativa.
+        favoriteConfig:
+          config.favoriteStrategyEnabled === true
+            ? { minAsk: config.favoriteMinAsk, maxAsk: config.favoriteMaxAsk, maxAskSum: config.favoriteMaxAskSum }
+            : undefined,
         openingPrice: opening?.openingPrice,
         tickValue: tick?.value,
         tickStale: tick ? isTickStale(tick, nowMs, settings.tickStaleMs) : false,
@@ -1524,16 +1546,27 @@ export class BotController {
     market: MarketInfo,
     config: BotConfig,
   ): WindowOpening | undefined {
-    const tick = this.priceFeed.getOpeningTick?.(marketSymbol, market.windowStartMs, config.openingCaptureGraceMs);
-    if (!tick) {
+    // La MISMA cascada que usa el bot (`resolveOpeningTick`, markets.ts). Antes esta ruta llamaba
+    // directo a `getOpeningTick`, o sea SPOT, mientras el bot ya prefería la serie TWAP: cuando
+    // `state.json` no tenia la apertura, el panel enseñaba un numero y el bot habia operado contra
+    // otro. `priceSource` viaja para que una apertura de respaldo se vea como tal en pantalla.
+    const resuelto = resolveOpeningTick({
+      feed: this.priceFeed,
+      market: marketSymbol,
+      windowStartMs: market.windowStartMs,
+      twapLookbackSeconds: market.twapLookbackSeconds,
+      graceMs: config.openingCaptureGraceMs,
+    });
+    if (!resuelto) {
       return undefined;
     }
     return {
       asset: marketSymbol,
       slug: market.slug,
       windowStartMs: market.windowStartMs,
-      openingPrice: tick.value,
-      openingTickTimestampMs: tick.timestampMs,
+      openingPrice: resuelto.tick.value,
+      openingTickTimestampMs: resuelto.tick.timestampMs,
+      priceSource: resuelto.priceSource,
       capturedAtMs: Date.now(),
     };
   }
@@ -1587,6 +1620,9 @@ export class BotController {
     enabledByOutcome: Record<Outcome, boolean>;
     secondsToEnd: number;
     minDistance: Record<Outcome, number>;
+    /** Presente solo con la estrategia "favorito" encendida: entonces es ELLA quien elige lado. */
+    favoriteConfig?: { minAsk?: number; maxAsk?: number; maxAskSum?: number };
+    quotes: Partial<Record<Outcome, OrderbookQuote>>;
   }) {
     const anyInEntryWindow = args.inEntryWindowByOutcome.UP || args.inEntryWindowByOutcome.DOWN;
     if (!args.marketActive) {
@@ -1602,10 +1638,17 @@ export class BotController {
       return { market: args.market, reason: "stale_chainlink_tick", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
 
-    const winner = getWinningOutcome(args.openingPrice, args.tickValue, args.minDistance);
-    if (!winner) {
-      return { market: args.market, reason: "btc_distance_below_threshold", inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
+    // El lado se elige con el MISMO criterio que usa el bot. Con la estrategia "favorito" encendida la
+    // distancia no decide nada (`minDistanceUsd: 0` en el runner), asi que seguir explicando el
+    // descarte como "distancia insuficiente" era la pantalla contando una estrategia que no corre —
+    // el error que este proyecto ya ha corregido cuatro veces en otros sitios.
+    const seleccion = args.favoriteConfig
+      ? seleccionFavorita(args.favoriteConfig, args.quotes, args.openingPrice, args.tickValue)
+      : seleccionDireccional(args.openingPrice, args.tickValue, args.minDistance);
+    if ("reason" in seleccion) {
+      return { market: args.market, reason: seleccion.reason, inEntryWindow: anyInEntryWindow, secondsToEnd: args.secondsToEnd };
     }
+    const winner = seleccion;
     if (!args.enabledByOutcome[winner.outcome]) {
       return {
         market: args.market,
@@ -1721,6 +1764,11 @@ export class BotController {
       maxAskPriceByMarketOutcome: config.maxAskPriceByMarketOutcome ?? settings.maxAskPriceByMarketOutcome,
       minAskPriceByMarketOutcome: config.minAskPriceByMarketOutcome ?? settings.minAskPriceByMarketOutcome,
       maxAskPriceCeiling: config.maxAskPriceCeiling ?? settings.maxAskPriceCeiling,
+      favoriteStrategyEnabled: config.favoriteStrategyEnabled ?? settings.favoriteStrategyEnabled,
+      favoriteMinAsk: config.favoriteMinAsk ?? settings.favoriteMinAsk,
+      favoriteMaxAsk: config.favoriteMaxAsk ?? settings.favoriteMaxAsk,
+      favoriteMaxAskSum: config.favoriteMaxAskSum ?? settings.favoriteMaxAskSum,
+      favoriteAllowLive: config.favoriteAllowLive ?? settings.favoriteAllowLive,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
       liveBankrollUsd: config.liveBankrollUsd ?? settings.liveBankrollUsd,
@@ -2003,4 +2051,49 @@ function extractOllamaContent(payload: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Lado elegido por la distancia del oraculo, o el motivo por el que no hay ninguno.
+ *
+ * Envuelve `getWinningOutcome` en la misma forma que devuelve `seleccionFavorita`, para que el
+ * llamador no tenga que saber cual de los dos criterios esta activo.
+ */
+function seleccionDireccional(
+  openingPrice: number,
+  tickValue: number,
+  minDistance: Record<Outcome, number>,
+): { outcome: Outcome; distanceUsd: number } | { reason: SkipReason } {
+  const winner = getWinningOutcome(openingPrice, tickValue, minDistance);
+  return winner ?? { reason: "btc_distance_below_threshold" };
+}
+
+/**
+ * Lado elegido por el PRECIO del libro, que es lo que hace el bot con la estrategia encendida.
+ *
+ * Llama al mismo `selectFavoriteOutcome` que el runner y traduce su motivo con la misma tabla
+ * (`FAVORITE_SKIP_REASONS`): asi el panel no puede explicar el descarte de una forma y el bot
+ * descartarlo por otra.
+ *
+ * La distancia se sigue calculando y publicando aunque no decida nada — es lo que despues permite
+ * preguntar si el favorito del libro coincidia con el movimiento real del oraculo.
+ */
+function seleccionFavorita(
+  config: { minAsk?: number; maxAsk?: number; maxAskSum?: number },
+  quotes: Partial<Record<Outcome, OrderbookQuote>>,
+  openingPrice: number,
+  tickValue: number,
+): { outcome: Outcome; distanceUsd: number } | { reason: SkipReason } {
+  const decision = selectFavoriteOutcome({
+    quotes,
+    minAsk: config.minAsk,
+    maxAsk: config.maxAsk,
+    maxAskSum: config.maxAskSum,
+  });
+  if (!decision.selection) {
+    return { reason: FAVORITE_SKIP_REASONS[decision.reason] };
+  }
+  const distanceUsd =
+    decision.selection.outcome === "UP" ? tickValue - openingPrice : openingPrice - tickValue;
+  return { outcome: decision.selection.outcome, distanceUsd };
 }

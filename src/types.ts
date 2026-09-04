@@ -289,6 +289,19 @@ export interface OrderbookQuote {
   quotedAtMs?: number;
   bestAsk?: number;
   bestBid?: number;
+  /**
+   * Punto medio de TOPE DE LIBRO: `(bestBid + bestAsk) / 2`. Es lo que la web de Polymarket enseña
+   * como "probabilidad" del lado, y por tanto el unico numero de la pantalla comparable con ella.
+   *
+   * Existe porque el panel pintaba `bestAsk` bajo esa idea y no cuadraba: con spreads de 1,5 a 4,5
+   * centavos el ask queda 1-3 centavos por encima del medio, SIEMPRE en la misma direccion, y eso
+   * hacia que un 0,805 en la web fuera un 0,81 en pantalla.
+   *
+   * NO es el "size-cutoff-adjusted midpoint" de `medioAjustadoPorTamano`: ese es del programa de
+   * recompensas y en un libro fino devuelve el ancho del libro disfrazado de precio. Ver el comentario
+   * de `summarizeOrderBook`.
+   */
+  mid?: number;
   /** Profundidad hasta el tope de ask. Para el camino DIRECCIONAL. */
   availableUsdUnderCap: number;
   /** Profundidad de todo el libro. Para el ARBITRAJE, que no corre riesgo direccional. */

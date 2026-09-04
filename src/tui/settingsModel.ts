@@ -43,6 +43,8 @@ const TOGGLE_LABELS: Record<string, string> = {
   evCalibration: "Calibración empírica",
   autoMinLive: "Operar al mínimo del exchange",
   arbEnabled: "Arbitraje de set completo",
+  favoriteStrategyEnabled: "Favorito: lado por precio",
+  favoriteAllowLive: "Favorito con DINERO REAL",
   makerEnabled: "Maker: cobrar por dar liquidez",
   aiAutoApplyLive: "Autoajuste predictivo",
   arb15mEnabled: "Arbitraje también en 15m",
@@ -59,6 +61,8 @@ const TOGGLE_HELP: Record<string, string> = {
   evCalibration: "Corrige la probabilidad estimada contra lo que de verdad pasó, por mercado.",
   autoMinLive: "Dimensiona al mínimo del exchange ($5) en vez del monto pedido. Igual en sim y en live.",
   arbEnabled: "Compra ambos lados cuando el par cuesta menos de $1 tras comisiones.",
+  favoriteStrategyEnabled: "Elige el lado cuyo ask ya es mas alto, dentro de la banda. SUSTITUYE a la distancia del oraculo.",
+  favoriteAllowLive: "Cierre APARTE: sin el, la estrategia solo corre en sim aunque este encendida.",
   makerEnabled: "Deja órdenes límite en reposo para cobrar el reparto de liquidez. No exige acertar la dirección.",
   arb15mEnabled: "Triplica las ventanas donde puede aparecer un par barato. SOLO arbitraje: el direccional sigue en 5m.",
   aiAutoApplyLive: "Ajusta ventana y distancia por mercado en caliente, con 30 min de enfriamiento entre cambios.",
@@ -184,9 +188,39 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
     integer: true,
     format: (v) => String(v),
   },
+  // La banda del favorito. Acota dinero igual que un tope de ask: define a que precio se entra y a
+  // cual no. Los rangos replican el zod de settings.ts (gt(0).lt(1)), asi que la TUI no puede mandar
+  // un valor que el servidor vaya a rechazar.
+  {
+    key: "favoriteMinAsk",
+    label: "Favorito: ask mínimo",
+    help: "Por debajo, el libro aún no ha declarado favorito y no se entra. Banda medida como improductiva: sin validar.",
+    min: 0.01,
+    max: 0.99,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteMaxAsk",
+    label: "Favorito: ask máximo",
+    help: "Por encima el premio se encoge más rápido que el riesgo: a 0,90 una pérdida borra 8,5 aciertos.",
+    min: 0.01,
+    max: 0.99,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteMaxAskSum",
+    label: "Favorito: suma máx de asks",
+    help: "Por encima el libro está muerto: un 0,80 no es '80% de probabilidad', es que no hay mercado.",
+    min: 1,
+    max: 2,
+    format: (v) => v.toFixed(3),
+  },
 ];
 
 const RISK_FIELD_BY_ID = new Map(RISK_FIELDS.map((field) => [String(field.key), field]));
+
+/** Los campos de RISK_FIELDS que se pintan bajo "Favorito" y no bajo "Límites de riesgo". */
+const FAVORITE_RISK_KEYS = new Set(["favoriteMinAsk", "favoriteMaxAsk", "favoriteMaxAskSum"]);
 
 /** Claves que acotan dinero. La usa el test de paridad entre la web y la TUI. */
 export const TUI_RISK_KEYS: readonly string[] = RISK_FIELDS.map((field) => String(field.key));
@@ -226,6 +260,23 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   header("Estrategia");
   (["requirePositiveEv", "explorationEnabled", "autoStartSimOnBoot", "watchdogEnabled", "evUseSimilarity", "evCalibration", "autoMinLive", "arbEnabled"] as (keyof UiSettings)[]).forEach(toggle);
 
+  // Grupo propio: es una estrategia, no un limite. Los tres numeros viven en RISK_FIELDS (para que el
+  // test de paridad los exija) pero se pintan AQUI, junto al interruptor que los pone en juego —
+  // leerlos a treinta filas de distancia del que los enciende no explica nada.
+  header("Favorito — comprar al que ya va ganando");
+  toggle("favoriteStrategyEnabled");
+  for (const field of RISK_FIELDS.filter((f) => FAVORITE_RISK_KEYS.has(String(f.key)))) {
+    fields.push({
+      id: String(field.key),
+      label: field.label,
+      kind: "number",
+      value: field.format(Number(settings[field.key])),
+      help: field.help,
+      editable: true,
+    });
+  }
+  toggle("favoriteAllowLive");
+
   header("Modo por estrategia");
   for (const key of MODE_KEYS) {
     fields.push({
@@ -248,7 +299,7 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
   fields.push({ id: "askCapAll", label: "Ask techo (todos)", kind: "number", value: cap === undefined ? "mixto" : cap.toFixed(2), editable: true });
 
   header("Límites de riesgo");
-  for (const field of RISK_FIELDS) {
+  for (const field of RISK_FIELDS.filter((f) => !FAVORITE_RISK_KEYS.has(String(f.key)))) {
     fields.push({
       id: String(field.key),
       label: field.label,

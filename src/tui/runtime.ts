@@ -356,7 +356,10 @@ export function startTui(client: PolybotClient): void {
       // aquello era el ARRANQUE, esto es el gesto de edicion. Los modos ciclan con la misma tecla que
       // los interruptores, asi que sin esto un Enter de mas empieza a mover dinero real. Salir de live
       // y el resto del ciclo siguen a una tecla: solo se pone friccion al lado que cuesta dinero.
-      if (isModeId(field.id) && entraEnLive(settings, next, field.id)) {
+      // Sin `isModeId` delante: `entraEnLive` ya sabe que claves encienden dinero real, y desde que
+      // cubre tambien los cierres booleanos (`favoriteAllowLive`) exigir que fuera un modo dejaba al
+      // favorito encendiendose en live con un solo Enter.
+      if (entraEnLive(settings, next, field.id)) {
         openPrompt({
           title: `${field.label} → LIVE. Escribe «${LIVE_PHRASE}» para operar con DINERO REAL:`,
           hint: "cualquier otra cosa cancela",

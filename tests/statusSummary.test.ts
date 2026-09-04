@@ -75,12 +75,22 @@ describe("summarizeStatus", () => {
     expect(compact.dailySpendLimitUsd).toBe(50);
     expect(compact.markets[0]).toEqual({
       marketSymbol: "BTC",
+      duration: undefined,
       reason: "btc_distance_below_threshold",
       inEntryWindow: false,
       secondsToEnd: 30.5,
       outcome: "UP",
       distanceUsd: 12.35,
       tickValue: 58000,
+      // El TWAP es el precio que resuelve y el que enseña la web; el spot (`tickValue`) es con el que
+      // el bot mide la distancia. Los dos viajan porque la pantalla los distingue.
+      twapValue: undefined,
+      // Precios del libro: sin ellos no habia ninguna superficie de terminal donde ver a cuanto cotiza
+      // el favorito, que es el numero del que depende esa estrategia.
+      upAsk: 0.8,
+      downAsk: undefined,
+      upMid: undefined,
+      downMid: undefined,
     });
     expect(compact.pnlByMode.sim).toEqual({
       realizedUsd: 5.5,

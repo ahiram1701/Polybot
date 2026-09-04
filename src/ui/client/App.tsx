@@ -70,9 +70,9 @@ import type { FiscalMonthSummary } from "../../fiscal.js";
 import type {
   AnalysisImportResponse,
   FiscalSummaryResponse,
+  LiveSensitiveKey,
   MarketStatusSnapshot,
   StartBotRequest,
-  StrategyModeKey,
   SupervisorKind,
   TelegramNotificationPatch,
   TelegramNotificationSettings,
@@ -88,11 +88,18 @@ import {
   watchdogToggleAplica,
 } from "../shared.js";
 
-/** Nombre de cada estrategia en los avisos de live. Se recorre con `MODE_KEYS`, nunca a mano. */
-const ETIQUETA_MODO: Record<StrategyModeKey, string> = {
+/**
+ * Nombre de cada palanca que enciende dinero real, para los avisos de live.
+ *
+ * Se recorre con `MODE_KEYS` / `modosQueEntranEnLive`, nunca a mano. Cubre tambien los cierres
+ * booleanos (`LIVE_GATE_KEYS`): el favorito no tiene modo propio —seria un segundo mando
+ * contradiciendo a `directionalMode`— pero abre dinero real igual, y el aviso tiene que nombrarlo.
+ */
+const ETIQUETA_MODO: Record<LiveSensitiveKey, string> = {
   arbMode: "Arbitraje",
   directionalMode: "Direccional",
   makerMode: "Maker",
+  favoriteAllowLive: "Favorito",
 };
 
 type Tab = "dashboard" | "trades" | "fiscal" | "analysis" | "settings" | "telegram" | "logs";
@@ -232,6 +239,11 @@ const emptySettings: UiSettings = {
     DOGE: { UP: 0.01, DOWN: 0.01 },
   },
   maxAskPriceCeiling: 0.85,
+  favoriteStrategyEnabled: false,
+  favoriteMinAsk: 0.76,
+  favoriteMaxAsk: 0.85,
+  favoriteMaxAskSum: 1.15,
+  favoriteAllowLive: false,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   liveBankrollUsd: 0,
@@ -1019,6 +1031,12 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
   const upDistance = snapshot.opening && snapshot.tick ? snapshot.tick.value - snapshot.opening.openingPrice : undefined;
   const downDistance = snapshot.opening && snapshot.tick ? snapshot.opening.openingPrice - snapshot.tick.value : undefined;
   const countdown = snapshot.signal.secondsToEnd;
+  // El precio de cabecera es el TWAP: es la serie con la que Polymarket RESUELVE y la que enseña en su
+  // web, asi que es la unica comparable a simple vista. El spot va debajo, etiquetado.
+  const twapLabel = snapshot.twapWindowSeconds ? `Precio (TWAP ${snapshot.twapWindowSeconds}s)` : "Precio (TWAP)";
+  // Una apertura de respaldo (spot) tiene que verse como tal: comparada contra un cierre TWAP es una
+  // etiqueta corrupta, y hasta ahora las dos quedaban indistinguibles dentro del mismo numero.
+  const openingLabel = snapshot.opening?.priceSource === "spot" ? "Apertura (spot)" : "Apertura";
   return (
     <article className="market-card">
       <div className="market-card-header">
@@ -1031,17 +1049,34 @@ function MarketCard({ snapshot }: { snapshot: MarketStatusSnapshot }) {
         </div>
       </div>
       <div className="hero-metrics market-metrics">
-        <Metric label="Precio" value={formatMarketUsd(snapshot.tick?.value, snapshot.marketSymbol)} />
-        <Metric label="Apertura" value={formatMarketUsd(snapshot.opening?.openingPrice, snapshot.marketSymbol)} />
+        <Metric label={twapLabel} value={formatMarketUsd(snapshot.twapTick?.value, snapshot.marketSymbol)} />
+        <Metric label={openingLabel} value={formatMarketUsd(snapshot.opening?.openingPrice, snapshot.marketSymbol)} />
         <Metric label="Cierre" value={countdown === undefined ? "--" : `${Math.max(0, countdown).toFixed(1)}s`} />
       </div>
       <div className="split-metrics">
         <Metric icon={<TrendingUp size={18} />} label="UP" value={formatMarketDistance(upDistance, snapshot.marketSymbol)} />
         <Metric icon={<TrendingDown size={18} />} label="DOWN" value={formatMarketDistance(downDistance, snapshot.marketSymbol)} />
       </div>
+      {/* La distancia de arriba mide SPOT contra apertura TWAP: son dos series del mismo feed y el
+          desfase es sistematico, no ruido. Enseñar el spot al lado lo hace visible en vez de
+          esconderlo dentro de un unico numero llamado "Precio". */}
+      <p className="market-card-note">
+        Spot {formatMarketUsd(snapshot.tick?.value, snapshot.marketSymbol)} · la distancia mide spot
+        contra apertura {snapshot.opening?.priceSource === "spot" ? "spot" : "TWAP"}
+      </p>
       <div className="quote-rows">
-        <QuoteRow side="UP" ask={snapshot.quotes?.UP?.bestAsk} bid={snapshot.quotes?.UP?.bestBid} />
-        <QuoteRow side="DOWN" ask={snapshot.quotes?.DOWN?.bestAsk} bid={snapshot.quotes?.DOWN?.bestBid} />
+        <QuoteRow
+          side="UP"
+          ask={snapshot.quotes?.UP?.bestAsk}
+          bid={snapshot.quotes?.UP?.bestBid}
+          mid={snapshot.quotes?.UP?.mid}
+        />
+        <QuoteRow
+          side="DOWN"
+          ask={snapshot.quotes?.DOWN?.bestAsk}
+          bid={snapshot.quotes?.DOWN?.bestBid}
+          mid={snapshot.quotes?.DOWN?.mid}
+        />
       </div>
     </article>
   );
@@ -1786,6 +1821,23 @@ export function SettingsPanel({
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
+  /**
+   * Los dos bordes de la banda del favorito, manteniendo min <= max.
+   *
+   * Sin el recorte se puede guardar una banda invertida (min 0,90 y max 0,85), que el esquema acepta
+   * —los dos son numeros validos por separado— y que el selector traduce en "nunca opera": ningun ask
+   * puede estar a la vez por encima de 0,90 y por debajo de 0,85. Una estrategia muda por un ajuste
+   * que parece correcto es de los sintomas mas caros de leer.
+   */
+  function setFavoriteBand(key: "favoriteMinAsk" | "favoriteMaxAsk", value: number) {
+    setDraft((current) => {
+      if (key === "favoriteMinAsk") {
+        return { ...current, favoriteMinAsk: value, favoriteMaxAsk: Math.max(value, current.favoriteMaxAsk) };
+      }
+      return { ...current, favoriteMaxAsk: value, favoriteMinAsk: Math.min(value, current.favoriteMinAsk) };
+    });
+  }
+
   function toggleMarketOutcome(symbol: MarketSymbol, outcome: Outcome, enabled: boolean) {
     setDraft((current) => {
       const enabledMarketOutcomes = {
@@ -2330,6 +2382,83 @@ export function SettingsPanel({
           mercado/lado a la vez — el cap se limita al Techo y el piso al cap de cada lado, para que la ventana nunca se
           cierre. Solo se opera cuando el mejor ask cae dentro de esa ventana. Puedes afinar cada lado abajo; si
           difieren, el campo muestra "mixto".
+        </p>
+      </section>
+
+      <section className="settings-advanced">
+        <div className="section-heading">
+          <TrendingUp size={18} />
+          <h2>Favorito — comprar al que ya va ganando</h2>
+        </div>
+        <p className="settings-hint">
+          Compra el lado cuyo <strong>ask ya está más alto</strong>, si cae dentro de la banda. No
+          predice nada: replica la operativa manual de «me subo al que va ganando».{" "}
+          <strong>Sustituye</strong> a la selección direccional (la distancia de Chainlink respecto a la
+          apertura), no se suma a ella — son dos criterios incompatibles, y mezclarlos haría imposible
+          atribuir cada muestra del historial a una de las dos.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.favoriteStrategyEnabled}
+            onChange={(event) => update("favoriteStrategyEnabled", event.target.checked)}
+            disabled={running}
+          />
+          <span>Elegir lado por el precio del libro, no por el oráculo</span>
+        </label>
+        <div className="settings-grid">
+          <NumberField
+            label="Ask mínimo (entra en banda)"
+            value={draft.favoriteMinAsk}
+            min={0.01}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => setFavoriteBand("favoriteMinAsk", value)}
+          />
+          <NumberField
+            label="Ask máximo (banda)"
+            value={draft.favoriteMaxAsk}
+            min={0.01}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => setFavoriteBand("favoriteMaxAsk", value)}
+          />
+          <NumberField
+            label="Suma máx de los dos asks"
+            value={draft.favoriteMaxAskSum}
+            min={1}
+            max={2}
+            step={0.01}
+            onChange={(value) => update("favoriteMaxAskSum", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          La <strong>suma de los dos asks</strong> es la guardia que sostiene el resto: por encima de
+          ella el libro está muerto, y ahí un 0,80 no significa «el mercado le da un 80%», significa que
+          no hay mercado. Toda la premisa de esta estrategia es que el precio <em>es</em> la
+          probabilidad implícita, y en un libro muerto esa premisa es falsa.
+        </p>
+        <p className="settings-hint settings-hint-warn">
+          <strong>La banda 0,76–0,85 no está validada.</strong> Cae dentro de la zona que este historial
+          ya midió como improductiva: 225 operaciones para ganar $8,68. Las 8 entradas que cumplen la
+          banda en el histórico salieron 8 de 8, pero con n=8 y un punto de equilibrio del 80,5% el
+          intervalo va del ~63% al 100% — es compatible con perder dinero. La estrategia existe para
+          medirse con muestras propias, no porque haya evidencia a favor.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.favoriteAllowLive}
+            onChange={(event) => update("favoriteAllowLive", event.target.checked)}
+            disabled={running}
+          />
+          <span>Permitir que opere con DINERO REAL</span>
+        </label>
+        <p className="settings-hint">
+          Cierre <strong>aparte</strong> del interruptor de arriba, a propósito: pasar a dinero real
+          debe ser un acto deliberado y no el efecto colateral de encender una estrategia. Con la
+          estrategia encendida y este cierre cerrado, el camino direccional <strong>se para</strong> en
+          live — no vuelve al criterio antiguo por su cuenta.
         </p>
       </section>
 
@@ -3534,10 +3663,19 @@ function SortHeader({ label, sortKey, sortState, onSort }: {
 }
 
 
-function QuoteRow({ side, ask, bid }: { side: "UP" | "DOWN"; ask?: number; bid?: number }) {
+function QuoteRow({ side, ask, bid, mid }: {
+  side: "UP" | "DOWN";
+  ask?: number;
+  bid?: number;
+  mid?: number;
+}) {
   return (
     <div className="quote-row">
       <span className={`side ${side.toLowerCase()}`}>{side}</span>
+      {/* El medio va PRIMERO porque es el numero que enseña la web de Polymarket. El ask es lo que de
+          verdad se paga, y queda 1-3 centavos por encima: los dos juntos explican la diferencia en vez
+          de dejarla como un misterio. */}
+      <span>Medio {formatPrice(mid)}</span>
       <span>Ask {formatPrice(ask)}</span>
       <span>Bid {formatPrice(bid)}</span>
     </div>
@@ -3915,11 +4053,18 @@ function formatDateTime(value?: number, timeZone?: string): string {
   return formatDateTimeInTimeZone(value, timeZone);
 }
 
+/**
+ * Precio de participacion (0-1). TRES decimales, no dos.
+ *
+ * Con `toFixed(2)` un ask de 0,785 se veia como "0,79" — por encima del techo de 0,85 no importaba,
+ * pero la banda del favorito mide 9 centimos de ancho y redondear al centimo esconde exactamente el
+ * borde: un 0,755 y un 0,764 se ven iguales y solo uno entra en banda.
+ */
 function formatPrice(value?: number): string {
   if (value === undefined || !Number.isFinite(value)) {
     return "--";
   }
-  return value.toFixed(2);
+  return value.toFixed(3);
 }
 
 function formatOutcomeSettingRange(
@@ -4046,24 +4191,31 @@ function getInitialTheme(): Theme {
   }
 }
 
+/**
+ * Etiqueta de la insignia de la tarjeta de mercado.
+ *
+ * Los motivos que NO son de descarte (estados propios de la tarjeta: sin mercado, error de snapshot)
+ * viven aqui, porque no existen en `SKIP_REASON_LABELS`. Todo lo demas se delega en el mapa
+ * COMPARTIDO: esta funcion era una segunda tabla paralela, y al aparecer la estrategia "favorito" la
+ * insignia empezo a enseñar `favorite_below_band` en crudo mientras el panel de abajo, que si usa el
+ * mapa compartido, lo traducia bien. Dos tablas para lo mismo siempre acaban asi.
+ */
+const BADGE_ONLY_LABELS: Record<string, string> = {
+  no_market: "Sin mercado",
+  no_markets_enabled: "Sin mercados activos",
+  disabled: "Desactivado",
+  market_not_found: "Mercado no encontrado",
+  waiting_entry_window: "Esperando ventana",
+  signal_ready: "Lista",
+  snapshot_error: "Error snapshot",
+  missing_live_configuration: "Faltan credenciales",
+};
+
 function reasonLabel(reason?: string): string {
-  const labels: Record<string, string> = {
-    no_market: "Sin mercado",
-    no_markets_enabled: "Sin mercados activos",
-    disabled: "Desactivado",
-    market_not_found: "Mercado no encontrado",
-    market_not_accepting_orders: "Mercado cerrado",
-    missing_opening_chainlink_tick: "Sin apertura",
-    missing_current_chainlink_tick: "Sin tick",
-    stale_chainlink_tick: "Tick stale",
-    btc_distance_below_threshold: "Sin distancia",
-    outcome_disabled: "Lado apagado",
-    waiting_entry_window: "Esperando ventana",
-    signal_ready: "Lista",
-    snapshot_error: "Error snapshot",
-    missing_live_configuration: "Faltan credenciales",
-  };
-  return labels[reason ?? ""] ?? reason ?? "--";
+  if (!reason) {
+    return "--";
+  }
+  return BADGE_ONLY_LABELS[reason] ?? humanSkipReason(reason);
 }
 
 

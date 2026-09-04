@@ -6,6 +6,7 @@ import type {
   MarketSymbol,
   Outcome,
   PriceFeedSymbol,
+  PriceTick,
 } from "./types.js";
 
 export interface MarketDefinition {
@@ -314,4 +315,63 @@ function isValidMaxAskPrice(value: unknown): value is number {
 
 function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Lo minimo que el resolutor de apertura necesita de un feed de precios.
+ *
+ * Todo opcional porque hay dobles en los tests que solo implementan una parte, y porque el propio
+ * `ChainlinkPriceFeed` gano `getTwapAtOrBefore` despues que el resto.
+ */
+export interface OpeningPriceFeed {
+  getTwapAtOrBefore?(
+    market: MarketSymbol,
+    timestampMs: number,
+    windowSeconds: number,
+    maxAgeMs?: number,
+  ): PriceTick | undefined;
+  getOpeningTick?(market: MarketSymbol, windowStartMs: number, graceMs: number): PriceTick | undefined;
+  getTickInRange?(market: MarketSymbol, fromMs: number, toMs: number): PriceTick | undefined;
+}
+
+/**
+ * El precio de apertura de una ventana, y de QUE serie salio.
+ *
+ * Vive aqui —y no en botRunner— porque hay DOS rutas que necesitan la misma respuesta: el bot, que
+ * captura la apertura para operar contra ella, y el panel, que la enseña cuando `state.json` todavia
+ * no la tiene. Cuando cada una llevaba su propia cascada se separaron: el bot ya prefería la serie
+ * TWAP y el panel seguia leyendo spot, asi que la pantalla mostraba una apertura y el bot habia
+ * operado contra otra, sin que nada lo dijera.
+ *
+ * La apertura oficial es el valor de la serie TWAP en el inicio de ventana. Las reglas del mercado son
+ * explicitas: "este mercado va del precio segun el data stream TWAP de Chainlink, NO segun ninguna
+ * otra fuente ni mercados spot". El spot es solo el respaldo mientras la serie TWAP no haya llegado
+ * —recien arrancado, por ejemplo—, y por eso `priceSource` viaja con el valor: una apertura spot
+ * comparada contra un cierre TWAP es una etiqueta corrupta que despues nadie puede detectar.
+ */
+export function resolveOpeningTick(args: {
+  feed: OpeningPriceFeed;
+  market: MarketSymbol;
+  windowStartMs: number;
+  /** `MarketInfo.twapLookbackSeconds`. Ausente = el mercado no resuelve por TWAP. */
+  twapLookbackSeconds?: number;
+  graceMs: number;
+  /** Ultimo tick spot conocido, como ultimo recurso. */
+  latestTick?: PriceTick;
+}): { tick: PriceTick; priceSource: "twap" | "spot" } | undefined {
+  const { feed, market, windowStartMs, twapLookbackSeconds, graceMs, latestTick } = args;
+  const twap = twapLookbackSeconds
+    ? feed.getTwapAtOrBefore?.(market, windowStartMs, twapLookbackSeconds, graceMs)
+    : undefined;
+  if (twap) {
+    return { tick: twap, priceSource: "twap" };
+  }
+  // Se prefiere el tick de apertura con gracia simetrica (acepta el ultimo precio justo antes del
+  // inicio de ventana, para feeds que actualizan poco); luego el rango dentro de la ventana; y por
+  // ultimo el ultimo tick conocido.
+  const spot =
+    feed.getOpeningTick?.(market, windowStartMs, graceMs) ??
+    feed.getTickInRange?.(market, windowStartMs, windowStartMs + graceMs) ??
+    latestTick;
+  return spot ? { tick: spot, priceSource: "spot" } : undefined;
 }

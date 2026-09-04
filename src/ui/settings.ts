@@ -85,6 +85,19 @@ const settingsSchema = z.object({
   }),
   // Ceiling default 0.85 keeps existing ui-config.json (without this key) at the recommended value.
   maxAskPriceCeiling: z.coerce.number().gt(0).lte(1).default(0.85),
+  /**
+   * Estrategia "favorito". Los rangos son los MISMOS que en `src/config.ts:143-155` a proposito: un
+   * ajuste que el panel acepta y el arranque rechaza es un bot que se comporta distinto segun por
+   * donde le llegue el valor.
+   *
+   * Los defaults dejan a un `ui-config.json` antiguo (sin estas claves) exactamente como estaba:
+   * apagada, y con la banda que documenta `.env.example`.
+   */
+  favoriteStrategyEnabled: z.boolean().default(false),
+  favoriteMinAsk: z.coerce.number().gt(0).lt(1).default(0.76),
+  favoriteMaxAsk: z.coerce.number().gt(0).lt(1).default(0.85),
+  favoriteMaxAskSum: z.coerce.number().positive().default(1.15),
+  favoriteAllowLive: z.boolean().default(false),
   dailySpendLimitUsd: z.coerce.number().positive(),
   maxDailyLossUsd: z.coerce.number().nonnegative().default(0),
   liveBankrollUsd: z.coerce.number().nonnegative().default(0),
@@ -247,6 +260,11 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
       config.maxAskPrice,
     ),
     maxAskPriceCeiling: config.maxAskPriceCeiling ?? 0.85,
+    favoriteStrategyEnabled: Boolean(config.favoriteStrategyEnabled ?? false),
+    favoriteMinAsk: config.favoriteMinAsk ?? 0.76,
+    favoriteMaxAsk: config.favoriteMaxAsk ?? 0.85,
+    favoriteMaxAskSum: config.favoriteMaxAskSum ?? 1.15,
+    favoriteAllowLive: Boolean(config.favoriteAllowLive ?? false),
     dailySpendLimitUsd: config.dailySpendLimitUsd,
     maxDailyLossUsd: config.maxDailyLossUsd ?? 0,
     liveBankrollUsd: config.liveBankrollUsd ?? 0,
@@ -340,6 +358,13 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     // 0.30 — o sea que su ausencia deja pasar justo las peores.
     minAskPriceByMarketOutcome: settings.minAskPriceByMarketOutcome,
     maxAskPriceCeiling: settings.maxAskPriceCeiling,
+    // La estrategia "favorito", con el mismo cuidado que el piso de ask de arriba: sin estas cinco
+    // lineas el panel la enseñaria encendida y el runner seguiria eligiendo lado por la distancia.
+    favoriteStrategyEnabled: settings.favoriteStrategyEnabled,
+    favoriteMinAsk: settings.favoriteMinAsk,
+    favoriteMaxAsk: settings.favoriteMaxAsk,
+    favoriteMaxAskSum: settings.favoriteMaxAskSum,
+    favoriteAllowLive: settings.favoriteAllowLive,
     dailySpendLimitUsd: settings.dailySpendLimitUsd,
     maxDailyLossUsd: settings.maxDailyLossUsd,
     liveBankrollUsd: settings.liveBankrollUsd,

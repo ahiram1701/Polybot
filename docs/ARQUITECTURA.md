@@ -107,14 +107,46 @@ Tres cosas que no son obvias:
   encendida y el cierre cerrado, el camino direccional **se para** en live; no vuelve al criterio
   antiguo. Un fallback silencioso pondría a operar con dinero real una estrategia distinta de la que el
   operador acaba de elegir.
-- **Solo opera en los últimos 120 s de la ventana.** Elige lado con los libros de la FASE 1, y esos solo
-  se piden dentro de `ANALYTICS_WINDOW_SECONDS`. Por eso `getAnalyticsQuotes` cotiza también cuando la
-  estrategia está encendida aunque no haya `analyticsRecorder` montado: sin eso dejaría de operar en
-  silencio, registrando `favorite_missing_quote` para siempre.
+- **Opera durante toda la ventana, pero con DOS techos de tiempo, no uno.** El declarado es
+  `entryWindowSeconds` (300 desde 2026-09-04). El otro no se declara: `getAnalyticsQuotes` solo pedía
+  los libros dentro de `ANALYTICS_WINDOW_SECONDS` (120 de 300), y el favorito ELIGE lado con esos
+  libros — así que abrir la ventana declarada sin abrir el suministro dejaba la estrategia ciega,
+  registrando `favorite_missing_quote` en bucle. Ahora el favorito también los pide fuera de esa
+  ventana, a cadencia reducida (`FAVORITE_SCAN_INTERVAL_MS`, 3 s), con su propio contador: cotizar en
+  cada iteración durante los 300 s es lo que llevó el p50 del loop de 56 ms a 281 ms.
+- Por lo mismo, `getAnalyticsQuotes` cotiza aunque no haya `analyticsRecorder` montado: sin eso dejaría
+  de operar en silencio.
+- **Abrir la ventana estrena un régimen sin muestras.** Un ask de 0,80 a 250 s del cierre refleja
+  incertidumbre real; a 15 s refleja un resultado casi decidido. Las 8 entradas 8/8 que el ledger tenía
+  al medir la banda son TODAS de la fase tardía. No extrapolar de unas a otras.
+- **El autoajuste tiraría la ventana hacia abajo.** Las rejillas de `recommendationEngine` y
+  `strategyAnalysisEngine` topan en 120 s, con salto máximo de 60 s por aplicación. Con
+  `aiAutoApplyLive` encendido, la ventana de 300 se iría reduciendo sola. Debe seguir apagado.
 
 La guardia que sostiene todo lo demás es `dead_book`: si los dos asks suman más de 1,15, el libro está
 muerto y un 0,80 **no** significa «el mercado le da un 80%», significa que no hay mercado. Toda la
 premisa de la estrategia es que el precio ES la probabilidad implícita, y ahí es falsa.
+
+## Qué precio enseña cada pantalla
+
+Tres números distintos se confundían en uno, y por eso el panel no cuadraba con polymarket.com:
+
+| En pantalla | Qué es | De dónde sale |
+| --- | --- | --- |
+| **Precio (TWAP Ns)** | La serie que RESUELVE el mercado. Es lo comparable con la web. | `getLatestTwapTick(market, twapLookbackSeconds)` |
+| **Spot** (pie de la tarjeta) | El oráculo al instante. Es con el que el bot mide la distancia. | `getLatestTick` |
+| **Medio** (fila de cotización) | El *size-cutoff-adjusted midpoint*: lo que la web muestra como «probabilidad». | `medioAjustadoPorTamano` sobre los niveles ya cotizados |
+| **Ask** | Lo que de verdad se paga. Queda 1–3 céntimos por encima del medio, siempre. | `bestAsk` |
+
+Dos trampas que esto cierra:
+
+- La tarjeta llamaba «Precio» al **spot** y «Apertura» al **TWAP**, así que la distancia mezclaba dos
+  series sin decirlo. Sigue mezclándolas —es lo que hace el bot— pero ahora se ve.
+- El *fallback* de apertura del panel usaba spot mientras el del bot usaba TWAP: cuando `state.json` no
+  tenía la apertura, la pantalla enseñaba un número y el bot había operado contra otro. Los dos usan
+  ahora `resolveOpeningTick` (`markets.ts`), y `priceSource` viaja hasta la pantalla.
+- Un medio calculado sin el corte de tamaño lo mueve cualquiera con cuatro participaciones sueltas.
+  Cuando ningún nivel llega al mínimo se cae al medio crudo y **se dice** (`midSource`).
 
 ## La resolución la decide el TWAP, no el spot
 

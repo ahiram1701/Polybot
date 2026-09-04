@@ -178,6 +178,83 @@ describe("UI API", () => {
     controller.dispose();
   });
 
+  it("patches the favorite strategy from the UI and applies it to the runtime config", async () => {
+    // La cadena entera: esquema zod -> ui-config.json -> applySettings -> config del runner. Sin el
+    // ultimo paso el panel enseñaria la estrategia encendida y el bot seguiria eligiendo lado por la
+    // distancia del oraculo — que es el fallo que ya se cometio tres veces en este fichero.
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({
+        favoriteStrategyEnabled: true,
+        favoriteMinAsk: 0.7,
+        favoriteMaxAsk: 0.88,
+        favoriteMaxAskSum: 1.1,
+      })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.favoriteStrategyEnabled).toBe(true);
+        expect(response.body.favoriteMinAsk).toBe(0.7);
+        expect(response.body.favoriteMaxAsk).toBe(0.88);
+        expect(response.body.favoriteMaxAskSum).toBe(1.1);
+      });
+
+    const status = await controller.getStatus();
+    expect(status.config.favoriteStrategyEnabled).toBe(true);
+    expect(status.config.favoriteMinAsk).toBe(0.7);
+    expect(status.config.favoriteMaxAsk).toBe(0.88);
+    expect(status.config.favoriteMaxAskSum).toBe(1.1);
+    // El cierre de dinero real NO se enciende de rebote al encender la estrategia.
+    expect(status.config.favoriteAllowLive).toBe(false);
+    controller.dispose();
+  });
+
+  it("rechaza una banda del favorito fuera de (0,1) en vez de guardarla", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    // Un ask de 1 no es un precio: la participacion ya vale $1 y no hay nada que ganar. El esquema del
+    // arranque (config.ts) lo rechaza, y el del panel tiene que rechazarlo igual — si no, el bot se
+    // comporta distinto segun por donde le llegue el valor.
+    await request(app).patch("/api/settings").send({ favoriteMinAsk: 1 }).expect(400);
+
+    const settings = await controller.getSettings();
+    expect(settings.favoriteMinAsk).toBe(0.76);
+    controller.dispose();
+  });
+
+  it("con el favorito encendido, el motivo del panel es el del FAVORITO, no el de la distancia", async () => {
+    // La pantalla contaba una estrategia que no corre: decia "Distancia insuficiente" mientras el bot
+    // elegia lado por el precio del libro y no miraba la distancia para nada.
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller);
+
+    await request(app)
+      .patch("/api/settings")
+      .send({ favoriteStrategyEnabled: true })
+      .expect(200);
+
+    const status = await controller.getStatus();
+    const motivos = (status.markets ?? []).map((m) => m.signal.reason);
+    // Sea cual sea el descarte concreto (depende del libro del doble), NUNCA puede ser el direccional.
+    expect(motivos).not.toContain("btc_distance_below_threshold");
+    controller.dispose();
+  });
+
   it("patches enabled markets from the UI", async () => {
     const controller = new BotController(await baseConfig(false), {
       startPriceFeed: false,

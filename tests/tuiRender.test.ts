@@ -46,6 +46,11 @@ function testSettings(): UiSettings {
     aiAutoTuneAskCap: false,
     dailySpendLimitUsd: 250,
     maxAskPriceCeiling: 0.85,
+    favoriteStrategyEnabled: true,
+    favoriteMinAsk: 0.76,
+    favoriteMaxAsk: 0.85,
+    favoriteMaxAskSum: 1.15,
+    favoriteAllowLive: false,
     maxAskPrice: 0.6,
     liveTradeAmountUsd: 5,
     simTradeAmountUsd: 5,
@@ -472,5 +477,67 @@ describe("TUI: decisiones del autoajuste", () => {
   it("sin programas no pinta el panel", () => {
     const text = stripAnsi(renderDashboard(baseVm({ status: statusFixture() })).join(NL));
     expect(text).not.toContain("bandas en prueba");
+  });
+});
+
+describe("TUI: precios del libro y ajustes del favorito", () => {
+  it("la caja de mercados enseña el ask y el medio, que es de lo que vive el favorito", () => {
+    // Hasta ahora la TUI no pintaba NINGUN precio de libro: no habia forma de ver "el favorito cotiza
+    // a 0,81" desde la terminal, que es justo el numero del que depende esa estrategia.
+    const vm = baseVm({
+      status: statusFixture({
+        markets: [
+          {
+            marketSymbol: "BTC",
+            reason: "favorite_below_band",
+            inEntryWindow: true,
+            secondsToEnd: 200,
+            twapValue: 80500.25,
+            upAsk: 0.812,
+            downAsk: 0.201,
+            upMid: 0.805,
+            downMid: 0.195,
+          },
+        ],
+      }),
+    });
+
+    const texto = stripAnsi(renderDashboard(vm).join("\n"));
+
+    expect(texto).toContain("0.812");
+    // El medio va al lado del ask porque es el numero que enseña la web de Polymarket, y difieren.
+    expect(texto).toContain("0.805");
+    expect(texto).toContain("twap 80500.25");
+  });
+
+  it("un mercado sin libro no inventa precios", () => {
+    const vm = baseVm({
+      status: statusFixture({
+        markets: [
+          {
+            marketSymbol: "BTC",
+            reason: "favorite_missing_quote",
+            inEntryWindow: true,
+            secondsToEnd: 200,
+          },
+        ],
+      }),
+    });
+
+    const texto = stripAnsi(renderDashboard(vm).join("\n"));
+
+    expect(texto).toContain("—");
+    expect(texto).not.toContain("0.000");
+  });
+
+  it("la estrategia favorito tiene su propio grupo de ajustes", () => {
+    const ids = buildSettingsFields(testSettings()).map((f) => f.id);
+
+    expect(ids).toContain("favoriteStrategyEnabled");
+    expect(ids).toContain("favoriteMinAsk");
+    expect(ids).toContain("favoriteMaxAsk");
+    expect(ids).toContain("favoriteMaxAskSum");
+    // El cierre de dinero real va DESPUES de la banda: se lee en el orden en que se decide.
+    expect(ids.indexOf("favoriteAllowLive")).toBeGreaterThan(ids.indexOf("favoriteMaxAskSum"));
   });
 });

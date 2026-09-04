@@ -31,7 +31,20 @@ export interface CompactMarket {
   secondsToEnd?: number;
   outcome?: Outcome;
   distanceUsd?: number;
+  /** Precio SPOT del oraculo. NO es el que resuelve el mercado ni el que enseña la web. */
   tickValue?: number;
+  /** Precio TWAP: la serie que RESUELVE, y la unica comparable con lo que muestra Polymarket. */
+  twapValue?: number;
+  /**
+   * Mejor ask de cada lado, y el punto medio que Polymarket usa como "probabilidad".
+   *
+   * Sin esto no habia NINGUNA superficie de terminal donde ver "el favorito cotiza a 0,81" — que es
+   * justo el numero del que depende la estrategia del favorito para decidir.
+   */
+  upAsk?: number;
+  downAsk?: number;
+  upMid?: number;
+  downMid?: number;
 }
 
 export interface CompactPnl {
@@ -128,6 +141,11 @@ export function summarizeStatus(
       outcome: market.signal.outcome,
       distanceUsd: round(market.signal.distanceUsd),
       tickValue: market.tick?.value,
+      twapValue: market.twapTick?.value,
+      upAsk: market.quotes?.UP?.bestAsk,
+      downAsk: market.quotes?.DOWN?.bestAsk,
+      upMid: market.quotes?.UP?.mid,
+      downMid: market.quotes?.DOWN?.mid,
     })),
     pnlByMode: {
       sim: compactPnl(status.pnlByMode.sim),

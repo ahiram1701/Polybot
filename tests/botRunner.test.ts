@@ -310,6 +310,166 @@ describe("BotRunner", () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
+  describe("la estrategia favorito ve el libro durante toda la ventana", () => {
+    // El favorito ELIGE lado con los libros de la fase de captura. Mientras esos solo se pedian en los
+    // ultimos ANALYTICS_WINDOW_SECONDS (120 de 300), abrir la ventana de entrada no servia de nada: el
+    // selector recibia un mapa de quotes vacio y registraba favorite_missing_quote en bucle.
+    /** Libro con asks DISTINTOS por lado: sin eso los dos empatan y el selector dice `no_favorite`. */
+    function libroConFavorito(upAsk: number, downAsk: number): OrderbookService {
+      return {
+        getQuote: vi.fn(async (tokenId: string) => {
+          const ask = tokenId.endsWith("-up") ? upAsk : downAsk;
+          return {
+            tokenId,
+            bestAsk: ask,
+            bestBid: ask - 0.01,
+            availableUsdUnderCap: 100,
+            availableUsdAllLevels: 100,
+            estimatedSharesForAmount: 1 / ask,
+            rawAskLevels: [],
+            rawBidLevels: [],
+            availableBidUsdAllLevels: 100,
+          };
+        }),
+      } as unknown as OrderbookService;
+    }
+
+    function escenarioTemprano(overrides: Partial<BotConfig> = {}, upAsk = 0.8, downAsk = 0.32) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      // t+50s: quedan 250s, MUY fuera de la ventana de analitica de 120s.
+      const nowMs = windowStartMs + 50_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      const watcher = {
+        getCurrentMarkets: vi.fn(async () => [market]),
+        getCurrentMarket: vi.fn(async () => market),
+      } as unknown as MarketWatcher;
+      const priceFeed = {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getLatestTick: vi.fn(() => ({
+          market: "BTC" as MarketSymbol,
+          symbol: priceFeedSymbol("BTC"),
+          value: 130,
+          timestampMs: nowMs,
+          receivedAtMs: nowMs,
+        })),
+      } as unknown as ChainlinkPriceFeed;
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn(() => ({
+          asset: "BTC" as MarketSymbol,
+          slug: market.slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        })),
+        hasTraded: vi.fn(() => false),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+        saveOpening: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const orderbook = libroConFavorito(upAsk, downAsk);
+      const executor = { execute: vi.fn(async () => ({ status: "filled" })) } as unknown as TradeExecutor;
+      const config: BotConfig = {
+        ...baseConfig(),
+        favoriteStrategyEnabled: true,
+        arbEnabled: false,
+        // La ventana abierta a los 300s: es el ajuste que sin el suministro temprano no hacia nada.
+        entryWindowSeconds: 300,
+        entryWindowSecondsByMarket: { BTC: 300, ETH: 300, DOGE: 300 },
+        ...overrides,
+      };
+      const runner = new BotRunner(config, {
+        watcher,
+        orderbook,
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      });
+      return { runner, orderbook, executor, nowMs };
+    }
+
+    it("pide el libro fuera de la ventana de analitica cuando el favorito esta encendido", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Ventana de entrada estrecha a proposito: asi el unico que puede pedir el libro es la FASE DE
+      // CAPTURA. Con la ventana abierta, el camino direccional tambien cotiza bajo demanda y las dos
+      // causas quedan indistinguibles.
+      const { runner, orderbook, nowMs } = escenarioTemprano({
+        entryWindowSeconds: 20,
+        entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+      });
+
+      await runner.runOnce(nowMs);
+
+      // Los dos lados: el favorito necesita el contrario para distinguir un favorito real de un libro
+      // muerto, aunque solo vaya a comprar uno.
+      expect(orderbook.getQuote).toHaveBeenCalledTimes(2);
+    });
+
+    it("sin favorito ni arbitraje la fase de captura sigue sin pedir libro", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, orderbook, nowMs } = escenarioTemprano({
+        favoriteStrategyEnabled: false,
+        entryWindowSeconds: 20,
+        entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+      });
+
+      await runner.runOnce(nowMs);
+
+      expect(orderbook.getQuote).not.toHaveBeenCalled();
+    });
+
+    it("respeta la cadencia reducida: no cotiza en cada iteracion", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, orderbook, nowMs } = escenarioTemprano({
+        entryWindowSeconds: 20,
+        entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+      });
+
+      await runner.runOnce(nowMs);
+      // Un segundo despues, dentro del intervalo de 3s: no debe volver a pedir el libro. Cotizar en
+      // cada iteracion durante los 300s es lo que llevo el p50 del loop de 56ms a 281ms.
+      await runner.runOnce(nowMs + 1_000);
+      expect(orderbook.getQuote).toHaveBeenCalledTimes(2);
+
+      // Pasado el intervalo, vuelve a mirar.
+      await runner.runOnce(nowMs + 3_500);
+      expect(orderbook.getQuote).toHaveBeenCalledTimes(4);
+    });
+
+    it("opera a 250s del cierre, que con la ventana de 20s era imposible", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // UP a 0,80 (en banda 0,76-0,85), DOWN a 0,32: suma 1,12, por debajo del tope de libro muerto.
+      const { runner, executor, nowMs } = escenarioTemprano();
+
+      await runner.runOnce(nowMs);
+
+      expect(executor.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("con la ventana estrecha el descarte DICE que fue la ventana", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+        logs.push(line);
+      });
+      // Mismo libro que el test de arriba (el favorito SI entra en banda), pero con 250s por delante y
+      // una ventana de 20s. Antes esto salia por un return sin motivo, asi que el panel decia "no
+      // opera" y no habia forma de saber que la causa era la ventana.
+      const { runner, executor, nowMs } = escenarioTemprano({
+        entryWindowSeconds: 20,
+        entryWindowSecondsByMarket: { BTC: 20, ETH: 20, DOGE: 20 },
+      });
+
+      await runner.runOnce(nowMs);
+
+      expect(executor.execute).not.toHaveBeenCalled();
+      expect(JSON.stringify(logs)).toContain("outside_entry_window");
+    });
+  });
+
   it("records analytics for all supported markets even when no market is enabled for directional trading", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 

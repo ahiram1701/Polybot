@@ -38,6 +38,25 @@ export interface UiSettings {
   minAskPriceByMarketOutcome: MarketOutcomeNumberSettings;
   // Hard ceiling on the ask price for any trade and for what the auto-adjust may pick (reward/risk).
   maxAskPriceCeiling: number;
+  /**
+   * Estrategia "favorito": compra el lado cuyo ask ya esta mas alto, dentro de la banda.
+   *
+   * SUSTITUYE a la seleccion direccional (la distancia de Chainlink), no se suma a ella: son dos
+   * criterios incompatibles sobre el mismo mercado y mezclarlos haria imposible atribuir cada muestra
+   * del ledger a una de las dos. Ver `selectSignalOutcome` en botRunner.
+   */
+  favoriteStrategyEnabled: boolean;
+  favoriteMinAsk: number;
+  favoriteMaxAsk: number;
+  /** Tope de la SUMA de los dos asks. Por encima el libro esta muerto y el ask no es probabilidad. */
+  favoriteMaxAskSum: number;
+  /**
+   * Cierre APARTE para dinero real. Sin esto la estrategia solo corre en sim, aunque este encendida.
+   *
+   * No es un booleano cualquiera: `entraEnLive` lo trata como los modos de estrategia, asi que
+   * encenderlo desde la web o la TUI exige teclear `LIVE_PHRASE`.
+   */
+  favoriteAllowLive: boolean;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   liveBankrollUsd: number;
@@ -133,7 +152,18 @@ export interface MarketStatusSnapshot {
   marketSymbol: MarketSymbol;
   market?: MarketInfo;
   opening?: WindowOpening;
+  /**
+   * Tick SPOT de Chainlink. Es el que usa el bot para medir la distancia, y por eso sigue publicandose.
+   *
+   * No es el precio que Polymarket enseña ni con el que resuelve: eso es `twapTick`. Los dos viajan
+   * juntos a proposito — la pantalla tenia un solo numero llamado "Precio" que era el spot mientras la
+   * "Apertura" de al lado ya era TWAP, asi que la distancia mezclaba dos series sin decirlo.
+   */
   tick?: PriceTick;
+  /** Ultimo valor de la serie TWAP que RESUELVE este mercado. Es el precio comparable con la web. */
+  twapTick?: PriceTick;
+  /** Ventana de esa serie en segundos (30 o 60), de `MarketInfo.twapLookbackSeconds`. */
+  twapWindowSeconds?: number;
   quotes?: Partial<Record<Outcome, OrderbookQuote>>;
   signal: SignalSnapshot;
 }
@@ -326,6 +356,11 @@ export const SKIP_REASON_LABELS = {
   missing_current_chainlink_tick: "Sin tick actual (feed)",
   stale_chainlink_tick: "Tick viejo (feed)",
   market_already_traded: "Ya operado",
+  // Fuera de la ventana de entrada. Este descarte existia y salia SIN motivo: el runner devolvia
+  // `undefined` en silencio, asi que el panel decia "no opera" y no habia forma de saber que la causa
+  // era la ventana. Con la ventana abierta a los 300s casi no se dispara, y por eso mismo conviene que
+  // hable: si alguien la estrecha, el silencio volveria a ser indistinguible de una averia.
+  outside_entry_window: "Fuera de la ventana de entrada",
   market_not_accepting_orders: "Mercado cerrado",
   daily_spend_limit_reached: "Limite de gasto",
   risk_circuit_breaker: "Circuit breaker de riesgo",
@@ -408,6 +443,25 @@ export function isStrategyModeKey(id: string): id is StrategyModeKey {
 }
 
 /**
+ * Cierres booleanos que abren dinero real sin ser un modo.
+ *
+ * `favoriteAllowLive` no es un `*Mode` —el favorito ES el camino direccional, asi que darle modo
+ * propio dejaria dos mandos que se contradicen con `directionalMode`—, pero enciende dinero real
+ * igual que uno. Vive en esta lista para que la friccion de `LIVE_PHRASE` lo cubra en las TRES
+ * superficies a la vez, que es justo lo que el comentario de `MODE_KEYS` explica que paso cuando
+ * cada una llevaba su propia lista.
+ */
+export const LIVE_GATE_KEYS = ["favoriteAllowLive"] as const;
+export type LiveGateKey = (typeof LIVE_GATE_KEYS)[number];
+
+export function isLiveGateKey(id: string): id is LiveGateKey {
+  return (LIVE_GATE_KEYS as readonly string[]).includes(id);
+}
+
+/** Las claves que exigen la frase al encenderse: modos de estrategia y cierres booleanos. */
+export type LiveSensitiveKey = StrategyModeKey | LiveGateKey;
+
+/**
  * La frase que hay que teclear para poner una estrategia en live.
  *
  * No contradice la decision de "sin confirmacion al arrancar": aquello era el ARRANQUE —que el
@@ -424,15 +478,20 @@ export const LIVE_PHRASE = "ARRANCAR LIVE";
  * frase se convertiria en un tramite que se teclea sin leer.
  */
 export function entraEnLive(antes: UiSettings, despues: UiSettings, id: string): boolean {
-  if (!isStrategyModeKey(id)) {
-    return false;
+  if (isStrategyModeKey(id)) {
+    return despues[id] === "live" && antes[id] !== "live";
   }
-  return despues[id] === "live" && antes[id] !== "live";
+  // Un cierre booleano: abrirlo es la transicion que cuesta dinero. Cerrarlo no pregunta, igual que
+  // salir de live en un modo.
+  if (isLiveGateKey(id)) {
+    return despues[id] === true && antes[id] !== true;
+  }
+  return false;
 }
 
-/** Las estrategias que este cambio pone en live, si es que alguna. */
-export function modosQueEntranEnLive(antes: UiSettings, despues: UiSettings): StrategyModeKey[] {
-  return MODE_KEYS.filter((key) => entraEnLive(antes, despues, key));
+/** Las estrategias y cierres que este cambio pone en live, si es que alguno. */
+export function modosQueEntranEnLive(antes: UiSettings, despues: UiSettings): LiveSensitiveKey[] {
+  return [...MODE_KEYS, ...LIVE_GATE_KEYS].filter((key) => entraEnLive(antes, despues, key));
 }
 
 // ---------------------------------------------------------------------------

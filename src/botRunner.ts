@@ -41,6 +41,7 @@ import {
   marketSymbolFromSlug,
   necesitaMercadosCripto,
   OUTCOMES,
+  resolveOpeningTick,
   SUPPORTED_MARKETS,
 } from "./markets.js";
 import { MarketWatcher } from "./marketWatcher.js";
@@ -98,7 +99,7 @@ const INTERVALO_MAKER_MS = 15_000;
  * cada motivo nuevo tenga su etiqueta en `SKIP_REASON_LABELS`, en vez de dejarla salir como codigo
  * crudo en las tres pantallas — que es exactamente como se colaron los siete motivos anteriores.
  */
-const FAVORITE_SKIP_REASONS: Record<FavoriteSkipReason, SkipReason> = {
+export const FAVORITE_SKIP_REASONS: Record<FavoriteSkipReason, SkipReason> = {
   missing_quote: "favorite_missing_quote",
   extreme_price: "favorite_extreme_price",
   dead_book: "favorite_dead_book",
@@ -148,6 +149,19 @@ const DEFAULT_MAX_ASK_SPREAD = 0.02;
 // cualquier momento del ciclo, no solo en los ultimos 120s, pero cotizar cada segundo durante los 300
 // degrada el loop. 3s cubre el resto de la ventana sin ahogar el camino caliente.
 const ARB_SCAN_INTERVAL_MS = 3_000;
+/**
+ * Cadencia con la que la estrategia "favorito" mira el libro FUERA de la ventana de analytics.
+ *
+ * La misma razon que `ARB_SCAN_INTERVAL_MS`, y el mismo numero: el favorito elige lado con estos
+ * libros, asi que con la ventana de entrada abierta a los 300s los necesita durante todo el ciclo,
+ * pero pedirlos cada segundo durante los 300 es exactamente lo que llevo el p50 del loop de 56ms a
+ * 281ms. Un ask que entra en la banda 0,76-0,85 no se evapora en 3 segundos; un loop lento si llega
+ * tarde a la entrada.
+ *
+ * En los ultimos `ANALYTICS_WINDOW_SECONDS` NO se aplica: ahi el libro se mueve de verdad (es cuando
+ * converge hacia 0/1) y se sigue cotizando en cada iteracion.
+ */
+const FAVORITE_SCAN_INTERVAL_MS = 3_000;
 
 /**
  * Default de patas sueltas seguidas antes de dejar de intentar arbitrajes. Configurable como
@@ -378,6 +392,12 @@ export class BotRunner {
   private readonly explorationCountByDayMarket = new Map<string, number>();
   /** Ultimo escaneo de arbitraje por slug, para la cadencia reducida fuera de la ventana. */
   private readonly lastArbScanMs = new Map<string, number>();
+  /**
+   * Ultimo sondeo del libro para el favorito, por slug. Mapa APARTE del de arbitraje a proposito: si
+   * compartieran contador, encender el arbitraje adelantaria el reloj del favorito (y al reves), y
+   * cada uno se quedaria sin la mitad de sus sondeos sin que nada lo dijera.
+   */
+  private readonly lastFavoriteScanMs = new Map<string, number>();
 
   constructor(
     private readonly config: BotConfig,
@@ -1408,26 +1428,23 @@ export class BotRunner {
   }
 
   private getOpeningTick(market: MarketInfo, latestTick: BtcPriceTick | undefined): BtcPriceTick | undefined {
-    const grace = this.config.openingCaptureGraceMs;
-    // La apertura oficial es el valor de la serie TWAP en el inicio de ventana. Las reglas del mercado
-    // son explicitas: "este mercado va del precio segun el data stream TWAP de Chainlink, NO segun
-    // ninguna otra fuente ni mercados spot". El spot queda solo como respaldo mientras la serie TWAP
-    // no haya llegado — recien arrancado, por ejemplo.
-    const ventanaTwap = market.twapLookbackSeconds;
-    const twap = ventanaTwap
-      ? this.deps.priceFeed.getTwapAtOrBefore?.(market.asset, market.windowStartMs, ventanaTwap, grace)
-      : undefined;
-    if (twap) {
-      this.aperturasPorTwap.add(market.slug);
-      return twap;
+    // La cascada TWAP → spot vive en `resolveOpeningTick` (markets.ts) porque el panel necesita la
+    // MISMA, y cuando cada uno llevaba la suya se separaron.
+    const resuelto = resolveOpeningTick({
+      feed: this.deps.priceFeed,
+      market: market.asset,
+      windowStartMs: market.windowStartMs,
+      twapLookbackSeconds: market.twapLookbackSeconds,
+      graceMs: this.config.openingCaptureGraceMs,
+      latestTick,
+    });
+    if (!resuelto) {
+      return undefined;
     }
-    // Prefer the symmetric-grace opening tick (accepts the last price just before window start for
-    // sparsely-updated feeds); fall back to the in-window range and finally the latest tick.
-    return (
-      this.deps.priceFeed.getOpeningTick?.(market.asset, market.windowStartMs, grace) ??
-      this.deps.priceFeed.getTickInRange?.(market.asset, market.windowStartMs, market.windowStartMs + grace) ??
-      latestTick
-    );
+    if (resuelto.priceSource === "twap") {
+      this.aperturasPorTwap.add(market.slug);
+    }
+    return resuelto.tick;
   }
 
   private buildTradeSignal(args: {
@@ -1516,6 +1533,12 @@ export class BotRunner {
 
     const entryWindowSeconds = this.resolveConfiguredEntryWindow(args.market.asset, winner.outcome);
     if (!isWithinEntryWindow(args.market.endMs, args.nowMs, entryWindowSeconds)) {
+      this.logSkipOnce(args.market.slug, "outside_entry_window", {
+        market: args.market.asset,
+        outcome: winner.outcome,
+        entryWindowSeconds,
+        secondsToEnd: Math.round((args.market.endMs - args.nowMs) / 1000),
+      });
       return undefined;
     }
 
@@ -2226,6 +2249,27 @@ export class BotRunner {
     return OUTCOMES.some((outcome) => this.isConfiguredOutcomeEnabled(market, outcome));
   }
 
+  /**
+   * Si a esta estrategia le toca sondear el libro, y marca su reloj si es que si.
+   *
+   * Marcar SIEMPRE que toca (aunque acabe cotizando por la otra estrategia) mantiene las dos cadencias
+   * independientes y estables: sin eso, la que no dispara acumularia deuda y sondearia de mas en
+   * cuanto la otra se apagara.
+   */
+  private debeEscanearFueraDeVentana(
+    relojes: Map<string, number>,
+    slug: string,
+    nowMs: number,
+    intervaloMs: number,
+  ): boolean {
+    const ultimo = relojes.get(slug) ?? 0;
+    if (nowMs - ultimo < intervaloMs) {
+      return false;
+    }
+    relojes.set(slug, nowMs);
+    return true;
+  }
+
   private async getAnalyticsQuotes(
     market: MarketInfo,
     nowMs: number,
@@ -2244,18 +2288,33 @@ export class BotRunner {
         return {};
       }
     } else {
-      // Fuera de la ventana de analytics solo se cotiza para el ARBITRAJE, y a cadencia reducida.
+      // Fuera de la ventana de analytics se cotiza a cadencia reducida, y solo para quien lo necesita:
+      // el ARBITRAJE (aparece en cualquier momento del ciclo) y la estrategia FAVORITO (elige lado con
+      // estos libros, asi que con la ventana de entrada abierta mas alla de los 120s se quedaba ciega
+      // y registraba `favorite_missing_quote` en bucle).
+      //
       // Cotizar en cada iteracion triplicaba las llamadas al orderbook y degrado el loop de p50 56ms
       // a 281ms (con picos de 20s), y un loop lento llega tarde a las entradas — que ya medimos que
-      // cuesta dinero. Cada ARB_SCAN_INTERVAL_MS basta: la oportunidad dura segundos, no milisegundos.
-      if (this.config.arbEnabled !== true) {
+      // cuesta dinero. Unos pocos segundos bastan: la oportunidad dura segundos, no milisegundos.
+      //
+      // Cada estrategia lleva su PROPIO contador. Con uno compartido, tener las dos encendidas le
+      // robaria sondeos a las dos.
+      const arbQuiere = this.config.arbEnabled === true;
+      const favoritoQuiere = this.config.favoriteStrategyEnabled === true;
+      if (!arbQuiere && !favoritoQuiere) {
         return {};
       }
-      const last = this.lastArbScanMs.get(market.slug) ?? 0;
-      if (nowMs - last < ARB_SCAN_INTERVAL_MS) {
+      // `some`, no `every`: basta con que UNA de las dos toque para cotizar, y la otra aprovecha el
+      // mismo libro. Los dos relojes se marcan igualmente, para que ninguna se salte su turno.
+      const debeEscanear = [
+        arbQuiere ? this.debeEscanearFueraDeVentana(this.lastArbScanMs, market.slug, nowMs, ARB_SCAN_INTERVAL_MS) : false,
+        favoritoQuiere
+          ? this.debeEscanearFueraDeVentana(this.lastFavoriteScanMs, market.slug, nowMs, FAVORITE_SCAN_INTERVAL_MS)
+          : false,
+      ].some(Boolean);
+      if (!debeEscanear) {
         return {};
       }
-      this.lastArbScanMs.set(market.slug, nowMs);
     }
 
     const [up, down] = await Promise.allSettled([

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { validationProgressByKind } from "../src/ui/client/chartData.js";
 import { AnalysisChartsSection, AnalysisPanel, App, ControlBar, Dashboard, FiscalPanel, SettingsPanel, TelegramPanel, TradesTable, splitPnlByKind } from "../src/ui/client/App.js";
+import { LIVE_PHRASE } from "../src/ui/shared.js";
 import type { UiSettings, UiStatus } from "../src/ui/shared.js";
 import type { AiRecommendationsResponse, MarketSymbol, RecommendationMetrics, TradeAttempt } from "../src/types.js";
 
@@ -570,6 +571,50 @@ describe("UI frontend components", () => {
     expect(screen.getByRole("checkbox", { name: "Exigir valor esperado positivo" })).toBeChecked();
   });
 
+  it("expone los controles de la estrategia favorito", () => {
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: /Favorito/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Ask mínimo (entra en banda)")).toHaveValue("0.76");
+    expect(screen.getByLabelText("Ask máximo (banda)")).toHaveValue("0.85");
+    expect(screen.getByLabelText("Suma máx de los dos asks")).toHaveValue("1.15");
+    expect(
+      screen.getByRole("checkbox", { name: "Elegir lado por el precio del libro, no por el oráculo" }),
+    ).not.toBeChecked();
+  });
+
+  it("mantiene la banda del favorito ordenada: subir el mínimo empuja el máximo", () => {
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
+
+    const minimo = screen.getByLabelText("Ask mínimo (entra en banda)");
+    fireEvent.focus(minimo);
+    fireEvent.change(minimo, { target: { value: "0.90" } });
+    fireEvent.blur(minimo);
+
+    // Una banda invertida (min 0,90 > max 0,85) la acepta el esquema —los dos son numeros validos por
+    // separado— y el selector la traduce en "nunca opera": ningun ask puede estar a la vez por encima
+    // de 0,90 y por debajo de 0,85. Una estrategia muda por un ajuste que parece correcto.
+    expect(screen.getByLabelText("Ask máximo (banda)")).toHaveValue("0.9");
+  });
+
+  it("encender el dinero real del favorito exige teclear la frase", async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={onSave} />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Permitir que opere con DINERO REAL" }));
+
+    // El aviso nombra la palanca: `favoriteAllowLive` no es un modo, pero enciende dinero real igual.
+    const aviso = screen.getByRole("heading", { name: "Vas a encender DINERO REAL" }).closest("section");
+    expect(aviso).not.toBeNull();
+    expect(within(aviso as HTMLElement).getByText("Favorito")).toBeInTheDocument();
+
+    // El propio boton avisa de que va a preguntar: la friccion empieza antes de pulsarlo.
+    fireEvent.click(screen.getByRole("button", { name: "Guardar (pedira confirmacion)" }));
+    await waitFor(() => expect(screen.getByLabelText(`Escribe ${LIVE_PHRASE} para confirmar`)).toBeInTheDocument());
+    // Sin la frase no se guarda nada: el cierre es aparte a proposito.
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("allows free-form number editing in settings", () => {
     render(<SettingsPanel settings={settings()} running={false} busy={false} onSave={vi.fn()} />);
 
@@ -860,6 +905,11 @@ function settings(): UiSettings {
       DOGE: { UP: 0.01, DOWN: 0.01 },
     },
     maxAskPriceCeiling: 0.85,
+    favoriteStrategyEnabled: false,
+    favoriteMinAsk: 0.76,
+    favoriteMaxAsk: 0.85,
+    favoriteMaxAskSum: 1.15,
+    favoriteAllowLive: false,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },
       ETH: { UP: 0.98, DOWN: 0.98 },

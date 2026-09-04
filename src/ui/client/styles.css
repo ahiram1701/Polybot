@@ -501,11 +501,16 @@ h2 {
 }
 
 .market-metrics {
-  grid-template-columns: minmax(112px, 1.35fr) minmax(68px, 0.8fr) minmax(72px, 0.85fr);
+  /* Las DOS primeras columnas llevan un precio de cripto completo (el TWAP y la apertura), no una y
+     un porcentaje: con el minimo anterior "$80,836.65" se partia en dos lineas. */
+  grid-template-columns: minmax(104px, 1.2fr) minmax(104px, 1.2fr) minmax(60px, 0.7fr);
 }
 
 .market-metrics .metric strong {
-  font-size: 20px;
+  /* Bajado de 20px: cinco digitos y dos decimales de BTC no caben a 20px en la columna que queda
+     cuando la tarjeta esta en una rejilla de tres. */
+  font-size: 17px;
+  white-space: nowrap;
 }
 
 .metric {
@@ -584,12 +589,23 @@ h2 {
 
 .quote-row {
   display: grid;
-  grid-template-columns: 72px 1fr 1fr;
+  /* Cuatro columnas desde que la fila enseña tambien el punto medio, que es el numero que muestra la
+     web de Polymarket. El ask solo ya hacia que un 0,80 en pantalla fuera un 0,78 en la web. */
+  grid-template-columns: 72px 1fr 1fr 1fr;
   gap: 8px;
   align-items: center;
   padding: 10px;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
+}
+
+/* Pie de la tarjeta de mercado: el spot, y contra que apertura se mide la distancia. Letra pequeña a
+   proposito — el numero de cabecera es el TWAP, que es el comparable con la web de Polymarket. */
+.market-card-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted, #6b7280);
 }
 
 .side {

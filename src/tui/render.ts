@@ -282,14 +282,22 @@ export function renderDashboard(vm: ViewModel): string[] {
     out.push(...boxed("Maker (recompensas)", makerBody, width));
   }
 
-  // Mercados
+  // Mercados. Dos filas por mercado: la de siempre (ventana, cuenta atras, lado, distancia) y una de
+  // PRECIOS. La segunda es nueva y no es decorativa: la estrategia del favorito decide con el ask del
+  // libro, y hasta ahora no habia ninguna pantalla de terminal donde verlo. El medio va al lado del
+  // ask porque es el numero que enseña la web de Polymarket, y difieren 1-3 centavos.
   const marketLines = s.markets.length
-    ? s.markets.map((m) => {
+    ? s.markets.flatMap((m) => {
         const inWin = m.inEntryWindow ? green("● en ventana") : gray("○ fuera");
         const secs = m.secondsToEnd !== undefined ? `${padStart(fmtInt(m.secondsToEnd), 3)}s` : "  —";
         const side = m.outcome ? padEnd(m.outcome, 4) : "    ";
         const dist = m.distanceUsd !== undefined ? padStart(fmtUsd(m.distanceUsd), 8) : padStart("—", 8);
-        return `${bold(padEnd(m.marketSymbol + (m.duration && m.duration !== "5m" ? `/${m.duration}` : ""), 9))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
+        const nombre = m.marketSymbol + (m.duration && m.duration !== "5m" ? `/${m.duration}` : "");
+        const cabecera = `${bold(padEnd(nombre, 9))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
+        const precio = m.twapValue !== undefined ? `twap ${fmtPrecio(m.twapValue)}` : "twap —";
+        const up = `UP a/m ${fmtBanda(m.upAsk)}/${fmtBanda(m.upMid)}`;
+        const down = `DOWN a/m ${fmtBanda(m.downAsk)}/${fmtBanda(m.downMid)}`;
+        return [cabecera, dim(`${" ".repeat(10)}${precio}   ${up}   ${down}`)];
       })
     : [dim("sin mercados observados")];
   out.push(...boxed("Mercados", marketLines, width));
@@ -505,6 +513,21 @@ export function renderBody(vm: ViewModel): string[] {
     default:
       return [];
   }
+}
+
+/**
+ * Precio de participacion (0-1) con TRES decimales.
+ *
+ * La banda del favorito mide 9 centimos de ancho: redondeada al centimo, un 0,755 y un 0,764 se ven
+ * iguales y solo uno entra en banda.
+ */
+function fmtBanda(value: number | undefined): string {
+  return value === undefined || !Number.isFinite(value) ? "—" : value.toFixed(3);
+}
+
+/** Precio de la cripto. Decimales suficientes para DOGE, que cotiza en centesimas de centavo. */
+function fmtPrecio(value: number): string {
+  return value >= 1 ? value.toFixed(2) : value.toFixed(6);
 }
 
 /** Compose the whole screen and pad/truncate to exactly `height` lines so the alt-screen repaint

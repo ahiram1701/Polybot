@@ -97,11 +97,26 @@ export function summarizeOrderBook(
   // arbitraje aparece cuando UN lado se encarece.
   const availableUsdAllLevels = asks.reduce((sum, ask) => sum + ask.price * ask.size, 0);
 
+  const bestAsk = asks[0]?.price;
+  const bestBid = bids[0]?.price;
+  // Medio de TOPE DE LIBRO, que es el que enseña la web. No cuesta ni una llamada extra: los niveles
+  // ya estan aqui.
+  //
+  // Deliberadamente NO se usa `medioAjustadoPorTamano` (makerQuoting.ts) aunque exista y este probado:
+  // ese es el "size-cutoff-adjusted midpoint" del programa de RECOMPENSAS, que tira los niveles por
+  // debajo del minimo para que nadie fije un medio falso con polvo. Para repartir recompensas es el
+  // correcto; para ENSEÑAR un precio no lo es. Medido en produccion el 2026-09-04 sobre el libro fino
+  // de DOGE: con el ask en 0,83 el medio ajustado salia 0,505, porque los bids cercanos eran todos
+  // polvo y el primero que llegaba al minimo estaba en 0,18. Un 0,505 al lado de un ask de 0,83 no es
+  // "la probabilidad": es el ancho del libro disfrazado de precio.
+  const mid = bestAsk !== undefined && bestBid !== undefined ? (bestAsk + bestBid) / 2 : undefined;
+
   return {
     tokenId: book.asset_id,
     quotedAtMs: Date.now(),
-    bestAsk: asks[0]?.price,
-    bestBid: bids[0]?.price,
+    bestAsk,
+    bestBid,
+    mid,
     availableUsdUnderCap,
     availableUsdAllLevels,
     estimatedSharesForAmount,
