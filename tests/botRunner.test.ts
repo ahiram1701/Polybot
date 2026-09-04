@@ -625,20 +625,32 @@ describe("BotRunner", () => {
       expect(JSON.stringify(logs)).toContain("market_already_traded");
     });
 
-    it("si la conviccion se lleva la cuenta, la banda se descarta por falta de capital", async () => {
+    it("la conviccion NO entra si la banda no opero esa ventana", async () => {
       const logs: unknown[] = [];
       vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
-      // Saldo justo: la conviccion entra primero y no deja sitio para los $5 de la banda.
-      const { runner, executed, nowMs, avanzar } = escenarioDosTramos({ saldoUsd: 12.42, asks: [0.99, 0.85] });
+      // El libro abre YA decidido: pasa de 0,98 sin haber estado nunca en la banda. Medido, es el
+      // 19,2% de las ventanas. La conviccion dobla sobre una eleccion de la banda; sin esa eleccion
+      // seria una apuesta suelta del capital entero.
+      const { runner, executed, nowMs } = escenarioDosTramos({ saldoUsd: 100, asks: [0.99] });
+
       await runner.runOnce(nowMs);
       await runner.runOnce(nowMs + 1_000);
-      expect(executed.map((e) => e.entryKind)).toEqual(["conviccion"]);
+      await runner.runOnce(nowMs + 2_000);
 
+      expect(executed).toHaveLength(0);
+      expect(JSON.stringify(logs)).toContain("favorite_max_size_sin_banda");
+    });
+
+    it("y SI entra en cuanto la banda ha operado antes en esa ventana", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Mismo libro, pero pasando primero por la banda: 0,85 -> 0,99.
+      const { runner, executed, nowMs, avanzar } = escenarioDosTramos({ saldoUsd: 100, asks: [0.85, 0.99] });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
       avanzar();
       await runner.runOnce(nowMs + 2_000);
 
-      expect(executed).toHaveLength(1);
-      expect(JSON.stringify(logs)).toContain("favorite_banda_sin_capital");
+      expect(executed.map((e) => e.entryKind)).toEqual(["banda", "conviccion"]);
     });
   });
 
@@ -672,14 +684,23 @@ describe("BotRunner", () => {
         mercados?: MarketSymbol[];
         /** 0,99 = tramo de conviccion (por defecto). 0,85 = banda. */
         askUp?: number;
+        /** La conviccion exige banda previa; los tests de la propia banda la necesitan sin operar. */
+        bandaYaOperada?: boolean;
       } = {},
     ) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
       const nowMs = windowStartMs + 200_000;
+      const simbolos = opts.mercados ?? (["BTC"] as MarketSymbol[]);
       const operados = new Set<string>();
       // Posiciones abiertas acumuladas, como haria el StateStore real: son las que atan capital.
       const abiertas: TradeAttempt[] = [];
-      const simbolos = opts.mercados ?? (["BTC"] as MarketSymbol[]);
+      // La conviccion exige que la banda YA haya operado esta ventana. Se marca sin añadir a
+      // `abiertas` a proposito: estos tests miden el dimensionado, no el capital que ataria la banda.
+      if (opts.bandaYaOperada !== false) {
+        for (const m of simbolos) {
+          operados.add(marketInfo(m, m.toLowerCase(), windowStartMs).slug + ":banda");
+        }
+      }
       const mercados = simbolos.map((m) => marketInfo(m, m.toLowerCase(), windowStartMs));
       const watcher = {
         getCurrentMarkets: vi.fn(async () => mercados),
@@ -868,6 +889,7 @@ it("tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
         profundidadUsd: 5_000,
         // BANDA, no conviccion: es el camino que no tenia contador y por eso sobrepasaba la cuenta.
         askUp: 0.85,
+        bandaYaOperada: false,
       });
 
       await runner.runOnce(nowMs);

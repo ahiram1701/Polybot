@@ -146,6 +146,13 @@ el capital disponible**. Cinco cosas que no son obvias:
   `resolveTradeAmountUsd` devuelve `orderMinSize` pase lo que pase, así que dejarlo en el camino
   aplastaría el tamaño a $5 sin decir nada.
 
+**La convicción exige que la banda haya operado antes esa ventana.** No es un tramo independiente: es
+doblar sobre una ventana que la banda ya eligió. Sin esa entrada delante no hay nada sobre lo que
+doblar, y la convicción sería una apuesta suelta del capital entero sobre un libro que nunca pasó por
+la banda. Coste medido: de las ventanas donde el ask supera 0,98, el **19,2% llegan ahí sin pasar por
+la banda** (el libro abre ya decidido). Esas dejan de operarse a propósito, y lo dicen
+(`favorite_max_size_sin_banda`).
+
 **Los dos tramos entran en la MISMA ventana, uno cada uno.** Antes compartían la única ranura de
 `market_already_traded` y el que disparase primero dejaba al otro fuera — medido sobre 780 ventanas, la
 banda ganaba la carrera el 56,3% de las veces, porque el precio pasa POR la banda camino de 0,99.

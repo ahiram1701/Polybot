@@ -1553,6 +1553,19 @@ export class BotRunner {
       this.logSkipOnce(args.market.slug, "market_already_traded", { market: args.market.asset, entryKind });
       return undefined;
     }
+    // La conviccion NO es un tramo independiente: es doblar sobre una ventana que la banda ya eligio.
+    // Sin la entrada de banda delante no hay nada sobre lo que doblar, y la conviccion se convertiria
+    // en una apuesta suelta del capital entero sobre un libro que nunca paso por la banda.
+    //
+    // Consecuencia medida: de las ventanas donde el ask supera 0,98, el 19,2% llegan ahi SIN pasar por
+    // la banda (el libro abre ya decidido). Esas dejan de operarse a proposito.
+    if (entryKind === "conviccion" && !this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"), "banda")) {
+      this.logSkipOnce(args.market.slug, "favorite_max_size_sin_banda", {
+        market: args.market.asset,
+        outcome: winner.outcome,
+      });
+      return undefined;
+    }
     if (!this.isConfiguredOutcomeEnabled(args.market.asset, winner.outcome)) {
       this.logSkipOnce(args.market.slug, "outcome_disabled", {
         market: args.market.asset,
