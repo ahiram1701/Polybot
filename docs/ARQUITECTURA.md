@@ -123,6 +123,42 @@ Tres cosas que no son obvias:
   `strategyAnalysisEngine` topan en 120 s, con salto máximo de 60 s por aplicación. Con
   `aiAutoApplyLive` encendido, la ventana de 300 se iría reduciendo sola. Debe seguir apagado.
 
+### El tramo de máxima convicción (ask > 0,98)
+
+Por encima de `favoriteMaxSizeAsk` el favorito deja de usar el importe configurado y entra con **todo
+el capital disponible**. Cinco cosas que no son obvias:
+
+- **"Capital disponible" es el saldo REAL de la cuenta**, leído on-chain por `OnChainBankrollSource`,
+  menos lo atado en posiciones abiertas (`openStakeUsd`), menos lo ya comprometido en esta iteración.
+  El límite diario sigue en la fórmula, pero como tope superior, no como definición del capital.
+- **Descontar las posiciones abiertas no es un detalle, es la corrección que hace que la frase sea
+  cierta.** El saldo no baja al abrir una posición: en sim nunca, y en live la lectura está cacheada 60
+  s mientras la posición dura minutos. Sin ese descuento, BTC apostaba la cuenta entera y un segundo
+  después ETH la volvía a apostar — tres mercados comprometiendo el triple del dinero que existe.
+- **Un saldo ilegible NO significa "sin límite": significa no entrar.** La guardia de
+  `minBankrollForDirectionalUsd` sí deja pasar un `unknown` a propósito, para no convertir un RPC caído
+  en política de riesgo; pero eso vale para *no bloquear*, no para *dimensionar*. Sin
+  `POLYMARKET_FUNDER_ADDRESS` el tramo queda inerte y lo dice (`favorite_max_size_bankroll_unknown`).
+- **Se recotiza el libro con el importe final.** El quote de la fase de captura se pidió con el importe
+  pequeño, y de él dependen `estimatedSharesForAmount` y `estimatedAveragePrice`. Reutilizarlo haría
+  que el P&L puntuara otra operación — el mismo fallo que ya apuntó $10 donde había $0,69.
+- **`autoMinLive` se salta a propósito.** Es un SUSTITUTO, no un mínimo: con él encendido
+  `resolveTradeAmountUsd` devuelve `orderMinSize` pase lo que pase, así que dejarlo en el camino
+  aplastaría el tamaño a $5 sin decir nada.
+
+**Lo que este tramo NO tiene es evidencia.** Medido sobre 204 entradas anteriores a los 30 s: acierta
+el 99,51% con un equilibrio del 99,03%, o sea +0,48% por operación. Pero la "verdad" con la que se
+puntúa sale del propio libro (`resolveSampleTruth`), y está validada al 98,6% contra la resolución
+oficial: **el error del etiquetado triplica la ventaja que dice medir**. Con 1 sola pérdida en 204, el
+intervalo de confianza baja hasta ~97,3%, muy por debajo del equilibrio.
+
+Y el riesgo real no es el EV, es la **ruina**: poniendo el saldo entero en cada entrada, un fallo no
+borra "102 aciertos", borra la cuenta. Por eso corre en sim, `favoriteAllowLive` sigue cerrado, y el
+saldo se lee con la dirección pública sin clave privada — no hay camino técnico a mover dinero real.
+
+**Ojo con la simulación:** el saldo on-chain es una constante que las operaciones de papel no mueven,
+así que **la sim no mostrará esta ruina**. No leer sus resultados como una validación.
+
 La guardia que sostiene todo lo demás es `dead_book`: si los dos asks suman más de 1,15, el libro está
 muerto y un 0,80 **no** significa «el mercado le da un 80%», significa que no hay mercado. Toda la
 premisa de la estrategia es que el precio ES la probabilidad implícita, y ahí es falsa.

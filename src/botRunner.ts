@@ -275,6 +275,12 @@ interface TradeSignal {
   distanceUsd: number;
   minDistanceUsd: number;
   entryWindowSeconds: number;
+  /**
+   * Esta entrada viene del tramo de MAXIMA CONVICCION: `amountUsd` no es el importe configurado sino
+   * todo el capital disponible. Viaja en la señal —y no se vuelve a deducir del precio mas adelante—
+   * porque decide si hay que recotizar el libro antes de ejecutar.
+   */
+  maxSize?: boolean;
 }
 
 interface TradeCandidate extends TradeSignal {
@@ -322,6 +328,14 @@ export class BotRunner {
    * al gastar. Dos arbitrajes de $10 con $10 en la cuenta dejan el segundo a medio llenar.
    */
   private arbCommittedUsdThisIteration = 0;
+  /**
+   * Capital ya comprometido por el tramo de maxima conviccion EN ESTA ITERACION.
+   *
+   * Espejo del de arriba y por el mismo motivo: los tres mercados de una ventana se evaluan en la
+   * misma pasada contra el mismo saldo, asi que sin este contador cada uno pediria la cuenta entera.
+   * Se pone a cero al empezar cada iteracion; no persiste, porque el saldo se vuelve a leer.
+   */
+  private maxSizeCommittedUsdThisIteration = 0;
 
   /**
    * Patas sueltas seguidas. Es el unico riesgo real del arbitraje: si la segunda pata deja de llenar
@@ -679,6 +693,7 @@ export class BotRunner {
 
     const tradeSignals: TradeSignal[] = [];
     this.arbCommittedUsdThisIteration = 0;
+    this.maxSizeCommittedUsdThisIteration = 0;
     const analyticsQuotesBySlug = new Map<string, Partial<Record<Outcome, OrderbookQuote>>>();
     const directionalMode = this.modeFor("dir");
     const dailySpendUsd = this.deps.state.getDailySpend(nowMs, undefined, directionalMode);
@@ -1542,12 +1557,6 @@ export class BotRunner {
       return undefined;
     }
 
-    const amountUsd = resolveTradeAmountUsd({
-      mode: this.config.mode,
-      requestedUsd: this.resolveConfiguredTradeAmountUsd(args.market.asset, winner.outcome),
-      orderMinSize: args.market.orderMinSize,
-      autoMinLive: this.config.autoMinLive,
-    });
     // Con un sondeo en curso la ventana se ensancha hasta cubrir la banda en pruebas. Tiene que llegar
     // hasta aqui y no solo al filtro posterior: este tope viaja a `getQuote`, que lo usa para calcular
     // la profundidad disponible bajo el — con el tope viejo, los precios que se quieren sondear
@@ -1559,6 +1568,29 @@ export class BotRunner {
       },
       this.probeFor(args.market.asset, args.nowMs),
     ).cap;
+
+    // El tramo de maxima conviccion NO pasa por `resolveTradeAmountUsd`, y por tanto tampoco por
+    // `autoMinLive` — que es un SUSTITUTO, no un minimo: con el encendido devuelve `orderMinSize` pase
+    // lo que pase, asi que dejarlo en el camino aplastaria el tamaño a $5 sin decir nada.
+    const amountUsd = winner.maxSize
+      ? this.resolveMaxSizeAmountUsd(args, winner.outcome)
+      : resolveTradeAmountUsd({
+          mode: this.config.mode,
+          requestedUsd: this.resolveConfiguredTradeAmountUsd(args.market.asset, winner.outcome),
+          orderMinSize: args.market.orderMinSize,
+          autoMinLive: this.config.autoMinLive,
+        });
+    if (amountUsd === undefined) {
+      // El motivo ya se registro dentro de `resolveMaxSizeAmountUsd`: alli se sabe cual de los topes
+      // mordio, y "no se pudo dimensionar" sin decir por que es de los sintomas mas caros de leer.
+      return undefined;
+    }
+    if (winner.maxSize) {
+      // Reserva inmediata, igual que `arbCommittedUsdThisIteration`. Sin esto los tres mercados de la
+      // misma ventana pedirian CADA UNO el saldo entero: 3x sobrecomprometido sobre dinero que solo
+      // existe una vez.
+      this.maxSizeCommittedUsdThisIteration += amountUsd;
+    }
 
     if (args.reservedDailySpendUsd + amountUsd > this.config.dailySpendLimitUsd) {
       this.logSkipOnce(args.market.slug, "daily_spend_limit_reached", {
@@ -1579,7 +1611,110 @@ export class BotRunner {
       distanceUsd: winner.distanceUsd,
       minDistanceUsd: winner.minDistanceUsd,
       entryWindowSeconds,
+      maxSize: winner.maxSize,
     };
+  }
+
+  /**
+   * Dolares comprometidos en posiciones que aun no han resuelto, en el modo direccional vigente.
+   *
+   * Es la pieza que hace que "todo el capital disponible" signifique lo que dice: el saldo de la
+   * cuenta no baja al abrir una posicion (en sim nunca; en live la lectura esta cacheada 60s y la
+   * posicion dura minutos), asi que sin descontar esto cada ventana volveria a apostar el mismo dinero.
+   *
+   * Se cuenta el modo entero y no solo el favorito: un dolar atado por el arbitraje tampoco esta
+   * disponible. `calculateTradePnl` ya sabe distinguir lo pendiente y usa el importe REALMENTE llenado
+   * cuando lo hay, no el pedido.
+   */
+  private openStakeUsd(): number {
+    const modo = this.modeFor("dir");
+    let total = 0;
+    for (const trade of this.deps.state.listTrades()) {
+      if (trade.mode !== modo) {
+        continue;
+      }
+      const pnl = calculateTradePnl(trade);
+      if (pnl.status === "pending") {
+        total += pnl.stakeUsd;
+      }
+    }
+    return total;
+  }
+
+  /**
+   * Cuanto poner en una entrada del tramo de MAXIMA CONVICCION: todo el capital disponible.
+   *
+   * "Capital disponible" es el saldo REAL de la cuenta de Polymarket, leido on-chain
+   * (`OnChainBankrollSource`), no el limite de gasto de papel. El limite diario sigue en la formula,
+   * pero como tope superior, no como definicion del capital.
+   *
+   * La estructura es la del arbitraje (`sizeArbOpportunity`), a proposito: es la misma pregunta
+   * —cuanto cabe -entre capital, profundidad y presupuesto— y ya estaba resuelta. Devuelve `undefined`
+   * cuando no se puede dimensionar, habiendo registrado el motivo.
+   */
+  private resolveMaxSizeAmountUsd(
+    args: {
+      market: MarketInfo;
+      nowMs: number;
+      quotes: Partial<Record<Outcome, OrderbookQuote>>;
+      reservedDailySpendUsd: number;
+    },
+    outcome: Outcome,
+  ): number | undefined {
+    // Un saldo ILEGIBLE no es "sin limite": es no entrar. La guardia de `minBankrollForDirectionalUsd`
+    // si deja pasar un `unknown` —para no convertir un RPC caido en politica de riesgo— pero eso vale
+    // para NO BLOQUEAR, no para DIMENSIONAR. Aqui un `unknown` significaria apostar contra un numero
+    // que nadie ha leido. Un 0 leido es autoritativo y tambien para.
+    const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, args.nowMs);
+    if (saldo.source === "unknown") {
+      this.logSkipOnce(args.market.slug, "favorite_max_size_bankroll_unknown", {
+        market: args.market.asset,
+        outcome,
+        // Sin `POLYMARKET_FUNDER_ADDRESS` no hay lector que construir y este es el estado permanente.
+        pista: "falta POLYMARKET_FUNDER_ADDRESS o el RPC no responde",
+      });
+      return undefined;
+    }
+
+    // Capital ya ATADO en posiciones abiertas. Sin esto el contador por iteracion no basta: se
+    // reinicia cada pasada, asi que un segundo despues otro mercado volvia a pedir la cuenta entera y
+    // tres mercados comprometian el triple del saldo. El saldo no baja solo — en sim nunca, y en live
+    // la lectura on-chain tiene 60s de cache mientras una posicion tarda minutos en resolverse.
+    const capitalAtadoUsd = this.openStakeUsd();
+    const capitalLibreUsd = Math.max(
+      0,
+      saldo.usd - capitalAtadoUsd - this.maxSizeCommittedUsdThisIteration,
+    );
+    const huecoDiarioUsd = Math.max(0, this.config.dailySpendLimitUsd - args.reservedDailySpendUsd);
+    // Profundidad bajo el tope, NO del libro entero: el tope es la politica de riesgo direccional y
+    // barrer por encima de el seria saltarsela. No depende del importe pedido, asi que se puede usar
+    // para dimensionar (a diferencia de `estimatedSharesForAmount`, que si).
+    const profundidadUsd = args.quotes[outcome]?.availableUsdUnderCap ?? 0;
+    const amountUsd = Math.floor(Math.min(capitalLibreUsd, huecoDiarioUsd, profundidadUsd) * 100) / 100;
+
+    if (amountUsd < args.market.orderMinSize) {
+      this.logSkipOnce(args.market.slug, "favorite_max_size_below_min", {
+        market: args.market.asset,
+        outcome,
+        amountUsd,
+        orderMinSize: args.market.orderMinSize,
+        capitalLibreUsd: Math.round(capitalLibreUsd * 100) / 100,
+        huecoDiarioUsd: Math.round(huecoDiarioUsd * 100) / 100,
+        profundidadUsd: Math.round(profundidadUsd * 100) / 100,
+        bankrollSource: saldo.source,
+      });
+      return undefined;
+    }
+
+    logger.info("Tramo de maxima conviccion: entrada con el capital disponible.", {
+      slug: args.market.slug,
+      outcome,
+      amountUsd,
+      bankrollUsd: Math.round(saldo.usd * 100) / 100,
+      bankrollSource: saldo.source,
+      profundidadUsd: Math.round(profundidadUsd * 100) / 100,
+    });
+    return amountUsd;
   }
 
   /**
@@ -1598,13 +1733,15 @@ export class BotRunner {
     opening: WindowOpening,
     tick: BtcPriceTick,
     quotes: Partial<Record<Outcome, OrderbookQuote>>,
-  ): { outcome: Outcome; distanceUsd: number; minDistanceUsd: number } | undefined {
+  ): { outcome: Outcome; distanceUsd: number; minDistanceUsd: number; maxSize?: boolean } | undefined {
     if (this.config.favoriteStrategyEnabled === true) {
       const decision = selectFavoriteOutcome({
         quotes,
         minAsk: this.config.favoriteMinAsk,
         maxAsk: this.config.favoriteMaxAsk,
         maxAskSum: this.config.favoriteMaxAskSum,
+        // Apagado = `undefined`, no un numero: el selector trata "no configurado" como tramo inexistente.
+        maxSizeAsk: this.config.favoriteMaxSizeEnabled === true ? this.config.favoriteMaxSizeAsk : undefined,
       });
       if (!decision.selection) {
         this.logSkipOnce(market.slug, FAVORITE_SKIP_REASONS[decision.reason], {
@@ -1618,7 +1755,12 @@ export class BotRunner {
       // con el movimiento real del oraculo. `minDistanceUsd: 0` = esta estrategia no aplica umbral.
       const distanceUsd =
         decision.selection.outcome === "UP" ? tick.value - opening.openingPrice : opening.openingPrice - tick.value;
-      return { outcome: decision.selection.outcome, distanceUsd, minDistanceUsd: 0 };
+      return {
+        outcome: decision.selection.outcome,
+        distanceUsd,
+        minDistanceUsd: 0,
+        maxSize: decision.reason === "max_size",
+      };
     }
 
     const minDistanceUsd = {
@@ -1670,9 +1812,13 @@ export class BotRunner {
     const token = signal.market.outcomes[signal.outcome];
     let quote: OrderbookQuote;
     try {
-      quote =
-        quoteCache.get(signal.market.slug)?.[signal.outcome] ??
-        (await this.deps.orderbook.getQuote(token.tokenId, signal.amountUsd, signal.maxAskPrice));
+      // El quote cacheado se pidio con el importe PEQUEÑO de la fase de captura, y de ese importe
+      // dependen `estimatedSharesForAmount` y `estimatedAveragePrice`. Reutilizarlo para una entrada
+      // de todo el capital guardaria participaciones y precio medio de otra operacion, y el P&L
+      // (`pnl.ts:getStakeUsd`) puntuaria con cifras falsas — el mismo fallo que ya apunto $10 donde
+      // habia $0,69. Una llamada extra, solo en estas entradas.
+      const cacheado = signal.maxSize ? undefined : quoteCache.get(signal.market.slug)?.[signal.outcome];
+      quote = cacheado ?? (await this.deps.orderbook.getQuote(token.tokenId, signal.amountUsd, signal.maxAskPrice));
     } catch (error) {
       this.logSkipOnce(signal.market.slug, "orderbook_quote_failed", {
         outcome: signal.outcome,

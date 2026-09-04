@@ -59,6 +59,16 @@ export interface BotConfig {
    * deliberado y no el efecto colateral de encender una estrategia.
    */
   favoriteAllowLive?: boolean;
+  /**
+   * Tramo de MAXIMA CONVICCION. Por encima de `favoriteMaxSizeAsk` el favorito entra con todo el
+   * capital disponible —el saldo real leido on-chain— en vez del importe configurado, saltandose
+   * `resolveTradeAmountUsd` y con el `autoMinLive`.
+   *
+   * Interruptor aparte del umbral: sin `favoriteMaxSizeEnabled` el selector recibe `maxSizeAsk:
+   * undefined` y todo lo que pase de la banda vuelve a salir como `above_band`.
+   */
+  favoriteMaxSizeEnabled?: boolean;
+  favoriteMaxSizeAsk?: number;
   // Max price a LIVE order may pay above the observed best-ask (limits book walk / slippage).
   liveMaxSlippage?: number;
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.

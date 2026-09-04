@@ -910,6 +910,8 @@ function settings(): UiSettings {
     favoriteMaxAsk: 0.85,
     favoriteMaxAskSum: 1.15,
     favoriteAllowLive: false,
+    favoriteMaxSizeEnabled: false,
+    favoriteMaxSizeAsk: 0.98,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },
       ETH: { UP: 0.98, DOWN: 0.98 },

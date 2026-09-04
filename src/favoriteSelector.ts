@@ -39,7 +39,18 @@ export type FavoriteSkipReason =
   | "below_band"
   | "above_band";
 
-export type FavoriteReason = "in_band" | FavoriteSkipReason;
+/**
+ * Los dos motivos que SI entran, y no son el mismo suceso.
+ *
+ * `in_band` es la operativa normal, con el tamaño configurado. `max_size` es el tramo de maxima
+ * conviccion: por encima de `maxSizeAsk` el libro ya no dice "este lado es favorito", dice "esto ya
+ * esta decidido", y quien llama entra con todo el capital disponible. Separarlos aqui —en vez de
+ * dejar que el llamador compare el precio otra vez— es lo que permite que el ledger distinga despues
+ * las dos operativas: tienen economias completamente distintas y mezclarlas haria imposible atribuir
+ * el resultado a ninguna.
+ */
+export type FavoriteEntryReason = "in_band" | "max_size";
+export type FavoriteReason = FavoriteEntryReason | FavoriteSkipReason;
 
 export interface FavoriteSelection {
   outcome: Outcome;
@@ -53,7 +64,7 @@ type FavoriteDetail = Record<string, number>;
 
 /** Union discriminada: comprobar `selection` estrecha `reason` al subconjunto de descartes. */
 export type FavoriteDecision =
-  | { reason: "in_band"; selection: FavoriteSelection; detail: FavoriteDetail }
+  | { reason: FavoriteEntryReason; selection: FavoriteSelection; detail: FavoriteDetail }
   | { reason: FavoriteSkipReason; selection?: undefined; detail: FavoriteDetail };
 
 export function selectFavoriteOutcome(args: {
@@ -61,10 +72,22 @@ export function selectFavoriteOutcome(args: {
   minAsk?: number;
   maxAsk?: number;
   maxAskSum?: number;
+  /**
+   * Umbral del tramo de maxima conviccion. `undefined` = el tramo esta apagado y todo lo que pase de
+   * `maxAsk` sale como `above_band`, que es el comportamiento de siempre.
+   *
+   * Sin default a proposito: un umbral con valor por defecto convertiria "no configurado" en "activo",
+   * y este tramo multiplica el tamaño de la posicion. Encenderlo tiene que ser un acto explicito.
+   */
+  maxSizeAsk?: number;
 }): FavoriteDecision {
   const minAsk = resolveBound(args.minAsk, DEFAULT_FAVORITE_MIN_ASK);
   const maxAsk = resolveBound(args.maxAsk, DEFAULT_FAVORITE_MAX_ASK);
   const maxAskSum = resolveSum(args.maxAskSum, DEFAULT_MAX_ASK_SUM);
+  const maxSizeAsk =
+    typeof args.maxSizeAsk === "number" && Number.isFinite(args.maxSizeAsk) && args.maxSizeAsk > 0 && args.maxSizeAsk < 1
+      ? args.maxSizeAsk
+      : undefined;
 
   const upAsk = args.quotes.UP?.bestAsk;
   const downAsk = args.quotes.DOWN?.bestAsk;
@@ -107,7 +130,23 @@ export function selectFavoriteOutcome(args: {
   const outcome: Outcome = upAsk > downAsk ? "UP" : "DOWN";
   const askPrice = Math.max(upAsk, downAsk);
   const oppositeAskPrice = Math.min(upAsk, downAsk);
-  const detail = { outcomeAsk: round(askPrice), oppositeAsk: round(oppositeAskPrice), minAsk, maxAsk };
+  const detail = {
+    outcomeAsk: round(askPrice),
+    oppositeAsk: round(oppositeAskPrice),
+    minAsk,
+    maxAsk,
+    ...(maxSizeAsk === undefined ? {} : { maxSizeAsk }),
+  };
+
+  // Maxima conviccion. Se comprueba ANTES que la banda porque este precio esta por ENCIMA de `maxAsk`:
+  // sin esta rama saldria como `above_band` y el tramo no podria existir.
+  //
+  // La guardia `dead_book` de arriba ya ha pasado, y aqui es donde mas importa: un 0,99 con los dos
+  // asks sumando de mas no significa "99% de probabilidad", significa que no hay mercado. Es la unica
+  // barrera entre este tramo y pagar el ancho de un libro vacio con todo el capital.
+  if (maxSizeAsk !== undefined && askPrice > maxSizeAsk) {
+    return { reason: "max_size", selection: { outcome, askPrice, oppositeAskPrice }, detail };
+  }
 
   // Todavia no hay un favorito lo bastante claro: el mercado sigue repartido.
   if (askPrice < minAsk) {

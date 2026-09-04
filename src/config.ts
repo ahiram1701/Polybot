@@ -148,6 +148,13 @@ const envSchema = z.object({
   FAVORITE_MAX_ASK: z.coerce.number().gt(0).lt(1).default(0.85),
   FAVORITE_MAX_ASK_SUM: z.coerce.number().positive().default(1.15),
   // Cierre separado para dinero real. Ver `favoriteAllowLive` en types.ts.
+  // Tramo de maxima conviccion. Apagado de fabrica: multiplica el tamaño de la posicion.
+  FAVORITE_MAX_SIZE_ENABLED: z
+    .string()
+    .optional()
+    .transform((value) => value === "true")
+    .pipe(z.boolean()),
+  FAVORITE_MAX_SIZE_ASK: z.coerce.number().gt(0).lt(1).default(0.98),
   FAVORITE_ALLOW_LIVE: z
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
@@ -354,6 +361,8 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     favoriteMaxAsk: env.FAVORITE_MAX_ASK,
     favoriteMaxAskSum: env.FAVORITE_MAX_ASK_SUM,
     favoriteAllowLive: env.FAVORITE_ALLOW_LIVE,
+    favoriteMaxSizeEnabled: env.FAVORITE_MAX_SIZE_ENABLED,
+    favoriteMaxSizeAsk: env.FAVORITE_MAX_SIZE_ASK,
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evUseSimilarity: env.EV_USE_SIMILARITY,

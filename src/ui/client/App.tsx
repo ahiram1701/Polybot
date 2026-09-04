@@ -244,6 +244,8 @@ const emptySettings: UiSettings = {
   favoriteMaxAsk: 0.85,
   favoriteMaxAskSum: 1.15,
   favoriteAllowLive: false,
+  favoriteMaxSizeEnabled: false,
+  favoriteMaxSizeAsk: 0.98,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   liveBankrollUsd: 0,
@@ -2445,6 +2447,41 @@ export function SettingsPanel({
           intervalo va del ~63% al 100% — es compatible con perder dinero. La estrategia existe para
           medirse con muestras propias, no porque haya evidencia a favor.
         </p>
+        <div className="settings-grid">
+          <label className="switch-row">
+            <input
+              type="checkbox"
+              checked={draft.favoriteMaxSizeEnabled}
+              onChange={(event) => update("favoriteMaxSizeEnabled", event.target.checked)}
+              disabled={running}
+            />
+            <span>Máxima convicción: invertir todo el capital</span>
+          </label>
+          <NumberField
+            label="Umbral de máxima convicción"
+            value={draft.favoriteMaxSizeAsk}
+            min={0.5}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => update("favoriteMaxSizeAsk", value)}
+          />
+        </div>
+        <p className="settings-hint">
+          Por encima de ese ask, el libro ya no dice «este lado es favorito», dice «esto está
+          decidido». La entrada deja de usar el importe configurado y pasa a{" "}
+          <strong>todo el capital disponible</strong>: el saldo real de la cuenta de Polymarket, leído
+          on-chain, acotado por la profundidad del libro bajo el techo y por lo que quede del límite
+          diario. Necesita <code>POLYMARKET_FUNDER_ADDRESS</code> en <code>.env</code> — solo la
+          dirección pública, sin clave privada. Sin ella el saldo no se puede leer y el tramo no entra.
+        </p>
+        <p className="settings-hint settings-hint-warn">
+          <strong>Es la apuesta de máxima varianza posible.</strong> Medido sobre este historial, el
+          tramo acierta el 99,5% con un punto de equilibrio del 99,0%: una ventaja de 0,48% por
+          operación. Pero el método que puntúa esa medición —el propio libro— se equivoca el 1,4% de
+          las veces, o sea <strong>tres veces más que la ventaja que dice medir</strong>. Y poniendo el
+          saldo entero en cada entrada, un solo fallo no borra «102 aciertos»: borra la cuenta.
+        </p>
+
         <label className="switch-row">
           <input
             type="checkbox"

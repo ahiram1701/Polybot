@@ -57,6 +57,15 @@ export interface UiSettings {
    * encenderlo desde la web o la TUI exige teclear `LIVE_PHRASE`.
    */
   favoriteAllowLive: boolean;
+  /**
+   * Tramo de MAXIMA CONVICCION: por encima de `favoriteMaxSizeAsk` se entra con todo el capital
+   * disponible (el saldo real de la cuenta) en vez del importe configurado.
+   *
+   * Interruptor propio y apagado por defecto a proposito: multiplica el tamaño de la posicion por dos
+   * ordenes de magnitud, y eso no puede ser el efecto colateral de mover una banda.
+   */
+  favoriteMaxSizeEnabled: boolean;
+  favoriteMaxSizeAsk: number;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   liveBankrollUsd: number;
@@ -396,6 +405,10 @@ export const SKIP_REASON_LABELS = {
   favorite_extreme_price: "Favorito: ask en el extremo (0 o >=1)",
   favorite_no_favorite: "Favorito: empate, el libro no declara favorito",
   favorite_strategy_live_not_allowed: "Favorito: encendida pero sin permiso para live",
+  // Tramo de maxima conviccion. El primero es el estado PERMANENTE mientras falte
+  // POLYMARKET_FUNDER_ADDRESS: sin saldo legible el tramo no entra, y tiene que decirlo o parece averia.
+  favorite_max_size_bankroll_unknown: "Convicción: no se puede leer el saldo",
+  favorite_max_size_below_min: "Convicción: capital bajo el mínimo",
   // Los siete siguientes salian como codigo crudo en las tres pantallas hasta que el tipo los delato.
   market_not_found: "No se encontro ningun mercado abierto",
   arb_15m_fetch_failed: "Arbitraje 15m: fallo al consultar los mercados",

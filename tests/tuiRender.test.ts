@@ -51,6 +51,8 @@ function testSettings(): UiSettings {
     favoriteMaxAsk: 0.85,
     favoriteMaxAskSum: 1.15,
     favoriteAllowLive: false,
+    favoriteMaxSizeEnabled: false,
+    favoriteMaxSizeAsk: 0.98,
     maxAskPrice: 0.6,
     liveTradeAmountUsd: 5,
     simTradeAmountUsd: 5,

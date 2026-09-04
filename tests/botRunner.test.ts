@@ -19,6 +19,7 @@ import type {
   BotConfig,
   MarketInfo,
   MarketSymbol,
+  Outcome,
   StrategyAnalysisResponse,
   StrategyCandidate,
   TradeAttempt,
@@ -467,6 +468,220 @@ describe("BotRunner", () => {
 
       expect(executor.execute).not.toHaveBeenCalled();
       expect(JSON.stringify(logs)).toContain("outside_entry_window");
+    });
+  });
+
+  describe("tramo de maxima conviccion: dimensionado por el saldo real", () => {
+    function libroProfundo(upAsk: number, downAsk: number, profundidadUsd: number): OrderbookService {
+      return {
+        getQuote: vi.fn(async (tokenId: string, amountUsd: number) => {
+          const ask = tokenId.endsWith("-up") ? upAsk : downAsk;
+          return {
+            tokenId,
+            bestAsk: ask,
+            bestBid: ask - 0.01,
+            availableUsdUnderCap: profundidadUsd,
+            availableUsdAllLevels: profundidadUsd,
+            // Depende del importe PEDIDO: es lo que hace detectable una recotizacion ausente.
+            estimatedSharesForAmount: amountUsd / ask,
+            estimatedAveragePrice: ask,
+            rawAskLevels: [{ price: ask, size: profundidadUsd / ask }],
+            rawBidLevels: [],
+            availableBidUsdAllLevels: 0,
+          };
+        }),
+      } as unknown as OrderbookService;
+    }
+
+    function escenario(
+      opts: { saldoUsd?: number; profundidadUsd?: number; limiteDiarioUsd?: number; mercados?: MarketSymbol[] } = {},
+    ) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 200_000;
+      const operados = new Set<string>();
+      // Posiciones abiertas acumuladas, como haria el StateStore real: son las que atan capital.
+      const abiertas: TradeAttempt[] = [];
+      const simbolos = opts.mercados ?? (["BTC"] as MarketSymbol[]);
+      const mercados = simbolos.map((m) => marketInfo(m, m.toLowerCase(), windowStartMs));
+      const watcher = {
+        getCurrentMarkets: vi.fn(async () => mercados),
+        getCurrentMarket: vi.fn(async () => mercados[0]),
+      } as unknown as MarketWatcher;
+      const priceFeed = {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getLatestTick: vi.fn((m: MarketSymbol = "BTC") => ({
+          market: m,
+          symbol: priceFeedSymbol(m),
+          value: 130,
+          timestampMs: nowMs,
+          receivedAtMs: nowMs,
+        })),
+      } as unknown as ChainlinkPriceFeed;
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => abiertas),
+        getOpening: vi.fn((slug: string) => ({
+          asset: mercados.find((m) => m.slug === slug)?.asset ?? "BTC",
+          slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        })),
+        // Con memoria, como el StateStore real: sin ella la segunda pasada vuelve a operar el mismo
+        // mercado y el test mediria dos ventanas creyendo que mide una.
+        hasTraded: vi.fn((slug: string) => operados.has(slug)),
+        // Las abiertas: es de donde sale el capital ATADO que ya no esta disponible.
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+        recordTradeResolution: vi.fn(async () => undefined),
+        saveOpening: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const orderbook = libroProfundo(0.99, 0.03, opts.profundidadUsd ?? 5_000);
+      const executed: Array<{ amountUsd: number }> = [];
+      const executor = {
+        execute: vi.fn(async (input: { amountUsd: number; market: MarketInfo; outcome: Outcome }) => {
+          executed.push({ amountUsd: input.amountUsd });
+          operados.add(input.market.slug);
+          abiertas.push({
+            mode: "sim",
+            market: input.market.asset,
+            slug: input.market.slug,
+            outcome: input.outcome,
+            amountUsd: input.amountUsd,
+            bestAsk: 0.99,
+            estimatedShares: input.amountUsd / 0.99,
+            // Sin cerrar: es lo que la mantiene contando como capital atado.
+            endMs: nowMs + 3_600_000,
+          } as unknown as TradeAttempt);
+          return { status: "filled" };
+        }),
+      } as unknown as TradeExecutor;
+      const config: BotConfig = {
+        ...baseConfig(),
+        favoriteStrategyEnabled: true,
+        favoriteMinAsk: 0.79,
+        favoriteMaxAsk: 0.9,
+        favoriteMaxSizeEnabled: true,
+        favoriteMaxSizeAsk: 0.98,
+        // El techo tiene que dejar pasar el 0,99 o la entrada muere antes en best_ask_above_cap.
+        maxAskPrice: 0.99,
+        maxAskPriceCeiling: 0.99,
+        // ENCENDIDO a proposito: autoMinLive es un SUSTITUTO, no un minimo. Si el tramo pasara por
+        // resolveTradeAmountUsd, el tamaño saldria aplastado a orderMinSize sin decir nada.
+        autoMinLive: true,
+        dailySpendLimitUsd: opts.limiteDiarioUsd ?? 100_000,
+        enabledMarkets: simbolos,
+        enabledMarketOutcomes: {
+          BTC: { UP: true, DOWN: true },
+          ETH: { UP: true, DOWN: true },
+          DOGE: { UP: true, DOWN: true },
+        },
+        entryWindowSeconds: 150,
+        entryWindowSecondsByMarket: { BTC: 150, ETH: 150, DOGE: 150 },
+      };
+      const runner = new BotRunner(config, {
+        watcher,
+        orderbook,
+        priceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+        // La lectura on-chain. Ausente = no se pudo leer, que NO es lo mismo que un saldo de cero.
+        bankrollSource:
+          opts.saldoUsd === undefined
+            ? undefined
+            : { read: vi.fn(async () => ({ usd: opts.saldoUsd as number, atMs: nowMs })) },
+      });
+      return { runner, orderbook, executor, executed, nowMs };
+    }
+
+    // Dos pasadas en cada test: la lectura del saldo se dispara SIN await, asi que la primera
+    // iteracion todavia no la tiene. Es el comportamiento real, no un arreglo del test.
+    it("invierte el saldo entero cuando el libro y el limite dan de sobra", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 742.5 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].amountUsd).toBeCloseTo(742.5, 2);
+    });
+
+    it("autoMinLive NO aplasta el tamaño a orderMinSize", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 400 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed[0]?.amountUsd).toBeGreaterThan(100);
+    });
+
+    it("la profundidad del libro manda cuando es menor que el saldo", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 5_000, profundidadUsd: 88.4 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed[0]?.amountUsd).toBeCloseTo(88.4, 2);
+    });
+
+    it("el hueco del limite diario manda cuando es el mas pequeño", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 5_000, limiteDiarioUsd: 250 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed[0]?.amountUsd).toBeCloseTo(250, 2);
+    });
+
+    it("un saldo ILEGIBLE para la entrada en vez de dejarla sin limite", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      // Sin bankrollSource (= sin POLYMARKET_FUNDER_ADDRESS) el saldo nunca se lee.
+      const { runner, executed, nowMs } = escenario({ saldoUsd: undefined });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(0);
+      expect(JSON.stringify(logs)).toContain("favorite_max_size_bankroll_unknown");
+    });
+
+    it("un saldo LEIDO de cero tambien para, y por su propio motivo", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 0 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(0);
+      // Un 0 leido es autoritativo: se sabe que no hay dinero, no que no se pudo mirar.
+      expect(JSON.stringify(logs)).toContain("favorite_max_size_below_min");
+    });
+
+    it("los tres mercados COMPARTEN la cuenta en vez de pedirla enteros cada uno", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 300, mercados: ["BTC", "ETH", "DOGE"] });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      // Sin el contador por iteracion, cada mercado pediria $300 y la suma seria $900 de dinero que
+      // solo existe una vez.
+      const total = executed.reduce((sum, t) => sum + t.amountUsd, 0);
+      expect(total).toBeLessThanOrEqual(300.01);
+      expect(executed.length).toBeGreaterThan(0);
+      // Y no solo dentro de una pasada: una tercera iteracion tampoco puede reinvertir el mismo
+      // dinero, porque sigue atado en la posicion abierta.
+      await runner.runOnce(nowMs + 2_000);
+      const totalTrasTercera = executed.reduce((sum, t) => sum + t.amountUsd, 0);
+      expect(totalTrasTercera).toBeLessThanOrEqual(300.01);
+    });
+
+    it("recotiza con el importe grande: sin eso el P&L puntuaria otra operacion", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, orderbook, nowMs } = escenario({ saldoUsd: 742.5 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      // El quote de la fase de captura se pide con el importe pequeño; tiene que haber OTRA llamada
+      // con el importe final, o estimatedSharesForAmount seria el de la operacion equivocada.
+      const importes = (orderbook.getQuote as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+        (c) => c[1] as number,
+      );
+      expect(importes).toContain(742.5);
     });
   });
 
