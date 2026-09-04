@@ -108,7 +108,7 @@ Tres cosas que no son obvias:
   antiguo. Un fallback silencioso pondría a operar con dinero real una estrategia distinta de la que el
   operador acaba de elegir.
 - **Opera durante toda la ventana, pero con DOS techos de tiempo, no uno.** El declarado es
-  `entryWindowSeconds` (300 desde 2026-09-04). El otro no se declara: `getAnalyticsQuotes` solo pedía
+  `entryWindowSeconds` (150 desde 2026-09-04: se cuenta desde el cierre, así que son los 2:30 finales). El otro no se declara: `getAnalyticsQuotes` solo pedía
   los libros dentro de `ANALYTICS_WINDOW_SECONDS` (120 de 300), y el favorito ELIGE lado con esos
   libros — así que abrir la ventana declarada sin abrir el suministro dejaba la estrategia ciega,
   registrando `favorite_missing_quote` en bucle. Ahora el favorito también los pide fuera de esa
