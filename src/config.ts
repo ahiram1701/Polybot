@@ -134,6 +134,24 @@ const envSchema = z.object({
   // donde ETH sangra.
   ASK_WINDOW_BASELINE_MIN: z.coerce.number().gte(0).lt(1).default(0.01),
   ASK_WINDOW_BASELINE_MAX: z.coerce.number().gt(0).lte(1).default(0.7),
+  // Estrategia "favorito": comprar el lado que el LIBRO ya declara ganador, cuando su ask entra en la
+  // banda. No predice nada; replica la operativa manual. Apagada por defecto.
+  //
+  // El techo de 0.85 coincide con MAX_ASK_PRICE_CEILING a proposito: por encima de ahi el ceiling
+  // duro rechazaria la entrada mas adelante de todos modos, y una banda que promete precios que otro
+  // filtro va a tirar produce descartes silenciosos que parecen un bug del selector.
+  FAVORITE_STRATEGY_ENABLED: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
+  FAVORITE_MIN_ASK: z.coerce.number().gt(0).lt(1).default(0.76),
+  FAVORITE_MAX_ASK: z.coerce.number().gt(0).lt(1).default(0.85),
+  FAVORITE_MAX_ASK_SUM: z.coerce.number().positive().default(1.15),
+  // Cierre separado para dinero real. Ver `favoriteAllowLive` en types.ts.
+  FAVORITE_ALLOW_LIVE: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
   REQUIRE_POSITIVE_EV: z
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
@@ -331,6 +349,11 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     minAskPriceByMarketOutcome,
     askWindowBaseline: { floor: env.ASK_WINDOW_BASELINE_MIN, cap: env.ASK_WINDOW_BASELINE_MAX },
     maxAskPriceCeiling: env.MAX_ASK_PRICE_CEILING,
+    favoriteStrategyEnabled: env.FAVORITE_STRATEGY_ENABLED,
+    favoriteMinAsk: env.FAVORITE_MIN_ASK,
+    favoriteMaxAsk: env.FAVORITE_MAX_ASK,
+    favoriteMaxAskSum: env.FAVORITE_MAX_ASK_SUM,
+    favoriteAllowLive: env.FAVORITE_ALLOW_LIVE,
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evUseSimilarity: env.EV_USE_SIMILARITY,

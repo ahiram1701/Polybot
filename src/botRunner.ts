@@ -9,6 +9,7 @@ import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
+import { selectFavoriteOutcome, type FavoriteSkipReason } from "./favoriteSelector.js";
 import { evaluateDirectionalRiskHalt, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
@@ -89,6 +90,22 @@ import type {
  * cinco las lecturas de libro para decidir, casi siempre, no hacer nada.
  */
 const INTERVALO_MAKER_MS = 15_000;
+
+/**
+ * Motivo del selector de favorito -> etiqueta de descarte del panel.
+ *
+ * Es una tabla explicita y no un `favorite_${reason}` compuesto al vuelo: asi el compilador exige que
+ * cada motivo nuevo tenga su etiqueta en `SKIP_REASON_LABELS`, en vez de dejarla salir como codigo
+ * crudo en las tres pantallas — que es exactamente como se colaron los siete motivos anteriores.
+ */
+const FAVORITE_SKIP_REASONS: Record<FavoriteSkipReason, SkipReason> = {
+  missing_quote: "favorite_missing_quote",
+  extreme_price: "favorite_extreme_price",
+  dead_book: "favorite_dead_book",
+  no_favorite: "favorite_no_favorite",
+  below_band: "favorite_below_band",
+  above_band: "favorite_above_band",
+};
 
 /**
  * Cada cuanto se comprueba que el archivador de analitica sigue vivo.
@@ -728,6 +745,9 @@ export class BotRunner {
         market,
         opening,
         latestTick,
+        // La estrategia "favorito" elige lado por el ask, asi que necesita los dos libros ya en la
+        // seleccion. Son los mismos de la FASE 1: no cuesta ninguna llamada extra.
+        quotes: analyticsQuotes,
         nowMs,
         reservedDailySpendUsd: dailySpendUsd + reservedSpendUsd,
       });
@@ -1414,11 +1434,24 @@ export class BotRunner {
     market: MarketInfo;
     opening: WindowOpening | undefined;
     latestTick: BtcPriceTick | undefined;
+    quotes: Partial<Record<Outcome, OrderbookQuote>>;
     nowMs: number;
     reservedDailySpendUsd: number;
   }): TradeSignal | undefined {
     if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"))) {
       this.logSkipOnce(args.market.slug, "market_already_traded");
+      return undefined;
+    }
+
+    // Con la estrategia "favorito" encendida pero sin permiso para dinero real NO se cae de vuelta al
+    // direccional: se para el camino entero. Un fallback silencioso pondria a operar en live una
+    // estrategia distinta de la que el operador acaba de elegir, que es la peor sorpresa posible.
+    if (
+      this.config.favoriteStrategyEnabled === true &&
+      this.modeFor("dir") === "live" &&
+      this.config.favoriteAllowLive !== true
+    ) {
+      this.logSkipOnce(args.market.slug, "favorite_strategy_live_not_allowed");
       return undefined;
     }
 
@@ -1469,18 +1502,8 @@ export class BotRunner {
       return undefined;
     }
 
-    const minDistanceUsd = {
-      UP: this.resolveConfiguredMinDistance(args.market.asset, "UP"),
-      DOWN: this.resolveConfiguredMinDistance(args.market.asset, "DOWN"),
-    };
-    const winner = getWinningOutcome(args.opening.openingPrice, args.latestTick.value, minDistanceUsd);
+    const winner = this.selectSignalOutcome(args.market, args.opening, args.latestTick, args.quotes);
     if (!winner) {
-      this.logSkipOnce(args.market.slug, "btc_distance_below_threshold", {
-        market: args.market.asset,
-        minDistanceUsd,
-        openingPrice: args.opening.openingPrice,
-        currentPrice: args.latestTick.value,
-      });
       return undefined;
     }
     if (!this.isConfiguredOutcomeEnabled(args.market.asset, winner.outcome)) {
@@ -1531,9 +1554,65 @@ export class BotRunner {
       opening: args.opening,
       tick: args.latestTick,
       distanceUsd: winner.distanceUsd,
-      minDistanceUsd: minDistanceUsd[winner.outcome],
+      minDistanceUsd: winner.minDistanceUsd,
       entryWindowSeconds,
     };
+  }
+
+  /**
+   * Elige el lado a comprar. Hay DOS criterios y son excluyentes:
+   *
+   * - **direccional** (por defecto): la distancia del oraculo respecto a la apertura. Predice.
+   * - **favorito**: el ask que el libro ya ha puesto mas alto, dentro de una banda. No predice.
+   *
+   * Son excluyentes y no acumulativos a proposito. Si pudieran disparar los dos, una misma ventana
+   * generaria muestras de dos estrategias distintas y el ledger dejaria de poder atribuir el
+   * resultado a ninguna — que es justo el error que ya invalido una calibracion entera (ver la
+   * trampa del backtest que se puntuaba a si mismo en ARQUITECTURA.md).
+   */
+  private selectSignalOutcome(
+    market: MarketInfo,
+    opening: WindowOpening,
+    tick: BtcPriceTick,
+    quotes: Partial<Record<Outcome, OrderbookQuote>>,
+  ): { outcome: Outcome; distanceUsd: number; minDistanceUsd: number } | undefined {
+    if (this.config.favoriteStrategyEnabled === true) {
+      const decision = selectFavoriteOutcome({
+        quotes,
+        minAsk: this.config.favoriteMinAsk,
+        maxAsk: this.config.favoriteMaxAsk,
+        maxAskSum: this.config.favoriteMaxAskSum,
+      });
+      if (!decision.selection) {
+        this.logSkipOnce(market.slug, FAVORITE_SKIP_REASONS[decision.reason], {
+          market: market.asset,
+          ...decision.detail,
+        });
+        return undefined;
+      }
+      // La distancia ya no decide nada, pero se sigue midiendo y guardando con el signo del lado
+      // comprado: es lo que despues permite preguntarle al ledger si el favorito del libro coincidia
+      // con el movimiento real del oraculo. `minDistanceUsd: 0` = esta estrategia no aplica umbral.
+      const distanceUsd =
+        decision.selection.outcome === "UP" ? tick.value - opening.openingPrice : opening.openingPrice - tick.value;
+      return { outcome: decision.selection.outcome, distanceUsd, minDistanceUsd: 0 };
+    }
+
+    const minDistanceUsd = {
+      UP: this.resolveConfiguredMinDistance(market.asset, "UP"),
+      DOWN: this.resolveConfiguredMinDistance(market.asset, "DOWN"),
+    };
+    const winner = getWinningOutcome(opening.openingPrice, tick.value, minDistanceUsd);
+    if (!winner) {
+      this.logSkipOnce(market.slug, "btc_distance_below_threshold", {
+        market: market.asset,
+        minDistanceUsd,
+        openingPrice: opening.openingPrice,
+        currentPrice: tick.value,
+      });
+      return undefined;
+    }
+    return { outcome: winner.outcome, distanceUsd: winner.distanceUsd, minDistanceUsd: minDistanceUsd[winner.outcome] };
   }
 
   private async buildTradeCandidates(
@@ -2157,7 +2236,11 @@ export class BotRunner {
     // apenas se detecten oportunidades. Con arbEnabled se cotiza toda la ventana.
     const inAnalyticsWindow = isWithinEntryWindow(market.endMs, nowMs, ANALYTICS_WINDOW_SECONDS);
     if (inAnalyticsWindow) {
-      if (!this.deps.analyticsRecorder) {
+      // La estrategia "favorito" ELIGE lado con estos libros, asi que para ella no son analitica: son
+      // la entrada de la decision. Sin esta condicion quedaba colgando de que hubiera un
+      // `analyticsRecorder` montado — y sin el no habria fallado, habria dejado de operar en silencio
+      // registrando `favorite_missing_quote` para siempre, que es de los sintomas mas caros de leer.
+      if (!this.deps.analyticsRecorder && this.config.favoriteStrategyEnabled !== true) {
         return {};
       }
     } else {

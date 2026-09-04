@@ -350,6 +350,17 @@ export const SKIP_REASON_LABELS = {
   spread_too_wide: "Spread demasiado ancho",
   too_close_to_close: "Demasiado cerca del cierre",
   exploration_budget_exhausted: "Presupuesto de exploracion agotado",
+  // Estrategia "favorito". `dead_book` es el que hay que mirar si deja de operar sin motivo aparente:
+  // significa que habia un ask en banda pero los dos lados sumaban de mas, o sea que no habia mercado.
+  favorite_below_band: "Favorito: aun no hay favorito claro",
+  favorite_above_band: "Favorito: demasiado caro para el premio",
+  favorite_dead_book: "Favorito: libro muerto (el ask no es probabilidad)",
+  // El mas frecuente con diferencia, y NO es una averia: al cerrar la ventana el lado casi seguro se
+  // queda sin asks (nadie vende barato un ganador ya hecho) mientras el perdedor cotiza a 0,01.
+  favorite_missing_quote: "Favorito: un lado se quedo sin asks",
+  favorite_extreme_price: "Favorito: ask en el extremo (0 o >=1)",
+  favorite_no_favorite: "Favorito: empate, el libro no declara favorito",
+  favorite_strategy_live_not_allowed: "Favorito: encendida pero sin permiso para live",
   // Los siete siguientes salian como codigo crudo en las tres pantallas hasta que el tipo los delato.
   market_not_found: "No se encontro ningun mercado abierto",
   arb_15m_fetch_failed: "Arbitraje 15m: fallo al consultar los mercados",

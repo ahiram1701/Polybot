@@ -3786,3 +3786,171 @@ function priceFeedSymbol(market: MarketSymbol) {
   }
   return "btc/usd";
 }
+
+/**
+ * Estrategia "favorito": comprar el lado que el LIBRO declara ganador.
+ *
+ * El escenario esta montado con el oraculo y el libro APUNTANDO A LADOS DISTINTOS (Chainlink sube de
+ * 100 a 130, o sea UP; el libro pone caro DOWN). Es la unica forma de comprobar que la seleccion
+ * cambio de criterio de verdad y no que las dos rutas coinciden por casualidad.
+ */
+describe("estrategia favorito", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+  // 10s para el cierre: dentro de la ventana de entrada (20s), dentro de la de analitica (120s) y
+  // justo en el limite de `DEFAULT_MIN_SECONDS_TO_END` (10), que rechaza con `<`.
+  const nowMs = windowStartMs + 290_000;
+
+  function escenario(args: { upAsk: number; downAsk: number; overrides?: Partial<BotConfig> }) {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const market = marketInfo("ETH", "eth", windowStartMs);
+    const opening: WindowOpening = {
+      asset: market.asset,
+      slug: market.slug,
+      windowStartMs,
+      openingPrice: 100,
+      openingTickTimestampMs: windowStartMs,
+      capturedAtMs: windowStartMs,
+    };
+    const watcher = {
+      getCurrentMarket: vi.fn(async (_n: number, m: MarketSymbol = "BTC") => (m === "ETH" ? market : null)),
+    } as unknown as MarketWatcher;
+    const priceFeed = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      getLatestTick: vi.fn((m: MarketSymbol = "BTC") => ({
+        market: m,
+        symbol: priceFeedSymbol(m),
+        value: 130,
+        timestampMs: nowMs,
+        receivedAtMs: nowMs,
+      })),
+    } as unknown as ChainlinkPriceFeed;
+    const state = {
+      load: vi.fn(async () => undefined),
+      listTrades: vi.fn(() => []),
+      getOpening: vi.fn(() => opening),
+      hasTraded: vi.fn(() => false),
+      getDailySpend: vi.fn(() => 0),
+      recordTradeAttempt: vi.fn(async () => undefined),
+    } as unknown as StateStore;
+    const executor = {
+      execute: vi.fn(async (input: ExecutionInput) => ({
+        id: `${input.market.slug}-${input.outcome}`,
+        asset: input.market.asset,
+        slug: input.market.slug,
+        mode: "sim" as const,
+        conditionId: input.market.conditionId,
+        outcome: input.outcome,
+        tokenId: input.market.outcomes[input.outcome].tokenId,
+        amountUsd: input.amountUsd,
+        maxAskPrice: 0.98,
+        bestAsk: input.quote.bestAsk,
+        estimatedShares: input.quote.estimatedSharesForAmount,
+        openingPrice: input.opening.openingPrice,
+        entryPrice: input.tick.value,
+        distanceUsd: input.distanceUsd,
+        entryWindowSeconds: input.entryWindowSeconds,
+        windowStartMs: input.market.windowStartMs,
+        endMs: input.market.endMs,
+        createdAtMs: nowMs,
+      })),
+    } satisfies TradeExecutor;
+    const orderbook = {
+      getQuote: vi.fn(async (tokenId: string) => {
+        const bestAsk = tokenId === market.outcomes.UP.tokenId ? args.upAsk : args.downAsk;
+        return {
+          tokenId,
+          bestAsk,
+          bestBid: Math.max(bestAsk - 0.01, 0.01),
+          availableUsdUnderCap: 100,
+          availableUsdAllLevels: 100,
+          estimatedSharesForAmount: 1 / bestAsk,
+          rawAskLevels: [],
+        };
+      }),
+    } as unknown as OrderbookService;
+
+    const config: BotConfig = {
+      ...baseConfig(),
+      enabledMarkets: ["ETH"] as MarketSymbol[],
+      favoriteStrategyEnabled: true,
+      ...args.overrides,
+    };
+
+    const runner = new BotRunner(config, {
+      watcher,
+      orderbook,
+      priceFeed,
+      state,
+      executor,
+      reconciler: fakeReconciler(),
+    });
+    return { runner, executor };
+  }
+
+  it("compra el lado caro del libro aunque el oraculo apunte al contrario", async () => {
+    const { runner, executor } = escenario({ upAsk: 0.2, downAsk: 0.8 });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    // El direccional habria comprado UP (100 -> 130). El favorito compra DOWN, que es lo que pide el libro.
+    expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({ outcome: "DOWN" }));
+  });
+
+  it("no entra mientras el mercado sigue repartido", async () => {
+    const { runner, executor } = escenario({ upAsk: 0.3, downAsk: 0.7 });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("no entra cuando el favorito ya esta demasiado caro", async () => {
+    const { runner, executor } = escenario({ upAsk: 0.08, downAsk: 0.92 });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("no entra en un libro muerto, aunque un lado cotice justo en la banda", async () => {
+    const { runner, executor } = escenario({ upAsk: 0.8, downAsk: 0.8 });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  // El invariante de seguridad: encender la estrategia sin abrir el cierre de live NO debe dejar
+  // operando al criterio antiguo con dinero real.
+  it("en live sin permiso explicito no opera, y NO cae de vuelta al direccional", async () => {
+    const { runner, executor } = escenario({
+      upAsk: 0.2,
+      downAsk: 0.8,
+      overrides: { directionalMode: "live" },
+    });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("con el cierre de live abierto, esa misma configuracion si opera", async () => {
+    const { runner, executor } = escenario({
+      upAsk: 0.2,
+      downAsk: 0.8,
+      overrides: { directionalMode: "live", favoriteAllowLive: true },
+    });
+
+    await runner.runOnce(nowMs);
+
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({ outcome: "DOWN" }));
+  });
+});

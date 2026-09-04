@@ -82,6 +82,40 @@ Arreglado con un tope de edad: 5 minutos, o sea cinco refrescos fallidos. Un hip
 
 ---
 
+## Dos criterios para elegir lado, y son excluyentes
+
+El camino direccional puede elegir el lado de **dos** formas, y solo una está activa a la vez
+(`selectSignalOutcome` en `botRunner.ts`):
+
+| | Direccional (por defecto) | Favorito (`FAVORITE_STRATEGY_ENABLED`) |
+|---|---|---|
+| Qué mira | Distancia del oráculo respecto a la apertura | El ask que el libro ya puso más alto |
+| Predice | Sí | No: copia al mercado |
+| Umbral | `minDistanceUsd` | Banda de ask `[0,76 – 0,85]` |
+
+**No son acumulativos a propósito.** Si pudieran disparar los dos, una misma ventana generaría muestras
+de dos estrategias distintas y el ledger no podría atribuir el resultado a ninguna — el mismo error de
+fondo que invalidó una calibración entera (trampa 1).
+
+Tres cosas que no son obvias:
+
+- **La banda 0,76-0,85 está dentro de la zona improductiva conocida.** Es la misma zona de favoritos
+  caros de la que salió el «225 operaciones para ganar $8,68» que hoy justifica el techo de 0,70 del
+  tuner. La estrategia existe porque se pidió medirla con muestras propias, no porque haya evidencia a
+  favor. Viene apagada.
+- **`FAVORITE_ALLOW_LIVE` es un cierre aparte de `FAVORITE_STRATEGY_ENABLED`.** Con la estrategia
+  encendida y el cierre cerrado, el camino direccional **se para** en live; no vuelve al criterio
+  antiguo. Un fallback silencioso pondría a operar con dinero real una estrategia distinta de la que el
+  operador acaba de elegir.
+- **Solo opera en los últimos 120 s de la ventana.** Elige lado con los libros de la FASE 1, y esos solo
+  se piden dentro de `ANALYTICS_WINDOW_SECONDS`. Por eso `getAnalyticsQuotes` cotiza también cuando la
+  estrategia está encendida aunque no haya `analyticsRecorder` montado: sin eso dejaría de operar en
+  silencio, registrando `favorite_missing_quote` para siempre.
+
+La guardia que sostiene todo lo demás es `dead_book`: si los dos asks suman más de 1,15, el libro está
+muerto y un 0,80 **no** significa «el mercado le da un 80%», significa que no hay mercado. Toda la
+premisa de la estrategia es que el precio ES la probabilidad implícita, y ahí es falsa.
+
 ## La resolución la decide el TWAP, no el spot
 
 **Cambió el 2026-08-07** y es el hecho más importante de este documento: los mercados «Up or Down» de

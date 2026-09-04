@@ -42,6 +42,23 @@ export interface BotConfig {
   // Hard ceiling applied on top of the per-market/outcome ask caps: no trade (and no auto-adjust)
   // may use an ask above this, to keep reward/risk sane. Optional; config.ts always sets it.
   maxAskPriceCeiling?: number;
+  /**
+   * Estrategia "favorito": elige lado por el ask del libro en vez de por la distancia de Chainlink.
+   * Es una seleccion ALTERNATIVA, no acumulativa — cuando esta activa sustituye a `getWinningOutcome`
+   * en el camino direccional, para que cada muestra del ledger pertenezca a una sola estrategia.
+   */
+  favoriteStrategyEnabled?: boolean;
+  favoriteMinAsk?: number;
+  favoriteMaxAsk?: number;
+  /** Tope de la suma de los dos asks. Por encima, el libro esta muerto y el ask no es probabilidad. */
+  favoriteMaxAskSum?: number;
+  /**
+   * Sin esto la estrategia solo corre en SIM, aunque `favoriteStrategyEnabled` este puesto. Es un
+   * cierre aparte a proposito: la banda 0,76-0,85 es justo la zona que el ledger midio como
+   * improductiva (225 operaciones para +$8,68), asi que pasar a dinero real debe ser un acto
+   * deliberado y no el efecto colateral de encender una estrategia.
+   */
+  favoriteAllowLive?: boolean;
   // Max price a LIVE order may pay above the observed best-ask (limits book walk / slippage).
   liveMaxSlippage?: number;
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.
