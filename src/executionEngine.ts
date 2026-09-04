@@ -33,6 +33,12 @@ export interface ExecutionInput {
   tick: BtcPriceTick;
   distanceUsd: number;
   entryWindowSeconds: number;
+  /**
+   * De que tramo del favorito sale la entrada. Llega hasta el `TradeAttempt` porque es lo que decide su
+   * ranura en el ledger: sin el, las dos entradas de una ventana comparten clave y la segunda borra
+   * a la primera.
+   */
+  entryKind?: "banda" | "conviccion";
 }
 
 export interface TradeExecutor {
@@ -225,6 +231,7 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     entryPrice: input.tick.value,
     distanceUsd: input.distanceUsd,
     entryWindowSeconds: input.entryWindowSeconds,
+    entryKind: input.entryKind,
     windowStartMs: input.market.windowStartMs,
     endMs: input.market.endMs,
     createdAtMs: Date.now(),

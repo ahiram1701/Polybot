@@ -617,6 +617,17 @@ export interface TradeAttempt {
   // False when only one leg filled (the pair could not complete): the position is directional and its
   // P&L follows the winner like a normal trade.
   arbPairComplete?: boolean;
+  /**
+   * De que TRAMO de la estrategia "favorito" salio esta entrada.
+   *
+   * Los dos tramos pueden entrar en la misma ventana —tienen economias distintas: la banda paga un
+   * importe fijo, la conviccion apuesta el capital— y sin distinguirlos comparten la misma ranura del
+   * ledger (`tradeStateKey`) y la segunda BORRA a la primera en silencio.
+   *
+   * Ausente = banda. Lo es a proposito: las filas ya guardadas en `state.json` conservan su clave
+   * exacta y no hay que migrar nada.
+   */
+  entryKind?: "banda" | "conviccion";
 }
 
 export interface SimResolution {

@@ -471,6 +471,177 @@ describe("BotRunner", () => {
     });
   });
 
+  describe("banda y conviccion en la MISMA ventana", () => {
+    // El ask cambia entre iteraciones: primero cae en la banda, luego se dispara por encima de 0,98.
+    // Es el recorrido normal de un favorito que se va confirmando, y es justo el caso en el que antes
+    // la banda se llevaba la unica ranura de la ventana y dejaba a la conviccion fuera.
+    function escenarioDosTramos(opts: { saldoUsd: number; asks: number[] }) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 200_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      let paso = 0;
+      const askActual = () => opts.asks[Math.min(paso, opts.asks.length - 1)];
+      const abiertas: TradeAttempt[] = [];
+      const operados = new Set<string>();
+      const executed: Array<{ amountUsd: number; entryKind?: string }> = [];
+
+      const orderbook = {
+        getQuote: vi.fn(async (tokenId: string, amountUsd: number) => {
+          const up = askActual();
+          const ask = tokenId.endsWith("-up") ? up : Math.round((1 - up) * 100) / 100;
+          return {
+            tokenId,
+            bestAsk: ask,
+            bestBid: ask - 0.01,
+            availableUsdUnderCap: 5_000,
+            availableUsdAllLevels: 5_000,
+            estimatedSharesForAmount: amountUsd / ask,
+            estimatedAveragePrice: ask,
+            rawAskLevels: [{ price: ask, size: 1_000 }],
+            rawBidLevels: [],
+            availableBidUsdAllLevels: 0,
+          };
+        }),
+      } as unknown as OrderbookService;
+
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          favoriteStrategyEnabled: true,
+          favoriteMinAsk: 0.79,
+          favoriteMaxAsk: 0.9,
+          favoriteMaxSizeEnabled: true,
+          favoriteMaxSizeAsk: 0.98,
+          maxAskPrice: 0.99,
+          maxAskPriceCeiling: 0.99,
+          autoMinLive: true,
+          dailySpendLimitUsd: 100_000,
+          entryWindowSeconds: 150,
+          entryWindowSecondsByMarket: { BTC: 150, ETH: 150, DOGE: 150 },
+        },
+        {
+          watcher: {
+            getCurrentMarkets: vi.fn(async () => [market]),
+            getCurrentMarket: vi.fn(async () => market),
+          } as unknown as MarketWatcher,
+          orderbook,
+          priceFeed: {
+            start: vi.fn(),
+            stop: vi.fn(),
+            getLatestTick: vi.fn(() => ({
+              market: "BTC" as MarketSymbol,
+              symbol: priceFeedSymbol("BTC"),
+              value: 130,
+              timestampMs: nowMs,
+              receivedAtMs: nowMs,
+            })),
+          } as unknown as ChainlinkPriceFeed,
+          state: {
+            load: vi.fn(async () => undefined),
+            listTrades: vi.fn(() => abiertas),
+            getOpening: vi.fn(() => ({
+              asset: "BTC" as MarketSymbol,
+              slug: market.slug,
+              windowStartMs,
+              openingPrice: 100,
+              openingTickTimestampMs: windowStartMs,
+              capturedAtMs: windowStartMs,
+            })),
+            hasTraded: vi.fn((slug: string, _m?: unknown, entryKind?: string) =>
+              operados.has(slug + ":" + (entryKind ?? "banda")),
+            ),
+            getDailySpend: vi.fn(() => 0),
+            recordTradeAttempt: vi.fn(async () => undefined),
+            recordTradeResolution: vi.fn(async () => undefined),
+            saveOpening: vi.fn(async () => undefined),
+          } as unknown as StateStore,
+          executor: {
+            execute: vi.fn(
+              async (input: { amountUsd: number; market: MarketInfo; outcome: Outcome; entryKind?: "banda" | "conviccion" }) => {
+                executed.push({ amountUsd: input.amountUsd, entryKind: input.entryKind });
+                operados.add(input.market.slug + ":" + (input.entryKind ?? "banda"));
+                abiertas.push({
+                  mode: "sim",
+                  market: "BTC",
+                  slug: input.market.slug,
+                  outcome: input.outcome,
+                  amountUsd: input.amountUsd,
+                  bestAsk: askActual(),
+                  estimatedShares: input.amountUsd / askActual(),
+                  entryKind: input.entryKind,
+                  endMs: nowMs + 3_600_000,
+                } as unknown as TradeAttempt);
+                return { status: "filled" };
+              },
+            ),
+          } as unknown as TradeExecutor,
+          reconciler: fakeReconciler(),
+          bankrollSource: { read: vi.fn(async () => ({ usd: opts.saldoUsd, atMs: nowMs })) },
+        },
+      );
+      return { runner, executed, nowMs, avanzar: () => { paso += 1; } };
+    }
+
+    it("entran las DOS: primero la banda, luego la conviccion", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs, avanzar } = escenarioDosTramos({ saldoUsd: 100, asks: [0.85, 0.99] });
+
+      // Primera pasada: solo lee el saldo (la lectura va sin await). Segunda: ask 0,85 -> banda.
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed.map((e) => e.entryKind)).toEqual(["banda"]);
+
+      // El ask se dispara: la ventana YA tiene una operacion, pero de otro tramo.
+      avanzar();
+      await runner.runOnce(nowMs + 2_000);
+
+      expect(executed.map((e) => e.entryKind)).toEqual(["banda", "conviccion"]);
+    });
+
+    it("la conviccion descuenta lo que ya se llevo la banda", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs, avanzar } = escenarioDosTramos({ saldoUsd: 100, asks: [0.85, 0.99] });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      avanzar();
+      await runner.runOnce(nowMs + 2_000);
+
+      // $100 de saldo menos los $5 que ya estan atados en la entrada de banda. Es la invariante que
+      // impide apostar dos veces el mismo dinero.
+      const banda = executed[0].amountUsd;
+      expect(executed[1].amountUsd).toBeCloseTo(100 - banda, 2);
+    });
+
+    it("una SEGUNDA entrada del mismo tramo se sigue descartando", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, executed, nowMs } = escenarioDosTramos({ saldoUsd: 100, asks: [0.85] });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      await runner.runOnce(nowMs + 2_000);
+      await runner.runOnce(nowMs + 3_000);
+
+      expect(executed).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("market_already_traded");
+    });
+
+    it("si la conviccion se lleva la cuenta, la banda se descarta por falta de capital", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      // Saldo justo: la conviccion entra primero y no deja sitio para los $5 de la banda.
+      const { runner, executed, nowMs, avanzar } = escenarioDosTramos({ saldoUsd: 12.42, asks: [0.99, 0.85] });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed.map((e) => e.entryKind)).toEqual(["conviccion"]);
+
+      avanzar();
+      await runner.runOnce(nowMs + 2_000);
+
+      expect(executed).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("favorite_banda_sin_capital");
+    });
+  });
+
   describe("tramo de maxima conviccion: dimensionado por el saldo real", () => {
     function libroProfundo(upAsk: number, downAsk: number, profundidadUsd: number): OrderbookService {
       return {
@@ -494,7 +665,14 @@ describe("BotRunner", () => {
     }
 
     function escenario(
-      opts: { saldoUsd?: number; profundidadUsd?: number; limiteDiarioUsd?: number; mercados?: MarketSymbol[] } = {},
+      opts: {
+        saldoUsd?: number;
+        profundidadUsd?: number;
+        limiteDiarioUsd?: number;
+        mercados?: MarketSymbol[];
+        /** 0,99 = tramo de conviccion (por defecto). 0,85 = banda. */
+        askUp?: number;
+      } = {},
     ) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
       const nowMs = windowStartMs + 200_000;
@@ -531,32 +709,38 @@ describe("BotRunner", () => {
         })),
         // Con memoria, como el StateStore real: sin ella la segunda pasada vuelve a operar el mismo
         // mercado y el test mediria dos ventanas creyendo que mide una.
-        hasTraded: vi.fn((slug: string) => operados.has(slug)),
+        hasTraded: vi.fn((slug: string, _mode?: unknown, entryKind?: string) =>
+          operados.has(slug + ":" + (entryKind ?? "banda")),
+        ),
         // Las abiertas: es de donde sale el capital ATADO que ya no esta disponible.
         getDailySpend: vi.fn(() => 0),
         recordTradeAttempt: vi.fn(async () => undefined),
         recordTradeResolution: vi.fn(async () => undefined),
         saveOpening: vi.fn(async () => undefined),
       } as unknown as StateStore;
-      const orderbook = libroProfundo(0.99, 0.03, opts.profundidadUsd ?? 5_000);
-      const executed: Array<{ amountUsd: number }> = [];
+      const askUp = opts.askUp ?? 0.99;
+      const orderbook = libroProfundo(askUp, Math.round((1 - askUp) * 100) / 100, opts.profundidadUsd ?? 5_000);
+      const executed: Array<{ amountUsd: number; entryKind?: string }> = [];
       const executor = {
-        execute: vi.fn(async (input: { amountUsd: number; market: MarketInfo; outcome: Outcome }) => {
-          executed.push({ amountUsd: input.amountUsd });
-          operados.add(input.market.slug);
+        execute: vi.fn(
+          async (input: { amountUsd: number; market: MarketInfo; outcome: Outcome; entryKind?: "banda" | "conviccion" }) => {
+          executed.push({ amountUsd: input.amountUsd, entryKind: input.entryKind });
+          operados.add(input.market.slug + ":" + (input.entryKind ?? "banda"));
           abiertas.push({
             mode: "sim",
             market: input.market.asset,
             slug: input.market.slug,
             outcome: input.outcome,
             amountUsd: input.amountUsd,
-            bestAsk: 0.99,
-            estimatedShares: input.amountUsd / 0.99,
+            bestAsk: askUp,
+            estimatedShares: input.amountUsd / askUp,
+            entryKind: input.entryKind,
             // Sin cerrar: es lo que la mantiene contando como capital atado.
             endMs: nowMs + 3_600_000,
           } as unknown as TradeAttempt);
           return { status: "filled" };
-        }),
+        },
+        ),
       } as unknown as TradeExecutor;
       const config: BotConfig = {
         ...baseConfig(),
@@ -669,6 +853,29 @@ describe("BotRunner", () => {
       await runner.runOnce(nowMs + 2_000);
       const totalTrasTercera = executed.reduce((sum, t) => sum + t.amountUsd, 0);
       expect(totalTrasTercera).toBeLessThanOrEqual(300.01);
+    });
+
+it("tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Medido en produccion antes de arreglarlo: BTC, ETH y DOGE entraban a $5 cada uno contra un
+      // saldo de $12,42. Los tres se evaluan en la MISMA pasada y sus operaciones no llegan al ledger
+      // hasta ejecutarse, asi que `openStakeUsd()` los veia a todos en cero.
+      // Saldo por debajo de lo que suman las tres entradas ($1 cada una en este doble): sin la reserva
+      // intra-iteracion las tres pasan la guarda, porque ninguna ha llegado aun al ledger.
+      const { runner, executed, nowMs } = escenario({
+        saldoUsd: 2.5,
+        mercados: ["BTC", "ETH", "DOGE"],
+        profundidadUsd: 5_000,
+        // BANDA, no conviccion: es el camino que no tenia contador y por eso sobrepasaba la cuenta.
+        askUp: 0.85,
+      });
+
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+
+      const total = executed.reduce((sum, t) => sum + t.amountUsd, 0);
+      expect(executed.length).toBeGreaterThan(0);
+      expect(total).toBeLessThanOrEqual(2.51);
     });
 
     it("recotiza con el importe grande: sin eso el P&L puntuaria otra operacion", async () => {
@@ -3486,11 +3693,13 @@ describe("BotRunner", () => {
     await runner.runOnce(nowMs);
 
     expect(watcher.getMarketBySlug).toHaveBeenCalledWith(misResolved.slug, nowMs);
-    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(misResolved.slug, "live", {
-      winningOutcome: "DOWN",
-      verifiedAtMs: nowMs,
-      corrected: true,
-    });
+    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(
+      misResolved.slug,
+      "live",
+      { winningOutcome: "DOWN", verifiedAtMs: nowMs, corrected: true },
+      // El id: sin el, con dos tramos en la ventana la verificacion oficial escribiria en la otra fila.
+      misResolved.id,
+    );
     expect(notifier.notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Resolución corregida" }),
     );
@@ -3571,11 +3780,13 @@ describe("BotRunner", () => {
 
     await runner.runOnce(nowMs);
 
-    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(misResolved.slug, "sim", {
-      winningOutcome: "UP",
-      verifiedAtMs: nowMs,
-      corrected: true,
-    });
+    expect(state.recordTradeOfficialResolution).toHaveBeenCalledWith(
+      misResolved.slug,
+      "sim",
+      { winningOutcome: "UP", verifiedAtMs: nowMs, corrected: true },
+      // El id: sin el, con dos tramos en la ventana la verificacion oficial escribiria en la otra fila.
+      misResolved.id,
+    );
   });
 
   it("stops retrying a window once the CLOB rejects with post-only mode", async () => {
@@ -3773,6 +3984,9 @@ describe("BotRunner", () => {
       trade.slug,
       expect.objectContaining({ won }),
       "sim",
+      // El id apunta a la fila exacta: con banda y conviccion en la misma ventana, buscar por slug
+      // resolveria siempre la primera.
+      trade.id,
     );
     expect(notifier.notify).toHaveBeenCalledWith(
       expect.objectContaining({

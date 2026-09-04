@@ -186,11 +186,18 @@ describe("el gasto diario se cuenta por modo", () => {
   });
 });
 
-function trade(args: { slug: string; mode: TradeAttempt["mode"]; id: string; outcome?: TradeAttempt["outcome"] }): TradeAttempt {
+function trade(args: {
+  slug: string;
+  mode: TradeAttempt["mode"];
+  id: string;
+  outcome?: TradeAttempt["outcome"];
+  entryKind?: TradeAttempt["entryKind"];
+}): TradeAttempt {
   return {
     id: args.id,
     slug: args.slug,
     mode: args.mode,
+    entryKind: args.entryKind,
     outcome: args.outcome ?? "UP",
     tokenId: "token",
     amountUsd: 1,
@@ -205,3 +212,81 @@ function trade(args: { slug: string; mode: TradeAttempt["mode"]; id: string; out
     createdAtMs: 3,
   };
 }
+
+describe("StateStore: los dos tramos del favorito en la misma ventana", () => {
+  // Antes de esto, `tradedMarkets[modo:slug] = trade` era una ASIGNACION: la segunda entrada de una
+  // ventana borraba la primera sin dejar rastro. Y eso no era solo perder una fila del historial —
+  // `openStakeUsd` lee de aqui para saber cuanto capital esta atado, asi que una fila perdida hacia
+  // que el tramo de conviccion volviera a apostar dinero ya comprometido.
+  it("banda y conviccion conviven, y ninguna borra a la otra", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-dos-tramos";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "banda-1", entryKind: "banda" }));
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "conviccion-1", entryKind: "conviccion" }));
+
+    const reloaded = new StateStore(dataDir);
+    await reloaded.load();
+
+    expect(reloaded.listTrades()).toHaveLength(2);
+    expect(reloaded.hasTraded(slug, "sim", "banda")).toBe(true);
+    expect(reloaded.hasTraded(slug, "sim", "conviccion")).toBe(true);
+    expect(reloaded.getTradedMarket(slug, "sim", "banda")?.id).toBe("banda-1");
+    expect(reloaded.getTradedMarket(slug, "sim", "conviccion")?.id).toBe("conviccion-1");
+  });
+
+  it("resolver una NO toca la otra", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-resolucion";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "banda-1", entryKind: "banda" }));
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "conviccion-1", entryKind: "conviccion" }));
+
+    // Por id. Buscando por slug caeria siempre en la primera y la otra se quedaria pendiente para
+    // siempre — que es como el capital atado se volvia invisible.
+    await store.recordTradeResolution(slug, {
+      resolvedAtMs: 4,
+      finalPrice: 90,
+      finalTickTimestampMs: 4,
+      winningOutcome: "DOWN",
+      won: false,
+    }, "sim", "conviccion-1");
+
+    expect(store.getTradedMarket(slug, "sim", "conviccion")?.resolved?.won).toBe(false);
+    expect(store.getTradedMarket(slug, "sim", "banda")?.resolved).toBeUndefined();
+  });
+
+  it("una fila antigua SIN entryKind se sigue encontrando y resolviendo", async () => {
+    // Compatibilidad: las filas ya guardadas en state.json no tienen el campo, y su clave no cambia.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-legacy";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "vieja" }));
+
+    const reloaded = new StateStore(dataDir);
+    await reloaded.load();
+
+    expect(reloaded.hasTraded(slug, "sim")).toBe(true);
+    // Ausente cuenta como banda: es el tramo que existia cuando se guardo.
+    expect(reloaded.hasTraded(slug, "sim", "banda")).toBe(true);
+    expect(reloaded.hasTraded(slug, "sim", "conviccion")).toBe(false);
+
+    await reloaded.recordTradeResolution(slug, {
+      resolvedAtMs: 4,
+      finalPrice: 90,
+      finalTickTimestampMs: 4,
+      winningOutcome: "UP",
+      won: true,
+    }, "sim");
+    expect(reloaded.getTradedMarket(slug, "sim")?.resolved?.won).toBe(true);
+  });
+});

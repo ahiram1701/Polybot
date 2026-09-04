@@ -149,14 +149,18 @@ export class StateStore {
     return this.state.openings[slug];
   }
 
-  hasTraded(slug: string, mode?: Mode): boolean {
+  /**
+   * Si esta ventana ya tiene una operacion DE ESE TRAMO. Los dos tramos del favorito conviven en la
+   * misma ventana, asi que preguntar solo por slug+modo cerraria la puerta al segundo.
+   */
+  hasTraded(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): boolean {
     this.assertLoaded();
-    return this.findTradeKey(slug, mode) !== undefined;
+    return this.findTradeKey(slug, mode, entryKind) !== undefined;
   }
 
-  getTradedMarket(slug: string, mode?: Mode): TradeAttempt | undefined {
+  getTradedMarket(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): TradeAttempt | undefined {
     this.assertLoaded();
-    const key = this.findTradeKey(slug, mode);
+    const key = this.findTradeKey(slug, mode, entryKind);
     return key ? this.state.tradedMarkets[key] : undefined;
   }
 
@@ -251,7 +255,7 @@ export class StateStore {
 
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug)] = trade;
+    this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug, trade.entryKind)] = trade;
     const key = modeDailySpendKey(trade.mode, dailySpendKey(trade.createdAtMs, this.timeZone));
     this.state.dailySpendUsd[key] = (this.state.dailySpendUsd[key] ?? 0) + trade.amountUsd;
     await this.save();
@@ -260,7 +264,7 @@ export class StateStore {
 
   async recordTradeReconciliation(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    const key = this.findTradeKey(trade.slug, trade.mode);
+    const key = this.findTradeKeyById(trade.id) ?? this.findTradeKey(trade.slug, trade.mode, trade.entryKind);
     if (!key) {
       return;
     }
@@ -269,9 +273,18 @@ export class StateStore {
     await this.appendTradeEvent({ type: "trade_reconciliation", trade });
   }
 
-  async recordTradeResolution(slug: string, resolution: NonNullable<TradeAttempt["resolved"]>, mode?: Mode): Promise<void> {
+  /**
+   * `tradeId` es opcional por compatibilidad con los llamadores viejos, pero los del bucle lo pasan
+   * SIEMPRE: es lo unico que distingue las dos entradas de una misma ventana.
+   */
+  async recordTradeResolution(
+    slug: string,
+    resolution: NonNullable<TradeAttempt["resolved"]>,
+    mode?: Mode,
+    tradeId?: string,
+  ): Promise<void> {
     this.assertLoaded();
-    const key = this.findTradeKey(slug, mode);
+    const key = (tradeId ? this.findTradeKeyById(tradeId) : undefined) ?? this.findTradeKey(slug, mode);
     const trade = key ? this.state.tradedMarkets[key] : undefined;
     if (!trade) {
       return;
@@ -293,9 +306,10 @@ export class StateStore {
     slug: string,
     mode: Mode,
     officialResolution: NonNullable<TradeAttempt["officialResolution"]>,
+    tradeId?: string,
   ): Promise<void> {
     this.assertLoaded();
-    const key = this.findTradeKey(slug, mode);
+    const key = (tradeId ? this.findTradeKeyById(tradeId) : undefined) ?? this.findTradeKey(slug, mode);
     const trade = key ? this.state.tradedMarkets[key] : undefined;
     if (!trade || !trade.resolved) {
       return;
@@ -331,8 +345,21 @@ export class StateStore {
     await this.save();
   }
 
-  private findTradeKey(slug: string, mode?: Mode): string | undefined {
-    const preferredKey = mode ? tradeStateKey(mode, slug) : undefined;
+  /**
+   * La ranura EXACTA de una operacion ya guardada.
+   *
+   * El `id` manda cuando se conoce, y no es un detalle: con dos tramos en la misma ventana hay dos
+   * filas con el mismo slug y el mismo modo, y el barrido de abajo devuelve siempre la PRIMERA. Sin
+   * esta rama, resolver la segunda entrada escribiria sobre la primera y la segunda se quedaria
+   * `pending` para siempre — envenenando `openStakeUsd`, que es lo que impide que el tramo de
+   * conviccion vuelva a apostar el capital ya comprometido.
+   */
+  private findTradeKeyById(id: string): string | undefined {
+    return Object.entries(this.state.tradedMarkets).find(([, trade]) => trade.id === id)?.[0];
+  }
+
+  private findTradeKey(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): string | undefined {
+    const preferredKey = mode ? tradeStateKey(mode, slug, entryKind) : undefined;
     if (preferredKey && this.state.tradedMarkets[preferredKey]) {
       return preferredKey;
     }
@@ -340,8 +367,14 @@ export class StateStore {
     if (legacyTrade && (!mode || legacyTrade.mode === mode)) {
       return slug;
     }
-    return Object.entries(this.state.tradedMarkets)
-      .find(([, trade]) => trade.slug === slug && (!mode || trade.mode === mode))?.[0];
+    // Barrido de ultimo recurso. Con `entryKind` presente se exige que coincida: sin eso, preguntar
+    // por el tramo de conviccion encontraria la fila de la banda y diria "ya operado" en falso.
+    return Object.entries(this.state.tradedMarkets).find(
+      ([, trade]) =>
+        trade.slug === slug &&
+        (!mode || trade.mode === mode) &&
+        (entryKind === undefined || (trade.entryKind ?? "banda") === entryKind),
+    )?.[0];
   }
 
   async reset(): Promise<void> {
@@ -419,8 +452,19 @@ function normalizeMode(mode: TradeAttempt["mode"] | undefined): Mode {
   return mode === "live" ? "live" : "sim";
 }
 
-function tradeStateKey(mode: Mode, slug: string): string {
-  return `${mode}:${slug}`;
+/**
+ * Ranura del ledger para una operacion.
+ *
+ * El tramo entra en la CLAVE, no en `trade.slug`. Es la diferencia con el apaño del arbitraje
+ * (`${slug}#arb`): alli el sufijo va en el slug y por eso `verifyOfficialResolutions` no puede
+ * preguntarle a Gamma por el —tiene que excluirse—. Aqui el slug se queda real y la consulta oficial
+ * sigue funcionando para los dos tramos.
+ *
+ * `banda` y ausente producen la MISMA clave que antes de existir este campo, asi que las filas ya
+ * guardadas en state.json se siguen encontrando sin migrar nada.
+ */
+function tradeStateKey(mode: Mode, slug: string, entryKind?: TradeAttempt["entryKind"]): string {
+  return entryKind === "conviccion" ? `${mode}:${slug}#conviccion` : `${mode}:${slug}`;
 }
 
 function normalizePnlResetAtMs(value: Partial<Record<Mode, number>> | undefined): Partial<Record<Mode, number>> {

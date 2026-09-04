@@ -409,6 +409,9 @@ export const SKIP_REASON_LABELS = {
   // POLYMARKET_FUNDER_ADDRESS: sin saldo legible el tramo no entra, y tiene que decirlo o parece averia.
   favorite_max_size_bankroll_unknown: "Convicción: no se puede leer el saldo",
   favorite_max_size_below_min: "Convicción: capital bajo el mínimo",
+  // La banda tampoco puede comprometer mas de lo que hay en la cuenta desde que los dos tramos entran
+  // en la misma ventana: la conviccion puede haberse llevado el saldo unos segundos antes.
+  favorite_banda_sin_capital: "Banda: sin capital libre",
   // Los siete siguientes salian como codigo crudo en las tres pantallas hasta que el tipo los delato.
   market_not_found: "No se encontro ningun mercado abierto",
   arb_15m_fetch_failed: "Arbitraje 15m: fallo al consultar los mercados",

@@ -146,6 +146,29 @@ el capital disponible**. Cinco cosas que no son obvias:
   `resolveTradeAmountUsd` devuelve `orderMinSize` pase lo que pase, así que dejarlo en el camino
   aplastaría el tamaño a $5 sin decir nada.
 
+**Los dos tramos entran en la MISMA ventana, uno cada uno.** Antes compartían la única ranura de
+`market_already_traded` y el que disparase primero dejaba al otro fuera — medido sobre 780 ventanas, la
+banda ganaba la carrera el 56,3% de las veces, porque el precio pasa POR la banda camino de 0,99.
+
+Sostenerlo exigió arreglar la identidad del ledger, y conviene saber por qué:
+
+- `recordTradeAttempt` guardaba en `tradedMarkets` bajo la clave `modo:slug` con una **asignación, no un
+  append**. Dos operaciones de la misma ventana se pisaban y la primera desaparecía sin dejar rastro.
+- Ahora el **tramo entra en la CLAVE** (sufijo `#conviccion`), no en `trade.slug`. Es la diferencia con
+  el apaño del arbitraje (`slug#arb`): allí el sufijo va en el slug, y por eso
+  `verifyOfficialResolutions` no puede preguntarle a Gamma por él y tiene que excluirse. Aquí el slug
+  se queda real y la consulta oficial funciona para los dos tramos.
+- `banda` y ausente producen la **misma clave que antes**, así que las filas ya guardadas en
+  `state.json` se siguen encontrando sin migrar nada.
+- Resolución, reconciliación y verificación oficial firman ahora **por `trade.id`**. Buscar por slug
+  devolvía siempre la primera fila: la segunda entrada se habría quedado `pending` para siempre, y eso
+  envenena `openStakeUsd` — que es justo lo que impide volver a apostar capital ya comprometido.
+
+**Y el contador por iteración cubre todo el camino direccional, no solo la convicción.** Los tres
+mercados de una ventana se evalúan en la MISMA pasada, y sus operaciones no llegan al ledger hasta
+ejecutarse: hasta entonces `openStakeUsd()` no las ve. Medido en producción antes de arreglarlo: tres
+entradas de banda de $5 comprometieron **$15 contra una cuenta de $12,42**.
+
 **Lo que este tramo NO tiene es evidencia.** Medido sobre 204 entradas anteriores a los 30 s: acierta
 el 99,51% con un equilibrio del 99,03%, o sea +0,48% por operación. Pero la "verdad" con la que se
 puntúa sale del propio libro (`resolveSampleTruth`), y está validada al 98,6% contra la resolución

@@ -281,6 +281,8 @@ interface TradeSignal {
    * porque decide si hay que recotizar el libro antes de ejecutar.
    */
   maxSize?: boolean;
+  /** El mismo dato en la forma que entiende el ledger. Decide la ranura de `tradedMarkets`. */
+  entryKind: TradeAttempt["entryKind"];
 }
 
 interface TradeCandidate extends TradeSignal {
@@ -329,13 +331,17 @@ export class BotRunner {
    */
   private arbCommittedUsdThisIteration = 0;
   /**
-   * Capital ya comprometido por el tramo de maxima conviccion EN ESTA ITERACION.
+   * Capital comprometido por el camino DIRECCIONAL en esta iteracion — los dos tramos, banda y
+   * conviccion, porque salen de la misma cuenta.
    *
-   * Espejo del de arriba y por el mismo motivo: los tres mercados de una ventana se evaluan en la
-   * misma pasada contra el mismo saldo, asi que sin este contador cada uno pediria la cuenta entera.
-   * Se pone a cero al empezar cada iteracion; no persiste, porque el saldo se vuelve a leer.
+   * Los tres mercados de una ventana se evaluan en la MISMA pasada, y sus operaciones no llegan al
+   * ledger hasta que se ejecutan: hasta entonces `openStakeUsd()` no las ve. Sin este contador, tres
+   * entradas de banda de $5 pasaban las tres la guarda de capital contra un saldo de $12,42 — medido
+   * en produccion: $15 comprometidos contra $12,42 disponibles.
+   *
+   * Se pone a cero al empezar cada iteracion; entre iteraciones el relevo lo toma `openStakeUsd()`.
    */
-  private maxSizeCommittedUsdThisIteration = 0;
+  private directionalCommittedUsdThisIteration = 0;
 
   /**
    * Patas sueltas seguidas. Es el unico riesgo real del arbitraje: si la segunda pata deja de llenar
@@ -693,7 +699,7 @@ export class BotRunner {
 
     const tradeSignals: TradeSignal[] = [];
     this.arbCommittedUsdThisIteration = 0;
-    this.maxSizeCommittedUsdThisIteration = 0;
+    this.directionalCommittedUsdThisIteration = 0;
     const analyticsQuotesBySlug = new Map<string, Partial<Record<Outcome, OrderbookQuote>>>();
     const directionalMode = this.modeFor("dir");
     const dailySpendUsd = this.deps.state.getDailySpend(nowMs, undefined, directionalMode);
@@ -1470,11 +1476,6 @@ export class BotRunner {
     nowMs: number;
     reservedDailySpendUsd: number;
   }): TradeSignal | undefined {
-    if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"))) {
-      this.logSkipOnce(args.market.slug, "market_already_traded");
-      return undefined;
-    }
-
     // Con la estrategia "favorito" encendida pero sin permiso para dinero real NO se cae de vuelta al
     // direccional: se para el camino entero. Un fallback silencioso pondria a operar en live una
     // estrategia distinta de la que el operador acaba de elegir, que es la peor sorpresa posible.
@@ -1538,6 +1539,20 @@ export class BotRunner {
     if (!winner) {
       return undefined;
     }
+
+    // "Ya operado" es POR TRAMO, no por ventana. Los dos tramos del favorito tienen economias
+    // distintas —la banda paga un importe fijo, la conviccion apuesta el capital— y compartir ranura
+    // significaba que el que disparase primero dejaba al otro fuera: medido sobre 780 ventanas, la
+    // banda ganaba la carrera el 56,3% de las veces.
+    //
+    // La comprobacion vive AQUI y no al principio del metodo porque hasta `selectSignalOutcome` no se
+    // sabe que tramo pide entrar. Cuesta unas guardas de mas antes de una comprobacion barata; el
+    // selector es puro y no gasta llamadas.
+    const entryKind: TradeAttempt["entryKind"] = winner.maxSize ? "conviccion" : "banda";
+    if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"), entryKind)) {
+      this.logSkipOnce(args.market.slug, "market_already_traded", { market: args.market.asset, entryKind });
+      return undefined;
+    }
     if (!this.isConfiguredOutcomeEnabled(args.market.asset, winner.outcome)) {
       this.logSkipOnce(args.market.slug, "outcome_disabled", {
         market: args.market.asset,
@@ -1585,11 +1600,40 @@ export class BotRunner {
       // mordio, y "no se pudo dimensionar" sin decir por que es de los sintomas mas caros de leer.
       return undefined;
     }
+    // La BANDA tambien tiene que caber en la cuenta. Antes no hacia falta comprobarlo: era la unica
+    // entrada de la ventana y su importe es fijo. Ahora la conviccion puede haberse llevado el saldo
+    // entero unos segundos antes (medido: pasa en el 19,2% de las ventanas), y sumarle $5 encima
+    // seria comprometer dinero que no existe.
+    //
+    // Es una GUARDA, no un dimensionado: el importe de la banda no se recorta, se descarta la entrada.
+    // Y un saldo ILEGIBLE no bloquea, al reves que en conviccion: la banda lleva operando sin mirar el
+    // saldo desde siempre, y convertir un RPC caido en 'no operes' seria cambiar la politica a
+    // escondidas. Solo frena cuando el saldo se ha leido de verdad y no llega.
+    if (!winner.maxSize) {
+      const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, args.nowMs);
+      if (saldo.source !== "unknown") {
+        const libreUsd = saldo.usd - this.openStakeUsd() - this.directionalCommittedUsdThisIteration;
+        if (libreUsd < amountUsd) {
+          this.logSkipOnce(args.market.slug, "favorite_banda_sin_capital", {
+            market: args.market.asset,
+            outcome: winner.outcome,
+            amountUsd,
+            libreUsd: Math.round(libreUsd * 100) / 100,
+            bankrollUsd: Math.round(saldo.usd * 100) / 100,
+            bankrollSource: saldo.source,
+          });
+          return undefined;
+        }
+        // Reserva: las siguientes señales de esta misma pasada ya no cuentan con este dinero.
+        this.directionalCommittedUsdThisIteration += amountUsd;
+      }
+    }
+
     if (winner.maxSize) {
       // Reserva inmediata, igual que `arbCommittedUsdThisIteration`. Sin esto los tres mercados de la
       // misma ventana pedirian CADA UNO el saldo entero: 3x sobrecomprometido sobre dinero que solo
       // existe una vez.
-      this.maxSizeCommittedUsdThisIteration += amountUsd;
+      this.directionalCommittedUsdThisIteration += amountUsd;
     }
 
     if (args.reservedDailySpendUsd + amountUsd > this.config.dailySpendLimitUsd) {
@@ -1612,6 +1656,7 @@ export class BotRunner {
       minDistanceUsd: winner.minDistanceUsd,
       entryWindowSeconds,
       maxSize: winner.maxSize,
+      entryKind,
     };
   }
 
@@ -1683,7 +1728,7 @@ export class BotRunner {
     const capitalAtadoUsd = this.openStakeUsd();
     const capitalLibreUsd = Math.max(
       0,
-      saldo.usd - capitalAtadoUsd - this.maxSizeCommittedUsdThisIteration,
+      saldo.usd - capitalAtadoUsd - this.directionalCommittedUsdThisIteration,
     );
     const huecoDiarioUsd = Math.max(0, this.config.dailySpendLimitUsd - args.reservedDailySpendUsd);
     // Profundidad bajo el tope, NO del libro entero: el tope es la politica de riesgo direccional y
@@ -2250,6 +2295,7 @@ export class BotRunner {
         tick: candidate.tick,
         distanceUsd: candidate.distanceUsd,
         entryWindowSeconds: candidate.entryWindowSeconds,
+        entryKind: candidate.entryKind,
       });
       return { candidate, trade };
     } catch (error) {
@@ -2851,6 +2897,9 @@ export class BotRunner {
   }): Promise<TradeExecutionResult> {
     const candidate: TradeCandidate = {
       strategy: "arb",
+      // El arbitraje NO es un tramo del favorito: ya se separa con su propio slug (#arb) y no compite
+      // por las ranuras de banda/conviccion. Explicito para que quien añada un tramo nuevo lo decida.
+      entryKind: undefined,
       market: args.market,
       outcome: args.outcome,
       amountUsd: Math.round(args.sets * args.quote.bestAsk! * 100) / 100,
@@ -2947,7 +2996,9 @@ export class BotRunner {
       if (!resolution) {
         continue;
       }
-      await this.deps.state.recordTradeResolution(trade.slug, resolution, trade.mode);
+      // Por ID: con dos tramos en la misma ventana hay dos filas con el mismo slug y modo, y buscar
+      // por slug resolveria siempre la primera dejando la otra pendiente para siempre.
+      await this.deps.state.recordTradeResolution(trade.slug, resolution, trade.mode, trade.id);
       await this.recordResolvedTradeAnalytics(trade, resolution);
       logger.info("Resolved trade.", {
         mode: trade.mode,
@@ -2987,12 +3038,14 @@ export class BotRunner {
           trade.kind !== "arb" &&
           // Give the official resolution time to land before asking.
           nowMs - trade.endMs > OFFICIAL_RESOLUTION_GRACE_MS &&
-          nowMs - (this.officialCheckAttemptsMs.get(`${trade.mode}:${trade.slug}`) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
+          nowMs - (this.officialCheckAttemptsMs.get(trade.id) ?? 0) > OFFICIAL_RETRY_INTERVAL_MS,
       )
       .slice(0, OFFICIAL_CHECKS_PER_SWEEP);
 
     for (const trade of candidates) {
-      this.officialCheckAttemptsMs.set(`${trade.mode}:${trade.slug}`, nowMs);
+      // Por id, no por modo:slug: con dos tramos en la ventana el throttle marcaba una y dejaba la
+      // otra sin reintentar nunca.
+      this.officialCheckAttemptsMs.set(trade.id, nowMs);
       try {
         const market = await getMarketBySlug(trade.slug, nowMs);
         const official = officialWinningOutcome(market);
@@ -3004,7 +3057,7 @@ export class BotRunner {
           winningOutcome: official,
           verifiedAtMs: nowMs,
           corrected,
-        });
+        }, trade.id);
         if (corrected) {
           logger.warn("Resolución corregida por resultado oficial de Polymarket.", {
             slug: trade.slug,
