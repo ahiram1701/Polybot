@@ -33,6 +33,43 @@ export function summarizeLiveOrderFill(response: unknown): LiveFillSummary {
   };
 }
 
+export interface LiveExitFillSummary {
+  fillDetected: boolean;
+  soldShares?: number;
+  proceedsUsd?: number;
+}
+
+/**
+ * Lo mismo que `summarizeLiveOrderFill` pero para una VENTA, con el mapeo al reves.
+ *
+ * No es duplicacion evitable: los dos campos del exchange son relativos al lado de la orden. En un
+ * BUY das USD (`makingAmount`) y recibes participaciones (`takingAmount`); en un SELL das
+ * participaciones y recibes USD. Reutilizar el de compra apuntaria los dolares como participaciones y
+ * al reves — y como los dos son `number`, ni el compilador ni el ojo lo verian: el P&L cobraria una
+ * venta de $0,68 como si hubieran sido 0,68 participaciones a $1.
+ */
+export function summarizeLiveExitFill(response: unknown): LiveExitFillSummary {
+  const orderResponse = unwrapOrderResponse(response);
+  const status = getString(orderResponse, "status")?.toLowerCase();
+  const makingAmount = parseClobAmount(getProperty(orderResponse, "makingAmount"));
+  const takingAmount = parseClobAmount(getProperty(orderResponse, "takingAmount"));
+  const tradeIds = getArray(orderResponse, "tradeIDs");
+  const transactionHashes = getArray(orderResponse, "transactionsHashes");
+  const rejected = getProperty(orderResponse, "success") === false;
+
+  return {
+    fillDetected: !rejected && (
+      RESOLVABLE_LIVE_STATUSES.has(status ?? "") ||
+      makingAmount !== undefined ||
+      takingAmount !== undefined ||
+      tradeIds.length > 0 ||
+      transactionHashes.length > 0
+    ),
+    soldShares: makingAmount,
+    proceedsUsd: takingAmount,
+  };
+}
+
 export function extractTradeIds(response: unknown): string[] {
   const orderResponse = unwrapOrderResponse(response);
   return getArray(orderResponse, "tradeIDs")

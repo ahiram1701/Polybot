@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveLiveOrderPrice, resolveTradeAmountUsd } from "../src/executionEngine.js";
+import { resolveLiveExitPrice, resolveLiveOrderPrice, resolveTradeAmountUsd } from "../src/executionEngine.js";
 
 describe("execution sizing", () => {
   it("aplica el minimo del exchange tambien en sim (sim debe dimensionar como live)", () => {
@@ -73,6 +73,101 @@ describe("live order pricing (anti-slippage)", () => {
 
   it("rounds to the tick and does not overshoot the cap on rounding", () => {
     expect(resolveLiveOrderPrice({ bestAsk: 0.795, maxAskPrice: 0.8, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.8);
+  });
+});
+
+describe("precio limite de una VENTA", () => {
+  // Espejo del de compra, y escrito aparte por lo mismo: un signo mal puesto aqui no da un error, da
+  // una orden que no se llena nunca o que barre el libro hasta el fondo.
+  it("se pega al mejor bid, un poco por debajo para que llene", () => {
+    expect(resolveLiveExitPrice({ bestBid: 0.68, minBidPrice: 0.05, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.66);
+  });
+
+  it("nunca baja del suelo, por mucha tolerancia que se le de", () => {
+    expect(resolveLiveExitPrice({ bestBid: 0.08, minBidPrice: 0.05, maxSlippage: 0.5, tickSize: 0.01 })).toBe(0.05);
+  });
+
+  it("el redondeo a tick tampoco puede cruzar el suelo", () => {
+    expect(resolveLiveExitPrice({ bestBid: 0.061, minBidPrice: 0.06, maxSlippage: 0.002, tickSize: 0.01 })).toBe(0.06);
+  });
+
+  it("sin bid conocido cae al suelo, que es el lado prudente", () => {
+    expect(resolveLiveExitPrice({ bestBid: undefined, minBidPrice: 0.05, maxSlippage: 0.02, tickSize: 0.01 })).toBe(0.05);
+  });
+});
+
+describe("venta simulada", () => {
+  async function vender(rawBidLevels: Array<{ price: number; size: number }>, shares: number) {
+    const { SimulationExecutionEngine } = await import("../src/executionEngine.js");
+    const engine = new SimulationExecutionEngine({ liveMaxSlippage: 0.02 } as never);
+    return engine.sell({
+      market: {
+        asset: "ETH",
+        tickSize: "0.01",
+        negRisk: false,
+        outcomes: { UP: { tokenId: "up" }, DOWN: { tokenId: "down" } },
+      } as never,
+      outcome: "UP",
+      shares,
+      quote: {
+        tokenId: "up",
+        bestAsk: 0.7,
+        bestBid: rawBidLevels[0]?.price,
+        availableUsdUnderCap: 0,
+        availableUsdAllLevels: 0,
+        estimatedSharesForAmount: 0,
+        rawAskLevels: [],
+        rawBidLevels,
+        availableBidUsdAllLevels: 0,
+      },
+      minBidPrice: 0.05,
+      reason: "stop_bajo_banda",
+    });
+  }
+
+  it("baja por el libro en vez de cobrarlo todo al mejor bid", async () => {
+    // Un sim optimista en la salida haria creer que cerrar es gratis justo donde la realidad es peor
+    // (libro fino al cierre, que es cuando esto se dispara).
+    const exit = await vender(
+      [
+        { price: 0.68, size: 40 },
+        { price: 0.66, size: 100 },
+      ],
+      100,
+    );
+
+    // 40*0,68 + 60*0,66 = 27,2 + 39,6 = 66,8. Al mejor bid habrian salido $68.
+    expect(exit.soldShares).toBe(100);
+    expect(exit.proceedsUsd).toBeCloseTo(66.8, 6);
+    expect(exit.averageExitPrice).toBeCloseTo(0.668, 6);
+  });
+
+  it("se para en el precio limite: los niveles peores no cuentan", async () => {
+    // Limite = 0,68 - 0,02 = 0,66. El nivel de 0,60 esta por debajo y la orden no llegaria a el.
+    const exit = await vender(
+      [
+        { price: 0.68, size: 40 },
+        { price: 0.6, size: 1_000 },
+      ],
+      100,
+    );
+
+    expect(exit.soldShares).toBe(40);
+    expect(exit.proceedsUsd).toBeCloseTo(27.2, 6);
+  });
+
+  it("cobra comision, porque un sim gratis no predice el live", async () => {
+    const exit = await vender([{ price: 0.68, size: 1_000 }], 100);
+
+    expect(exit.feeUsd).toBeGreaterThan(0);
+  });
+
+  it("un libro sin compradores devuelve una venta vacia, no un error", async () => {
+    const exit = await vender([], 100);
+
+    expect(exit.soldShares).toBe(0);
+    expect(exit.proceedsUsd).toBe(0);
+    expect(exit.feeUsd).toBe(0);
   });
 });
 

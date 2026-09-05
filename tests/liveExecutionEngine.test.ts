@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ExecutionInput } from "../src/executionEngine.js";
+import type { ExecutionInput, ExitExecutionInput } from "../src/executionEngine.js";
 import type { BotConfig, MarketInfo, WindowOpening } from "../src/types.js";
 
 /** Nunca el `data/` real: un test no debe poder escribir en produccion. */
@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => {
     clobClient,
     createOrDeriveApiKey,
     createAndPostMarketOrder,
+    cancelOrder,
   };
 });
 
@@ -59,7 +60,10 @@ vi.mock("@polymarket/clob-client-v2", () => ({
   Chain: { POLYGON: 137 },
   ClobClient: mocks.clobClient,
   OrderType: { FAK: "FAK" },
-  Side: { BUY: "BUY" },
+  // SELL tiene que estar aqui. Sin el, `Side.SELL` es `undefined`, la orden viaja SIN LADO al
+  // exchange y este test pasa verde igual: el mock no valida nada. Es el agujero mas peligroso de
+  // todo el camino de venta, porque solo se descubre con dinero real.
+  Side: { BUY: "BUY", SELL: "SELL" },
 }));
 
 describe("LiveExecutionEngine", () => {
@@ -131,6 +135,98 @@ describe("LiveExecutionEngine", () => {
     expect(trade.averageFillPrice).toBeCloseTo(0.91);
     expect(trade.fillSource).toBe("order_response");
     expect(trade.tradeIds).toEqual(["trade-1"]);
+  });
+
+  describe("venta", () => {
+    it("manda un SELL con PARTICIPACIONES, no con dolares", async () => {
+      // El fallo que ningun tipo puede atrapar: `amount` es `number` en los dos lados, asi que pasar
+      // los dolares en vez de las participaciones compila igual de bien y vende una cantidad
+      // completamente distinta de la que se pretendia.
+      const { LiveExecutionEngine } = await import("../src/executionEngine.js");
+      const engine = new LiveExecutionEngine(baseConfig());
+
+      await engine.sell(baseExitInput());
+
+      expect(mocks.createAndPostMarketOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tokenID: "up-token",
+          side: "SELL",
+          // 12,5 participaciones. NO los ~$8,5 que valen.
+          amount: 12.5,
+          // Precio pegado al mejor bid (0,68) menos la tolerancia de 0,02, redondeado a tick.
+          price: 0.66,
+        }),
+        expect.objectContaining({ tickSize: "0.01", negRisk: false }),
+        "FAK",
+      );
+    });
+
+    it("lee el llenado con el mapeo de VENTA, no con el de compra", async () => {
+      // makingAmount son las participaciones ENTREGADAS y takingAmount los dolares RECIBIDOS: al
+      // reves que en una compra. Con el resumen de compra, esta venta de $8,50 se apuntaria como
+      // 8,5 participaciones y 12,5 dolares.
+      mocks.createAndPostMarketOrder.mockResolvedValueOnce({
+        success: true,
+        status: "matched",
+        orderID: "order-sell",
+        makingAmount: "12500000",
+        takingAmount: "8500000",
+        tradeIDs: ["trade-sell"],
+      });
+      const { LiveExecutionEngine } = await import("../src/executionEngine.js");
+      const engine = new LiveExecutionEngine(baseConfig());
+
+      const exit = await engine.sell(baseExitInput());
+
+      expect(exit.soldShares).toBe(12.5);
+      expect(exit.proceedsUsd).toBe(8.5);
+      expect(exit.averageExitPrice).toBeCloseTo(0.68, 6);
+      expect(exit.tradeIds).toEqual(["trade-sell"]);
+    });
+
+    it("cancela una venta que se queda viva en el libro", async () => {
+      // Una FAK que queda `live` no es una venta: es una orden en reposo que nadie va a vigilar.
+      mocks.createAndPostMarketOrder.mockResolvedValueOnce({ status: "live", orderID: "order-viva" });
+      const { LiveExecutionEngine } = await import("../src/executionEngine.js");
+      const engine = new LiveExecutionEngine(baseConfig());
+
+      const exit = await engine.sell(baseExitInput());
+
+      expect(mocks.cancelOrder).toHaveBeenCalledWith({ orderID: "order-viva" });
+      expect(exit.soldShares).toBe(0);
+    });
+
+    it("el error de venta expone el BID que se miro, no un ask inventado", async () => {
+      // Meter un bid en el campo `quotedBestAsk` de la compra daria un diagnostico que miente sobre
+      // que precio se estaba mirando, que es peor que no tener diagnostico.
+      mocks.createAndPostMarketOrder.mockRejectedValueOnce(new Error("no liquidity"));
+      const { LiveExecutionEngine, LiveExitError } = await import("../src/executionEngine.js");
+      const engine = new LiveExecutionEngine(baseConfig());
+
+      const error = await engine.sell(baseExitInput()).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(LiveExitError);
+      expect((error as InstanceType<typeof LiveExitError>).details).toMatchObject({
+        quotedBestBid: 0.68,
+        quotedBidDepthUsd: 340,
+        shares: 12.5,
+        orderPrice: 0.66,
+        tokenId: "up-token",
+      });
+    });
+
+    it("el precio limite nunca baja del suelo", async () => {
+      const { LiveExecutionEngine } = await import("../src/executionEngine.js");
+      const engine = new LiveExecutionEngine(baseConfig());
+
+      await engine.sell({ ...baseExitInput(), minBidPrice: 0.67 });
+
+      expect(mocks.createAndPostMarketOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ price: 0.67 }),
+        expect.anything(),
+        "FAK",
+      );
+    });
   });
 });
 
@@ -217,5 +313,29 @@ function baseInput(): ExecutionInput {
     },
     distanceUsd: 23,
     entryWindowSeconds: 20,
+  };
+}
+
+function baseExitInput(): ExitExecutionInput {
+  const { market } = baseInput();
+  return {
+    market,
+    outcome: "UP",
+    // 12,5 participaciones: lo que dan $10 comprados a 0,80.
+    shares: 12.5,
+    quote: {
+      tokenId: "up-token",
+      quotedAtMs: Date.now() - 500,
+      bestAsk: 0.7,
+      bestBid: 0.68,
+      availableUsdUnderCap: 100,
+      availableUsdAllLevels: 100,
+      estimatedSharesForAmount: 0,
+      rawAskLevels: [],
+      rawBidLevels: [{ price: 0.68, size: 500 }],
+      availableBidUsdAllLevels: 340,
+    },
+    minBidPrice: 0.05,
+    reason: "stop_bajo_banda",
   };
 }
