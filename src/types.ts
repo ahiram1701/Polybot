@@ -104,6 +104,15 @@ export interface BotConfig {
    * corregirlo si el sim enseña ese patron, y por eso no se activa sola.
    */
   favoriteExitStopMargin?: number;
+  /**
+   * Umbral ABSOLUTO: el ask mas alto al que todavia se vende. Manda sobre el margen cuando esta puesto.
+   *
+   * Existe porque el stop util esta LEJOS de la banda, no pegado a ella. Barrido sobre 705 ventanas de
+   * `data/analytics.jsonl`: con el stop en el suelo de la banda, 264 de 373 salidas fueron a lados que
+   * acabaron ganando, y el conjunto costo 105$ frente a no vender. Expresar ese stop como una resta a
+   * la banda lo dejaria ademas desplazandose solo en cuanto alguien la mueva.
+   */
+  favoriteExitStopAsk?: number;
   /** Segundos minimos al cierre para vender: el CLOB pasa a post-only al final y rechazaria la orden. */
   favoriteExitMinSecondsToEnd?: number;
   /** Suelo del mejor bid. Por debajo, vender no acota la perdida: la regala. */

@@ -81,6 +81,8 @@ export interface UiSettings {
    */
   favoriteExitEnabled: boolean;
   favoriteExitStopMargin: number;
+  /** Umbral ABSOLUTO: el ask mas alto al que todavia se vende. Manda sobre el margen. */
+  favoriteExitStopAsk: number;
   favoriteExitMinSecondsToEnd: number;
   favoriteExitMinBid: number;
   favoriteExitMinFillRatio: number;

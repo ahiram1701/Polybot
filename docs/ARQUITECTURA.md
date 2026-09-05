@@ -165,9 +165,25 @@ lado que se tiene cae por debajo del suelo de la banda de compra, la posición s
   iteración siguiente a cualquier compra: con spreads de 1,5 a 4,5 céntimos, un ask de 0,82 lleva el
   bid ya por debajo del suelo de 0,79. La consecuencia es que **la pérdida realizada es peor que la
   nominal**: se cobra el bid y se paga comisión encima.
-- **La referencia es `favoriteMinAsk`, no `minAskPriceByMarketOutcome`.** Ese otro es el piso de la
-  ventana de ask (0,01 por defecto, un antifiltro de polvo) y usarlo dejaría el stop tan abajo que no
-  se dispararía nunca.
+- **El umbral es absoluto (`favoriteExitStopAsk`), y es la decisión que más pesa.** Barrido sobre las
+  705 ventanas operables de `data/analytics.jsonl`:
+
+  | stop | salidas | a lados que ganaban | neto | vs no vender |
+  |---|---|---|---|---|
+  | 0,79 | 373 | 264 | −157,40 | **−105,22** |
+  | 0,70 | 250 | 144 | −113,86 | −61,67 |
+  | 0,60 | 191 | 87 | −79,59 | −27,41 |
+  | 0,60 + 2 lecturas | 165 | 66 | −60,38 | −8,20 |
+
+  **En ningún umbral probado vender gana a aguantar.** Lo que delata el mecanismo es que las salidas
+  acertadas apenas se mueven (109 → 87 entre 0,79 y 0,60) mientras las innecesarias se desploman
+  (264 → 25): los desplomes de verdad los caza cualquier umbral, y todo lo que añade un stop pegado a
+  la banda son falsos positivos. Medido en vivo, 5 de 15 salidas recompraron el mismo lado 7-10
+  céntimos peor. De fondo: cuando el ask está en X el valor justo del mercado *es* X, así que vender
+  contra el bid pierde el ancho del libro siempre.
+- **Sin umbral absoluto se deriva de `favoriteMinAsk`, nunca de `minAskPriceByMarketOutcome`.** Ese
+  otro es el piso de la ventana de ask (0,01 por defecto, un antifiltro de polvo) y con él el stop no
+  se dispararía jamás.
 - **No exige los dos asks, al revés que el selector.** Al final de la ventana el lado ganador se queda
   sin asks, y exigirlos dejaría la posición atrapada justo mientras se derrumba. Sin el ask del
   contrario se pierde la guarda de libro muerto, así que la realidad del precio se confirma con lo

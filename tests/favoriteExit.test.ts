@@ -108,11 +108,25 @@ describe("decideFavoriteExit", () => {
     expect(decision.reason).toBe("en_banda");
   });
 
-  it("justo en el stop todavia NO cierra: el suelo es inclusivo", () => {
+  it("justo EN el stop ya cierra: el umbral es el ultimo precio al que se vende", () => {
+    // Inclusivo a proposito. Asi el ajuste dice literalmente lo que hace —"vende con el ask en 0,69 o
+    // menos" es `stopAsk: 0.69`— en vez de obligar a configurar el primer precio que NO vende, que es
+    // como se cuelan los errores de un tick.
     const decision = escenario({
       quotes: {
         UP: quote({ bestAsk: 0.79, bids: [{ price: 0.77, size: 1_000 }] }),
         DOWN: quote({ bestAsk: 0.23, bids: [{ price: 0.21, size: 1_000 }] }),
+      },
+    });
+
+    expect(decision.reason).toBe("stop_bajo_banda");
+  });
+
+  it("un tick por encima del stop no cierra", () => {
+    const decision = escenario({
+      quotes: {
+        UP: quote({ bestAsk: 0.8, bids: [{ price: 0.78, size: 1_000 }] }),
+        DOWN: quote({ bestAsk: 0.22, bids: [{ price: 0.2, size: 1_000 }] }),
       },
     });
 
@@ -241,12 +255,23 @@ describe("decideFavoriteExit", () => {
 });
 
 describe("resolveStopAsk", () => {
-  it("sin margen, el stop es exactamente el suelo de la banda", () => {
-    expect(resolveStopAsk(0.79, undefined)).toBeCloseTo(0.79, 6);
-    expect(resolveStopAsk(0.79, 0)).toBeCloseTo(0.79, 6);
+  it("el umbral ABSOLUTO manda sobre la banda y sobre el margen", () => {
+    // Es el caso normal: el stop util esta lejos de la banda, y expresarlo como una resta lo dejaria
+    // desplazandose solo en cuanto alguien mueva la banda.
+    expect(resolveStopAsk(0.79, 0.02, 0.69)).toBeCloseTo(0.69, 6);
+    expect(resolveStopAsk(0.9, 0.5, 0.69)).toBeCloseTo(0.69, 6);
   });
 
-  it("el margen separa el stop del borde por el que se entra", () => {
+  it("un umbral absoluto fuera de (0,1) se ignora y se cae al derivado", () => {
+    expect(resolveStopAsk(0.79, 0.02, 0)).toBeCloseTo(0.77, 6);
+    expect(resolveStopAsk(0.79, 0.02, 1)).toBeCloseTo(0.77, 6);
+    expect(resolveStopAsk(0.79, 0.02, Number.NaN)).toBeCloseTo(0.77, 6);
+  });
+
+  it("sin umbral absoluto, el stop se deriva del suelo de la banda", () => {
+    // Un tick por debajo por defecto: con el stop EN el suelo se venderia a un precio al que la
+    // estrategia todavia compra.
+    expect(resolveStopAsk(0.79, undefined)).toBeCloseTo(0.78, 6);
     expect(resolveStopAsk(0.79, 0.02)).toBeCloseTo(0.77, 6);
   });
 

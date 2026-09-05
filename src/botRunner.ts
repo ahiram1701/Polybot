@@ -1799,13 +1799,13 @@ export class BotRunner {
         quotes,
         nowMs,
         endMs: trade.endMs,
-        // El suelo de la BANDA DEL FAVORITO, no `resolveConfiguredMinAskPrice`: ese es el piso de la
-        // ventana de ask (0,01 por defecto, un antifiltro de polvo) y usarlo dejaria el stop tan abajo
-        // que no se dispararia nunca. El criterio es "ya no cotiza donde compre", asi que la referencia
-        // tiene que ser exactamente el borde por el que se entra.
+        // Con umbral absoluto configurado manda ese; si no, se deriva del suelo de la BANDA DEL
+        // FAVORITO. Nunca de `resolveConfiguredMinAskPrice`: ese es el piso de la ventana de ask (0,01
+        // por defecto, un antifiltro de polvo) y con el, el stop no se dispararia jamas.
         stopAsk: resolveStopAsk(
           this.config.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
           this.config.favoriteExitStopMargin,
+          this.config.favoriteExitStopAsk,
         ),
         minSecondsToEnd: this.config.favoriteExitMinSecondsToEnd,
         minBid: this.config.favoriteExitMinBid,

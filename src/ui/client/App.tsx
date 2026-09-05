@@ -249,7 +249,8 @@ const emptySettings: UiSettings = {
   favoriteMaxSizeAsk: 0.98,
   favoriteMaxSizeFraction: 0.5,
   favoriteExitEnabled: false,
-  favoriteExitStopMargin: 0,
+  favoriteExitStopMargin: 0.01,
+  favoriteExitStopAsk: 0.69,
   favoriteExitMinSecondsToEnd: 45,
   favoriteExitMinBid: 0.05,
   favoriteExitMinFillRatio: 0.9,
@@ -2527,9 +2528,16 @@ export function SettingsPanel({
         <h3>Salida por stop</h3>
         <p className="settings-hint">
           Hasta ahora el bot <strong>solo compraba</strong>: toda posición se mantenía hasta que el
-          mercado resolvía. Con esto encendido, si el ask del lado que tienes cae por debajo del suelo
-          de la banda en la que compras, la posición se <strong>vende</strong> y el favorito puede
-          volver a entrar en la misma ventana si el nuevo lado pasa los filtros de siempre.
+          mercado resolvía. Con esto encendido, cuando el ask del lado que tienes llega al umbral de
+          abajo <em>o por debajo</em>, la posición se <strong>vende</strong> y el favorito puede volver
+          a entrar en la misma ventana si el nuevo lado pasa los filtros de siempre.
+        </p>
+        <p className="settings-hint settings-hint-warn">
+          <strong>Dónde pongas ese umbral lo decide todo.</strong> Medido sobre 705 ventanas del propio
+          histórico: con el stop pegado al suelo de la banda, <strong>264 de 373 ventas fueron a lados
+          que acabaron ganando</strong> y el conjunto costó 105 $ frente a no vender nada. Cuanto más
+          cerca de la banda, más vendes por ruido: el ask baja dos céntimos, cobras el bid y recompras
+          más caro. Los desplomes de verdad los caza cualquier umbral, porque cuando cae, cae mucho.
         </p>
         <div className="settings-grid">
           <label className="switch-row">
@@ -2542,12 +2550,12 @@ export function SettingsPanel({
             <span>Vender cuando el precio cae del tramo</span>
           </label>
           <NumberField
-            label="Margen bajo la banda"
-            value={draft.favoriteExitStopMargin}
-            min={0}
-            max={0.5}
+            label="Vender con el ask en"
+            value={draft.favoriteExitStopAsk}
+            min={0.05}
+            max={0.95}
             step={0.01}
-            onChange={(value) => update("favoriteExitStopMargin", value)}
+            onChange={(value) => update("favoriteExitStopAsk", value)}
           />
           <NumberField
             label="Bid mínimo para vender"

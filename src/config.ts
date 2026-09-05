@@ -168,7 +168,9 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(false),
-  FAVORITE_EXIT_STOP_MARGIN: z.coerce.number().gte(0).lt(1).default(0),
+  FAVORITE_EXIT_STOP_MARGIN: z.coerce.number().gte(0).lt(1).default(0.01),
+  // Umbral ABSOLUTO. Sin valor, el stop se deriva de la banda. Ver `favoriteExitStopAsk` en types.ts.
+  FAVORITE_EXIT_STOP_ASK: z.coerce.number().gt(0).lt(1).optional(),
   FAVORITE_EXIT_MIN_SECONDS: z.coerce.number().nonnegative().default(45),
   FAVORITE_EXIT_MIN_BID: z.coerce.number().gt(0).lt(1).default(0.05),
   FAVORITE_EXIT_MIN_FILL_RATIO: z.coerce.number().min(0).max(1).default(0.9),
@@ -386,6 +388,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     favoriteMaxSizeFraction: env.FAVORITE_MAX_SIZE_FRACTION,
     favoriteExitEnabled: env.FAVORITE_EXIT_ENABLED,
     favoriteExitStopMargin: env.FAVORITE_EXIT_STOP_MARGIN,
+    favoriteExitStopAsk: env.FAVORITE_EXIT_STOP_ASK,
     favoriteExitMinSecondsToEnd: env.FAVORITE_EXIT_MIN_SECONDS,
     favoriteExitMinBid: env.FAVORITE_EXIT_MIN_BID,
     favoriteExitMinFillRatio: env.FAVORITE_EXIT_MIN_FILL_RATIO,

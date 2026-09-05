@@ -1774,6 +1774,7 @@ export class BotController {
       favoriteMaxSizeFraction: config.favoriteMaxSizeFraction ?? settings.favoriteMaxSizeFraction,
       favoriteExitEnabled: config.favoriteExitEnabled ?? settings.favoriteExitEnabled,
       favoriteExitStopMargin: config.favoriteExitStopMargin ?? settings.favoriteExitStopMargin,
+      favoriteExitStopAsk: config.favoriteExitStopAsk ?? settings.favoriteExitStopAsk,
       favoriteExitMinSecondsToEnd: config.favoriteExitMinSecondsToEnd ?? settings.favoriteExitMinSecondsToEnd,
       favoriteExitMinBid: config.favoriteExitMinBid ?? settings.favoriteExitMinBid,
       favoriteExitMinFillRatio: config.favoriteExitMinFillRatio ?? settings.favoriteExitMinFillRatio,

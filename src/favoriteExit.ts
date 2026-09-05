@@ -19,14 +19,18 @@ import type { OrderbookQuote, Outcome } from "./types.js";
  */
 
 /**
- * Cuanto por debajo del suelo de la banda se pone el stop. Cero = exactamente el suelo.
+ * Cuanto por debajo del suelo de la banda cae el stop cuando NO hay umbral absoluto configurado.
  *
- * Existe como palanca, no como opinion. El disparo elegido es el suelo de la banda de compra, y ese
- * suelo es tambien el borde por el que se ENTRA: una entrada en el borde exacto (ask 0,79 con la banda
- * empezando en 0,79) sale al primer tick en contra sin haber arriesgado nada, pagando el ancho del
- * libro por nada. Si el sim enseña ese patron, este margen es lo que lo corrige — y no se activa solo.
+ * Un centimo, no cero, porque `stopAsk` es "el ask mas alto al que todavia se vende" (la comparacion
+ * es inclusiva): con cero, el stop coincidiria con el suelo de la banda y se vendera a un precio al
+ * que la estrategia todavia COMPRA. Un tick de separacion es lo minimo coherente.
+ *
+ * Medido sobre 705 ventanas de `data/analytics.jsonl`: este stop pegado a la banda es el PEOR de todos
+ * los probados —cuesta 105$ frente a no vender— porque el ask baja un par de centimos por ruido, se
+ * vende contra el bid y se recompra mas caro. De 15 salidas reales, 5 recompraron el MISMO lado 7-10
+ * centimos peor. Por eso existe `favoriteExitStopAsk`: para poner el stop donde el ruido ya no llega.
  */
-export const DEFAULT_EXIT_STOP_MARGIN = 0;
+export const DEFAULT_EXIT_STOP_MARGIN = 0.01;
 
 /**
  * Segundos minimos al cierre para vender. Dos razones distintas, y las dos importan:
@@ -132,7 +136,7 @@ export function decideFavoriteExit(args: {
   quotes: Partial<Record<Outcome, OrderbookQuote>>;
   nowMs: number;
   endMs: number;
-  /** Por debajo de este ask se cierra. Normalmente `favoriteMinAsk - favoriteExitStopMargin`. */
+  /** El ask mas alto al que TODAVIA se vende. La comparacion es inclusiva: ask <= stopAsk cierra. */
   stopAsk: number;
   minSecondsToEnd?: number;
   minBid?: number;
@@ -212,13 +216,17 @@ export function decideFavoriteExit(args: {
     };
   }
 
-  // El caso NORMAL, y el unico que no es una anomalia: la posicion sigue donde se compro.
+  // El caso NORMAL, y el unico que no es una anomalia: la posicion sigue por encima del stop.
   //
   // La comparacion es contra el ASK, no contra el bid, y no es un detalle. La banda de compra es de
   // asks, asi que el ask es la misma vara con la que se decidio entrar. Medir el stop sobre el bid
   // dispararia en la iteracion siguiente a CUALQUIER compra: con spreads de 1,5 a 4,5 centimos, un ask
   // de 0,82 lleva el bid ya por debajo del suelo de 0,79.
-  if (askNuestro >= args.stopAsk) {
+  //
+  // INCLUSIVA: `stopAsk` es el ask mas alto al que todavia se vende. Asi el ajuste dice literalmente lo
+  // que hace —"vende con el ask en 0,69 o menos" es `stopAsk: 0.69`— en vez de obligar a configurar el
+  // primer precio que NO vende, que es como se cuelan los errores de un tick.
+  if (askNuestro > args.stopAsk) {
     return { reason: "en_banda", detail: detalleBase };
   }
 
@@ -275,13 +283,25 @@ export function decideFavoriteExit(args: {
 }
 
 /**
- * El ask por debajo del cual se cierra.
+ * El ask mas alto al que todavia se vende.
  *
- * Se deriva del suelo de la banda de COMPRA y no de un numero suelto: el criterio es "ya no cotiza
- * donde compro", asi que mover la banda tiene que mover el stop con ella. Un umbral independiente se
- * quedaria descolgado en el primer ajuste y nadie se enteraria.
+ * Dos formas, y la absoluta manda cuando esta puesta:
+ *
+ * - `stopAsk` ABSOLUTO. El criterio es un suelo de precio propio, independiente de donde se compre.
+ *   Es lo que hace falta cuando el stop tiene que estar LEJOS de la banda: medido sobre 705 ventanas,
+ *   un stop pegado al suelo de la banda vende por ruido —264 de 373 salidas fueron a lados que
+ *   acabaron ganando— y derivarlo de la banda obligaria a expresarlo como una resta que se desplaza
+ *   sola en cuanto alguien mueve la banda.
+ * - Derivado de la banda, para el caso en que no se configure nada: "ya no cotiza donde compre".
  */
-export function resolveStopAsk(favoriteMinAsk: number, stopMargin: number | undefined): number {
+export function resolveStopAsk(
+  favoriteMinAsk: number,
+  stopMargin: number | undefined,
+  stopAsk?: number,
+): number {
+  if (typeof stopAsk === "number" && Number.isFinite(stopAsk) && stopAsk > 0 && stopAsk < 1) {
+    return stopAsk;
+  }
   const margen = typeof stopMargin === "number" && Number.isFinite(stopMargin) && stopMargin >= 0
     ? stopMargin
     : DEFAULT_EXIT_STOP_MARGIN;
