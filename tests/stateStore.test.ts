@@ -289,4 +289,37 @@ describe("StateStore: los dos tramos del favorito en la misma ventana", () => {
     }, "sim");
     expect(reloaded.getTradedMarket(slug, "sim")?.resolved?.won).toBe(true);
   });
+
+  it("los dos tramos sobreviven a una carga EN FRIO desde el disco", async () => {
+    // El otro test de convivencia no llega a `normalizeTradedMarkets`: reutiliza el mismo proceso, y
+    // `load()` acierta en `stateFileCache` (misma ruta, misma firma) devolviendo el estado ya
+    // normalizado. Aqui el state.json se escribe A MANO, asi que la cache esta vacia y la carga pasa
+    // de verdad por la reconstruccion de claves — que es donde la conviccion desaparecia.
+    //
+    // Es el escenario REAL del bug: no un `new StateStore()` cualquiera, sino arrancar el proceso.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+
+    const slug = "btc-updown-5m-arranque-en-frio";
+    await writeFile(
+      join(dataDir, "state.json"),
+      JSON.stringify({
+        version: 1,
+        openings: {},
+        tradedMarkets: {
+          [`sim:${slug}`]: trade({ slug, mode: "sim", id: "banda-1", entryKind: "banda" }),
+          [`sim:${slug}#conviccion`]: trade({ slug, mode: "sim", id: "conviccion-1", entryKind: "conviccion" }),
+        },
+        dailySpendUsd: {},
+      }),
+      "utf8",
+    );
+
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    expect(store.listTrades()).toHaveLength(2);
+    expect(store.getTradedMarket(slug, "sim", "banda")?.id).toBe("banda-1");
+    expect(store.getTradedMarket(slug, "sim", "conviccion")?.id).toBe("conviccion-1");
+  });
 });

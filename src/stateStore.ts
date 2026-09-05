@@ -434,13 +434,22 @@ async function getStateFileSignature(path: string): Promise<string> {
   }
 }
 
+/**
+ * Reconstruye las claves al cargar del disco.
+ *
+ * La clave se calcula CON `entryKind`, y no es cosmetico: sin el, las dos filas de una misma ventana
+ * —la banda y la conviccion— colapsan en la misma ranura y la segunda BORRA a la primera en cada
+ * arranque. `tradeStateKey` ya lo tenia resuelto al ESCRIBIR; el que reconstruia al LEER se habia
+ * quedado atras, asi que el ledger perdia una fila con solo reiniciar el proceso — y con ella su
+ * P&L, que es justo lo que `openStakeUsd` necesita para no volver a comprometer capital ya gastado.
+ */
 function normalizeTradedMarkets(tradedMarkets: Record<string, TradeAttempt>): Record<string, TradeAttempt> {
   const normalized: Record<string, TradeAttempt> = {};
   for (const trade of Object.values(tradedMarkets)) {
     if (!trade?.slug) {
       continue;
     }
-    normalized[tradeStateKey(normalizeMode(trade.mode), trade.slug)] = {
+    normalized[tradeStateKey(normalizeMode(trade.mode), trade.slug, trade.entryKind)] = {
       ...trade,
       mode: normalizeMode(trade.mode),
     };
