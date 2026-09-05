@@ -42,7 +42,10 @@ export function realizedForCandidate(
   let netUsd = 0;
   let wins = 0;
   for (const trade of trades) {
-    if (trade.asset !== market || trade.kind === "arb" || !trade.resolved) {
+    // Por el ESTADO del P&L y no por `trade.resolved`: una posicion vendida antes de tiempo tiene su
+    // dinero realizado igual, y dejarla fuera haria que esta guarda solo viera las ventanas que se
+    // aguantaron hasta el final — o sea, infravalorando justo las perdidas que la salida acota.
+    if (trade.asset !== market || trade.kind === "arb" || calculateTradePnl(trade).status !== "resolved") {
       continue;
     }
     const secondsToEnd = (trade.endMs - trade.createdAtMs) / 1000;

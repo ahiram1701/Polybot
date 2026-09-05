@@ -1,4 +1,4 @@
-import { calculateTradePnl, isWinningTrade } from "./pnl.js";
+import { calculateTradePnl, isWinningTrade, tradeClosedAtMs } from "./pnl.js";
 import { dailySpendKey, localDayRange } from "./time.js";
 import type { Mode, TradeAttempt } from "./types.js";
 
@@ -44,15 +44,19 @@ export function evaluateRiskCircuitBreaker(
   // salian 164,7 ms por iteracion del bucle — el 16% de cada segundo, creciendo con el historial.
   // Comparar numeros es exactamente equivalente y practicamente gratis.
   const hoy = localDayRange(nowMs, limits.timeZone);
+  // `tradeClosedAtMs` y no `resolved.resolvedAtMs`: una posicion vendida antes de tiempo no tiene
+  // `resolved`, asi que filtrar por ese campo dejaba fuera del cortacircuitos precisamente las
+  // perdidas que se acaban de realizar. Ninguna de ellas contaba ni en la perdida diaria ni en la
+  // racha, que es lo contrario de lo que este freno existe para hacer.
   const resolvedToday = trades
-    .filter(
-      (trade) =>
-        trade.mode === mode &&
-        trade.resolved !== undefined &&
-        trade.resolved.resolvedAtMs >= hoy.startMs &&
-        trade.resolved.resolvedAtMs < hoy.endMs,
-    )
-    .sort((left, right) => (left.resolved?.resolvedAtMs ?? 0) - (right.resolved?.resolvedAtMs ?? 0));
+    .filter((trade) => {
+      if (trade.mode !== mode) {
+        return false;
+      }
+      const cerradoMs = tradeClosedAtMs(trade);
+      return cerradoMs !== undefined && cerradoMs >= hoy.startMs && cerradoMs < hoy.endMs;
+    })
+    .sort((left, right) => (tradeClosedAtMs(left) ?? 0) - (tradeClosedAtMs(right) ?? 0));
 
   const cooldownMs = Math.max(0, limits.cooldownHours ?? 0) * 3_600_000;
 
@@ -90,7 +94,7 @@ function evaluateFromBaseline(
 ): { reason?: RiskHaltReason; trippedAtMs: number; dailyLossUsd: number; consecutiveLosses: number } {
   const maxDailyLossUsd = limits.maxDailyLossUsd ?? 0;
   const maxConsecutiveLosses = limits.maxConsecutiveLosses ?? 0;
-  const counted = resolvedToday.filter((trade) => (trade.resolved?.resolvedAtMs ?? 0) > baselineMs);
+  const counted = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > baselineMs);
 
   // Walk chronologically so we know the exact moment each limit was crossed (the cooldown anchors there).
   let netUsd = 0;
@@ -104,10 +108,10 @@ function evaluateFromBaseline(
     if (reason === undefined) {
       if (maxDailyLossUsd > 0 && Math.max(0, -netUsd) >= maxDailyLossUsd) {
         reason = "daily_loss_limit";
-        trippedAtMs = trade.resolved?.resolvedAtMs ?? 0;
+        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
       } else if (maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
         reason = "consecutive_losses";
-        trippedAtMs = trade.resolved?.resolvedAtMs ?? 0;
+        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
       }
     }
   }

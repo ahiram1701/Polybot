@@ -36,7 +36,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { LogEntry } from "../../logger.js";
 import { summarizeLogs } from "../../agent/statusSummary.js";
 import type { ArbOpportunitySummary } from "../../arbMonitor.js";
-import { calculateTradePnl, filterTradesForPnlReset, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
+import { calculateTradePnl, esSalidaTotal, filterTradesForPnlReset, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import {
   buildEquitySeries,
@@ -4205,7 +4205,17 @@ function formatTradePayout(pnl: TradePnl): string {
 }
 
 function tradeStatusLabel(trade: TradeAttempt): string {
+  // Antes que `resolved`: una salida total no lo tiene, y sin esta rama se pintaba como pendiente
+  // para siempre pese a estar cerrada y cobrada.
+  if (esSalidaTotal(trade)) {
+    return "Salida";
+  }
   if (trade.resolved) {
+    // Una salida PARCIAL si resuelve, pero su etiqueta no puede ser solo "Gano"/"Perdio": parte del
+    // dinero vino de la venta y parte de la redencion.
+    if (trade.exit) {
+      return trade.resolved.won ? "Salida + gano" : "Salida + perdio";
+    }
     // Un set de arbitraje completo redime $1 por set gane quien gane: nunca es una perdida, y
     // etiquetarlo por el lado nominal mostraba "Perdio" en trades que ganaron dinero.
     if (isCompleteArbPair(trade)) {

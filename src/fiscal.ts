@@ -1,4 +1,4 @@
-import { calculateTradePnl, estimateTradeFeeUsd, isWinningTrade } from "./pnl.js";
+import { calculateTradePnl, estimateTradeFeeUsd, isWinningTrade, tradeClosedAtMs } from "./pnl.js";
 import { dayKeyInTimeZone } from "./timezone.js";
 import type { MarketSymbol, Outcome, TradeAttempt } from "./types.js";
 
@@ -56,14 +56,17 @@ export type FxRateResolver = (fechaIso: string) => number | undefined;
 export function buildFiscalRows(trades: TradeAttempt[], resolveRate?: FxRateResolver, timeZone?: string): FiscalRow[] {
   const rows: FiscalRow[] = [];
   for (const trade of trades) {
-    if (trade.mode !== "live" || !trade.resolved) {
+    if (trade.mode !== "live") {
       continue;
     }
     const pnl = calculateTradePnl(trade);
-    if (pnl.status !== "resolved") {
+    // Una venta anticipada es un hecho imponible como cualquier otro: hay dinero cobrado y una
+    // ganancia o perdida realizada. Se filtra por el ESTADO del P&L, que es quien sabe si la posicion
+    // sigue abierta, y no por `trade.resolved`, que una salida total no llega a tener.
+    const resolvedAtMs = tradeClosedAtMs(trade);
+    if (pnl.status !== "resolved" || resolvedAtMs === undefined) {
       continue;
     }
-    const resolvedAtMs = trade.resolved.resolvedAtMs;
     const fechaIso = toLocalDateIso(resolvedAtMs, timeZone);
     const gananciaUsd = pnl.netUsd ?? 0;
     const tipoCambio = resolveRate?.(fechaIso);

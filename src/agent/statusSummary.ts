@@ -1,6 +1,6 @@
 import type { BandProgram } from "../bandProbeProgram.js";
 import type { LogEntry } from "../logger.js";
-import { calculateTradePnl, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
+import { calculateTradePnl, esSalidaTotal, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type { EffectiveModes } from "../ui/shared.js";
 import type {
@@ -233,6 +233,13 @@ export interface CompactTrade {
   entryWindowSeconds?: number;
   createdAtMs: number;
   resolved?: { won: boolean; winningOutcome: Outcome };
+  /**
+   * Se vendio ENTERA antes de que el mercado resolviera.
+   *
+   * Bandera propia y no derivable de `resolved`: una salida total no lo tiene, asi que sin esto las
+   * pantallas que leen este resumen la pintaban "pendiente" pese a estar cerrada y cobrada.
+   */
+  exited?: boolean;
   netUsd?: number;
   // Slim view of the EV that gated the entry (full snapshot omitted).
   ev?: { edge?: number; expectedRoi?: number; adjustedWinProbability?: number; tradeCount: number };
@@ -258,6 +265,7 @@ export function summarizeTrade(trade: TradeAttempt): CompactTrade {
     resolved: trade.resolved
       ? { won: trade.resolved.won, winningOutcome: trade.resolved.winningOutcome }
       : undefined,
+    exited: esSalidaTotal(trade) ? true : undefined,
     netUsd: round(pnl.netUsd),
     ev: ev
       ? {

@@ -44,7 +44,10 @@ export function summarizeAskBands(
     .filter(
       (trade) =>
         trade.mode === mode &&
-        trade.resolved !== undefined &&
+        // Por el ESTADO del P&L: una salida anticipada realiza dinero sin tener `resolved`, y esta
+        // tabla es la que lee el tuner de bandas. Dejarlas fuera le enseñaria una banda mas rentable
+        // de lo que es, porque las perdidas acotadas desaparecerian de la suma.
+        calculateTradePnl(trade).status === "resolved" &&
         // Arbitrage is not a directional entry at a price: its `bestAsk` is the cost of the whole SET
         // (~0.93), so it lands in the top band and — since it is booked against one nominal side — it
         // reads there as a near-break-even "loss". Left in, it poisons the very table the ask-window

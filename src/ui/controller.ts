@@ -2030,7 +2030,9 @@ function summarizeTrade(trade: TradeAttempt) {
     distanceUsd: trade.distanceUsd,
     entryWindowSeconds: trade.entryWindowSeconds,
     createdAtMs: trade.createdAtMs,
-    resolvedWon: trade.resolved ? isWinningTrade(trade) : undefined,
+    // Por el P&L y no por `trade.resolved`: una salida total esta cerrada y cobrada sin tenerlo, y
+    // preguntando por el campo se quedaba "pendiente" en pantalla para siempre.
+    resolvedWon: pnl.status === "resolved" ? isWinningTrade(trade) : undefined,
     pnl,
   };
 }

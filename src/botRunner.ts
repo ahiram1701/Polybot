@@ -48,7 +48,7 @@ import { MarketWatcher } from "./marketWatcher.js";
 import { archivadorDesatendido, ultimaPasadaArchivado } from "./archiveAnalytics.js";
 import { createDynamicNotifier, type Notifier } from "./notifier.js";
 import { OrderbookService } from "./orderbookService.js";
-import { calculatePnlSummaryByMode, calculateTradePnl, estimateTradeFeeUsd } from "./pnl.js";
+import { calculatePnlSummaryByMode, calculateTradePnl, esSalidaTotal, estimateTradeFeeUsd } from "./pnl.js";
 import {
   getWinningOutcome,
   isTickStale,
@@ -1713,7 +1713,10 @@ export class BotRunner {
       }
       const pnl = calculateTradePnl(trade);
       if (pnl.status === "pending") {
-        total += pnl.stakeUsd;
+        // `openStakeUsd` y no `stakeUsd`: tras una salida PARCIAL solo sigue atado lo que no se
+        // vendio. Cobrar el stake entero mantendria reservado un dinero que ya esta de vuelta en la
+        // cuenta, y la siguiente entrada se descartaria por falta de capital que si existe.
+        total += pnl.openStakeUsd ?? pnl.stakeUsd;
       }
     }
     return total;
@@ -3016,7 +3019,13 @@ export class BotRunner {
       //
       // Las dos condiciones son exactamente las que aplica `resolveTradeFromTick`, solo que antes: no
       // cambia lo que se resuelve, solo lo que cuesta no resolver.
-      if (trade.resolved || nowMs < trade.endMs) {
+      // Una posicion ya VENDIDA no se resuelve. No es cosmetico: sin esta guarda `notifyTradeResolved`
+      // anunciaria por Telegram "Trade ganado/perdido" de algo que ya no se tiene, con un P&L que no
+      // es el que se cobro. Y se deja SIN `resolved` a proposito: sintetizarlo meteria la fila en
+      // `verifyOfficialResolutions`, que podria "corregir" el ganador de una posicion inexistente y
+      // mover el P&L ya realizado. Una salida PARCIAL si resuelve, que es lo correcto para las
+      // participaciones que siguen vivas.
+      if (trade.resolved || esSalidaTotal(trade) || nowMs < trade.endMs) {
         continue;
       }
       const market = trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "BTC";

@@ -627,6 +627,21 @@ export interface TradeAttempt {
   // "arb" = a complete-set arbitrage PAIR stored as one synthetic trade (slug suffixed "#arb" so it
   // never collides with the momentum trade of the same window): amount/fills cover BOTH legs and
   // filledShares is the number of $1-redeeming sets. Absent = normal momentum trade.
+  /**
+   * Salida ANTICIPADA: la posicion se vendio antes de que el mercado resolviera.
+   *
+   * Ausente = el comportamiento de siempre (mantener hasta la redencion), asi que las filas ya
+   * guardadas no necesitan migracion. Cuando esta, el P&L cobra el dinero REAL de la venta en vez de
+   * esperar al ganador: ver `calculateTradePnl`.
+   */
+  exit?: TradeExit;
+  /**
+   * Ronda de rebalanceo de la ventana. Ausente o 0 = la entrada original.
+   *
+   * Va tambien en la clave del ledger (`tradeStateKey`), que es lo que permite que una ventana tenga
+   * varias entradas sin que la nueva pise a la vendida.
+   */
+  reentry?: number;
   kind?: "arb";
   // False when only one leg filled (the pair could not complete): the position is directional and its
   // P&L follows the winner like a normal trade.
@@ -642,6 +657,29 @@ export interface TradeAttempt {
    * exacta y no hay que migrar nada.
    */
   entryKind?: "banda" | "conviccion";
+}
+
+/**
+ * Lo que se consiguio al CERRAR una posicion antes de tiempo.
+ *
+ * `proceedsUsd` son dolares brutos recibidos y `feeUsd` la comision que el CLOB cobra SOBRE ellos, no
+ * sobre el stake: por eso el P&L la descuenta del payout y no la suma al coste de entrada. Sumarla al
+ * stake inflaria el denominador del ROI y haria que dos operaciones identicas puntuaran distinto solo
+ * por haberse cerrado antes.
+ */
+export interface TradeExit {
+  exitedAtMs: number;
+  reason: "stop_bajo_banda";
+  /** Precio limite que viajo en la orden. Se guarda para poder auditar un llenado parcial. */
+  orderPrice: number;
+  soldShares: number;
+  proceedsUsd: number;
+  averageExitPrice: number;
+  feeUsd?: number;
+  orderId?: string;
+  status?: string;
+  tradeIds?: string[];
+  response?: unknown;
 }
 
 export interface SimResolution {
@@ -688,4 +726,5 @@ export type TradeEvent =
   | { type: "trade_resolution"; trade: TradeAttempt; resolution: SimResolution }
   | { type: "sim_resolution"; trade: TradeAttempt; resolution: SimResolution }
   | { type: "trade_official_resolution"; trade: TradeAttempt; officialResolution: OfficialResolution }
+  | { type: "trade_exit"; trade: TradeAttempt; exit: TradeExit }
   | { type: "pnl_reset"; mode: Mode; resetAtMs: number };

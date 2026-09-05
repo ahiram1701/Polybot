@@ -340,7 +340,11 @@ function tradeRow(t: CompactTrade, width: number): string {
   const ask = padStart(t.bestAsk !== undefined ? t.bestAsk.toFixed(2) : "—", 5);
   const amount = padStart(fmtUsd(t.amountUsd), 7);
   let result: string;
-  if (!t.resolved) {
+  if (t.exited) {
+    // Antes que "pend.": una salida total esta cerrada y cobrada, pero no tiene `resolved`, asi que
+    // sin esta rama se pintaba pendiente para siempre.
+    result = cyan(padEnd("SALIDA", 6));
+  } else if (!t.resolved) {
     result = yellow(padEnd("pend.", 6));
   } else if (t.kind === "arb") {
     // El set completo cobra $1 por set gane quien gane: nunca es LOST.

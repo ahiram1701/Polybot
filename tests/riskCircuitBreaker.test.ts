@@ -180,6 +180,88 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(fullReset.consecutiveLosses).toBe(0);
     expect(fullReset.tripped).toBe(false);
   });
+
+  /**
+   * Las salidas anticipadas no tienen `resolved`, y este freno filtraba por ese campo.
+   *
+   * O sea: las perdidas que se acaban de REALIZAR —las que mas se parecen a lo que el cortacircuitos
+   * existe para atrapar— no contaban ni en la perdida diaria ni en la racha. Un bot que sangra
+   * cerrando posiciones podia no disparar el freno nunca.
+   */
+  function conSalida(args: { id: string; exitedAtMs?: number; proceedsUsd: number }): TradeAttempt {
+    return {
+      ...trade({ id: args.id, resolved: false, amountUsd: 10, ask: 0.8 }),
+      exit: {
+        exitedAtMs: args.exitedAtMs ?? NOW,
+        reason: "stop_bajo_banda",
+        orderPrice: 0.7,
+        // La posicion entera: 10 / 0,8 = 12,5 participaciones.
+        soldShares: 12.5,
+        proceedsUsd: args.proceedsUsd,
+        averageExitPrice: args.proceedsUsd / 12.5,
+      },
+    };
+  }
+
+  it("una perdida acotada de hoy cuenta en la perdida diaria", () => {
+    // $10 de stake, $7 recuperados: -$3 realizados sin que exista `resolved`.
+    const trades = [conSalida({ id: "salida", proceedsUsd: 7 })];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 2.5 }, NOW);
+
+    expect(status.dailyLossUsd).toBeCloseTo(3, 6);
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+  });
+
+  it("una perdida acotada extiende la racha igual que una resuelta", () => {
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: NOW - 3_000 }),
+      conSalida({ id: "salida", exitedAtMs: NOW - 2_000, proceedsUsd: 7 }),
+      trade({ id: "l2", won: false, resolvedAtMs: NOW - 1_000 }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW);
+
+    expect(status.consecutiveLosses).toBe(3);
+    expect(status.tripped).toBe(true);
+  });
+
+  it("una salida GANADORA corta la racha, como cualquier otra ganancia", () => {
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: NOW - 3_000 }),
+      conSalida({ id: "salida", exitedAtMs: NOW - 2_000, proceedsUsd: 12 }),
+      trade({ id: "l2", won: false, resolvedAtMs: NOW - 1_000 }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3 }, NOW);
+
+    expect(status.consecutiveLosses).toBe(1);
+    expect(status.tripped).toBe(false);
+  });
+
+  it("una salida PARCIAL sigue abierta y no cuenta todavia", () => {
+    const parcial: TradeAttempt = {
+      ...conSalida({ id: "parcial", proceedsUsd: 3 }),
+      exit: {
+        exitedAtMs: NOW,
+        reason: "stop_bajo_banda",
+        orderPrice: 0.7,
+        soldShares: 5,
+        proceedsUsd: 3,
+        averageExitPrice: 0.6,
+      },
+    };
+    const status = evaluateRiskCircuitBreaker([parcial], "sim", { maxDailyLossUsd: 1 }, NOW);
+
+    expect(status.dailyLossUsd).toBe(0);
+    expect(status.tripped).toBe(false);
+  });
+
+  it("una salida de AYER no cuenta en el dia de hoy", () => {
+    const trades = [conSalida({ id: "vieja", exitedAtMs: YESTERDAY, proceedsUsd: 7 })];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 1 }, NOW);
+
+    expect(status.dailyLossUsd).toBe(0);
+    expect(status.tripped).toBe(false);
+  });
 });
 
 /**

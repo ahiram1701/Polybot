@@ -8,6 +8,15 @@ export interface TradePnl {
   payoutUsd?: number;
   netUsd?: number;
   roiPct?: number;
+  /**
+   * Capital que SIGUE en riesgo. Igual a `stakeUsd` salvo tras una salida PARCIAL.
+   *
+   * Campo aparte en vez de recortar `stakeUsd` porque son dos preguntas distintas: el stake es lo que
+   * se arriesgo (el denominador del ROI, que no puede encogerse al vender) y esto es lo que queda
+   * comprometido ahora mismo. Lo lee `openStakeUsd` en botRunner, que es quien decide cuanto capital
+   * libre hay para la siguiente entrada.
+   */
+  openStakeUsd?: number;
 }
 
 export interface PnlSummary {
@@ -64,23 +73,63 @@ export function isCompleteArbPair(trade: Pick<TradeAttempt, "kind" | "arbPairCom
  * dashboard and Telegram showed profitable arbitrages as losses.
  */
 export function isWinningTrade(trade: TradeAttempt): boolean {
+  if (isCompleteArbPair(trade)) {
+    return true;
+  }
+  // Una salida anticipada no tiene ganador nominal, y no puede tenerlo: se cerro antes de que lo
+  // hubiera. La pregunta de arriba —"¿hizo dinero?"— sigue teniendo respuesta, y es el neto. Casi
+  // siempre sera negativo, porque acotar una perdida es realizarla; contarla como "ni ganada ni
+  // perdida" la sacaria de la racha del cortacircuitos justo cuando mas informa.
+  if (trade.exit && !trade.resolved) {
+    return (calculateTradePnl(trade).netUsd ?? 0) > 0;
+  }
   if (!trade.resolved) {
     return false;
   }
-  return trade.resolved.won === true || isCompleteArbPair(trade);
+  return trade.resolved.won === true;
 }
 
 export function calculateTradePnl(trade: TradeAttempt): TradePnl {
   const stakeUsd = getStakeUsd(trade);
+  const sharesTotales = getFilledShares(trade) ?? trade.estimatedShares;
+  const sharesVendidas = getSoldShares(trade, sharesTotales);
+  const sharesRestantes = Math.max(0, sharesTotales - sharesVendidas);
+  // Bruto MENOS la comision de salida. El CLOB la cobra sobre los ingresos, asi que va aqui y no
+  // sumada al stake: sumarla al coste de entrada inflaria el denominador del ROI y haria que dos
+  // operaciones identicas puntuaran distinto solo por haberse cerrado antes.
+  const payoutVenta = trade.exit ? Math.max(0, trade.exit.proceedsUsd - (trade.exit.feeUsd ?? 0)) : 0;
+  // Lo que sigue en riesgo, en proporcion a lo que queda sin vender. Solo se separa del stake tras una
+  // salida parcial; en cualquier otro caso son el mismo numero.
+  const openStakeUsd =
+    sharesTotales > 0 ? (stakeUsd * sharesRestantes) / sharesTotales : trade.exit ? 0 : stakeUsd;
+
+  // Una salida TOTAL cierra la operacion aqui mismo, sin esperar al cierre del mercado: el dinero ya
+  // esta cobrado y quien pague despues es irrelevante para esta fila. Es lo que permite que la perdida
+  // acotada aparezca en el P&L, en el cortacircuitos y en las pantallas el mismo segundo en que ocurre
+  // — antes bastaba con no tener `resolved` para quedarse "pendiente" para siempre.
   if (!trade.resolved) {
+    if (trade.exit && sharesRestantes <= SHARE_EPSILON) {
+      return {
+        status: "resolved",
+        stakeUsd,
+        payoutUsd: payoutVenta,
+        netUsd: payoutVenta - stakeUsd,
+        roiPct: stakeUsd > 0 ? (payoutVenta - stakeUsd) / stakeUsd : undefined,
+        openStakeUsd: 0,
+      };
+    }
     return {
       status: "pending",
       stakeUsd,
+      openStakeUsd,
     };
   }
 
   const paysRegardlessOfWinner = isCompleteArbPair(trade);
-  const payoutUsd = trade.resolved.won || paysRegardlessOfWinner ? getPayoutUsd(trade) : 0;
+  // Solo redimen las participaciones que SIGUEN en la posicion. Las vendidas ya cobraron su precio de
+  // mercado y contarlas otra vez a $1 seria cobrarlas dos veces.
+  const payoutResolucion = trade.resolved.won || paysRegardlessOfWinner ? sanitizeUsd(sharesRestantes) : 0;
+  const payoutUsd = payoutVenta + payoutResolucion;
   const netUsd = payoutUsd - stakeUsd;
   return {
     status: "resolved",
@@ -88,7 +137,44 @@ export function calculateTradePnl(trade: TradeAttempt): TradePnl {
     payoutUsd,
     netUsd,
     roiPct: stakeUsd > 0 ? netUsd / stakeUsd : undefined,
+    openStakeUsd: 0,
   };
+}
+
+/** Por debajo de esto un resto de participaciones es ruido de coma flotante, no una posicion viva. */
+const SHARE_EPSILON = 1e-6;
+
+/** Nunca mas de lo que se tenia: un llenado reportado de mas no puede inventar payout. */
+function getSoldShares(trade: TradeAttempt, sharesTotales: number): number {
+  if (!trade.exit || !isPositiveFinite(trade.exit.soldShares)) {
+    return 0;
+  }
+  return Math.min(trade.exit.soldShares, sharesTotales);
+}
+
+/**
+ * ¿Se vendio ENTERA antes de que el mercado resolviera?
+ *
+ * Se pregunta por el resultado del P&L y no por `trade.exit !== undefined` porque una salida parcial
+ * tambien tiene `exit` y sigue teniendo posicion viva: esa si debe resolver al cierre.
+ */
+export function esSalidaTotal(trade: TradeAttempt): boolean {
+  return trade.exit !== undefined && !trade.resolved && calculateTradePnl(trade).status === "resolved";
+}
+
+/**
+ * Cuando dejo de estar abierta esta operacion, o `undefined` si sigue viva.
+ *
+ * Existe porque una salida anticipada NO tiene `resolved`, y todo lo que filtraba por ese campo la
+ * daba por pendiente para siempre. En el cortacircuitos eso era grave: las perdidas acotadas —las que
+ * mas se parecen a lo que el cortacircuitos existe para atrapar— no contaban ni en la perdida diaria
+ * ni en la racha.
+ */
+export function tradeClosedAtMs(trade: TradeAttempt): number | undefined {
+  if (trade.resolved) {
+    return trade.resolved.resolvedAtMs;
+  }
+  return calculateTradePnl(trade).status === "resolved" ? trade.exit?.exitedAtMs : undefined;
 }
 
 function getStakeUsd(trade: TradeAttempt): number {
@@ -130,10 +216,6 @@ function getEntryPriceUsd(trade: TradeAttempt): number | undefined {
     return trade.estimatedAveragePrice;
   }
   return isPositiveFinite(trade.bestAsk) ? trade.bestAsk : undefined;
-}
-
-function getPayoutUsd(trade: TradeAttempt): number {
-  return sanitizeUsd(getFilledShares(trade) ?? trade.estimatedShares);
 }
 
 function getFilledAmountUsd(trade: TradeAttempt): number | undefined {

@@ -4,8 +4,10 @@ import {
   calculatePnlSummary,
   calculatePnlSummaryByMode,
   calculateTradePnl,
+  esSalidaTotal,
   isCompleteArbPair,
   isWinningTrade,
+  tradeClosedAtMs,
 } from "../src/pnl.js";
 import type { TradeAttempt } from "../src/types.js";
 
@@ -259,6 +261,113 @@ describe("la simulacion tambien paga comision", () => {
     const conComision = calculateTradePnl(t);
     // 20 participaciones a 0,50 con 700 bps: 20 x 0,07 x 0,5 x 0,5 = $0,35.
     expect(conComision.netUsd).toBeCloseTo(20 - 10 - 0.35, 4);
+  });
+});
+
+describe("salida anticipada", () => {
+  /** Base: $1 de stake por 1,25 participaciones (ask implicito 0,80). */
+  function conSalida(args: {
+    won?: boolean;
+    soldShares: number;
+    proceedsUsd: number;
+    feeUsd?: number;
+  }): TradeAttempt {
+    return {
+      ...trade({ won: args.won, amountUsd: 1, estimatedShares: 1.25 }),
+      exit: {
+        exitedAtMs: 3_500,
+        reason: "stop_bajo_banda",
+        orderPrice: 0.68,
+        soldShares: args.soldShares,
+        proceedsUsd: args.proceedsUsd,
+        averageExitPrice: args.proceedsUsd / args.soldShares,
+        feeUsd: args.feeUsd,
+      },
+    };
+  }
+
+  it("una salida TOTAL cierra la operacion sin esperar al mercado", () => {
+    // Es el punto de todo esto: la perdida acotada tiene que aparecer en el P&L el mismo segundo en
+    // que se realiza. Antes, sin `resolved`, la fila se quedaba "pendiente" para siempre.
+    const pnl = calculateTradePnl(conSalida({ soldShares: 1.25, proceedsUsd: 0.85, feeUsd: 0.05 }));
+
+    expect(pnl.status).toBe("resolved");
+    expect(pnl.payoutUsd).toBeCloseTo(0.8, 6);
+    expect(pnl.netUsd).toBeCloseTo(-0.2, 6);
+    expect(pnl.openStakeUsd).toBe(0);
+  });
+
+  it("la comision de salida se descuenta del payout, no se suma al stake", () => {
+    // El CLOB la cobra sobre los ingresos. Sumarla al coste de entrada inflaria el denominador del
+    // ROI y haria que dos operaciones identicas puntuaran distinto solo por haberse cerrado antes.
+    const pnl = calculateTradePnl(conSalida({ soldShares: 1.25, proceedsUsd: 0.85, feeUsd: 0.05 }));
+
+    expect(pnl.stakeUsd).toBeCloseTo(1, 6);
+    expect(pnl.roiPct).toBeCloseTo(-0.2, 6);
+  });
+
+  it("una salida PARCIAL sigue pendiente, con solo el resto en riesgo", () => {
+    const pnl = calculateTradePnl(conSalida({ soldShares: 0.5, proceedsUsd: 0.34 }));
+
+    expect(pnl.status).toBe("pending");
+    // 0,75 de 1,25 participaciones siguen vivas: tres quintas partes del stake.
+    expect(pnl.openStakeUsd).toBeCloseTo(0.6, 6);
+    // El stake NO se encoge: es lo que se arriesgo, y es el denominador del ROI.
+    expect(pnl.stakeUsd).toBeCloseTo(1, 6);
+  });
+
+  it("una salida PARCIAL que luego gana cobra las dos cosas", () => {
+    const pnl = calculateTradePnl(conSalida({ won: true, soldShares: 0.5, proceedsUsd: 0.34 }));
+
+    expect(pnl.status).toBe("resolved");
+    // 0,34 de la venta mas las 0,75 participaciones que redimen a $1.
+    expect(pnl.payoutUsd).toBeCloseTo(1.09, 6);
+  });
+
+  it("las participaciones vendidas no vuelven a cobrarse al redimir", () => {
+    // El error que evita: contar la posicion ENTERA a $1 ademas del dinero de la venta seria cobrar
+    // dos veces las mismas participaciones.
+    const pnl = calculateTradePnl(conSalida({ won: true, soldShares: 1.25, proceedsUsd: 0.85 }));
+
+    expect(pnl.payoutUsd).toBeCloseTo(0.85, 6);
+  });
+
+  it("un llenado reportado de mas no puede inventar payout", () => {
+    const pnl = calculateTradePnl(conSalida({ won: true, soldShares: 99, proceedsUsd: 0.85 }));
+
+    expect(pnl.payoutUsd).toBeCloseTo(0.85, 6);
+  });
+
+  it("isWinningTrade mira el NETO, porque no hay ganador nominal que mirar", () => {
+    const perdedora = conSalida({ soldShares: 1.25, proceedsUsd: 0.85, feeUsd: 0.05 });
+    const ganadora = conSalida({ soldShares: 1.25, proceedsUsd: 1.4 });
+
+    expect(isWinningTrade(perdedora)).toBe(false);
+    expect(isWinningTrade(ganadora)).toBe(true);
+  });
+
+  it("la salida total entra en el resumen como resuelta, no como pendiente", () => {
+    const summary = calculatePnlSummary([conSalida({ soldShares: 1.25, proceedsUsd: 0.85, feeUsd: 0.05 })]);
+
+    expect(summary.resolvedCount).toBe(1);
+    expect(summary.pendingCount).toBe(0);
+    expect(summary.pendingStakeUsd).toBe(0);
+    expect(summary.lostCount).toBe(1);
+    expect(summary.realizedUsd).toBeCloseTo(-0.2, 6);
+  });
+
+  it("esSalidaTotal distingue la venta entera de la parcial", () => {
+    expect(esSalidaTotal(conSalida({ soldShares: 1.25, proceedsUsd: 0.85 }))).toBe(true);
+    expect(esSalidaTotal(conSalida({ soldShares: 0.5, proceedsUsd: 0.34 }))).toBe(false);
+    expect(esSalidaTotal(trade({ amountUsd: 1, estimatedShares: 1.25 }))).toBe(false);
+  });
+
+  it("tradeClosedAtMs devuelve el momento de la venta cuando no hay resolucion", () => {
+    expect(tradeClosedAtMs(conSalida({ soldShares: 1.25, proceedsUsd: 0.85 }))).toBe(3_500);
+    // Parcial: sigue abierta, asi que no se ha cerrado nada.
+    expect(tradeClosedAtMs(conSalida({ soldShares: 0.5, proceedsUsd: 0.34 }))).toBeUndefined();
+    // Con resolucion manda la resolucion, que es cuando dejo de existir de verdad.
+    expect(tradeClosedAtMs(conSalida({ won: true, soldShares: 0.5, proceedsUsd: 0.34 }))).toBe(4);
   });
 });
 
