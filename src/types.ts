@@ -60,7 +60,7 @@ export interface BotConfig {
    */
   favoriteAllowLive?: boolean;
   /**
-   * Tramo de MAXIMA CONVICCION. Por encima de `favoriteMaxSizeAsk` el favorito entra con todo el
+   * Tramo de MAXIMA CONVICCION. Por encima de `favoriteMaxSizeAsk` el favorito dimensiona contra el
    * capital disponible —el saldo real leido on-chain— en vez del importe configurado, saltandose
    * `resolveTradeAmountUsd` y con el `autoMinLive`.
    *
@@ -69,6 +69,20 @@ export interface BotConfig {
    */
   favoriteMaxSizeEnabled?: boolean;
   favoriteMaxSizeAsk?: number;
+  /**
+   * Que FRACCION del capital libre se juega la conviccion. 1 = todo (el comportamiento original).
+   *
+   * Nace de que "maxima conviccion" no puede significar "toda la cuenta": a 0,98 el mercado dice que
+   * se equivoca una de cada cincuenta veces, y una de cada cincuenta veces esa entrada se lleva el
+   * saldo entero. Con una fraccion, el mismo fallo deja con que seguir operando — y como la banda
+   * comprueba capital libre antes de entrar (`favorite_banda_sin_capital`), lo que no se juega aqui
+   * no queda ocioso: vuelve a estar disponible para las entradas normales.
+   *
+   * Se aplica SOLO al termino de capital. El hueco diario y la profundidad del libro son topes de
+   * otras politicas —presupuesto y liquidez— y recortarlos tambien seria aplicar dos veces la misma
+   * restriccion.
+   */
+  favoriteMaxSizeFraction?: number;
   // Max price a LIVE order may pay above the observed best-ask (limits book walk / slippage).
   liveMaxSlippage?: number;
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.

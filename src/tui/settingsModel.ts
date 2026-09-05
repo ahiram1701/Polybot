@@ -45,7 +45,7 @@ const TOGGLE_LABELS: Record<string, string> = {
   arbEnabled: "Arbitraje de set completo",
   favoriteStrategyEnabled: "Favorito: lado por precio",
   favoriteAllowLive: "Favorito con DINERO REAL",
-  favoriteMaxSizeEnabled: "Convicción: todo el capital",
+  favoriteMaxSizeEnabled: "Convicción: por saldo real",
   makerEnabled: "Maker: cobrar por dar liquidez",
   aiAutoApplyLive: "Autoajuste predictivo",
   arb15mEnabled: "Arbitraje también en 15m",
@@ -64,7 +64,7 @@ const TOGGLE_HELP: Record<string, string> = {
   arbEnabled: "Compra ambos lados cuando el par cuesta menos de $1 tras comisiones.",
   favoriteStrategyEnabled: "Elige el lado cuyo ask ya es mas alto, dentro de la banda. SUSTITUYE a la distancia del oraculo.",
   favoriteAllowLive: "Cierre APARTE: sin el, la estrategia solo corre en sim aunque este encendida.",
-  favoriteMaxSizeEnabled: "Por encima del umbral entra con TODO el saldo de la cuenta. Un solo fallo se lleva el capital.",
+  favoriteMaxSizeEnabled: "Por encima del umbral dimensiona con el saldo real, recortado por la fracción. Alta varianza.",
   makerEnabled: "Deja órdenes límite en reposo para cobrar el reparto de liquidez. No exige acertar la dirección.",
   arb15mEnabled: "Triplica las ventanas donde puede aparecer un par barato. SOLO arbitraje: el direccional sigue en 5m.",
   aiAutoApplyLive: "Ajusta ventana y distancia por mercado en caliente, con 30 min de enfriamiento entre cambios.",
@@ -212,10 +212,18 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
   {
     key: "favoriteMaxSizeAsk",
     label: "Convicción: umbral",
-    help: "Por encima de este ask se entra con todo el capital. Requiere POLYMARKET_FUNDER_ADDRESS para leer el saldo.",
+    help: "Por encima de este ask se dimensiona contra el saldo real. Requiere POLYMARKET_FUNDER_ADDRESS para leerlo.",
     min: 0.5,
     max: 0.99,
     format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteMaxSizeFraction",
+    label: "Convicción: fracción capital",
+    help: "Qué parte del capital libre se juega. 0,5 = la mitad. 1 = la cuenta entera, que es un all-in por entrada.",
+    min: 0.05,
+    max: 1,
+    format: (v) => v.toFixed(2),
   },
   {
     key: "favoriteMaxAskSum",
@@ -230,7 +238,13 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
 const RISK_FIELD_BY_ID = new Map(RISK_FIELDS.map((field) => [String(field.key), field]));
 
 /** Los campos de RISK_FIELDS que se pintan bajo "Favorito" y no bajo "Límites de riesgo". */
-const FAVORITE_RISK_KEYS = new Set(["favoriteMinAsk", "favoriteMaxAsk", "favoriteMaxAskSum", "favoriteMaxSizeAsk"]);
+const FAVORITE_RISK_KEYS = new Set([
+  "favoriteMinAsk",
+  "favoriteMaxAsk",
+  "favoriteMaxAskSum",
+  "favoriteMaxSizeAsk",
+  "favoriteMaxSizeFraction",
+]);
 
 /** Claves que acotan dinero. La usa el test de paridad entre la web y la TUI. */
 export const TUI_RISK_KEYS: readonly string[] = RISK_FIELDS.map((field) => String(field.key));

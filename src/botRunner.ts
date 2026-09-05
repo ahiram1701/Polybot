@@ -179,6 +179,26 @@ const DEFAULT_ARB_NAKED_LEG_HALT_STREAK = 1;
 // Skip a trade when the book can fill less than this fraction of the requested amount under the cap.
 // Prevents useless micro-positions (a thin book filling only ~$0.69 of a requested $10).
 const DEFAULT_MIN_FILL_RATIO = 0.5;
+/**
+ * Que fraccion del capital libre se juega el tramo de maxima conviccion.
+ *
+ * La mitad, no todo. "Maxima conviccion" describe la lectura del libro, no el tamaño de la apuesta:
+ * a 0,98 el propio mercado dice que se equivoca una de cada cincuenta veces, y con la cuenta entera
+ * esa una no deja con que seguir. Media cuenta convierte el peor caso en un mal dia en vez de en el
+ * final del bot, y la mitad que no se juega no queda ociosa — la banda comprueba capital libre antes
+ * de entrar (`favorite_banda_sin_capital`), asi que vuelve a estar disponible para las entradas
+ * normales.
+ *
+ * Configurable como `favoriteMaxSizeFraction`; 1 restaura el comportamiento original.
+ */
+const DEFAULT_FAVORITE_MAX_SIZE_FRACTION = 0.5;
+
+/** Un valor fuera de (0,1] no se corrige en silencio a "todo": cae al default, que es el lado prudente. */
+function resolveMaxSizeFraction(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1
+    ? value
+    : DEFAULT_FAVORITE_MAX_SIZE_FRACTION;
+}
 // Cold-start exploration: a market/setup needs `evMinHistoryTrades` (15) fillable samples to trade
 // normally, but a setup with thin quote coverage (BTC/DOGE) can never reach 15 because it never
 // trades — a deadlock. Exploration breaks it by allowing a BOUNDED number of probes per market/day on
@@ -1700,11 +1720,16 @@ export class BotRunner {
   }
 
   /**
-   * Cuanto poner en una entrada del tramo de MAXIMA CONVICCION: todo el capital disponible.
+   * Cuanto poner en una entrada del tramo de MAXIMA CONVICCION: una FRACCION del capital disponible.
    *
    * "Capital disponible" es el saldo REAL de la cuenta de Polymarket, leido on-chain
    * (`OnChainBankrollSource`), no el limite de gasto de papel. El limite diario sigue en la formula,
    * pero como tope superior, no como definicion del capital.
+   *
+   * La fraccion (`favoriteMaxSizeFraction`, mitad por defecto) existe porque apostar la cuenta entera
+   * convierte cada entrada en un all-in: a 0,98 el mercado dice que se equivoca una de cada cincuenta
+   * veces, y esa una se llevaba todo. Se aplica SOLO al capital: el hueco diario y la profundidad del
+   * libro ya son topes de otras politicas, y recortarlos tambien seria aplicar dos veces lo mismo.
    *
    * La estructura es la del arbitraje (`sizeArbOpportunity`), a proposito: es la misma pregunta
    * —cuanto cabe -entre capital, profundidad y presupuesto— y ya estaba resuelta. Devuelve `undefined`
@@ -1743,12 +1768,14 @@ export class BotRunner {
       0,
       saldo.usd - capitalAtadoUsd - this.directionalCommittedUsdThisIteration,
     );
+    const fraccion = resolveMaxSizeFraction(this.config.favoriteMaxSizeFraction);
+    const capitalUsableUsd = capitalLibreUsd * fraccion;
     const huecoDiarioUsd = Math.max(0, this.config.dailySpendLimitUsd - args.reservedDailySpendUsd);
     // Profundidad bajo el tope, NO del libro entero: el tope es la politica de riesgo direccional y
     // barrer por encima de el seria saltarsela. No depende del importe pedido, asi que se puede usar
     // para dimensionar (a diferencia de `estimatedSharesForAmount`, que si).
     const profundidadUsd = args.quotes[outcome]?.availableUsdUnderCap ?? 0;
-    const amountUsd = Math.floor(Math.min(capitalLibreUsd, huecoDiarioUsd, profundidadUsd) * 100) / 100;
+    const amountUsd = Math.floor(Math.min(capitalUsableUsd, huecoDiarioUsd, profundidadUsd) * 100) / 100;
 
     if (amountUsd < args.market.orderMinSize) {
       this.logSkipOnce(args.market.slug, "favorite_max_size_below_min", {
@@ -1757,6 +1784,10 @@ export class BotRunner {
         amountUsd,
         orderMinSize: args.market.orderMinSize,
         capitalLibreUsd: Math.round(capitalLibreUsd * 100) / 100,
+        // El usable va junto al libre a proposito: con una fraccion activa, ver solo el capital libre
+        // no explica por que el importe no llego al minimo.
+        capitalUsableUsd: Math.round(capitalUsableUsd * 100) / 100,
+        fraccion,
         huecoDiarioUsd: Math.round(huecoDiarioUsd * 100) / 100,
         profundidadUsd: Math.round(profundidadUsd * 100) / 100,
         bankrollSource: saldo.source,
@@ -1764,10 +1795,12 @@ export class BotRunner {
       return undefined;
     }
 
-    logger.info("Tramo de maxima conviccion: entrada con el capital disponible.", {
+    logger.info("Tramo de maxima conviccion: entrada con la fraccion configurada del capital.", {
       slug: args.market.slug,
       outcome,
       amountUsd,
+      fraccion,
+      capitalLibreUsd: Math.round(capitalLibreUsd * 100) / 100,
       bankrollUsd: Math.round(saldo.usd * 100) / 100,
       bankrollSource: saldo.source,
       profundidadUsd: Math.round(profundidadUsd * 100) / 100,

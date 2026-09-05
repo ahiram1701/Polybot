@@ -246,6 +246,7 @@ const emptySettings: UiSettings = {
   favoriteAllowLive: false,
   favoriteMaxSizeEnabled: false,
   favoriteMaxSizeAsk: 0.98,
+  favoriteMaxSizeFraction: 0.5,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   liveBankrollUsd: 0,
@@ -2455,7 +2456,7 @@ export function SettingsPanel({
               onChange={(event) => update("favoriteMaxSizeEnabled", event.target.checked)}
               disabled={running}
             />
-            <span>Máxima convicción: invertir todo el capital</span>
+            <span>Máxima convicción: dimensionar por el saldo real</span>
           </label>
           <NumberField
             label="Umbral de máxima convicción"
@@ -2465,14 +2466,30 @@ export function SettingsPanel({
             step={0.01}
             onChange={(value) => update("favoriteMaxSizeAsk", value)}
           />
+          <NumberField
+            label="Fracción del capital"
+            value={draft.favoriteMaxSizeFraction}
+            min={0.05}
+            max={1}
+            step={0.05}
+            onChange={(value) => update("favoriteMaxSizeFraction", value)}
+          />
         </div>
         <p className="settings-hint">
           Por encima de ese ask, el libro ya no dice «este lado es favorito», dice «esto está
-          decidido». La entrada deja de usar el importe configurado y pasa a{" "}
-          <strong>todo el capital disponible</strong>: el saldo real de la cuenta de Polymarket, leído
-          on-chain, acotado por la profundidad del libro bajo el techo y por lo que quede del límite
-          diario. Necesita <code>POLYMARKET_FUNDER_ADDRESS</code> en <code>.env</code> — solo la
-          dirección pública, sin clave privada. Sin ella el saldo no se puede leer y el tramo no entra.
+          decidido». La entrada deja de usar el importe configurado y pasa a dimensionarse contra el{" "}
+          <strong>capital disponible</strong>: el saldo real de la cuenta de Polymarket, leído
+          on-chain, multiplicado por la fracción, y acotado por la profundidad del libro bajo el techo
+          y por lo que quede del límite diario. Necesita <code>POLYMARKET_FUNDER_ADDRESS</code> en{" "}
+          <code>.env</code> — solo la dirección pública, sin clave privada. Sin ella el saldo no se
+          puede leer y el tramo no entra.
+        </p>
+        <p className="settings-hint">
+          La <strong>fracción</strong> es el freno del tramo. A 0,98 el propio mercado admite fallar
+          una de cada cincuenta veces, y con la cuenta entera esa una no deja con qué seguir. Con 0,5
+          el peor caso es un mal día en vez del final del bot, y la mitad que no se juega no queda
+          ociosa: la banda comprueba capital libre antes de entrar, así que vuelve a estar disponible
+          para las entradas normales. <strong>1 restaura el all-in</strong> de antes.
         </p>
         <p className="settings-hint settings-hint-warn">
           <strong>Es la apuesta de máxima varianza posible.</strong> Medido sobre este historial, el

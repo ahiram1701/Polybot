@@ -102,6 +102,7 @@ const settingsSchema = z.object({
   // comportandose igual; el umbral solo importa con el interruptor encendido.
   favoriteMaxSizeEnabled: z.boolean().default(false),
   favoriteMaxSizeAsk: z.coerce.number().gt(0).lt(1).default(0.98),
+  favoriteMaxSizeFraction: z.coerce.number().gt(0).lte(1).default(0.5),
   dailySpendLimitUsd: z.coerce.number().positive(),
   maxDailyLossUsd: z.coerce.number().nonnegative().default(0),
   liveBankrollUsd: z.coerce.number().nonnegative().default(0),
@@ -271,6 +272,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     favoriteAllowLive: Boolean(config.favoriteAllowLive ?? false),
     favoriteMaxSizeEnabled: Boolean(config.favoriteMaxSizeEnabled ?? false),
     favoriteMaxSizeAsk: config.favoriteMaxSizeAsk ?? 0.98,
+    favoriteMaxSizeFraction: config.favoriteMaxSizeFraction ?? 0.5,
     dailySpendLimitUsd: config.dailySpendLimitUsd,
     maxDailyLossUsd: config.maxDailyLossUsd ?? 0,
     liveBankrollUsd: config.liveBankrollUsd ?? 0,
@@ -373,6 +375,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     favoriteAllowLive: settings.favoriteAllowLive,
     favoriteMaxSizeEnabled: settings.favoriteMaxSizeEnabled,
     favoriteMaxSizeAsk: settings.favoriteMaxSizeAsk,
+    favoriteMaxSizeFraction: settings.favoriteMaxSizeFraction,
     dailySpendLimitUsd: settings.dailySpendLimitUsd,
     maxDailyLossUsd: settings.maxDailyLossUsd,
     liveBankrollUsd: settings.liveBankrollUsd,

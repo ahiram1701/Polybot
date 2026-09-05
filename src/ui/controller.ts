@@ -1771,6 +1771,7 @@ export class BotController {
       favoriteAllowLive: config.favoriteAllowLive ?? settings.favoriteAllowLive,
       favoriteMaxSizeEnabled: config.favoriteMaxSizeEnabled ?? settings.favoriteMaxSizeEnabled,
       favoriteMaxSizeAsk: config.favoriteMaxSizeAsk ?? settings.favoriteMaxSizeAsk,
+      favoriteMaxSizeFraction: config.favoriteMaxSizeFraction ?? settings.favoriteMaxSizeFraction,
       dailySpendLimitUsd: config.dailySpendLimitUsd,
       maxDailyLossUsd: config.maxDailyLossUsd ?? settings.maxDailyLossUsd,
       liveBankrollUsd: config.liveBankrollUsd ?? settings.liveBankrollUsd,

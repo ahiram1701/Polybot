@@ -512,6 +512,9 @@ describe("BotRunner", () => {
           favoriteMaxAsk: 0.9,
           favoriteMaxSizeEnabled: true,
           favoriteMaxSizeAsk: 0.98,
+          // Fraccion 1 a proposito: aqui se mide que la conviccion DESCUENTA lo que ato la banda, y
+          // con el 0,5 del default el recorte del capital se mezclaria con ese descuento.
+          favoriteMaxSizeFraction: 1,
           maxAskPrice: 0.99,
           maxAskPriceCeiling: 0.99,
           autoMinLive: true,
@@ -686,6 +689,15 @@ describe("BotRunner", () => {
         askUp?: number;
         /** La conviccion exige banda previa; los tests de la propia banda la necesitan sin operar. */
         bandaYaOperada?: boolean;
+        /**
+         * Fraccion del capital que se juega la conviccion. 1 por defecto AQUI —no el 0,5 del codigo—
+         * para que los tests de los otros topes (profundidad, limite diario, reparto entre mercados)
+         * sigan midiendo su tope y no la fraccion. Los tests de la fraccion la pasan explicita, y el
+         * del default la omite con `omitirFraccion`.
+         */
+        fraccion?: number;
+        /** Deja la clave FUERA de la config, para comprobar el default del codigo. */
+        omitirFraccion?: boolean;
       } = {},
     ) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
@@ -770,6 +782,7 @@ describe("BotRunner", () => {
         favoriteMaxAsk: 0.9,
         favoriteMaxSizeEnabled: true,
         favoriteMaxSizeAsk: 0.98,
+        ...(opts.omitirFraccion === true ? {} : { favoriteMaxSizeFraction: opts.fraccion ?? 1 }),
         // El techo tiene que dejar pasar el 0,99 o la entrada muere antes en best_ask_above_cap.
         maxAskPrice: 0.99,
         maxAskPriceCeiling: 0.99,
@@ -804,13 +817,58 @@ describe("BotRunner", () => {
 
     // Dos pasadas en cada test: la lectura del saldo se dispara SIN await, asi que la primera
     // iteracion todavia no la tiene. Es el comportamiento real, no un arreglo del test.
-    it("invierte el saldo entero cuando el libro y el limite dan de sobra", async () => {
+    it("con fraccion 1 invierte el saldo entero cuando el libro y el limite dan de sobra", async () => {
       vi.spyOn(console, "log").mockImplementation(() => undefined);
-      const { runner, executed, nowMs } = escenario({ saldoUsd: 742.5 });
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 742.5, fraccion: 1 });
       await runner.runOnce(nowMs);
       await runner.runOnce(nowMs + 1_000);
       expect(executed).toHaveLength(1);
       expect(executed[0].amountUsd).toBeCloseTo(742.5, 2);
+    });
+
+    it("la fraccion recorta el capital: media cuenta es media entrada", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 742.5, fraccion: 0.5 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].amountUsd).toBeCloseTo(371.25, 2);
+    });
+
+    it("sin configurar, la fraccion por defecto es la MITAD y no la cuenta entera", async () => {
+      // El default vive en el codigo, no en la config: `data/ui-config.json` no trae la clave, asi
+      // que es el que manda en la instalacion real hasta que alguien toque la UI.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 400, omitirFraccion: true });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].amountUsd).toBeCloseTo(200, 2);
+    });
+
+    it("la fraccion NO se aplica al limite diario ni a la profundidad: son topes de otra politica", async () => {
+      // Recortar tambien esos dos seria aplicar la misma restriccion dos veces: con media cuenta de
+      // $5.000 el capital usable son $2.500, pero el limite diario de $250 ya muerde antes y debe
+      // entrar entero, no a la mitad.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 5_000, limiteDiarioUsd: 250, fraccion: 0.5 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed[0]?.amountUsd).toBeCloseTo(250, 2);
+    });
+
+    it("con la fraccion, un saldo que antes bastaba puede caer bajo el minimo del exchange", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      // $1,60 de saldo pasaban el minimo de $1 de este doble; su mitad, $0,80, ya no. El descarte
+      // tiene que decir POR QUE, y para eso el meta lleva el capital usable junto al libre.
+      const { runner, executed, nowMs } = escenario({ saldoUsd: 1.6, fraccion: 0.5 });
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+      expect(executed).toHaveLength(0);
+      const registro = JSON.stringify(logs);
+      expect(registro).toContain("favorite_max_size_below_min");
+      expect(registro).toContain("capitalUsableUsd");
     });
 
     it("autoMinLive NO aplasta el tamaño a orderMinSize", async () => {

@@ -58,14 +58,22 @@ export interface UiSettings {
    */
   favoriteAllowLive: boolean;
   /**
-   * Tramo de MAXIMA CONVICCION: por encima de `favoriteMaxSizeAsk` se entra con todo el capital
-   * disponible (el saldo real de la cuenta) en vez del importe configurado.
+   * Tramo de MAXIMA CONVICCION: por encima de `favoriteMaxSizeAsk` se dimensiona contra el capital
+   * disponible (el saldo real de la cuenta), recortado por `favoriteMaxSizeFraction`, en vez de
+   * usar el importe configurado.
    *
    * Interruptor propio y apagado por defecto a proposito: multiplica el tamaño de la posicion por dos
    * ordenes de magnitud, y eso no puede ser el efecto colateral de mover una banda.
    */
   favoriteMaxSizeEnabled: boolean;
   favoriteMaxSizeAsk: number;
+  /**
+   * Que fraccion del capital libre se juega la conviccion. 1 = la cuenta entera.
+   *
+   * Es el freno del tramo: sin el, "maxima conviccion" significaba all-in en cada entrada, y a 0,98
+   * el propio mercado admite fallar una de cada cincuenta veces.
+   */
+  favoriteMaxSizeFraction: number;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   liveBankrollUsd: number;

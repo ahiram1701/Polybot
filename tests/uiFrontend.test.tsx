@@ -912,6 +912,7 @@ function settings(): UiSettings {
     favoriteAllowLive: false,
     favoriteMaxSizeEnabled: false,
     favoriteMaxSizeAsk: 0.98,
+    favoriteMaxSizeFraction: 0.5,
     maxAskPriceByMarketOutcome: {
       BTC: { UP: 0.98, DOWN: 0.98 },
       ETH: { UP: 0.98, DOWN: 0.98 },

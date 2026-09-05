@@ -125,12 +125,20 @@ Tres cosas que no son obvias:
 
 ### El tramo de máxima convicción (ask > 0,98)
 
-Por encima de `favoriteMaxSizeAsk` el favorito deja de usar el importe configurado y entra con **todo
-el capital disponible**. Cinco cosas que no son obvias:
+Por encima de `favoriteMaxSizeAsk` el favorito deja de usar el importe configurado y dimensiona contra
+una **fracción del capital disponible**. Seis cosas que no son obvias:
 
 - **"Capital disponible" es el saldo REAL de la cuenta**, leído on-chain por `OnChainBankrollSource`,
   menos lo atado en posiciones abiertas (`openStakeUsd`), menos lo ya comprometido en esta iteración.
   El límite diario sigue en la fórmula, pero como tope superior, no como definición del capital.
+- **La fracción (`favoriteMaxSizeFraction`, la mitad por defecto) es el freno del tramo.** "Máxima
+  convicción" describe la lectura del libro, no el tamaño de la apuesta: a 0,98 el propio mercado dice
+  que se equivoca una de cada cincuenta veces, y con la cuenta entera esa una no dejaba con qué seguir.
+  Con media cuenta el peor caso es un mal día en vez del final del bot, y la mitad que no se juega no
+  queda ociosa — la banda comprueba capital libre antes de entrar (`favorite_banda_sin_capital`), así
+  que vuelve a estar disponible para las entradas normales. Se aplica **solo al término de capital**:
+  el hueco diario y la profundidad del libro son topes de otras políticas, y recortarlos también sería
+  aplicar dos veces la misma restricción. Con `1` se recupera el all-in original.
 - **Descontar las posiciones abiertas no es un detalle, es la corrección que hace que la frase sea
   cierta.** El saldo no baja al abrir una posición: en sim nunca, y en live la lectura está cacheada 60
   s mientras la posición dura minutos. Sin ese descuento, BTC apostaba la cuenta entera y un segundo
@@ -148,7 +156,7 @@ el capital disponible**. Cinco cosas que no son obvias:
 
 **La convicción exige que la banda haya operado antes esa ventana.** No es un tramo independiente: es
 doblar sobre una ventana que la banda ya eligió. Sin esa entrada delante no hay nada sobre lo que
-doblar, y la convicción sería una apuesta suelta del capital entero sobre un libro que nunca pasó por
+doblar, y la convicción sería una apuesta suelta de medio capital sobre un libro que nunca pasó por
 la banda. Coste medido: de las ventanas donde el ask supera 0,98, el **19,2% llegan ahí sin pasar por
 la banda** (el libro abre ya decidido). Esas dejan de operarse a propósito, y lo dicen
 (`favorite_max_size_sin_banda`).
