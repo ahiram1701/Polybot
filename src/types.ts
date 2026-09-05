@@ -83,6 +83,39 @@ export interface BotConfig {
    * restriccion.
    */
   favoriteMaxSizeFraction?: number;
+  /**
+   * Salida por STOP: vender la posicion cuando el ask de su lado cae por debajo del suelo de la banda
+   * de compra, y dejar que el favorito vuelva a entrar si el nuevo lado pasa los filtros de siempre.
+   *
+   * Apagada de fabrica, y no es la prudencia rutinaria de cualquier ajuste nuevo: abre el PRIMER
+   * camino de venta del bot. Hasta aqui, toda posicion se mantenia hasta la redencion, asi que no hay
+   * ni una operacion de venta en el historial contra la que comparar.
+   *
+   * Solo aplica a posiciones de la estrategia favorito y requiere `favoriteStrategyEnabled`: son sus
+   * libros —cotizados durante toda la ventana para elegir lado— los que alimentan la decision, y
+   * atarla a ellos evita abrir un tercer reloj de escaneo del orderbook.
+   */
+  favoriteExitEnabled?: boolean;
+  /**
+   * Cuanto por debajo de `favoriteMinAsk` se pone el stop. 0 = exactamente el suelo de la banda.
+   *
+   * El suelo de la banda es tambien el borde por el que se ENTRA, asi que una compra en el borde
+   * exacto sale al primer tick en contra sin haber arriesgado nada. Este margen es la palanca para
+   * corregirlo si el sim enseña ese patron, y por eso no se activa sola.
+   */
+  favoriteExitStopMargin?: number;
+  /** Segundos minimos al cierre para vender: el CLOB pasa a post-only al final y rechazaria la orden. */
+  favoriteExitMinSecondsToEnd?: number;
+  /** Suelo del mejor bid. Por debajo, vender no acota la perdida: la regala. */
+  favoriteExitMinBid?: number;
+  /** Fraccion minima de la posicion que los compradores deben absorber. Una venta parcial no acota nada. */
+  favoriteExitMinFillRatio?: number;
+  /** Spread propio maximo para fiarse del ask: con el libro anchisimo el precio no significa nada. */
+  favoriteExitMaxSpread?: number;
+  /** Cuanto debe vivir una posicion antes de poder venderse, para que la misma oscilacion no haga las dos cosas. */
+  favoriteExitMinHoldSeconds?: number;
+  /** Cierre APARTE para dinero real, igual que `favoriteAllowLive`. Sin esto la salida solo corre en sim. */
+  favoriteExitAllowLive?: boolean;
   // Max price a LIVE order may pay above the observed best-ask (limits book walk / slippage).
   liveMaxSlippage?: number;
   // Expected-value gate: only trade when the historical win rate beats the ask by a fee-aware margin.

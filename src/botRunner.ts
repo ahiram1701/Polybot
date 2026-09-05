@@ -9,7 +9,17 @@ import { ChainlinkPriceFeed } from "./chainlinkPriceFeed.js";
 import { buildCalibrationMap, type CalibrationMap } from "./calibration.js";
 import { calculateExpectedValue, type ExpectedValueSnapshot } from "./expectedValue.js";
 import { defaultTakerFeeRateBps } from "./fees.js";
-import { selectFavoriteOutcome, type FavoriteSkipReason } from "./favoriteSelector.js";
+import {
+  DEFAULT_FAVORITE_MIN_ASK,
+  selectFavoriteOutcome,
+  type FavoriteSkipReason,
+} from "./favoriteSelector.js";
+import {
+  DEFAULT_EXIT_MIN_BID,
+  decideFavoriteExit,
+  resolveStopAsk,
+  type FavoriteExitSkipReason,
+} from "./favoriteExit.js";
 import { evaluateDirectionalRiskHalt, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
@@ -68,7 +78,7 @@ import type { CandidatoRecompensa } from "./rewardMarketScanner.js";
 import { RewardParamsReader } from "./rewardParams.js";
 import type { RecompensaMercado } from "./rewardParams.js";
 import type { MercadoMaker } from "./makerMarket.js";
-import { resolveTradeFromTick } from "./tradeResolution.js";
+import { hasResolvablePosition, resolveTradeFromTick } from "./tradeResolution.js";
 import type { SkipReason } from "./ui/shared.js";
 import type {
   BotConfig,
@@ -106,6 +116,23 @@ export const FAVORITE_SKIP_REASONS: Record<FavoriteSkipReason, SkipReason> = {
   no_favorite: "favorite_no_favorite",
   below_band: "favorite_below_band",
   above_band: "favorite_above_band",
+};
+
+/**
+ * Espejo del anterior para la SALIDA. Mismo mecanismo y misma razon: el tipo obliga a que cada motivo
+ * tenga su etiqueta traducida, o no compila.
+ */
+export const FAVORITE_EXIT_SKIP_REASONS: Record<FavoriteExitSkipReason, SkipReason> = {
+  missing_quote: "favorite_exit_missing_quote",
+  extreme_price: "favorite_exit_extreme_price",
+  dead_book: "favorite_exit_dead_book",
+  libro_ancho: "favorite_exit_libro_ancho",
+  en_banda: "favorite_exit_en_banda",
+  demasiado_pronto: "favorite_exit_demasiado_pronto",
+  demasiado_tarde: "favorite_exit_demasiado_tarde",
+  sin_bid: "favorite_exit_sin_bid",
+  bid_bajo_suelo: "favorite_exit_bid_bajo_suelo",
+  liquidez_insuficiente: "favorite_exit_liquidez_insuficiente",
 };
 
 /**
@@ -303,6 +330,14 @@ interface TradeSignal {
   maxSize?: boolean;
   /** El mismo dato en la forma que entiende el ledger. Decide la ranura de `tradedMarkets`. */
   entryKind: TradeAttempt["entryKind"];
+  /**
+   * Ronda de rebalanceo de la ventana. 0 = la entrada original.
+   *
+   * Viaja con la señal hasta el ledger porque forma parte de su clave: sin ella, la reentrada
+   * escribiria sobre la posicion que se acaba de vender y borraria el P&L que justifica haberla
+   * vendido.
+   */
+  reentry?: number;
 }
 
 interface TradeCandidate extends TradeSignal {
@@ -801,6 +836,13 @@ export class BotRunner {
       }
       if (!this.isMarketEnabledForTrading(market.asset)) {
         continue;
+      }
+      // ANTES de `buildTradeSignal`, y en esta fase y no al principio del tick, por tres razones que
+      // se refuerzan: aqui los dos libros ya estan capturados y no cuesta ni una llamada mas; la FASE
+      // 2 es secuencial y vender es mover dinero; y ejecutando la venta primero, la reentrada de este
+      // mismo mercado ve en la MISMA pasada el capital que acaba de liberarse.
+      if (this.config.favoriteExitEnabled === true && this.config.favoriteStrategyEnabled === true) {
+        await this.considerarSalidaPorStop(market, analyticsQuotes, nowMs);
       }
       const signal = this.buildTradeSignal({
         market,
@@ -1569,8 +1611,12 @@ export class BotRunner {
     // sabe que tramo pide entrar. Cuesta unas guardas de mas antes de una comprobacion barata; el
     // selector es puro y no gasta llamadas.
     const entryKind: TradeAttempt["entryKind"] = winner.maxSize ? "conviccion" : "banda";
-    if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"), entryKind)) {
-      this.logSkipOnce(args.market.slug, "market_already_traded", { market: args.market.asset, entryKind });
+    // "Ya operado" es tambien POR RONDA desde que existe la salida por stop: tras vender, la ranura de
+    // la ronda siguiente esta libre y la ventana puede volver a entrar. Sin la ronda, la primera venta
+    // dejaria el mercado bloqueado hasta la ventana siguiente.
+    const reentry = this.rondaActual(args.market.slug, this.modeFor("dir"));
+    if (this.deps.state.hasTraded(args.market.slug, this.modeFor("dir"), entryKind, reentry)) {
+      this.logSkipOnce(args.market.slug, "market_already_traded", { market: args.market.asset, entryKind, reentry });
       return undefined;
     }
     // La conviccion NO es un tramo independiente: es doblar sobre una ventana que la banda ya eligio.
@@ -1690,7 +1736,167 @@ export class BotRunner {
       entryWindowSeconds,
       maxSize: winner.maxSize,
       entryKind,
+      reentry,
     };
+  }
+
+  /**
+   * Ronda de rebalanceo en la que esta esta ventana: cuantas posiciones se han cerrado ya vendiendo.
+   *
+   * Se DERIVA del estado en vez de llevar un contador en memoria, y eso importa: un reinicio a mitad
+   * de ventana —watchdog, actualizacion— regalaria rondas y con ellas otra vuelta de comisiones.
+   */
+  private rondaActual(slug: string, mode: Mode): number {
+    let cerradas = 0;
+    for (const trade of this.deps.state.listTrades()) {
+      if (trade.slug === slug && trade.mode === mode && esSalidaTotal(trade)) {
+        cerradas += 1;
+      }
+    }
+    return cerradas;
+  }
+
+  /**
+   * Cierra la posicion de esta ventana si su lado ya no cotiza en el tramo en el que se compra.
+   *
+   * La reentrada NO se decide aqui. Se limita a vender; quien vuelve a elegir lado es
+   * `selectFavoriteOutcome` en la señal de esta misma pasada, con sus bandas, su gate de EV y su
+   * ventana. Una sola fuente de verdad para "¿compro esto?", y como consecuencia hay veces que se sale
+   * y no se vuelve a entrar: justo despues de un desplome el nuevo favorito suele estar por debajo de
+   * la banda, y quedarse en efectivo es la respuesta correcta.
+   */
+  private async considerarSalidaPorStop(
+    market: MarketInfo,
+    quotes: Partial<Record<Outcome, OrderbookQuote>>,
+    nowMs: number,
+  ): Promise<void> {
+    const modo = this.modeFor("dir");
+    // Cierre aparte para dinero real, como el de la propia estrategia. No se cae a sim en silencio:
+    // seguir manteniendo en live una posicion que el operador cree protegida es la peor sorpresa.
+    if (modo === "live" && this.config.favoriteExitAllowLive !== true) {
+      this.logSkipOnce(market.slug, "favorite_exit_live_not_allowed");
+      return;
+    }
+
+    const ronda = this.rondaActual(market.slug, modo);
+    for (const entryKind of ["banda", "conviccion"] as const) {
+      const trade = this.deps.state.getTradedMarket(market.slug, modo, entryKind, ronda);
+      if (!trade || trade.kind === "arb" || trade.resolved || trade.exit) {
+        continue;
+      }
+      // Sin llenado confirmado no hay nada que vender, y ademas `getStakeUsd` devuelve 0 para esas
+      // filas: acreditar ingresos contra un stake de cero inventaria una ganancia.
+      if (!hasResolvablePosition(trade)) {
+        continue;
+      }
+      const shares = trade.filledShares ?? trade.estimatedShares;
+      if (!Number.isFinite(shares) || shares <= 0) {
+        continue;
+      }
+
+      const decision = decideFavoriteExit({
+        posicion: { outcome: trade.outcome, shares, createdAtMs: trade.createdAtMs },
+        quotes,
+        nowMs,
+        endMs: trade.endMs,
+        // El suelo de la BANDA DEL FAVORITO, no `resolveConfiguredMinAskPrice`: ese es el piso de la
+        // ventana de ask (0,01 por defecto, un antifiltro de polvo) y usarlo dejaria el stop tan abajo
+        // que no se dispararia nunca. El criterio es "ya no cotiza donde compre", asi que la referencia
+        // tiene que ser exactamente el borde por el que se entra.
+        stopAsk: resolveStopAsk(
+          this.config.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
+          this.config.favoriteExitStopMargin,
+        ),
+        minSecondsToEnd: this.config.favoriteExitMinSecondsToEnd,
+        minBid: this.config.favoriteExitMinBid,
+        minSellFillRatio: this.config.favoriteExitMinFillRatio,
+        maxAskSum: this.config.favoriteMaxAskSum,
+        maxSpread: this.config.favoriteExitMaxSpread,
+        minHoldMs:
+          this.config.favoriteExitMinHoldSeconds === undefined
+            ? undefined
+            : this.config.favoriteExitMinHoldSeconds * 1000,
+      });
+      if (!decision.plan) {
+        this.logSkipOnce(market.slug, FAVORITE_EXIT_SKIP_REASONS[decision.reason], {
+          market: market.asset,
+          outcome: trade.outcome,
+          entryKind,
+          ...decision.detail,
+        });
+        continue;
+      }
+
+      const executor = this.executorFor(modo);
+      if (!executor.sell) {
+        this.logSkipOnce(market.slug, "favorite_exit_sin_motor", { market: market.asset });
+        continue;
+      }
+
+      try {
+        const exit = await executor.sell({
+          market,
+          outcome: trade.outcome,
+          shares: decision.plan.shares,
+          quote: quotes[trade.outcome] as OrderbookQuote,
+          minBidPrice: this.config.favoriteExitMinBid ?? DEFAULT_EXIT_MIN_BID,
+          reason: "stop_bajo_banda",
+        });
+        // Un llenado CERO no es una salida: la posicion sigue entera. No se apunta nada, para que la
+        // proxima iteracion pueda volver a intentarlo con el libro de entonces.
+        if (!(exit.soldShares > 0)) {
+          this.logSkipOnce(market.slug, "favorite_exit_liquidez_insuficiente", {
+            market: market.asset,
+            outcome: trade.outcome,
+            sharesVendibles: 0,
+          });
+          continue;
+        }
+        await this.deps.state.recordTradeExit(trade.id, exit);
+        logger.info("Salida por stop: posicion cerrada antes del vencimiento.", {
+          mode: modo,
+          slug: market.slug,
+          market: market.asset,
+          outcome: trade.outcome,
+          entryKind,
+          askNuestro: decision.plan.askNuestro,
+          stopAsk: decision.plan.stopAsk,
+          soldShares: exit.soldShares,
+          proceedsUsd: exit.proceedsUsd,
+          averageExitPrice: exit.averageExitPrice,
+        });
+        await this.notifyTradeExit(trade, exit, decision.plan.stopAsk);
+      } catch (error) {
+        // La posicion queda VIVA y sin `exit`: se reintenta en la siguiente iteracion. Tampoco avanza
+        // la ronda, porque solo la consume una venta que de verdad ocurrio.
+        this.logSkipOnce(market.slug, "favorite_exit_failed", {
+          market: market.asset,
+          outcome: trade.outcome,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async notifyTradeExit(
+    trade: TradeAttempt,
+    exit: NonNullable<TradeAttempt["exit"]>,
+    stopAsk: number,
+  ): Promise<void> {
+    const pnl = calculateTradePnl({ ...trade, exit });
+    await this.deps.notifier?.notify({
+      key: `trade-exit:${trade.id}`,
+      category: "trade",
+      level: "warn",
+      title: "Salida por stop",
+      body: [
+        `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
+        `${trade.outcome} cayo por debajo de ${stopAsk.toFixed(2)}; vendido a ${exit.averageExitPrice.toFixed(3)}.`,
+        // El neto es lo unico que responde "¿cuanto ha costado esto?", y es peor que la caida nominal
+        // del ask: se cobra el bid, no el ask, y ademas se paga comision.
+        `Recuperado ${exit.proceedsUsd.toFixed(2)} USD. Neto ${(pnl.netUsd ?? 0).toFixed(2)} USD.`,
+      ].join("\n"),
+    });
   }
 
   /**
@@ -2345,6 +2551,7 @@ export class BotRunner {
         distanceUsd: candidate.distanceUsd,
         entryWindowSeconds: candidate.entryWindowSeconds,
         entryKind: candidate.entryKind,
+        reentry: candidate.reentry,
       });
       return { candidate, trade };
     } catch (error) {

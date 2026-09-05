@@ -74,6 +74,20 @@ export interface UiSettings {
    * el propio mercado admite fallar una de cada cincuenta veces.
    */
   favoriteMaxSizeFraction: number;
+  /**
+   * Salida por STOP: cerrar la posicion cuando el ask de su lado cae por debajo del suelo de la banda.
+   *
+   * Es el PRIMER camino de venta del bot. Hasta aqui toda posicion se mantenia hasta la redencion.
+   */
+  favoriteExitEnabled: boolean;
+  favoriteExitStopMargin: number;
+  favoriteExitMinSecondsToEnd: number;
+  favoriteExitMinBid: number;
+  favoriteExitMinFillRatio: number;
+  favoriteExitMaxSpread: number;
+  favoriteExitMinHoldSeconds: number;
+  /** Cierre APARTE para dinero real, como `favoriteAllowLive`. */
+  favoriteExitAllowLive: boolean;
   dailySpendLimitUsd: number;
   maxDailyLossUsd: number;
   liveBankrollUsd: number;
@@ -430,6 +444,21 @@ export const SKIP_REASON_LABELS = {
   post_only_mode: "El mercado ya no acepta ordenes taker (ultimos segundos)",
   expected_value_analysis_unavailable: "Gate de EV: motor de analisis no disponible",
   expected_value_analysis_failed: "Gate de EV: el analisis fallo",
+  // Salida por stop. `en_banda` es el estado NORMAL de toda posicion sana, asi que aparecera
+  // constantemente en el panel: se traduce en positivo ("aguanta") para que no se lea como una averia.
+  favorite_exit_en_banda: "Salida: la posición aguanta en el tramo",
+  favorite_exit_missing_quote: "Salida: sin ask del lado que se tiene",
+  favorite_exit_extreme_price: "Salida: precio fuera de rango",
+  favorite_exit_dead_book: "Salida: libro muerto (la caída no es real)",
+  favorite_exit_libro_ancho: "Salida: libro demasiado ancho para fiarse",
+  favorite_exit_demasiado_pronto: "Salida: la posición es demasiado reciente",
+  favorite_exit_demasiado_tarde: "Salida: quedan pocos segundos de ventana",
+  favorite_exit_sin_bid: "Salida: nadie compra ese lado",
+  favorite_exit_bid_bajo_suelo: "Salida: el bid está por debajo del suelo",
+  favorite_exit_liquidez_insuficiente: "Salida: los compradores no absorben la posición",
+  favorite_exit_live_not_allowed: "Salida: encendida pero sin permiso para live",
+  favorite_exit_sin_motor: "Salida: este motor no sabe vender",
+  favorite_exit_failed: "Salida: el exchange rechazó la venta",
 } as const;
 
 /**
@@ -477,7 +506,7 @@ export function isStrategyModeKey(id: string): id is StrategyModeKey {
  * superficies a la vez, que es justo lo que el comentario de `MODE_KEYS` explica que paso cuando
  * cada una llevaba su propia lista.
  */
-export const LIVE_GATE_KEYS = ["favoriteAllowLive"] as const;
+export const LIVE_GATE_KEYS = ["favoriteAllowLive", "favoriteExitAllowLive"] as const;
 export type LiveGateKey = (typeof LIVE_GATE_KEYS)[number];
 
 export function isLiveGateKey(id: string): id is LiveGateKey {

@@ -154,6 +154,37 @@ una **fracción del capital disponible**. Seis cosas que no son obvias:
   `resolveTradeAmountUsd` devuelve `orderMinSize` pase lo que pase, así que dejarlo en el camino
   aplastaría el tamaño a $5 sin decir nada.
 
+### La salida por stop (el primer camino de venta)
+
+Hasta que existió esto, el bot **solo compraba**: toda posición se mantenía hasta la redención, y
+`resolveCompletedTrades` ni miraba una fila antes de `endMs`. Con `favoriteExitEnabled`, si el ask del
+lado que se tiene cae por debajo del suelo de la banda de compra, la posición se vende.
+
+- **El disparo se mide sobre el ASK; la venta se cobra contra el BID.** El ask es la misma vara con la
+  que se decidió entrar (la banda es de asks), y es lo único que evita que el stop salte en la
+  iteración siguiente a cualquier compra: con spreads de 1,5 a 4,5 céntimos, un ask de 0,82 lleva el
+  bid ya por debajo del suelo de 0,79. La consecuencia es que **la pérdida realizada es peor que la
+  nominal**: se cobra el bid y se paga comisión encima.
+- **La referencia es `favoriteMinAsk`, no `minAskPriceByMarketOutcome`.** Ese otro es el piso de la
+  ventana de ask (0,01 por defecto, un antifiltro de polvo) y usarlo dejaría el stop tan abajo que no
+  se dispararía nunca.
+- **No exige los dos asks, al revés que el selector.** Al final de la ventana el lado ganador se queda
+  sin asks, y exigirlos dejaría la posición atrapada justo mientras se derrumba. Sin el ask del
+  contrario se pierde la guarda de libro muerto, así que la realidad del precio se confirma con lo
+  ancho que esté el libro propio.
+- **La reentrada no se decide ahí.** `considerarSalidaPorStop` solo vende; quien vuelve a elegir lado
+  es `selectFavoriteOutcome` en la señal de esa misma pasada. Por eso hay veces que se sale y no se
+  vuelve a entrar: justo tras un desplome el nuevo favorito suele estar por debajo de la banda, y
+  quedarse en efectivo es la respuesta correcta.
+- **Va en la FASE 2 y antes de `buildTradeSignal`.** Ahí los dos libros ya están capturados (no cuesta
+  una llamada más), la fase es secuencial y vender es mover dinero, y ejecutando la venta primero la
+  reentrada ve en la misma pasada el capital que acaba de liberarse.
+- **La ronda de rebalanceo entra en la clave del ledger** (`#r1`, `#r2`…), igual que `#conviccion`, y
+  se deriva contando las filas ya cerradas por venta — no de un contador en memoria, que un reinicio a
+  mitad de ventana regalaría.
+- **El límite diario no se reembolsa.** `dailySpendUsd` mide gasto BRUTO y un rebalanceo gasta dos
+  veces de verdad. Con las reentradas sin límite, ese contador es el único techo que queda.
+
 **La convicción exige que la banda haya operado antes esa ventana.** No es un tramo independiente: es
 doblar sobre una ventana que la banda ya eligió. Sin esa entrada delante no hay nada sobre lo que
 doblar, y la convicción sería una apuesta suelta de medio capital sobre un libro que nunca pasó por

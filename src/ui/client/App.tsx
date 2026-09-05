@@ -100,6 +100,7 @@ const ETIQUETA_MODO: Record<LiveSensitiveKey, string> = {
   directionalMode: "Direccional",
   makerMode: "Maker",
   favoriteAllowLive: "Favorito",
+  favoriteExitAllowLive: "Salida por stop",
 };
 
 type Tab = "dashboard" | "trades" | "fiscal" | "analysis" | "settings" | "telegram" | "logs";
@@ -247,6 +248,14 @@ const emptySettings: UiSettings = {
   favoriteMaxSizeEnabled: false,
   favoriteMaxSizeAsk: 0.98,
   favoriteMaxSizeFraction: 0.5,
+  favoriteExitEnabled: false,
+  favoriteExitStopMargin: 0,
+  favoriteExitMinSecondsToEnd: 45,
+  favoriteExitMinBid: 0.05,
+  favoriteExitMinFillRatio: 0.9,
+  favoriteExitMaxSpread: 0.1,
+  favoriteExitMinHoldSeconds: 10,
+  favoriteExitAllowLive: false,
   dailySpendLimitUsd: 50,
   maxDailyLossUsd: 0,
   liveBankrollUsd: 0,
@@ -2513,6 +2522,96 @@ export function SettingsPanel({
           debe ser un acto deliberado y no el efecto colateral de encender una estrategia. Con la
           estrategia encendida y este cierre cerrado, el camino direccional <strong>se para</strong> en
           live — no vuelve al criterio antiguo por su cuenta.
+        </p>
+
+        <h3>Salida por stop</h3>
+        <p className="settings-hint">
+          Hasta ahora el bot <strong>solo compraba</strong>: toda posición se mantenía hasta que el
+          mercado resolvía. Con esto encendido, si el ask del lado que tienes cae por debajo del suelo
+          de la banda en la que compras, la posición se <strong>vende</strong> y el favorito puede
+          volver a entrar en la misma ventana si el nuevo lado pasa los filtros de siempre.
+        </p>
+        <div className="settings-grid">
+          <label className="switch-row">
+            <input
+              type="checkbox"
+              checked={draft.favoriteExitEnabled}
+              onChange={(event) => update("favoriteExitEnabled", event.target.checked)}
+              disabled={running}
+            />
+            <span>Vender cuando el precio cae del tramo</span>
+          </label>
+          <NumberField
+            label="Margen bajo la banda"
+            value={draft.favoriteExitStopMargin}
+            min={0}
+            max={0.5}
+            step={0.01}
+            onChange={(value) => update("favoriteExitStopMargin", value)}
+          />
+          <NumberField
+            label="Bid mínimo para vender"
+            value={draft.favoriteExitMinBid}
+            min={0.01}
+            max={0.5}
+            step={0.01}
+            onChange={(value) => update("favoriteExitMinBid", value)}
+          />
+          <NumberField
+            label="Llenado mínimo de la venta"
+            value={draft.favoriteExitMinFillRatio}
+            min={0.1}
+            max={1}
+            step={0.05}
+            onChange={(value) => update("favoriteExitMinFillRatio", value)}
+          />
+          <NumberField
+            label="Segundos mínimos al cierre"
+            value={draft.favoriteExitMinSecondsToEnd}
+            min={0}
+            max={300}
+            step={5}
+            onChange={(value) => update("favoriteExitMinSecondsToEnd", value)}
+          />
+          <NumberField
+            label="Spread máximo del libro"
+            value={draft.favoriteExitMaxSpread}
+            min={0.01}
+            max={0.9}
+            step={0.01}
+            onChange={(value) => update("favoriteExitMaxSpread", value)}
+          />
+          <NumberField
+            label="Espera tras comprar (s)"
+            value={draft.favoriteExitMinHoldSeconds}
+            min={0}
+            max={300}
+            step={5}
+            onChange={(value) => update("favoriteExitMinHoldSeconds", value)}
+          />
+        </div>
+        <p className="settings-hint settings-hint-warn">
+          <strong>La pérdida real es mayor que la nominal.</strong> El stop mira el <em>ask</em>, que es
+          la misma vara con la que se decidió entrar, pero al vender se cobra el <em>bid</em>, dos o
+          tres céntimos más abajo, y encima se paga comisión. Con el stop pegado al suelo de la banda
+          saltará a menudo, y cada vuelta paga el ancho del libro dos veces: bid al vender, ask al
+          recomprar. <strong>Mídelo en sim antes de plantearte el cierre de abajo</strong>, y baja el
+          límite de gasto diario primero: con las reentradas sin límite, es el único techo que queda.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={draft.favoriteExitAllowLive}
+            onChange={(event) => update("favoriteExitAllowLive", event.target.checked)}
+            disabled={running}
+          />
+          <span>Permitir que VENDA con dinero real</span>
+        </label>
+        <p className="settings-hint">
+          Cierre <strong>aparte</strong>, como el de arriba. Sin él la salida se simula aunque esté
+          encendida. Ojo: este camino de venta <strong>nunca ha tocado el exchange real</strong>, así
+          que el simulador no puede haber validado el formato de la orden. La primera venta en live
+          conviene hacerla con una posición pequeña.
         </p>
       </section>
 

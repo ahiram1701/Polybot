@@ -45,6 +45,8 @@ const TOGGLE_LABELS: Record<string, string> = {
   arbEnabled: "Arbitraje de set completo",
   favoriteStrategyEnabled: "Favorito: lado por precio",
   favoriteAllowLive: "Favorito con DINERO REAL",
+  favoriteExitEnabled: "Salida por stop",
+  favoriteExitAllowLive: "Vender con DINERO REAL",
   favoriteMaxSizeEnabled: "Convicción: por saldo real",
   makerEnabled: "Maker: cobrar por dar liquidez",
   aiAutoApplyLive: "Autoajuste predictivo",
@@ -64,6 +66,8 @@ const TOGGLE_HELP: Record<string, string> = {
   arbEnabled: "Compra ambos lados cuando el par cuesta menos de $1 tras comisiones.",
   favoriteStrategyEnabled: "Elige el lado cuyo ask ya es mas alto, dentro de la banda. SUSTITUYE a la distancia del oraculo.",
   favoriteAllowLive: "Cierre APARTE: sin el, la estrategia solo corre en sim aunque este encendida.",
+  favoriteExitEnabled: "Vende la posición si su ask cae bajo el suelo de la banda, y deja que el favorito reentre.",
+  favoriteExitAllowLive: "Cierre APARTE para vender de verdad. Sin él, la salida solo se simula.",
   favoriteMaxSizeEnabled: "Por encima del umbral dimensiona con el saldo real, recortado por la fracción. Alta varianza.",
   makerEnabled: "Deja órdenes límite en reposo para cobrar el reparto de liquidez. No exige acertar la dirección.",
   arb15mEnabled: "Triplica las ventanas donde puede aparecer un par barato. SOLO arbitraje: el direccional sigue en 5m.",
@@ -226,6 +230,54 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
     format: (v) => v.toFixed(2),
   },
   {
+    key: "favoriteExitStopMargin",
+    label: "Salida: margen bajo la banda",
+    help: "0 = el stop es el suelo exacto de la banda. Súbelo si ves ventas al primer tick tras comprar.",
+    min: 0,
+    max: 0.5,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteExitMinBid",
+    label: "Salida: bid mínimo",
+    help: "Por debajo no se vende: a ese precio soltar la posición no acota la pérdida, la regala.",
+    min: 0.01,
+    max: 0.5,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteExitMinFillRatio",
+    label: "Salida: llenado mínimo",
+    help: "Cuánto deben absorber los compradores. Una venta parcial paga el spread y te deja la pérdida.",
+    min: 0.1,
+    max: 1,
+    format: (v) => v.toFixed(2),
+  },
+  {
+    key: "favoriteExitMinSecondsToEnd",
+    label: "Salida: segundos mínimos",
+    help: "Al final de la ventana el mercado rechaza órdenes taker, y no queda tiempo para reentrar.",
+    min: 0,
+    max: 300,
+    format: (v) => v.toFixed(0),
+  },
+  {
+    key: "favoriteExitMaxSpread",
+    label: "Salida: spread máximo",
+    help: "Con el libro muy ancho el ask no es un precio, es el ancho: no se vende por esa lectura.",
+    min: 0.01,
+    max: 0.9,
+    format: (v) => v.toFixed(3),
+  },
+  {
+    key: "favoriteExitMinHoldSeconds",
+    label: "Salida: espera tras comprar",
+    help: "Impide que la misma oscilación del libro que produjo la compra produzca la venta.",
+    min: 0,
+    max: 300,
+    format: (v) => v.toFixed(0),
+  },
+  {
     key: "favoriteMaxAskSum",
     label: "Favorito: suma máx de asks",
     help: "Por encima el libro está muerto: un 0,80 no es '80% de probabilidad', es que no hay mercado.",
@@ -244,6 +296,12 @@ const FAVORITE_RISK_KEYS = new Set([
   "favoriteMaxAskSum",
   "favoriteMaxSizeAsk",
   "favoriteMaxSizeFraction",
+  "favoriteExitStopMargin",
+  "favoriteExitMinBid",
+  "favoriteExitMinFillRatio",
+  "favoriteExitMinSecondsToEnd",
+  "favoriteExitMaxSpread",
+  "favoriteExitMinHoldSeconds",
 ]);
 
 /** Claves que acotan dinero. La usa el test de paridad entre la web y la TUI. */
@@ -300,7 +358,9 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
     });
   }
   toggle("favoriteMaxSizeEnabled");
+  toggle("favoriteExitEnabled");
   toggle("favoriteAllowLive");
+  toggle("favoriteExitAllowLive");
 
   header("Modo por estrategia");
   for (const key of MODE_KEYS) {

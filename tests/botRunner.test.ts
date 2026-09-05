@@ -471,6 +471,342 @@ describe("BotRunner", () => {
     });
   });
 
+  describe("salida por stop y reentrada", () => {
+    /**
+     * El recorrido completo: se compra a 0,85, el ask se desploma a 0,60 y el contrario pasa a ser el
+     * favorito. `asks` es la secuencia del ask de UP por iteracion.
+     */
+    function escenarioSalida(opts: {
+      asks: number[];
+      exitEnabled?: boolean;
+      modo?: "sim" | "live";
+      allowExitLive?: boolean;
+      sinMotorDeVenta?: boolean;
+      ventaFalla?: boolean;
+      /** Bids del lado UP. Por defecto, profundos y a un centimo del ask. */
+      bidsUp?: (ask: number) => Array<{ price: number; size: number }>;
+      minHoldSeconds?: number;
+    }) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 60_000;
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      let paso = 0;
+      const askUp = () => opts.asks[Math.min(paso, opts.asks.length - 1)];
+      const abiertas: TradeAttempt[] = [];
+      const executed: Array<{ amountUsd: number; outcome: Outcome; entryKind?: string; reentry?: number }> = [];
+      const vendidos: Array<{ outcome: Outcome; shares: number }> = [];
+
+      const orderbook = {
+        getQuote: vi.fn(async (tokenId: string, amountUsd: number) => {
+          const up = askUp();
+          const esUp = tokenId.endsWith("-up");
+          const ask = esUp ? up : Math.round((1 - up) * 100) / 100;
+          const bids = esUp
+            ? (opts.bidsUp ?? ((a: number) => [{ price: a - 0.01, size: 10_000 }]))(ask)
+            : [{ price: ask - 0.01, size: 10_000 }];
+          return {
+            tokenId,
+            quotedAtMs: nowMs,
+            bestAsk: ask,
+            bestBid: bids[0]?.price,
+            availableUsdUnderCap: 5_000,
+            availableUsdAllLevels: 5_000,
+            estimatedSharesForAmount: amountUsd / ask,
+            estimatedAveragePrice: ask,
+            rawAskLevels: [{ price: ask, size: 10_000 }],
+            rawBidLevels: bids,
+            availableBidUsdAllLevels: bids.reduce((s, b) => s + b.price * b.size, 0),
+          };
+        }),
+      } as unknown as OrderbookService;
+
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => abiertas),
+        getOpening: vi.fn((slug: string) => ({
+          asset: "BTC" as MarketSymbol,
+          slug,
+          windowStartMs,
+          openingPrice: 100,
+          openingTickTimestampMs: windowStartMs,
+          capturedAtMs: windowStartMs,
+        })),
+        hasTraded: vi.fn(
+          (slug: string, mode?: unknown, entryKind?: string, reentry?: number) =>
+            abiertas.some(
+              (t) =>
+                t.slug === slug &&
+                (t.entryKind ?? "banda") === (entryKind ?? "banda") &&
+                (t.reentry ?? 0) === (reentry ?? 0),
+            ),
+        ),
+        getTradedMarket: vi.fn(
+          (slug: string, mode?: unknown, entryKind?: string, reentry?: number) =>
+            abiertas.find(
+              (t) =>
+                t.slug === slug &&
+                (t.entryKind ?? "banda") === (entryKind ?? "banda") &&
+                (t.reentry ?? 0) === (reentry ?? 0),
+            ),
+        ),
+        recordTradeExit: vi.fn(async (tradeId: string, exit: TradeAttempt["exit"]) => {
+          const fila = abiertas.find((t) => t.id === tradeId);
+          if (fila) {
+            fila.exit = exit;
+          }
+        }),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+        recordTradeResolution: vi.fn(async () => undefined),
+        saveOpening: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+
+      const executor = {
+        execute: vi.fn(
+          async (input: {
+            amountUsd: number;
+            market: MarketInfo;
+            outcome: Outcome;
+            entryKind?: "banda" | "conviccion";
+            reentry?: number;
+          }) => {
+            executed.push({
+              amountUsd: input.amountUsd,
+              outcome: input.outcome,
+              entryKind: input.entryKind,
+              reentry: input.reentry,
+            });
+            const ask = input.outcome === "UP" ? askUp() : Math.round((1 - askUp()) * 100) / 100;
+            const trade = {
+              id: `t-${executed.length}`,
+              mode: "sim",
+              asset: input.market.asset,
+              slug: input.market.slug,
+              outcome: input.outcome,
+              amountUsd: input.amountUsd,
+              bestAsk: ask,
+              estimatedShares: input.amountUsd / ask,
+              entryKind: input.entryKind,
+              reentry: input.reentry,
+              createdAtMs: nowMs,
+              endMs: windowStartMs + 300_000,
+            } as unknown as TradeAttempt;
+            abiertas.push(trade);
+            return trade;
+          },
+        ),
+        ...(opts.sinMotorDeVenta === true
+          ? {}
+          : {
+              sell: vi.fn(async (input: { outcome: Outcome; shares: number }) => {
+                if (opts.ventaFalla === true) {
+                  throw new Error("el exchange rechazo la venta");
+                }
+                vendidos.push({ outcome: input.outcome, shares: input.shares });
+                return {
+                  exitedAtMs: nowMs,
+                  reason: "stop_bajo_banda" as const,
+                  orderPrice: 0.58,
+                  soldShares: input.shares,
+                  proceedsUsd: input.shares * 0.59,
+                  averageExitPrice: 0.59,
+                };
+              }),
+            }),
+      } as unknown as TradeExecutor;
+
+      const config: BotConfig = {
+        ...baseConfig(),
+        favoriteStrategyEnabled: true,
+        favoriteMinAsk: 0.79,
+        favoriteMaxAsk: 0.9,
+        favoriteMaxSizeEnabled: false,
+        favoriteExitEnabled: opts.exitEnabled ?? true,
+        favoriteExitAllowLive: opts.allowExitLive ?? false,
+        favoriteExitMinHoldSeconds: opts.minHoldSeconds ?? 0,
+        favoriteExitMinSecondsToEnd: 45,
+        favoriteAllowLive: true,
+        directionalMode: opts.modo ?? "sim",
+        maxAskPrice: 0.95,
+        maxAskPriceCeiling: 0.95,
+        autoMinLive: true,
+        dailySpendLimitUsd: 100_000,
+        requirePositiveEv: false,
+        entryWindowSeconds: 300,
+        entryWindowSecondsByMarket: { BTC: 300, ETH: 300, DOGE: 300 },
+      };
+
+      const runner = new BotRunner(config, {
+        watcher: {
+          getCurrentMarkets: vi.fn(async () => [market]),
+          getCurrentMarket: vi.fn(async () => market),
+        } as unknown as MarketWatcher,
+        orderbook,
+        priceFeed: {
+          start: vi.fn(),
+          stop: vi.fn(),
+          getLatestTick: vi.fn(() => ({
+            market: "BTC" as MarketSymbol,
+            symbol: "btc/usd",
+            value: 130,
+            timestampMs: nowMs,
+            receivedAtMs: nowMs,
+          })),
+        } as unknown as ChainlinkPriceFeed,
+        state,
+        executor,
+        reconciler: fakeReconciler(),
+      });
+
+      return {
+        runner,
+        executed,
+        vendidos,
+        abiertas,
+        state,
+        nowMs,
+        avanzar: () => {
+          paso += 1;
+        },
+      };
+    }
+
+    it("vende cuando el ask cae bajo el suelo de la banda, y reentra en el nuevo favorito", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // 0,85 = compra de banda. 0,60 = por debajo del suelo de 0,79, asi que se sale; y el contrario
+      // esta en 0,40, todavia fuera de banda. 0,18 deja al contrario en 0,82: dentro de la banda.
+      const { runner, executed, vendidos, avanzar, nowMs } = escenarioSalida({ asks: [0.85, 0.6, 0.18] });
+
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].outcome).toBe("UP");
+
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+      // Se vendio, pero NO se reentra: el nuevo favorito (0,40) sigue fuera de la banda. Quedarse en
+      // efectivo es la respuesta correcta, no un fallo.
+      expect(vendidos).toHaveLength(1);
+      expect(vendidos[0].outcome).toBe("UP");
+      expect(executed).toHaveLength(1);
+
+      avanzar();
+      await runner.runOnce(nowMs + 10_000);
+      // Ahora el contrario si esta en banda: entra, y en la ronda 1 para no pisar a la vendida.
+      expect(executed).toHaveLength(2);
+      expect(executed[1].outcome).toBe("DOWN");
+      expect(executed[1].reentry).toBe(1);
+    });
+
+    it("con el interruptor apagado nunca se llama a vender", async () => {
+      // El test que protege el default: esto abre el primer camino de venta del repo.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, vendidos, executed, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        exitEnabled: false,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(0);
+      expect(executed).toHaveLength(1);
+    });
+
+    it("en live sin su cierre propio no vende, y lo dice", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        modo: "live",
+        allowExitLive: false,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(0);
+      expect(JSON.stringify(logs)).toContain("favorite_exit_live_not_allowed");
+    });
+
+    it("un motor que no sabe vender no rompe la iteracion", async () => {
+      // `sell` es opcional en la interfaz: los dobles antiguos solo implementan `execute`.
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, executed, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        sinMotorDeVenta: true,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await expect(runner.runOnce(nowMs + 5_000)).resolves.toBeUndefined();
+
+      expect(executed).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("favorite_exit_sin_motor");
+    });
+
+    it("una venta que falla deja la posicion viva y no consume la ronda", async () => {
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, abiertas, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        ventaFalla: true,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(abiertas).toHaveLength(1);
+      expect(abiertas[0].exit).toBeUndefined();
+      expect(JSON.stringify(logs)).toContain("favorite_exit_failed");
+    });
+
+    it("no vende si los compradores no absorben la posicion", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // Un solo bid diminuto: la venta seria parcial, que paga el spread y deja la perdida encima.
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        bidsUp: (ask) => [{ price: ask - 0.01, size: 0.1 }],
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(0);
+    });
+
+    it("no vende una posicion recien comprada aunque el ask ya haya caido", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        minHoldSeconds: 120,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(0);
+    });
+
+    it("no vuelve a vender una posicion ya cerrada", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({ asks: [0.85, 0.6] });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+      await runner.runOnce(nowMs + 10_000);
+      await runner.runOnce(nowMs + 15_000);
+
+      expect(vendidos).toHaveLength(1);
+    });
+  });
+
   describe("banda y conviccion en la MISMA ventana", () => {
     // El ask cambia entre iteraciones: primero cae en la banda, luego se dispara por encima de 0,98.
     // Es el recorrido normal de un favorito que se va confirmando, y es justo el caso en el que antes

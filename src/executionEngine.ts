@@ -42,6 +42,11 @@ export interface ExecutionInput {
    * a la primera.
    */
   entryKind?: "banda" | "conviccion";
+  /**
+   * Ronda de rebalanceo de la ventana. Llega hasta el `TradeAttempt` por lo mismo que `entryKind`:
+   * forma parte de su clave en el ledger, y sin ella la reentrada pisaria a la posicion vendida.
+   */
+  reentry?: number;
 }
 
 /**
@@ -416,6 +421,7 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     distanceUsd: input.distanceUsd,
     entryWindowSeconds: input.entryWindowSeconds,
     entryKind: input.entryKind,
+    reentry: input.reentry,
     windowStartMs: input.market.windowStartMs,
     endMs: input.market.endMs,
     createdAtMs: Date.now(),

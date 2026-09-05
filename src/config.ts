@@ -161,6 +161,24 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(false),
+  // Salida por stop: vender cuando el ask del lado que se tiene cae por debajo del suelo de la banda
+  // de compra. Abre el PRIMER camino de venta del bot, asi que viene apagada. Ver `favoriteExitEnabled`
+  // en types.ts para el porque de cada umbral.
+  FAVORITE_EXIT_ENABLED: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
+  FAVORITE_EXIT_STOP_MARGIN: z.coerce.number().gte(0).lt(1).default(0),
+  FAVORITE_EXIT_MIN_SECONDS: z.coerce.number().nonnegative().default(45),
+  FAVORITE_EXIT_MIN_BID: z.coerce.number().gt(0).lt(1).default(0.05),
+  FAVORITE_EXIT_MIN_FILL_RATIO: z.coerce.number().min(0).max(1).default(0.9),
+  FAVORITE_EXIT_MAX_SPREAD: z.coerce.number().gt(0).lt(1).default(0.1),
+  FAVORITE_EXIT_MIN_HOLD_SECONDS: z.coerce.number().nonnegative().default(10),
+  // Cierre APARTE para dinero real, igual que FAVORITE_ALLOW_LIVE.
+  FAVORITE_EXIT_ALLOW_LIVE: z
+    .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
+    .transform((value) => value === "true")
+    .default(false),
   REQUIRE_POSITIVE_EV: z
     .preprocess((value) => String(value ?? "true").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
@@ -366,6 +384,14 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     favoriteMaxSizeEnabled: env.FAVORITE_MAX_SIZE_ENABLED,
     favoriteMaxSizeAsk: env.FAVORITE_MAX_SIZE_ASK,
     favoriteMaxSizeFraction: env.FAVORITE_MAX_SIZE_FRACTION,
+    favoriteExitEnabled: env.FAVORITE_EXIT_ENABLED,
+    favoriteExitStopMargin: env.FAVORITE_EXIT_STOP_MARGIN,
+    favoriteExitMinSecondsToEnd: env.FAVORITE_EXIT_MIN_SECONDS,
+    favoriteExitMinBid: env.FAVORITE_EXIT_MIN_BID,
+    favoriteExitMinFillRatio: env.FAVORITE_EXIT_MIN_FILL_RATIO,
+    favoriteExitMaxSpread: env.FAVORITE_EXIT_MAX_SPREAD,
+    favoriteExitMinHoldSeconds: env.FAVORITE_EXIT_MIN_HOLD_SECONDS,
+    favoriteExitAllowLive: env.FAVORITE_EXIT_ALLOW_LIVE,
     liveMaxSlippage: env.LIVE_MAX_SLIPPAGE,
     requirePositiveEv: env.REQUIRE_POSITIVE_EV,
     evUseSimilarity: env.EV_USE_SIMILARITY,
