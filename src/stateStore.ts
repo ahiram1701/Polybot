@@ -153,14 +153,19 @@ export class StateStore {
    * Si esta ventana ya tiene una operacion DE ESE TRAMO. Los dos tramos del favorito conviven en la
    * misma ventana, asi que preguntar solo por slug+modo cerraria la puerta al segundo.
    */
-  hasTraded(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): boolean {
+  hasTraded(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"], reentry?: number): boolean {
     this.assertLoaded();
-    return this.findTradeKey(slug, mode, entryKind) !== undefined;
+    return this.findTradeKey(slug, mode, entryKind, reentry) !== undefined;
   }
 
-  getTradedMarket(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): TradeAttempt | undefined {
+  getTradedMarket(
+    slug: string,
+    mode?: Mode,
+    entryKind?: TradeAttempt["entryKind"],
+    reentry?: number,
+  ): TradeAttempt | undefined {
     this.assertLoaded();
-    const key = this.findTradeKey(slug, mode, entryKind);
+    const key = this.findTradeKey(slug, mode, entryKind, reentry);
     return key ? this.state.tradedMarkets[key] : undefined;
   }
 
@@ -255,7 +260,7 @@ export class StateStore {
 
   async recordTradeAttempt(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug, trade.entryKind)] = trade;
+    this.state.tradedMarkets[tradeStateKey(trade.mode, trade.slug, trade.entryKind, trade.reentry)] = trade;
     const key = modeDailySpendKey(trade.mode, dailySpendKey(trade.createdAtMs, this.timeZone));
     this.state.dailySpendUsd[key] = (this.state.dailySpendUsd[key] ?? 0) + trade.amountUsd;
     await this.save();
@@ -264,13 +269,37 @@ export class StateStore {
 
   async recordTradeReconciliation(trade: TradeAttempt): Promise<void> {
     this.assertLoaded();
-    const key = this.findTradeKeyById(trade.id) ?? this.findTradeKey(trade.slug, trade.mode, trade.entryKind);
+    const key =
+      this.findTradeKeyById(trade.id) ?? this.findTradeKey(trade.slug, trade.mode, trade.entryKind, trade.reentry);
     if (!key) {
       return;
     }
     this.state.tradedMarkets[key] = trade;
     await this.save();
     await this.appendTradeEvent({ type: "trade_reconciliation", trade });
+  }
+
+  /**
+   * Apunta la VENTA anticipada sobre la fila que la sufrio.
+   *
+   * Solo por `id`, sin respaldo por slug: una ventana puede tener varias filas —los dos tramos y las
+   * rondas de rebalanceo— y equivocarse de fila aqui no da un error, da un P&L que cuadra en el total
+   * pero miente en cada linea. El llamador siempre tiene el id, porque acaba de leer la posicion.
+   *
+   * NO toca `dailySpendUsd`: ese contador mide gasto BRUTO y un rebalanceo gasta de verdad dos veces.
+   * Devolver el dinero de la venta al presupuesto convertiria el limite diario en algo que no frena
+   * nada mientras las ventas cubran las compras.
+   */
+  async recordTradeExit(tradeId: string, exit: NonNullable<TradeAttempt["exit"]>): Promise<void> {
+    this.assertLoaded();
+    const key = this.findTradeKeyById(tradeId);
+    const trade = key ? this.state.tradedMarkets[key] : undefined;
+    if (!trade) {
+      return;
+    }
+    trade.exit = exit;
+    await this.save();
+    await this.appendTradeEvent({ type: "trade_exit", trade, exit });
   }
 
   /**
@@ -358,8 +387,13 @@ export class StateStore {
     return Object.entries(this.state.tradedMarkets).find(([, trade]) => trade.id === id)?.[0];
   }
 
-  private findTradeKey(slug: string, mode?: Mode, entryKind?: TradeAttempt["entryKind"]): string | undefined {
-    const preferredKey = mode ? tradeStateKey(mode, slug, entryKind) : undefined;
+  private findTradeKey(
+    slug: string,
+    mode?: Mode,
+    entryKind?: TradeAttempt["entryKind"],
+    reentry?: number,
+  ): string | undefined {
+    const preferredKey = mode ? tradeStateKey(mode, slug, entryKind, reentry) : undefined;
     if (preferredKey && this.state.tradedMarkets[preferredKey]) {
       return preferredKey;
     }
@@ -368,12 +402,15 @@ export class StateStore {
       return slug;
     }
     // Barrido de ultimo recurso. Con `entryKind` presente se exige que coincida: sin eso, preguntar
-    // por el tramo de conviccion encontraria la fila de la banda y diria "ya operado" en falso.
+    // por el tramo de conviccion encontraria la fila de la banda y diria "ya operado" en falso. La
+    // ronda se exige igual y por lo mismo: preguntar por la ronda 1 no puede encontrar la entrada
+    // original y declararla ya operada, que dejaria la ventana sin poder reentrar nunca.
     return Object.entries(this.state.tradedMarkets).find(
       ([, trade]) =>
         trade.slug === slug &&
         (!mode || trade.mode === mode) &&
-        (entryKind === undefined || (trade.entryKind ?? "banda") === entryKind),
+        (entryKind === undefined || (trade.entryKind ?? "banda") === entryKind) &&
+        (reentry === undefined || (trade.reentry ?? 0) === reentry),
     )?.[0];
   }
 
@@ -449,7 +486,7 @@ function normalizeTradedMarkets(tradedMarkets: Record<string, TradeAttempt>): Re
     if (!trade?.slug) {
       continue;
     }
-    normalized[tradeStateKey(normalizeMode(trade.mode), trade.slug, trade.entryKind)] = {
+    normalized[tradeStateKey(normalizeMode(trade.mode), trade.slug, trade.entryKind, trade.reentry)] = {
       ...trade,
       mode: normalizeMode(trade.mode),
     };
@@ -472,8 +509,21 @@ function normalizeMode(mode: TradeAttempt["mode"] | undefined): Mode {
  * `banda` y ausente producen la MISMA clave que antes de existir este campo, asi que las filas ya
  * guardadas en state.json se siguen encontrando sin migrar nada.
  */
-function tradeStateKey(mode: Mode, slug: string, entryKind?: TradeAttempt["entryKind"]): string {
-  return entryKind === "conviccion" ? `${mode}:${slug}#conviccion` : `${mode}:${slug}`;
+function tradeStateKey(
+  mode: Mode,
+  slug: string,
+  entryKind?: TradeAttempt["entryKind"],
+  reentry?: number,
+): string {
+  const tramo = entryKind === "conviccion" ? "#conviccion" : "";
+  // La RONDA de rebalanceo, por el mismo mecanismo y por la misma razon que el tramo: tras vender, la
+  // ventana puede volver a entrar, y sin distinguir la ronda la entrada nueva pisaria a la vendida —
+  // borrando su P&L, que es justamente el dato que justifica la salida.
+  //
+  // Ausente o 0 produce la clave de SIEMPRE, byte a byte, asi que las filas ya guardadas en
+  // state.json se siguen encontrando sin migrar nada.
+  const ronda = typeof reentry === "number" && reentry > 0 ? `#r${reentry}` : "";
+  return `${mode}:${slug}${tramo}${ronda}`;
 }
 
 function normalizePnlResetAtMs(value: Partial<Record<Mode, number>> | undefined): Partial<Record<Mode, number>> {

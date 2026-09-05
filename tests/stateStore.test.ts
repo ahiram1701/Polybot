@@ -323,3 +323,120 @@ describe("StateStore: los dos tramos del favorito en la misma ventana", () => {
     expect(store.getTradedMarket(slug, "sim", "conviccion")?.id).toBe("conviccion-1");
   });
 });
+
+describe("StateStore: salida anticipada y reentradas", () => {
+  const salida = {
+    exitedAtMs: 5,
+    reason: "stop_bajo_banda" as const,
+    orderPrice: 0.66,
+    soldShares: 2,
+    proceedsUsd: 1.36,
+    averageExitPrice: 0.68,
+  };
+
+  it("la venta se apunta sobre la fila del id, y queda en el jsonl", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-venta";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "banda-1", entryKind: "banda" }));
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "conviccion-1", entryKind: "conviccion" }));
+
+    await store.recordTradeExit("conviccion-1", salida);
+
+    // Por ID: equivocarse de fila aqui no da un error, da un P&L que cuadra en el total y miente en
+    // cada linea.
+    expect(store.getTradedMarket(slug, "sim", "conviccion")?.exit?.proceedsUsd).toBeCloseTo(1.36, 6);
+    expect(store.getTradedMarket(slug, "sim", "banda")?.exit).toBeUndefined();
+
+    const jsonl = await readFile(join(dataDir, "trades.jsonl"), "utf8");
+    expect(jsonl).toContain("\"type\":\"trade_exit\"");
+  });
+
+  it("la venta NO devuelve dinero al presupuesto diario", async () => {
+    // `dailySpendUsd` mide gasto BRUTO, y un rebalanceo gasta de verdad dos veces. Reembolsarlo
+    // convertiria el limite diario en algo que no frena nada mientras las ventas cubran las compras.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const nowMs = Date.now();
+    await store.recordTradeAttempt({
+      ...trade({ slug: "btc-updown-5m-gasto", mode: "sim", id: "uno" }),
+      amountUsd: 10,
+      createdAtMs: nowMs,
+    });
+    const antes = store.getDailySpend(nowMs, undefined, "sim");
+
+    await store.recordTradeExit("uno", salida);
+
+    expect(store.getDailySpend(nowMs, undefined, "sim")).toBe(antes);
+  });
+
+  it("una reentrada no pisa la entrada original de la ventana", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-reentrada";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "ronda-0", entryKind: "banda" }));
+    await store.recordTradeAttempt({
+      ...trade({ slug, mode: "sim", id: "ronda-1", entryKind: "banda" }),
+      reentry: 1,
+    });
+
+    expect(store.listTrades()).toHaveLength(2);
+    // Sin ronda se pregunta por la original, que es la clave de siempre.
+    expect(store.getTradedMarket(slug, "sim", "banda", 0)?.id).toBe("ronda-0");
+    expect(store.getTradedMarket(slug, "sim", "banda", 1)?.id).toBe("ronda-1");
+    // Y la ranura de la ronda 2 sigue libre: es lo que permite volver a entrar.
+    expect(store.hasTraded(slug, "sim", "banda", 2)).toBe(false);
+  });
+
+  it("las rondas sobreviven a una carga EN FRIO", async () => {
+    // Misma trampa que con los tramos: la clave se reconstruye al leer, y si la ronda no viaja en
+    // ella las dos filas colapsan — reiniciando en silencio el contador de rebalanceos y borrando el
+    // P&L de la pata ya vendida.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+
+    const slug = "btc-updown-5m-rondas-frio";
+    await writeFile(
+      join(dataDir, "state.json"),
+      JSON.stringify({
+        version: 1,
+        openings: {},
+        tradedMarkets: {
+          [`sim:${slug}`]: trade({ slug, mode: "sim", id: "ronda-0", entryKind: "banda" }),
+          [`sim:${slug}#r1`]: { ...trade({ slug, mode: "sim", id: "ronda-1", entryKind: "banda" }), reentry: 1 },
+        },
+        dailySpendUsd: {},
+      }),
+      "utf8",
+    );
+
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    expect(store.listTrades()).toHaveLength(2);
+    expect(store.getTradedMarket(slug, "sim", "banda", 1)?.id).toBe("ronda-1");
+  });
+
+  it("una fila antigua sin reentry se sigue encontrando", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-sin-ronda";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "vieja" }));
+
+    expect(store.hasTraded(slug, "sim")).toBe(true);
+    // Ausente cuenta como ronda 0, igual que ausente cuenta como banda.
+    expect(store.hasTraded(slug, "sim", "banda", 0)).toBe(true);
+  });
+});
