@@ -88,6 +88,8 @@ export interface UiSettings {
    * contra para darle la vuelta. Es lo que separa "el libro dice favorito" de "ya esta decidido".
    */
   favoriteMinCertainty: number;
+  /** Certeza a la que se VENDE. Cero = cuando la ventaja se ha evaporado del todo. */
+  favoriteExitCertainty: number;
   favoriteExitMinSecondsToEnd: number;
   favoriteExitMinBid: number;
   favoriteExitMinFillRatio: number;

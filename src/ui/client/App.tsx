@@ -252,6 +252,7 @@ const emptySettings: UiSettings = {
   favoriteExitStopMargin: 0.01,
   favoriteExitStopAsk: 0.69,
   favoriteMinCertainty: 1,
+  favoriteExitCertainty: 0,
   favoriteExitMinSecondsToEnd: 45,
   favoriteExitMinBid: 0.05,
   favoriteExitMinFillRatio: 0.9,
@@ -2556,12 +2557,18 @@ export function SettingsPanel({
           abajo <em>o por debajo</em>, la posición se <strong>vende</strong> y el favorito puede volver
           a entrar en la misma ventana si el nuevo lado pasa los filtros de siempre.
         </p>
+        <p className="settings-hint">
+          El disparador que manda es la <strong>certeza</strong>, la misma medida con la que se decide
+          entrar: se vende cuando la ventaja se ha evaporado, no cuando el libro tiembla. El umbral del
+          ask queda de <strong>red de seguridad</strong> para el desplome que la certeza no vea venir.
+        </p>
         <p className="settings-hint settings-hint-warn">
-          <strong>Dónde pongas ese umbral lo decide todo.</strong> Medido sobre 705 ventanas del propio
-          histórico: con el stop pegado al suelo de la banda, <strong>264 de 373 ventas fueron a lados
-          que acabaron ganando</strong> y el conjunto costó 105 $ frente a no vender nada. Cuanto más
-          cerca de la banda, más vendes por ruido: el ask baja dos céntimos, cobras el bid y recompras
-          más caro. Los desplomes de verdad los caza cualquier umbral, porque cuando cae, cae mucho.
+          <strong>Por qué el disparador cambió de sitio.</strong> Cuando vendía por el precio del libro,
+          medido sobre 705 ventanas, <strong>264 de 373 ventas fueron a lados que acabaron ganando</strong>
+          y el conjunto costó 105 $ frente a no vender nada: el ask baja dos céntimos por ruido, cobras
+          el bid y recompras más caro. Disparando por la certeza, sobre las 152 entradas de certeza
+          alta: <strong>+0,569 $ por operación frente a +0,462 aguantando</strong>, y vendiendo 9 veces
+          en vez de 73.
         </p>
         <div className="settings-grid">
           <label className="switch-row">
@@ -2574,12 +2581,20 @@ export function SettingsPanel({
             <span>Vender cuando el precio cae del tramo</span>
           </label>
           <NumberField
-            label="Vender con el ask en"
+            label="Red de seguridad (ask en)"
             value={draft.favoriteExitStopAsk}
             min={0.05}
             max={0.95}
             step={0.01}
             onChange={(value) => update("favoriteExitStopAsk", value)}
+          />
+          <NumberField
+            label="Vender con certeza en"
+            value={draft.favoriteExitCertainty}
+            min={-2}
+            max={2}
+            step={0.05}
+            onChange={(value) => update("favoriteExitCertainty", value)}
           />
           <NumberField
             label="Bid mínimo para vender"

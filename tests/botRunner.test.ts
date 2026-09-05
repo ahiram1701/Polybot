@@ -659,6 +659,13 @@ describe("BotRunner", () => {
       /** Bids del lado UP. Por defecto, profundos y a un centimo del ask. */
       bidsUp?: (ask: number) => Array<{ price: number; size: number }>;
       minHoldSeconds?: number;
+      /**
+       * Con esto el feed expone historia de ticks y la salida puede leer la certeza. Es el precio al
+       * que llega la serie partiendo de la apertura (100).
+       */
+      precioFinal?: number;
+      exitCertainty?: number;
+      stopAsk?: number;
     }) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
       const nowMs = windowStartMs + 60_000;
@@ -798,6 +805,10 @@ describe("BotRunner", () => {
         favoriteExitAllowLive: opts.allowExitLive ?? false,
         favoriteExitMinHoldSeconds: opts.minHoldSeconds ?? 0,
         favoriteExitMinSecondsToEnd: 45,
+        ...(opts.exitCertainty === undefined ? {} : { favoriteExitCertainty: opts.exitCertainty }),
+        ...(opts.stopAsk === undefined ? {} : { favoriteExitStopAsk: opts.stopAsk }),
+        // Sin certeza minima el filtro de ENTRADA frenaria estos escenarios, que prueban la salida.
+        favoriteMinCertainty: -99,
         favoriteAllowLive: true,
         directionalMode: opts.modo ?? "sim",
         maxAskPrice: 0.95,
@@ -825,6 +836,23 @@ describe("BotRunner", () => {
             timestampMs: nowMs,
             receivedAtMs: nowMs,
           })),
+          // Solo cuando el test pide historia: sin ella la salida no puede leer la certeza y se queda
+          // con la red de seguridad por precio, que es el comportamiento que prueban los demas.
+          ...(opts.precioFinal === undefined
+            ? {}
+            : {
+                getTickAtOrBefore: vi.fn((_m: MarketSymbol, ts: number) => {
+                  const serie = Array.from({ length: 60 }, (_, i) => ({
+                    timestampMs: nowMs - (59 - i) * 2_000,
+                    value: 100 + ((opts.precioFinal! - 100) * i) / 59 + (i % 2 === 0 ? 0.1 : -0.1),
+                  }));
+                  const previos = serie.filter((s) => s.timestampMs <= ts);
+                  const s = previos[previos.length - 1];
+                  return s
+                    ? { market: "BTC" as MarketSymbol, symbol: "btc/usd", value: s.value, timestampMs: s.timestampMs, receivedAtMs: s.timestampMs }
+                    : undefined;
+                }),
+              }),
         } as unknown as ChainlinkPriceFeed,
         state,
         executor,
@@ -957,6 +985,45 @@ describe("BotRunner", () => {
       const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
         asks: [0.85, 0.6],
         minHoldSeconds: 120,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(0);
+    });
+
+    it("vende por CERTEZA perdida aunque el libro siga alto", async () => {
+      // El cableado que este test protege: leer la apertura del estado, calcular la certeza con la
+      // historia del feed y pasarsela a la decision. El ask se queda en 0,84 —muy por encima de la red
+      // de seguridad— asi que si vende, es por el oraculo.
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.84],
+        precioFinal: 70,   // el precio se fue al lado contrario de UP
+        stopAsk: 0.35,
+        exitCertainty: 0,
+      });
+
+      await runner.runOnce(nowMs);
+      avanzar();
+      await runner.runOnce(nowMs + 5_000);
+
+      expect(vendidos).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("certeza_perdida");
+    });
+
+    it("NO vende por un ask hundido si la certeza sigue alta", async () => {
+      // El falso positivo que costaba el dinero: 264 de 373 ventas por precio iban a lados que
+      // acababan ganando.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, vendidos, avanzar, nowMs } = escenarioSalida({
+        asks: [0.85, 0.6],
+        precioFinal: 130,  // el oraculo dice que UP esta decidido
+        stopAsk: 0.35,
+        exitCertainty: 0,
       });
 
       await runner.runOnce(nowMs);

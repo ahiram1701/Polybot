@@ -85,6 +85,31 @@ export const DEFAULT_EXIT_MAX_SPREAD = 0.1;
 export const DEFAULT_EXIT_MIN_HOLD_MS = 10_000;
 
 /**
+ * Certeza a la que se vende. Cero = se vende cuando la ventaja se ha evaporado del todo.
+ *
+ * Es el disparador BUENO, el que mide el oraculo en vez del libro. Barrido sobre las 152 entradas con
+ * certeza alta del historico:
+ *
+ *   aguantar siempre          +0,4623 por operacion    0 ventas
+ *   vender con certeza <= 0   +0,5686                  9 ventas
+ *   vender con certeza <= 0,25 +0,5166                14 ventas
+ *   vender con certeza <= 0,50 +0,4876                19 ventas
+ *
+ * Cero, no 0,25: cuanto antes se vende mas se paga el ancho del libro por ventanas que se habrian
+ * recuperado solas. En cero se vende solo cuando el precio ya esta al otro lado del strike.
+ */
+export const DEFAULT_EXIT_CERTAINTY = 0;
+
+/**
+ * Red de seguridad por precio, MUY por debajo de la banda de compra.
+ *
+ * Cuando esto era el disparador principal, la salida perdia dinero en todos los umbrales probados
+ * (105$ frente a no vender con el stop pegado a la banda). Aqui solo cubre el desplome que la certeza
+ * no vea a tiempo: por debajo de 0,35 el libro ya no discrepa del oraculo, lo confirma.
+ */
+export const DEFAULT_EXIT_STOP_ASK = 0.35;
+
+/**
  * Motivos que NO son salida. Separados del exito para que el llamador pueda componer
  * `favorite_exit_${reason}` sin que el tipo le cuele el caso bueno: esas etiquetas van a
  * `SKIP_REASON_LABELS`, y una sin traducir sale como codigo crudo en las tres pantallas.
@@ -101,12 +126,27 @@ export type FavoriteExitSkipReason =
   | "bid_bajo_suelo"
   | "liquidez_insuficiente";
 
-/** El unico motivo que SI cierra. */
-export type FavoriteExitReason = "stop_bajo_banda";
+/**
+ * Los dos motivos que SI cierran, y no son el mismo suceso.
+ *
+ * `certeza_perdida` es el disparador BUENO: el oraculo dice que la ventaja se ha evaporado, que es
+ * literalmente "la volatilidad se lo esta comiendo". `stop_bajo_banda` es la red de seguridad para el
+ * desplome que el oraculo no vea a tiempo.
+ *
+ * Separarlos importa porque tienen tasas de acierto completamente distintas y mezclarlos haria
+ * imposible saber cual de los dos paga. Medido sobre 152 entradas con certeza alta: vender cuando la
+ * certeza cae a cero da +0,569 por operacion frente a +0,462 aguantando, y dispara 9 veces. El stop
+ * por ask, en cambio, disparaba 373 veces de las que 264 iban a lados que acababan GANANDO.
+ */
+export type FavoriteExitReason = "certeza_perdida" | "stop_bajo_banda";
 
 export interface FavoriteExitPlan {
+  /** Cual de los dos disparadores mordio. Viaja al ledger para poder puntuarlos por separado. */
+  motivo: FavoriteExitReason;
   /** El lado que se VENDE. */
   outcome: Outcome;
+  /** La certeza en el momento de vender, si se pudo leer. */
+  certeza?: number;
   /** Participaciones que se piden vender. */
   shares: number;
   /** Las que los bids absorben de verdad, bajando por el libro. */
@@ -136,8 +176,21 @@ export function decideFavoriteExit(args: {
   quotes: Partial<Record<Outcome, OrderbookQuote>>;
   nowMs: number;
   endMs: number;
-  /** El ask mas alto al que TODAVIA se vende. La comparacion es inclusiva: ask <= stopAsk cierra. */
+  /**
+   * RED DE SEGURIDAD por precio: el ask mas alto al que todavia se vende. Inclusiva.
+   *
+   * Deliberadamente bajo. Cuando este era el disparador principal —pegado a la banda de compra—
+   * producia sobre todo falsos positivos: 264 de 373 ventas iban a lados que acababan ganando, y el
+   * conjunto costo 105$ frente a no vender. Aqui solo cubre el desplome que la certeza no vea venir.
+   */
   stopAsk: number;
+  /**
+   * La certeza AHORA, la misma medida con la que se decidio entrar (`readWindowCertainty`).
+   * `undefined` = no se pudo leer, y entonces solo queda la red de seguridad por precio.
+   */
+  certeza?: number;
+  /** Se vende cuando la certeza cae a este valor o por debajo. Inclusiva, como el stop. */
+  exitCertainty?: number;
   minSecondsToEnd?: number;
   minBid?: number;
   minSellFillRatio?: number;
@@ -216,19 +269,33 @@ export function decideFavoriteExit(args: {
     };
   }
 
-  // El caso NORMAL, y el unico que no es una anomalia: la posicion sigue por encima del stop.
+  // El caso NORMAL, y el unico que no es una anomalia: la posicion aguanta.
   //
-  // La comparacion es contra el ASK, no contra el bid, y no es un detalle. La banda de compra es de
-  // asks, asi que el ask es la misma vara con la que se decidio entrar. Medir el stop sobre el bid
-  // dispararia en la iteracion siguiente a CUALQUIER compra: con spreads de 1,5 a 4,5 centimos, un ask
-  // de 0,82 lleva el bid ya por debajo del suelo de 0,79.
+  // Dos disparadores, y el que manda es el del ORACULO. Este modulo nacio midiendo el libro —vender
+  // cuando el ask se hundia— y esa version perdia dinero en todos los umbrales probados: el ask baja
+  // dos centimos por ruido constantemente, se cobra el bid y se recompra mas caro. Medido, 264 de 373
+  // ventas iban a lados que acababan ganando.
   //
-  // INCLUSIVA: `stopAsk` es el ask mas alto al que todavia se vende. Asi el ajuste dice literalmente lo
-  // que hace —"vende con el ask en 0,69 o menos" es `stopAsk: 0.69`— en vez de obligar a configurar el
-  // primer precio que NO vende, que es como se cuelan los errores de un tick.
-  if (askNuestro > args.stopAsk) {
-    return { reason: "en_banda", detail: detalleBase };
+  // La certeza no tiene ese problema porque no la fija un libro fino, la fija el precio que RESUELVE:
+  // vender cuando la ventaja se evapora da +0,569 por operacion frente a +0,462 aguantando, disparando
+  // 9 veces de 152 en vez de 73.
+  //
+  // Las dos comparaciones son INCLUSIVAS, para que los ajustes digan literalmente lo que hacen —"vende
+  // con la certeza en 0 o menos" es `exitCertainty: 0`— en vez de obligar a configurar el primer valor
+  // que NO vende, que es como se cuelan los errores de un tick.
+  const exitCertainty = resolveFinito(args.exitCertainty, DEFAULT_EXIT_CERTAINTY);
+  const perdioCerteza = args.certeza !== undefined && args.certeza <= exitCertainty;
+  const askDesplomado = askNuestro <= args.stopAsk;
+  if (!perdioCerteza && !askDesplomado) {
+    return {
+      reason: "en_banda",
+      detail: {
+        ...detalleBase,
+        ...(args.certeza === undefined ? {} : { certeza: redondear(args.certeza), exitCertainty }),
+      },
+    };
   }
+  const motivo: FavoriteExitReason = perdioCerteza ? "certeza_perdida" : "stop_bajo_banda";
 
   if (bestBid === undefined) {
     return { reason: "sin_bid", detail: detalleBase };
@@ -259,8 +326,10 @@ export function decideFavoriteExit(args: {
 
   const precioMedioSalida = proceedsUsd / sharesSold;
   return {
-    reason: "stop_bajo_banda",
+    reason: motivo,
     plan: {
+      motivo,
+      certeza: args.certeza,
       outcome: args.posicion.outcome,
       shares: args.posicion.shares,
       sharesVendibles: sharesSold,
@@ -273,6 +342,7 @@ export function decideFavoriteExit(args: {
     },
     detail: {
       ...detalleBase,
+      ...(args.certeza === undefined ? {} : { certeza: redondear(args.certeza), exitCertainty }),
       shares: redondear(args.posicion.shares),
       sharesVendibles: redondear(sharesSold),
       proceedsUsd: redondear(proceedsUsd),
@@ -330,6 +400,11 @@ function resolvePositive(value: number | undefined, fallback: number): number {
 
 function resolveNonNegative(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** La certeza puede ser negativa —el precio ya cruzado— asi que aqui solo se exige que sea un numero. */
+function resolveFinito(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function redondear(value: number): number {

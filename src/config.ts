@@ -174,6 +174,8 @@ const envSchema = z.object({
   // Certeza minima de la ventana para entrar. Ver `favoriteMinCertainty` en types.ts. Admite negativos
   // porque un valor muy negativo es como se apaga el filtro.
   FAVORITE_MIN_CERTAINTY: z.coerce.number().default(1),
+  // Certeza a la que se VENDE. Ver `favoriteExitCertainty` en types.ts.
+  FAVORITE_EXIT_CERTAINTY: z.coerce.number().default(0),
   FAVORITE_EXIT_MIN_SECONDS: z.coerce.number().nonnegative().default(45),
   FAVORITE_EXIT_MIN_BID: z.coerce.number().gt(0).lt(1).default(0.05),
   FAVORITE_EXIT_MIN_FILL_RATIO: z.coerce.number().min(0).max(1).default(0.9),
@@ -393,6 +395,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     favoriteExitStopMargin: env.FAVORITE_EXIT_STOP_MARGIN,
     favoriteExitStopAsk: env.FAVORITE_EXIT_STOP_ASK,
     favoriteMinCertainty: env.FAVORITE_MIN_CERTAINTY,
+    favoriteExitCertainty: env.FAVORITE_EXIT_CERTAINTY,
     favoriteExitMinSecondsToEnd: env.FAVORITE_EXIT_MIN_SECONDS,
     favoriteExitMinBid: env.FAVORITE_EXIT_MIN_BID,
     favoriteExitMinFillRatio: env.FAVORITE_EXIT_MIN_FILL_RATIO,

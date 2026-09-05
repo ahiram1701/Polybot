@@ -917,6 +917,7 @@ function settings(): UiSettings {
     favoriteExitStopMargin: 0.01,
     favoriteExitStopAsk: 0.69,
     favoriteMinCertainty: 1,
+    favoriteExitCertainty: 0,
     favoriteExitMinSecondsToEnd: 45,
     favoriteExitMinBid: 0.05,
     favoriteExitMinFillRatio: 0.9,

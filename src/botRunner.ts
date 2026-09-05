@@ -18,6 +18,7 @@ import {
   DEFAULT_EXIT_MIN_BID,
   decideFavoriteExit,
   resolveStopAsk,
+  type FavoriteExitPlan,
   type FavoriteExitSkipReason,
 } from "./favoriteExit.js";
 import { readWindowCertainty, type WindowCertainty } from "./windowCertainty.js";
@@ -1882,11 +1883,17 @@ export class BotRunner {
         continue;
       }
 
+      // La MISMA medida con la que se decidio entrar. Que las dos decisiones miren el oraculo y no el
+      // libro es todo el cambio: el libro baja dos centimos por ruido, y el precio que resuelve no.
+      const opening = this.deps.state.getOpening(market.slug);
+      const certeza = opening ? this.leerCerteza(market, opening, trade.outcome, nowMs) : undefined;
       const decision = decideFavoriteExit({
         posicion: { outcome: trade.outcome, shares, createdAtMs: trade.createdAtMs },
         quotes,
         nowMs,
         endMs: trade.endMs,
+        certeza: certeza?.z,
+        exitCertainty: this.config.favoriteExitCertainty,
         // Con umbral absoluto configurado manda ese; si no, se deriva del suelo de la BANDA DEL
         // FAVORITO. Nunca de `resolveConfiguredMinAskPrice`: ese es el piso de la ventana de ask (0,01
         // por defecto, un antifiltro de polvo) y con el, el stop no se dispararia jamas.
@@ -1928,7 +1935,9 @@ export class BotRunner {
           shares: decision.plan.shares,
           quote: quotes[trade.outcome] as OrderbookQuote,
           minBidPrice: this.config.favoriteExitMinBid ?? DEFAULT_EXIT_MIN_BID,
-          reason: "stop_bajo_banda",
+          // Cual de los dos disparadores mordio viaja al ledger: tienen tasas de acierto muy distintas
+          // y sin distinguirlos no se puede saber cual paga.
+          reason: decision.plan.motivo,
         });
         // Un llenado CERO no es una salida: la posicion sigue entera. No se apunta nada, para que la
         // proxima iteracion pueda volver a intentarlo con el libro de entonces.
@@ -1941,19 +1950,21 @@ export class BotRunner {
           continue;
         }
         await this.deps.state.recordTradeExit(trade.id, exit);
-        logger.info("Salida por stop: posicion cerrada antes del vencimiento.", {
+        logger.info("Salida: posicion cerrada antes del vencimiento.", {
           mode: modo,
           slug: market.slug,
           market: market.asset,
           outcome: trade.outcome,
           entryKind,
+          motivo: decision.plan.motivo,
+          certeza: decision.plan.certeza === undefined ? undefined : Math.round(decision.plan.certeza * 1000) / 1000,
           askNuestro: decision.plan.askNuestro,
           stopAsk: decision.plan.stopAsk,
           soldShares: exit.soldShares,
           proceedsUsd: exit.proceedsUsd,
           averageExitPrice: exit.averageExitPrice,
         });
-        await this.notifyTradeExit(trade, exit, decision.plan.stopAsk);
+        await this.notifyTradeExit(trade, exit, decision.plan);
       } catch (error) {
         // La posicion queda VIVA y sin `exit`: se reintenta en la siguiente iteracion. Tampoco avanza
         // la ronda, porque solo la consume una venta que de verdad ocurrio.
@@ -1969,17 +1980,23 @@ export class BotRunner {
   private async notifyTradeExit(
     trade: TradeAttempt,
     exit: NonNullable<TradeAttempt["exit"]>,
-    stopAsk: number,
+    plan: FavoriteExitPlan,
   ): Promise<void> {
     const pnl = calculateTradePnl({ ...trade, exit });
+    // El aviso dice POR QUE se vendio, no solo que se vendio: una salida por certeza perdida y una por
+    // desplome del libro son sucesos distintos, y quien lee el movil necesita distinguirlos.
+    const causa =
+      plan.motivo === "certeza_perdida"
+        ? `la ventaja se evaporo (certeza ${(plan.certeza ?? 0).toFixed(2)})`
+        : `el libro se desplomo por debajo de ${plan.stopAsk.toFixed(2)}`;
     await this.deps.notifier?.notify({
       key: `trade-exit:${trade.id}`,
       category: "trade",
       level: "warn",
-      title: "Salida por stop",
+      title: plan.motivo === "certeza_perdida" ? "Salida: ventaja perdida" : "Salida: desplome del libro",
       body: [
         `Modo: ${trade.mode}. Mercado: ${trade.asset ?? marketSymbolFromSlug(trade.slug) ?? "--"}.`,
-        `${trade.outcome} cayo por debajo de ${stopAsk.toFixed(2)}; vendido a ${exit.averageExitPrice.toFixed(3)}.`,
+        `${trade.outcome}: ${causa}; vendido a ${exit.averageExitPrice.toFixed(3)}.`,
         // El neto es lo unico que responde "¿cuanto ha costado esto?", y es peor que la caida nominal
         // del ask: se cobra el bid, no el ask, y ademas se paga comision.
         `Recuperado ${exit.proceedsUsd.toFixed(2)} USD. Neto ${(pnl.netUsd ?? 0).toFixed(2)} USD.`,

@@ -125,6 +125,14 @@ export interface BotConfig {
    * El precio del filtro es el volumen: solo el 10% de las ventanas califican.
    */
   favoriteMinCertainty?: number;
+  /**
+   * Certeza a la que se VENDE. Cero = cuando la ventaja se ha evaporado del todo.
+   *
+   * Es el disparador bueno de la salida, el que mide el oraculo en vez del libro. Sobre las 152
+   * entradas de certeza alta del historico: aguantar da +0,4623 por operacion y vender con la certeza
+   * en cero da +0,5686, disparando 9 veces de 152 en vez de las 73 del stop por precio.
+   */
+  favoriteExitCertainty?: number;
   /** Segundos minimos al cierre para vender: el CLOB pasa a post-only al final y rechazaria la orden. */
   favoriteExitMinSecondsToEnd?: number;
   /** Suelo del mejor bid. Por debajo, vender no acota la perdida: la regala. */
@@ -723,7 +731,14 @@ export interface TradeAttempt {
  */
 export interface TradeExit {
   exitedAtMs: number;
-  reason: "stop_bajo_banda";
+  /**
+   * Cual de los dos disparadores mordio. Espejo de `FavoriteExitReason` (`src/favoriteExit.ts`), escrito
+   * a mano para que el tipo persistido no dependa de un modulo de decision.
+   *
+   * Se guarda porque tienen tasas de acierto muy distintas: la salida por certeza mide el oraculo y
+   * paga; la del libro es la red de seguridad. Sin distinguirlas en el ledger no se puede saber cual.
+   */
+  reason: "certeza_perdida" | "stop_bajo_banda";
   /** Precio limite que viajo en la orden. Se guarda para poder auditar un llenado parcial. */
   orderPrice: number;
   soldShares: number;

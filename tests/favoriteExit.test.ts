@@ -254,6 +254,93 @@ describe("decideFavoriteExit", () => {
   });
 });
 
+describe("la certeza es el disparador que manda", () => {
+  /** Libro sano y muy por encima de la red de seguridad: aqui solo decide la certeza. */
+  function conCerteza(certeza: number | undefined, overrides = {}) {
+    return escenario({
+      quotes: {
+        UP: quote({ bestAsk: 0.84, bids: [{ price: 0.82, size: 1_000 }] }),
+        DOWN: quote({ bestAsk: 0.18, bids: [{ price: 0.16, size: 1_000 }] }),
+      },
+      stopAsk: 0.35,
+      certeza,
+      exitCertainty: 0,
+      ...overrides,
+    });
+  }
+
+  it("vende cuando la ventaja se ha evaporado", () => {
+    const decision = conCerteza(-0.4);
+
+    expect(decision.reason).toBe("certeza_perdida");
+    expect(decision.plan?.motivo).toBe("certeza_perdida");
+    expect(decision.plan?.certeza).toBe(-0.4);
+  });
+
+  it("justo EN el umbral ya vende", () => {
+    expect(conCerteza(0).reason).toBe("certeza_perdida");
+  });
+
+  it("aguanta mientras la ventaja siga viva", () => {
+    expect(conCerteza(0.8).reason).toBe("en_banda");
+    expect(conCerteza(0.01).reason).toBe("en_banda");
+  });
+
+  it("NO vende por un ask hundido si la certeza sigue alta", () => {
+    // Es exactamente el falso positivo que costaba el dinero: 264 de 373 ventas por precio iban a
+    // lados que acababan ganando. Con el libro en 0,60 y el oraculo diciendo que esta decidido, se
+    // aguanta.
+    const decision = escenario({
+      quotes: {
+        UP: quote({ bestAsk: 0.6, bids: [{ price: 0.58, size: 1_000 }] }),
+        DOWN: quote({ bestAsk: 0.42, bids: [{ price: 0.4, size: 1_000 }] }),
+      },
+      stopAsk: 0.35,
+      certeza: 1.4,
+      exitCertainty: 0,
+    });
+
+    expect(decision.reason).toBe("en_banda");
+  });
+
+  it("la red de seguridad SI dispara cuando el libro se desploma de verdad", () => {
+    const decision = escenario({
+      quotes: {
+        UP: quote({ bestAsk: 0.3, bids: [{ price: 0.28, size: 1_000 }] }),
+        DOWN: quote({ bestAsk: 0.72, bids: [{ price: 0.7, size: 1_000 }] }),
+      },
+      stopAsk: 0.35,
+      certeza: 1.4,
+      exitCertainty: 0,
+    });
+
+    expect(decision.reason).toBe("stop_bajo_banda");
+    expect(decision.plan?.motivo).toBe("stop_bajo_banda");
+  });
+
+  it("sin lectura de certeza queda solo la red de seguridad", () => {
+    // Una laguna del feed no puede dejar la posicion sin ninguna proteccion, pero tampoco puede
+    // inventarse una venta: se cae al unico criterio que si se puede medir.
+    expect(conCerteza(undefined).reason).toBe("en_banda");
+    expect(
+      escenario({
+        quotes: {
+          UP: quote({ bestAsk: 0.3, bids: [{ price: 0.28, size: 1_000 }] }),
+          DOWN: quote({ bestAsk: 0.72, bids: [{ price: 0.7, size: 1_000 }] }),
+        },
+        stopAsk: 0.35,
+        certeza: undefined,
+      }).reason,
+    ).toBe("stop_bajo_banda");
+  });
+
+  it("una certeza negativa no se confunde con 'sin lectura'", () => {
+    // `resolveFinito` acepta negativos a proposito: el precio cruzado al lado malo es la señal mas
+    // fuerte que hay, y tratarla como ausente seria perder justo el caso que mas urge.
+    expect(conCerteza(-2.5).reason).toBe("certeza_perdida");
+  });
+});
+
 describe("resolveStopAsk", () => {
   it("el umbral ABSOLUTO manda sobre la banda y sobre el margen", () => {
     // Es el caso normal: el stop util esta lejos de la banda, y expresarlo como una resta lo dejaria

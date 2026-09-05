@@ -216,8 +216,23 @@ lado que se tiene cae por debajo del suelo de la banda de compra, la posición s
   iteración siguiente a cualquier compra: con spreads de 1,5 a 4,5 céntimos, un ask de 0,82 lleva el
   bid ya por debajo del suelo de 0,79. La consecuencia es que **la pérdida realizada es peor que la
   nominal**: se cobra el bid y se paga comisión encima.
-- **El umbral es absoluto (`favoriteExitStopAsk`), y es la decisión que más pesa.** Barrido sobre las
-  705 ventanas operables de `data/analytics.jsonl`:
+- **El disparador que manda es la CERTEZA, no el precio del libro.** Este módulo nació midiendo el ask
+  y esa versión perdía dinero en todos los umbrales probados. La certeza (`favoriteExitCertainty`, cero
+  por defecto) mide el precio que **resuelve**, y ahí sí paga — sobre las 152 entradas de certeza alta:
+
+  | | por operación | ventas |
+  |---|---|---|
+  | aguantar siempre | +0,4623 | 0 |
+  | **vender con certeza ≤ 0** | **+0,5686** | **9 de 152** |
+  | vender con certeza ≤ 0,25 | +0,5166 | 14 |
+  | vender con certeza ≤ 0,50 | +0,4876 | 19 |
+
+  Dispara el 6% de las veces, no el 28%. Los dos motivos viajan por separado al ledger
+  (`certeza_perdida` y `stop_bajo_banda`) porque tienen tasas de acierto muy distintas y mezclarlos
+  haría imposible saber cuál paga.
+- **El umbral por ask (`favoriteExitStopAsk`) queda de RED DE SEGURIDAD**, en 0,35, para el desplome
+  que la certeza no vea venir. Cuando era el disparador principal, barrido sobre las 705 ventanas
+  operables de `data/analytics.jsonl`:
 
   | stop | salidas | a lados que ganaban | neto | vs no vender |
   |---|---|---|---|---|
