@@ -426,6 +426,49 @@ describe("StateStore: salida anticipada y reentradas", () => {
     expect(store.getTradedMarket(slug, "sim", "banda", 1)?.id).toBe("ronda-1");
   });
 
+  it("el ganador oficial de una venta se guarda pero NO le reescribe el P&L", async () => {
+    // Sin esto la salida es inauditable: una posicion vendida no llega a tener `resolved`, asi que
+    // nadie sabria nunca si aquella venta salvo dinero o lo tiro. Pero el dinero de la venta YA esta
+    // cobrado, asi que el resultado oficial es un dato de auditoria, no una correccion.
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-venta-oficial";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "vendida", outcome: "UP" }));
+    await store.recordTradeExit("vendida", salida);
+
+    await store.recordTradeOfficialResolution(slug, "sim", {
+      winningOutcome: "DOWN",
+      verifiedAtMs: 9,
+      corrected: false,
+    }, "vendida");
+
+    const fila = store.getTradedMarket(slug, "sim");
+    expect(fila?.officialResolution?.winningOutcome).toBe("DOWN");
+    // La clave: sigue SIN resolucion propia, asi que su P&L sigue siendo el de la venta.
+    expect(fila?.resolved).toBeUndefined();
+  });
+
+  it("una fila todavia abierta no tiene resultado oficial que anotar", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
+    temps.push(dataDir);
+    const store = new StateStore(dataDir);
+    await store.load();
+
+    const slug = "btc-updown-5m-abierta";
+    await store.recordTradeAttempt(trade({ slug, mode: "sim", id: "abierta" }));
+
+    await store.recordTradeOfficialResolution(slug, "sim", {
+      winningOutcome: "DOWN",
+      verifiedAtMs: 9,
+      corrected: false,
+    }, "abierta");
+
+    expect(store.getTradedMarket(slug, "sim")?.officialResolution).toBeUndefined();
+  });
+
   it("una fila antigua sin reentry se sigue encontrando", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "polybot-state-"));
     temps.push(dataDir);

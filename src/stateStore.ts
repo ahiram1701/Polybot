@@ -340,11 +340,18 @@ export class StateStore {
     this.assertLoaded();
     const key = (tradeId ? this.findTradeKeyById(tradeId) : undefined) ?? this.findTradeKey(slug, mode);
     const trade = key ? this.state.tradedMarkets[key] : undefined;
-    if (!trade || !trade.resolved) {
+    // Ya NO se exige `resolved`: una posicion vendida antes del cierre no lo tiene nunca, y sin
+    // guardarle el ganador oficial la salida es inauditable —no hay forma de saber si aquella venta
+    // salvo dinero o lo tiro—. Lo que si se exige es que haya pasado algo: una fila todavia abierta no
+    // tiene resultado que anotar.
+    if (!trade || (!trade.resolved && !trade.exit)) {
       return;
     }
     trade.officialResolution = officialResolution;
-    if (officialResolution.corrected) {
+    // La correccion solo toca una resolucion que EXISTE. En una venta el dinero ya esta cobrado y
+    // quien pague despues no cambia su P&L: sintetizarle un `resolved` aqui reescribiria un resultado
+    // realizado con uno hipotetico.
+    if (officialResolution.corrected && trade.resolved) {
       trade.resolved = {
         ...trade.resolved,
         winningOutcome: officialResolution.winningOutcome,

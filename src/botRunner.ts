@@ -3399,7 +3399,15 @@ export class BotRunner {
       .listTrades()
       .filter(
         (trade) =>
-          trade.resolved !== undefined &&
+          // Las posiciones VENDIDAS tambien se preguntan, aunque nunca lleguen a tener `resolved`.
+          // Sin esto la salida es inauditable: se cerraban sin que nadie supiera nunca quien habria
+          // ganado esa ventana, asi que no habia forma de distinguir una venta que salvo dinero de una
+          // que lo tiro. Medido en produccion: 9 de cada 15 ventas se quedaban sin ganador conocido.
+          //
+          // El resultado oficial se guarda pero NO reescribe su P&L — el dinero de una venta ya esta
+          // cobrado y quien pague despues es irrelevante para esa fila. Eso lo garantiza
+          // `recordTradeOfficialResolution`.
+          (trade.resolved !== undefined || esSalidaTotal(trade)) &&
           trade.officialResolution === undefined &&
           // Arb pairs pay $1/set regardless of the winner and their "#arb" slug is not a gamma market.
           trade.kind !== "arb" &&
@@ -3416,15 +3424,28 @@ export class BotRunner {
       try {
         const market = await getMarketBySlug(trade.slug, nowMs);
         const official = officialWinningOutcome(market);
-        if (!official || !trade.resolved) {
+        if (!official) {
           continue;
         }
-        const corrected = official !== trade.resolved.winningOutcome;
+        // Una posicion VENDIDA no tiene resolucion propia que corregir: el resultado oficial se guarda
+        // como dato de auditoria —"¿acerto aquella venta?"— y `corrected` se queda en false porque no
+        // hay nada que enmendar.
+        const corrected = trade.resolved !== undefined && official !== trade.resolved.winningOutcome;
         await this.deps.state.recordTradeOfficialResolution(trade.slug, trade.mode, {
           winningOutcome: official,
           verifiedAtMs: nowMs,
           corrected,
         }, trade.id);
+        if (!trade.resolved) {
+          logger.info("Ganador oficial de una ventana ya vendida.", {
+            slug: trade.slug,
+            outcome: trade.outcome,
+            officialWinner: official,
+            // Lo unico que responde si aquella venta acerto.
+            laVentaEvitoUnaPerdida: official !== trade.outcome,
+          });
+          continue;
+        }
         if (corrected) {
           logger.warn("Resolución corregida por resultado oficial de Polymarket.", {
             slug: trade.slug,
