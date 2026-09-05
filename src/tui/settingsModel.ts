@@ -230,6 +230,14 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
     format: (v) => v.toFixed(2),
   },
   {
+    key: "favoriteMinCertainty",
+    label: "Entrar: certeza mínima",
+    help: "Cuántos movimientos típicos harían falta en contra para dar la vuelta. 1 = medido 91,4% de acierto.",
+    min: -3,
+    max: 3,
+    format: (v) => v.toFixed(2),
+  },
+  {
     key: "favoriteExitStopAsk",
     label: "Salida: vender con el ask en",
     help: "El ask más alto al que todavía se vende. Medido: pegarlo a la banda vende por ruido y cuesta dinero.",
@@ -304,6 +312,7 @@ const FAVORITE_RISK_KEYS = new Set([
   "favoriteMaxAskSum",
   "favoriteMaxSizeAsk",
   "favoriteMaxSizeFraction",
+  "favoriteMinCertainty",
   "favoriteExitStopAsk",
   "favoriteExitStopMargin",
   "favoriteExitMinBid",

@@ -113,6 +113,18 @@ export interface BotConfig {
    * la banda lo dejaria ademas desplazandose solo en cuanto alguien la mueva.
    */
   favoriteExitStopAsk?: number;
+  /**
+   * Certeza minima de la ventana para ENTRAR: cuantos movimientos tipicos del precio harian falta EN
+   * CONTRA para darle la vuelta. Ver `readWindowCertainty` en `src/windowCertainty.ts`.
+   *
+   * Es la traduccion de "subirse a lo que ya va ganando cuando es casi seguro". El bot entraba solo
+   * por el precio del libro, que se equivoca mucho mas de lo que su propio precio admite: medido sobre
+   * 1.484 ventanas, sin filtro el acierto es 70,4% y el neto -0,067 por operacion; con z >= 1 sube a
+   * 91,4% y +0,462, positivo en las dos mitades del historico.
+   *
+   * El precio del filtro es el volumen: solo el 10% de las ventanas califican.
+   */
+  favoriteMinCertainty?: number;
   /** Segundos minimos al cierre para vender: el CLOB pasa a post-only al final y rechazaria la orden. */
   favoriteExitMinSecondsToEnd?: number;
   /** Suelo del mejor bid. Por debajo, vender no acota la perdida: la regala. */

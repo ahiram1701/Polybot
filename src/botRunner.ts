@@ -20,6 +20,7 @@ import {
   resolveStopAsk,
   type FavoriteExitSkipReason,
 } from "./favoriteExit.js";
+import { readWindowCertainty, type WindowCertainty } from "./windowCertainty.js";
 import { evaluateDirectionalRiskHalt, type RiskHaltStatus } from "./riskCircuitBreaker.js";
 import {
   LiveExecutionEngine,
@@ -219,6 +220,22 @@ const DEFAULT_MIN_FILL_RATIO = 0.5;
  * Configurable como `favoriteMaxSizeFraction`; 1 restaura el comportamiento original.
  */
 const DEFAULT_FAVORITE_MAX_SIZE_FRACTION = 0.5;
+
+/**
+ * Certeza minima para entrar: cuantos movimientos tipicos tendria que hacer el precio EN CONTRA para
+ * darle la vuelta a la ventana. Ver `readWindowCertainty` para la medida y el barrido que fija el 1.
+ *
+ * Uno, no 1,5: el 100% de aciertos de 1,5 son 43 ventanas, mientras que 1,0 tiene 152 y sale positivo
+ * en las dos mitades del historico. La cola de la distribucion promete mas de lo que puede sostener.
+ */
+const DEFAULT_FAVORITE_MIN_CERTAINTY = 1;
+/** Cuanta historia se muestrea del feed para estimar la volatilidad. Ver `DEFAULT_HISTORIA_SEGUNDOS`. */
+const CERTEZA_HISTORIA_MS = 180_000;
+/**
+ * Paso del muestreo hacia atras. 2s, por debajo de la cadencia tipica del feed: si fuera mas grueso se
+ * perderian ticks y la sigma saldria de menos saltos de los que hay de verdad.
+ */
+const CERTEZA_PASO_MS = 2_000;
 
 /** Un valor fuera de (0,1] no se corrige en silencio a "todo": cae al default, que es el lado prudente. */
 function resolveMaxSizeFraction(value: number | undefined): number {
@@ -1651,6 +1668,35 @@ export class BotRunner {
       return undefined;
     }
 
+    // La ventana tiene que estar YA DECIDIDA, no solo cotizar como favorita.
+    //
+    // Es la diferencia entre "el libro dice que este lado va ganando" y "al precio le faltan varios
+    // movimientos tipicos para darle la vuelta a esto". El libro se equivoca en la primera lectura
+    // mucho mas de lo que su propio precio admite: medido sobre 1.484 ventanas, entrando sin este
+    // filtro el acierto es del 70,4% y el neto -0,067 por operacion; exigiendo z >= 1 sube al 91,4% y
+    // +0,462, positivo en las DOS mitades del historico.
+    //
+    // Va DESPUES de la ventana de entrada para no pagar el muestreo de ticks en cada iteracion de las
+    // ventanas que ni siquiera se van a mirar, y ANTES del dimensionado para no leer el saldo por una
+    // entrada que va a caerse igual.
+    const certezaMinima = this.config.favoriteMinCertainty ?? DEFAULT_FAVORITE_MIN_CERTAINTY;
+    const certeza = this.leerCerteza(args.market, args.opening, winner.outcome, args.nowMs);
+    // Una lectura AUSENTE no bloquea: seria convertir una laguna del feed en politica de riesgo, el
+    // mismo error que `minBankrollForDirectionalUsd` evita a proposito. Una lectura que SI sale y da
+    // poco es informacion, y esa si frena.
+    if (certeza && certeza.z < certezaMinima) {
+      this.logSkipOnce(args.market.slug, "favorite_ventana_no_decidida", {
+        market: args.market.asset,
+        outcome: winner.outcome,
+        z: Math.round(certeza.z * 1000) / 1000,
+        certezaMinima,
+        distanceUsd: Math.round(certeza.distanceUsd * 100000) / 100000,
+        segundosAlCierre: Math.round(certeza.segundosAlCierre),
+        muestras: certeza.muestras,
+      });
+      return undefined;
+    }
+
     // Con un sondeo en curso la ventana se ensancha hasta cubrir la banda en pruebas. Tiene que llegar
     // hasta aqui y no solo al filtro posterior: este tope viaja a `getQuote`, que lo usa para calcular
     // la profundidad disponible bajo el — con el tope viejo, los precios que se quieren sondear
@@ -1738,6 +1784,48 @@ export class BotRunner {
       entryKind,
       reentry,
     };
+  }
+
+  /**
+   * Cuanto de decidida esta la ventana AHORA, para el lado que se mira.
+   *
+   * Los ticks se sacan muestreando `getTickAtOrBefore` hacia atras en vez de pedirle al feed una serie:
+   * esa es la unica lectura de historia que la interfaz `RunnerPriceFeed` ya expone, y añadir un metodo
+   * nuevo obligaria a tocar todos los dobles de test para no ganar nada. El feed guarda 10 minutos, de
+   * sobra para los 3 que se miran.
+   *
+   * El muestreo repite tick cuando la cadencia del feed es mas lenta que el paso, asi que se deduplica
+   * por marca de tiempo: sin eso, un feed lento inventaria saltos de valor cero y hundiria la sigma —
+   * que es el denominador de todo esto.
+   */
+  private leerCerteza(
+    market: MarketInfo,
+    opening: WindowOpening,
+    outcome: Outcome,
+    nowMs: number,
+  ): WindowCertainty | undefined {
+    const getTickAtOrBefore = this.deps.priceFeed.getTickAtOrBefore;
+    if (!getTickAtOrBefore) {
+      return undefined;
+    }
+    const vistos = new Map<number, number>();
+    for (let t = nowMs; t >= nowMs - CERTEZA_HISTORIA_MS; t -= CERTEZA_PASO_MS) {
+      const tick = getTickAtOrBefore.call(this.deps.priceFeed, market.asset, t);
+      if (tick && !vistos.has(tick.timestampMs)) {
+        vistos.set(tick.timestampMs, tick.value);
+      }
+    }
+    if (vistos.size === 0) {
+      return undefined;
+    }
+    return readWindowCertainty({
+      ticks: [...vistos].map(([timestampMs, value]) => ({ timestampMs, value })),
+      openingPrice: opening.openingPrice,
+      outcome,
+      nowMs,
+      endMs: market.endMs,
+      historiaSegundos: CERTEZA_HISTORIA_MS / 1000,
+    });
   }
 
   /**

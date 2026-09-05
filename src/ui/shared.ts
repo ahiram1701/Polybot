@@ -83,6 +83,11 @@ export interface UiSettings {
   favoriteExitStopMargin: number;
   /** Umbral ABSOLUTO: el ask mas alto al que todavia se vende. Manda sobre el margen. */
   favoriteExitStopAsk: number;
+  /**
+   * Certeza minima de la ventana para ENTRAR: cuantos movimientos tipicos del precio harian falta en
+   * contra para darle la vuelta. Es lo que separa "el libro dice favorito" de "ya esta decidido".
+   */
+  favoriteMinCertainty: number;
   favoriteExitMinSecondsToEnd: number;
   favoriteExitMinBid: number;
   favoriteExitMinFillRatio: number;
@@ -461,6 +466,9 @@ export const SKIP_REASON_LABELS = {
   favorite_exit_live_not_allowed: "Salida: encendida pero sin permiso para live",
   favorite_exit_sin_motor: "Salida: este motor no sabe vender",
   favorite_exit_failed: "Salida: el exchange rechazó la venta",
+  // El filtro que separa "el libro dice favorito" de "esto ya está decidido". Es, con diferencia, el
+  // descarte que más veces aparecerá: solo el 10% de las ventanas llegan a z >= 1.
+  favorite_ventana_no_decidida: "La ventana aún no está decidida",
 } as const;
 
 /**

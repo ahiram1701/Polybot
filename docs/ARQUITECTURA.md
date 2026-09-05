@@ -123,6 +123,57 @@ Tres cosas que no son obvias:
   `strategyAnalysisEngine` topan en 120 s, con salto máximo de 60 s por aplicación. Con
   `aiAutoApplyLive` encendido, la ventana de 300 se iría reduciendo sola. Debe seguir apagado.
 
+### La certeza de la ventana: entrar solo cuando ya está decidido
+
+La estrategia no es predecir hacia dónde va, es **subirse a lo que ya va ganando cuando es casi seguro
+que va a ganar**. Eso tiene una traducción exacta, y es la que aplica `readWindowCertainty`
+(`src/windowCertainty.ts`):
+
+```
+z = distancia al strike / (volatilidad por segundo × raíz de los segundos que quedan)
+```
+
+El denominador es cuánto se espera que el precio se mueva en lo que queda de ventana. Así que z dice,
+en una cifra, **cuántos movimientos típicos tendría que hacer el precio en contra para dar la vuelta a
+esto**. Un z de 2 a quince segundos del cierre y un z de 2 a cuatro minutos son la misma certeza,
+aunque la distancia en dólares no se parezca en nada.
+
+**Por qué no bastaba la distancia que el bot ya medía.** `signal.distanceUsd` existe desde siempre y se
+filtra con `minDistanceUsdByMarket` (BTC 20, ETH 0,1, DOGE 0,00003). Esos umbrales no son comparables
+ni entre mercados —dependen de la escala del precio— ni entre el principio y el final de la ventana,
+que es donde está toda la diferencia. Dividir por `σ·√T` es lo único que convierte un dato que ya
+existía en la señal que separa las ventanas que ganan de las que no.
+
+Medido sobre 1.484 ventanas de `data/analytics.jsonl`, aguantando hasta el cierre:
+
+| umbral z | ops | % | aciertos | neto/op | 1ª mitad | 2ª mitad (fuera de muestra) |
+|---|---|---|---|---|---|---|
+| sin filtro | 1484 | 100% | 70,4% | −0,0670 | −0,1391 | +0,0051 |
+| z ≥ 0,5 | 508 | 34% | 82,5% | +0,2301 | +0,1201 | +0,3481 |
+| **z ≥ 1,0** | **152** | **10%** | **91,4%** | **+0,4623** | **+0,2355** | **+0,6610** |
+| z ≥ 1,5 | 43 | 3% | 100,0% | +0,7372 | +0,3882 | +0,9885 |
+
+Monótono y positivo en las **dos** mitades. Con z ≥ 1 el favorito acierta el 91,4% mientras el precio
+medio del libro (0,83) solo cobra el 84,4%: **el mercado infravalora la certeza**. Y al revés, con
+z < 0 —el precio ya cruzado al lado malo pero el libro todavía marcando favorito— el acierto cae al
+53,4% contra un 62,0% de equilibrio. Ésas son las que sangraban.
+
+Cuatro detalles que no son obvios:
+
+- **El default es 1,0 y no 1,5.** El 100% de aciertos de 1,5 son 43 ventanas; 1,0 tiene 152 y sale
+  positivo en ambas mitades. La cola promete más de lo que puede sostener.
+- **Una lectura AUSENTE no bloquea.** Sin ticks suficientes o con σ = 0, `readWindowCertainty` devuelve
+  `undefined` y la entrada sigue su camino: convertir una laguna del feed en política de riesgo es el
+  mismo error que evita la guarda de bankroll con un saldo ilegible. Una lectura que sí sale y da poco
+  es información, y ésa sí frena.
+- **σ = 0 no es certeza infinita**, es un feed congelado. Dejarla pasar daría z infinito y convertiría
+  una avería en la señal más fuerte posible.
+- **Los ticks salen de muestrear `getTickAtOrBefore` hacia atrás**, que es la única lectura de historia
+  que `RunnerPriceFeed` ya expone. Se deduplica por marca de tiempo: sin eso, un feed más lento que el
+  paso del muestreo inventaría saltos de valor cero y hundiría la σ, que es el denominador de todo.
+
+**El precio del filtro es el volumen: solo el 10% de las ventanas califican.**
+
 ### El tramo de máxima convicción (ask > 0,98)
 
 Por encima de `favoriteMaxSizeAsk` el favorito deja de usar el importe configurado y dimensiona contra

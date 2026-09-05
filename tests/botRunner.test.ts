@@ -471,6 +471,179 @@ describe("BotRunner", () => {
     });
   });
 
+  describe("solo entra si la ventana ya esta decidida", () => {
+    /**
+     * El precio arranca en 100 (la apertura) y termina en `precioFinal`, con ruido alternado para que
+     * la volatilidad no sea cero. Mucho recorrido = ventana decidida; casi ninguno = todavia abierta.
+     */
+    function escenarioCerteza(opts: {
+      precioFinal: number;
+      askUp?: number;
+      certezaMinima?: number;
+      sinHistoria?: boolean;
+      ruido?: number;
+      /** La conviccion exige banda previa en la ventana; sin esto se cae antes de llegar al filtro. */
+      bandaYaOperada?: boolean;
+    }) {
+      const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+      const nowMs = windowStartMs + 200_000; // quedan 100 s
+      const market = marketInfo("BTC", "btc", windowStartMs);
+      const askUp = opts.askUp ?? 0.85;
+      const ruido = opts.ruido ?? 0.1;
+      const executed: Array<{ outcome: Outcome; entryKind?: string }> = [];
+
+      // Serie de 60 ticks, uno cada 2 s, de 100 a `precioFinal`.
+      const serie: Array<{ timestampMs: number; value: number }> = [];
+      for (let i = 0; i < 60; i += 1) {
+        serie.push({
+          timestampMs: nowMs - (59 - i) * 2_000,
+          value: 100 + ((opts.precioFinal - 100) * i) / 59 + (i % 2 === 0 ? ruido : -ruido),
+        });
+      }
+      const tick = (ts: number) => {
+        const previos = serie.filter((s) => s.timestampMs <= ts);
+        const s = previos[previos.length - 1];
+        return s
+          ? { market: "BTC" as MarketSymbol, symbol: "btc/usd", value: s.value, timestampMs: s.timestampMs, receivedAtMs: s.timestampMs }
+          : undefined;
+      };
+
+      const orderbook = {
+        getQuote: vi.fn(async (tokenId: string, amountUsd: number) => {
+          const ask = tokenId.endsWith("-up") ? askUp : Math.round((1 - askUp) * 100) / 100;
+          return {
+            tokenId, quotedAtMs: nowMs, bestAsk: ask, bestBid: ask - 0.01,
+            availableUsdUnderCap: 5_000, availableUsdAllLevels: 5_000,
+            estimatedSharesForAmount: amountUsd / ask, estimatedAveragePrice: ask,
+            rawAskLevels: [{ price: ask, size: 10_000 }], rawBidLevels: [{ price: ask - 0.01, size: 10_000 }],
+            availableBidUsdAllLevels: 1_000,
+          };
+        }),
+      } as unknown as OrderbookService;
+
+      const priceFeed = {
+        start: vi.fn(), stop: vi.fn(),
+        getLatestTick: vi.fn(() => tick(nowMs)),
+        ...(opts.sinHistoria === true ? {} : { getTickAtOrBefore: vi.fn((_m: MarketSymbol, ts: number) => tick(ts)) }),
+      } as unknown as ChainlinkPriceFeed;
+
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn((slug: string) => ({
+          asset: "BTC" as MarketSymbol, slug, windowStartMs,
+          openingPrice: 100, openingTickTimestampMs: windowStartMs, capturedAtMs: windowStartMs,
+        })),
+        hasTraded: vi.fn((_slug: string, _mode?: unknown, entryKind?: string) =>
+          opts.bandaYaOperada === true && entryKind === "banda",
+        ),
+        getTradedMarket: vi.fn(() => undefined),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+        recordTradeResolution: vi.fn(async () => undefined),
+        saveOpening: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+
+      const runner = new BotRunner(
+        {
+          ...baseConfig(),
+          favoriteStrategyEnabled: true,
+          favoriteMinAsk: 0.79,
+          favoriteMaxAsk: 0.9,
+          favoriteMaxSizeEnabled: opts.bandaYaOperada === true,
+          favoriteMaxSizeAsk: 0.98,
+          favoriteExitEnabled: false,
+          favoriteMinCertainty: opts.certezaMinima ?? 1,
+          maxAskPrice: 0.95,
+          maxAskPriceCeiling: 0.95,
+          autoMinLive: true,
+          dailySpendLimitUsd: 100_000,
+          requirePositiveEv: false,
+          entryWindowSeconds: 300,
+          entryWindowSecondsByMarket: { BTC: 300, ETH: 300, DOGE: 300 },
+        },
+        {
+          watcher: {
+            getCurrentMarkets: vi.fn(async () => [market]),
+            getCurrentMarket: vi.fn(async () => market),
+          } as unknown as MarketWatcher,
+          orderbook,
+          priceFeed,
+          state,
+          executor: {
+            execute: vi.fn(async (input: { outcome: Outcome; entryKind?: "banda" | "conviccion" }) => {
+              executed.push({ outcome: input.outcome, entryKind: input.entryKind });
+              return { status: "filled" } as unknown as TradeAttempt;
+            }),
+          } as unknown as TradeExecutor,
+          reconciler: fakeReconciler(),
+        },
+      );
+      return { runner, executed, nowMs };
+    }
+
+    it("entra cuando el precio ya se ha ido lejos del strike", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenarioCerteza({ precioFinal: 130 });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(1);
+      expect(executed[0].outcome).toBe("UP");
+    });
+
+    it("NO entra si el precio apenas se ha movido, aunque el libro marque favorito", async () => {
+      // Es el caso que sangra: el ask dice 0,85 pero al precio le sobra tiempo para darse la vuelta.
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, executed, nowMs } = escenarioCerteza({ precioFinal: 100.05 });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(0);
+      const registro = JSON.stringify(logs);
+      expect(registro).toContain("favorite_ventana_no_decidida");
+      // El motivo tiene que llevar la lectura y el umbral: sin ellos, "no decidida" no es auditable.
+      expect(registro).toContain("certezaMinima");
+      expect(registro).toContain("muestras");
+    });
+
+    it("NO entra si el precio se fue al lado CONTRARIO del que marca el libro", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // El libro dice UP favorito, pero el oraculo lleva rato por debajo de la apertura.
+      const { runner, executed, nowMs } = escenarioCerteza({ precioFinal: 70 });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(0);
+    });
+
+    it("sin historia de ticks NO se bloquea la entrada", async () => {
+      // Una laguna del feed no puede convertirse en politica de riesgo: es el mismo criterio que ya
+      // aplica la guarda de bankroll con un saldo ilegible.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenarioCerteza({ precioFinal: 100.05, sinHistoria: true });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(1);
+    });
+
+    it("un umbral muy negativo apaga el filtro", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenarioCerteza({ precioFinal: 100.05, certezaMinima: -99 });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(1);
+    });
+
+    it("el filtro tambien frena una entrada de CONVICCION", async () => {
+      // La conviccion entra por encima de 0,98 saltandose la banda, asi que sin esto seria la unica
+      // que podria apostar el capital sobre una ventana que el oraculo no ha decidido.
+      const logs: unknown[] = [];
+      vi.spyOn(console, "log").mockImplementation((l: unknown) => { logs.push(l); });
+      const { runner, executed, nowMs } = escenarioCerteza({
+        precioFinal: 100.05,
+        askUp: 0.99,
+        bandaYaOperada: true,
+      });
+      await runner.runOnce(nowMs);
+      expect(executed).toHaveLength(0);
+      expect(JSON.stringify(logs)).toContain("favorite_ventana_no_decidida");
+    });
+  });
+
   describe("salida por stop y reentrada", () => {
     /**
      * El recorrido completo: se compra a 0,85, el ask se desploma a 0,60 y el contrario pasa a ser el
