@@ -86,6 +86,8 @@ async function renderOnce(client: PolybotClient, tab: Tab): Promise<void> {
     settingsFields,
     settingsSelected: 0,
     settingsScroll: 0,
+    bodyScroll: 0,
+    lastUpdateMs: status ? Date.now() : undefined,
   };
 
   const lines = [renderTitleBar(vm), renderTabBar(vm), "", ...renderBody(vm)];

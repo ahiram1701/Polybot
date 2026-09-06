@@ -2,13 +2,26 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import type { CompactStatus, CompactTrade } from "../src/agent/statusSummary.js";
 import type { UiSettings } from "../src/ui/shared.js";
-import { applyNumber, applyToggle, buildSettingsFields, isModeId, TUI_RISK_KEYS } from "../src/tui/settingsModel.js";
 import {
+  applyNumber,
+  applyToggle,
+  buildSettingsFields,
+  filterSettingsFields,
+  isModeId,
+  TUI_RISK_KEYS,
+} from "../src/tui/settingsModel.js";
+import {
+  maxBodyScroll,
+  maxTradesScroll,
+  renderActionBar,
   renderDashboard,
+  renderScreen,
   renderSettings,
   renderStatusLine,
   renderTabBar,
+  renderTitleBar,
   renderTrades,
+  tradeRowsPerPage,
   type ViewModel,
 } from "../src/tui/render.js";
 import { setColorEnabled, stripAnsi } from "../src/tui/theme.js";
@@ -198,6 +211,7 @@ function baseVm(overrides: Partial<ViewModel> = {}): ViewModel {
     analysisLoading: false,
     settingsSelected: 0,
     settingsScroll: 0,
+    bodyScroll: 0,
     ...overrides,
   };
 }
@@ -541,5 +555,196 @@ describe("TUI: precios del libro y ajustes del favorito", () => {
     expect(ids).toContain("favoriteMaxAskSum");
     // El cierre de dinero real va DESPUES de la banda: se lee en el orden en que se decide.
     expect(ids.indexOf("favoriteAllowLive")).toBeGreaterThan(ids.indexOf("favoriteMaxAskSum"));
+  });
+});
+
+/**
+ * El cuerpo del dashboard es mas alto que casi cualquier terminal en cuanto el maker y el autoajuste
+ * tienen algo que decir. Antes `renderScreen` lo RECORTABA por abajo sin avisar, y la caja que se caia
+ * primero era la que se llama "Por que no opera": justo la que uno abre la TUI para leer.
+ */
+describe("TUI: el cuerpo se desplaza en vez de recortarse", () => {
+  const largo = () =>
+    baseVm({
+      height: 24,
+      status: statusFixture({
+        makerSummary: {
+          colocadas: 3,
+          canceladas: 1,
+          comprometidoUsd: 20,
+          vivoUsd: 20,
+          gastadoUsd: 0,
+          mercados: [{ slug: "un-mercado-cualquiera", esperadoUsdDia: 12 }],
+        },
+        bandPrograms: [
+          { market: "ETH", lo: 0.85, hi: 0.9, createdAtMs: 0, expectedNetPerTradeUsd: 0.29, status: "probing" },
+        ] as never,
+      }),
+    });
+
+  it("con el cuerpo mas alto que la ventana hay algo a lo que desplazarse", () => {
+    expect(maxBodyScroll(largo())).toBeGreaterThan(0);
+  });
+
+  it("lo que no cabe arriba se alcanza desde abajo", () => {
+    const vm = largo();
+    const arriba = stripAnsi(renderScreen(vm).join(NL));
+    const abajo = stripAnsi(renderScreen({ ...vm, bodyScroll: maxBodyScroll(vm) }).join(NL));
+
+    expect(arriba).toContain("Estado");
+    expect(arriba).not.toContain("Por qué no opera");
+    // El mismo dashboard, desplazado al final: la caja que se perdia esta ahi.
+    expect(abajo).toContain("Por qué no opera");
+  });
+
+  it("avisa de que hay mas, y en que direccion", () => {
+    const vm = largo();
+    expect(stripAnsi(renderScreen(vm).join(NL))).toContain("▼");
+    expect(stripAnsi(renderScreen({ ...vm, bodyScroll: maxBodyScroll(vm) }).join(NL))).toContain("▲");
+  });
+
+  it("un cuerpo que cabe entero no ofrece desplazamiento", () => {
+    expect(maxBodyScroll(baseVm({ height: 60, status: statusFixture() }))).toBe(0);
+  });
+
+  it("Trades y Settings no se desplazan dos veces: ya paginan por dentro", () => {
+    expect(maxBodyScroll(baseVm({ tab: "trades", height: 12, trades: [tradeFixture()] }))).toBe(0);
+    expect(
+      maxBodyScroll(baseVm({ tab: "settings", height: 12, settingsFields: buildSettingsFields(testSettings()) })),
+    ).toBe(0);
+  });
+});
+
+describe("TUI: tope del desplazamiento de Trades", () => {
+  it("no deja pasarse del final, que antes vaciaba la caja", () => {
+    // `tradesScroll` solo crecia: mantener pulsado ↓ dejaba una tabla en blanco sin forma de volver.
+    expect(maxTradesScroll(5, 40)).toBe(0); // caben todos: nada que desplazar
+    expect(maxTradesScroll(100, 40)).toBe(100 - tradeRowsPerPage(40));
+  });
+
+  it("un desplazamiento pasado de rosca se recorta al pintar", () => {
+    const trades = Array.from({ length: 4 }, (_, i) => tradeFixture({ id: `t${i}` }));
+    const texto = stripAnsi(renderTrades(baseVm({ tab: "trades", trades, tradesScroll: 999 })).join(NL));
+    expect(texto).toContain("WON"); // sigue habiendo filas: no se ha ido a un hueco vacio
+  });
+});
+
+describe("TUI: legibilidad de las tablas", () => {
+  it("la cabecera de Trades cae sobre sus columnas", () => {
+    // Le faltaba la columna de una letra del modo, asi que TODOS los rotulos iban corridos.
+    const lineas = stripAnsi(renderTrades(baseVm({ tab: "trades", trades: [tradeFixture()] })).join(NL)).split(NL);
+    const cabecera = lineas.find((l) => l.includes("hora"));
+    const fila = lineas.find((l) => l.includes("WON"));
+    expect(cabecera?.indexOf("res")).toBe(fila?.indexOf("WON"));
+    expect(cabecera?.indexOf("mkt")).toBe(fila?.indexOf("ETH"));
+  });
+
+  it("la insignia de ventana tiene ancho fijo, asi que las columnas de Mercados cuadran", () => {
+    const vm = baseVm({
+      status: statusFixture({
+        markets: [
+          { marketSymbol: "BTC", reason: "market_already_traded", inEntryWindow: true, secondsToEnd: 90, outcome: "UP", distanceUsd: 1 },
+          { marketSymbol: "ETH", reason: "market_already_traded", inEntryWindow: false, secondsToEnd: 210, outcome: "DOWN", distanceUsd: 2 },
+        ],
+      }),
+    });
+    const lineas = stripAnsi(renderDashboard(vm).join(NL)).split(NL);
+    const btc = lineas.find((l) => l.startsWith("│BTC"));
+    const eth = lineas.find((l) => l.startsWith("│ETH"));
+    // El motivo es la ultima columna: si empieza en la misma posicion, todo lo anterior cuadra.
+    expect(btc?.indexOf("Ya operado")).toBe(eth?.indexOf("Ya operado"));
+  });
+
+  it("el uptime se cuenta en la unidad mas grande que aplique", () => {
+    // "2947m 12s" no contesta a la pregunta que hace uno al mirarlo: ¿se reinicio esta noche?
+    expect(stripAnsi(renderDashboard(baseVm({ status: statusFixture({ uptimeSeconds: 3725 }) })).join(NL))).toContain("1h 2m");
+    expect(stripAnsi(renderDashboard(baseVm({ status: statusFixture({ uptimeSeconds: 180000 }) })).join(NL))).toContain("2d 2h 0m");
+  });
+});
+
+/**
+ * El punto de "conectado" solo habla de la ULTIMA peticion. Un sondeo colgado deja la pantalla llena de
+ * numeros plausibles y quietos, que es peor que una pantalla vacia: no se distingue de un mercado
+ * tranquilo.
+ */
+describe("TUI: antiguedad del dato", () => {
+  it("calla mientras el dato es fresco", () => {
+    expect(stripAnsi(renderTitleBar(baseVm({ lastUpdateMs: baseVm().nowMs - 2000 })))).not.toContain("hace");
+  });
+
+  it("lo dice en cuanto el refresco se atrasa", () => {
+    expect(stripAnsi(renderTitleBar(baseVm({ lastUpdateMs: baseVm().nowMs - 41000 })))).toContain("hace 41s");
+  });
+});
+
+describe("TUI: ayuda y descubribilidad", () => {
+  it("las pestañas llevan su numero, que es el atajo mas rapido y no lo sabia nadie", () => {
+    const barra = stripAnsi(renderTabBar(baseVm()));
+    expect(barra).toContain("1 Dashboard");
+    expect(barra).toContain("4 Settings");
+  });
+
+  it("[?] lista los atajos que no caben en la barra de acciones", () => {
+    const texto = stripAnsi(renderScreen(baseVm({ help: true })).join(NL));
+    expect(texto).toContain("1 … 4");
+    expect(texto).toContain("re-armar el freno de riesgo");
+    expect(texto).toContain("resetear estado y trades");
+  });
+
+  it("con la ayuda abierta la barra no anuncia acciones que estan inertes", () => {
+    const barra = stripAnsi(renderActionBar(baseVm({ help: true })));
+    expect(barra).toContain("cerrar la ayuda");
+    expect(barra).not.toContain("[I]");
+  });
+});
+
+describe("TUI: filtro de Settings", () => {
+  const campos = () => buildSettingsFields(testSettings());
+
+  it("busca sin acentos ni mayusculas, y tambien en la ayuda", () => {
+    // "arbitraje" casi nunca esta en la etiqueta —cabe en 30 caracteres— pero si en la explicacion.
+    expect(filterSettingsFields(campos(), "ARBITRAJE").length).toBeGreaterThan(0);
+    expect(filterSettingsFields(campos(), "calibracion").map((f) => f.id)).toContain("evCalibration");
+  });
+
+  it("se lleva por delante las cabeceras: agruparlas cuesta mas que los resultados", () => {
+    expect(filterSettingsFields(campos(), "favorito").every((f) => f.kind !== "header")).toBe(true);
+  });
+
+  it("sin texto no filtra nada", () => {
+    expect(filterSettingsFields(campos(), "").length).toBe(campos().length);
+  });
+
+  it("el filtro puesto se ve, para que la lista corta no parezca un ajuste perdido", () => {
+    const fields = filterSettingsFields(campos(), "favorito");
+    const texto = stripAnsi(
+      renderSettings(baseVm({ tab: "settings", settingsFields: fields, settingsFilter: "favorito" })).join(NL),
+    );
+    expect(texto).toContain("filtro");
+    expect(texto).toContain("coinciden");
+  });
+});
+
+describe("TUI: valores de ajuste ausentes", () => {
+  it("una clave que el servidor no manda sale como guion, no como NaN", () => {
+    // Pasa con un servidor mas viejo que la TUI, y "NaN" se lee como un error de calculo del bot.
+    const parcial = { ...testSettings() } as Record<string, unknown>;
+    delete parcial.favoriteMinAsk;
+    const campo = buildSettingsFields(parcial as unknown as UiSettings).find((f) => f.id === "favoriteMinAsk");
+    expect(campo?.value).toBe("—");
+  });
+});
+
+describe("TUI: la fila seleccionada de Settings", () => {
+  it("no desplaza la etiqueta al resaltarse", () => {
+    // El marcador se sustituia por un espacio al resaltar: la etiqueta bailaba una columna justo en la
+    // fila que estas mirando.
+    const fields = buildSettingsFields(testSettings());
+    const lineas = stripAnsi(
+      renderSettings(baseVm({ tab: "settings", settingsFields: fields, settingsSelected: 1 })).join(NL),
+    ).split(NL);
+    const seleccionada = lineas.find((l) => l.includes("›"));
+    const otra = lineas.find((l) => l.includes("Exploración"));
+    expect(seleccionada?.indexOf("Gate de EV")).toBe(otra?.indexOf("Exploración"));
   });
 });

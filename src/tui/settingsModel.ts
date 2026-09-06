@@ -348,6 +348,42 @@ function onOff(value: boolean): string {
   return value ? "ON" : "OFF";
 }
 
+/**
+ * Formatea un campo numérico tolerando que la clave NO exista en el objeto de ajustes.
+ *
+ * `Number(undefined)` es NaN, y los formateadores a medida (`toFixed`, plantillas) lo pintan tal cual:
+ * la lista se llenaba de "NaN" en cuanto el servidor era más viejo que la TUI y le faltaba un ajuste.
+ * Un guion dice lo mismo sin parecer un error de cálculo.
+ */
+function formatFieldValue(spec: RiskFieldSpec, raw: unknown): string {
+  const value = Number(raw);
+  return Number.isFinite(value) ? spec.format(value) : "—";
+}
+
+/**
+ * Deja solo las filas cuyo texto contiene `query`, sin acentos ni mayúsculas.
+ *
+ * Con el filtro puesto se caen TODAS las cabeceras: agrupar seis resultados sueltos bajo cinco títulos
+ * de sección ocupa más que los propios resultados. Se busca en etiqueta, valor y ayuda: la etiqueta cabe
+ * en 30 caracteres, así que la palabra que uno recuerda ("arbitraje") suele estar solo en la
+ * explicación, y buscar "live" tiene que encontrar las estrategias que AHORA MISMO valen LIVE.
+ */
+export function filterSettingsFields(fields: SettingsField[], query: string): SettingsField[] {
+  const needle = normalizeSearch(query);
+  if (needle === "") {
+    return fields;
+  }
+  return fields.filter(
+    (field) =>
+      field.kind !== "header" &&
+      [field.label, field.value ?? "", field.help ?? ""].some((text) => normalizeSearch(text).includes(needle)),
+  );
+}
+
+function normalizeSearch(text: string): string {
+  return text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
 /** Build the flat, ordered field list rendered in the Settings tab. Headers are interleaved for
  * grouping and are skipped by navigation. */
 export function buildSettingsFields(settings: UiSettings): SettingsField[] {
@@ -379,7 +415,7 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
       id: String(field.key),
       label: field.label,
       kind: "number",
-      value: field.format(Number(settings[field.key])),
+      value: formatFieldValue(field, settings[field.key]),
       help: field.help,
       editable: true,
     });
@@ -416,7 +452,7 @@ export function buildSettingsFields(settings: UiSettings): SettingsField[] {
       id: String(field.key),
       label: field.label,
       kind: "number",
-      value: field.format(Number(settings[field.key])),
+      value: formatFieldValue(field, settings[field.key]),
       help: field.help,
       editable: true,
     });

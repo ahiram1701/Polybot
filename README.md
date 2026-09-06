@@ -214,12 +214,17 @@ detenido**).
 
 | Tecla | Dónde | Qué hace |
 |---|---|---|
+| `?` | siempre | Abre y cierra la ayuda con todos los atajos |
 | `1`‑`4` | siempre | Salta a Dashboard / Trades / Análisis / Settings |
 | `←` `→` o `Tab` | siempre | Pestaña anterior / siguiente |
-| `↑` `↓` | Trades / Settings | Hace scroll · mueve la selección |
+| `↑` `↓` | siempre | Desplaza línea a línea · en Settings mueve la selección |
+| `PgUp` `PgDn` | siempre | Desplaza una página |
+| `Inicio` `Fin` | siempre | Principio / final |
 | `g` | siempre | Refresca la pestaña actual |
+| `Esc` | siempre | Cierra la ayuda, limpia el aviso o quita el filtro |
 | `q` o `Ctrl+C` | siempre | Sale |
 | `Enter` | Settings | Alterna un interruptor o edita un número |
+| `/` | Settings | Filtra la lista por texto (busca en etiqueta, valor y ayuda) |
 | `i` | Dashboard | Arranca en **sim** |
 | `s` | Dashboard | Detiene el bot |
 | `b` | Dashboard | Re-arma el circuit breaker |
@@ -227,7 +232,13 @@ detenido**).
 | `x` | Dashboard | Resetea estado — pide escribir `RESET`, con backup previo |
 | `L` | Dashboard | Arranca en **live** — pide escribir `ARRANCAR LIVE` |
 
-`Esc` cancela cualquiera de esas preguntas. El estado se refresca solo cada 2 s.
+`Esc` cancela cualquiera de esas preguntas. El estado se refresca solo cada 2 s, y si un refresco se
+atrasa la cabecera lo dice («hace 41s»): un sondeo colgado deja números plausibles y quietos, que es
+más difícil de detectar que una pantalla vacía.
+
+El Dashboard es más alto que casi cualquier terminal en cuanto el maker tiene algo que decir, así que
+**se desplaza**: el pie indica con `▲`/`▼` que queda contenido fuera de vista. La barra de acciones solo
+lista lo que se puede hacer ahora mismo; el repertorio completo está en `?`.
 
 `L` es la única que exige mayúscula, y encender cualquier ajuste que abra dinero real pide la misma
 frase: **la TUI nunca arranca live sola**. Los números se recortan al rango del esquema antes de

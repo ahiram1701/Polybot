@@ -22,6 +22,7 @@ import {
   padStart,
   red,
   truncate,
+  visibleLength,
   wrapText,
   yellow,
 } from "./theme.js";
@@ -69,6 +70,18 @@ export interface ViewModel {
   settingsFields?: SettingsField[];
   settingsSelected: number;
   settingsScroll: number;
+  /** Texto del filtro de Settings, si hay uno puesto. Solo cambia el rótulo: la lista ya llega filtrada. */
+  settingsFilter?: string;
+  /**
+   * Desplazamiento vertical del cuerpo, en líneas, para las pestañas que NO paginan por dentro
+   * (Dashboard y Análisis). Sin esto el cuerpo se recortaba a la altura de la ventana y las cajas de
+   * abajo desaparecían sin dejar rastro — incluida la que se llama «Por qué no opera».
+   */
+  bodyScroll: number;
+  /** Momento del último refresco con éxito, para poder ver que los datos se han quedado congelados. */
+  lastUpdateMs?: number;
+  /** Superposición de ayuda: sustituye al cuerpo mientras está activa. */
+  help?: boolean;
   message?: Message;
   prompt?: PromptState;
 }
@@ -88,29 +101,65 @@ function winRatePct(won: number, resolved: number): number | undefined {
   return resolved > 0 ? (won / resolved) * 100 : undefined;
 }
 
+/**
+ * Duración en la unidad más grande que aplique.
+ *
+ * Un bot que lleva dos días en pie decía «2947m 12s», y ahí ya nadie divide: la pregunta que contesta
+ * el uptime es «¿se reinició esta noche?», y en minutos no se contesta.
+ */
+function fmtDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) {
+    return `${days}d ${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m ${seconds % 60}s`;
+}
+
 // ---- title + tab bar ---------------------------------------------------------------------------
 
 export function renderTitleBar(vm: ViewModel): string {
   const brand = bold(cyan(" POLYBOT "));
   const conn = vm.connected ? green("● conectado") : red("● sin conexión");
   const clock = dim(hhmm(vm.nowMs));
-  const left = `${brand} ${conn}`;
+  const left = `${brand} ${conn}${renderStaleness(vm)}`;
   const right = clock;
-  const gap = Math.max(1, vm.width - visibleLen(left) - visibleLen(right));
+  const gap = Math.max(1, vm.width - visibleLength(left) - visibleLength(right));
   return `${left}${" ".repeat(gap)}${right}`;
 }
 
+/**
+ * Antigüedad del último dato bueno, en segundos.
+ *
+ * El punto de «conectado» solo dice si la ÚLTIMA petición fue bien; un sondeo que se queda colgado deja
+ * la pantalla llena de números plausibles y quietos, que es peor que una pantalla vacía. A partir de
+ * dos ciclos sin refrescar se pinta en ámbar, y de diez en rojo.
+ */
+function renderStaleness(vm: ViewModel): string {
+  if (vm.lastUpdateMs === undefined) {
+    return "";
+  }
+  const seconds = Math.max(0, Math.round((vm.nowMs - vm.lastUpdateMs) / 1000));
+  if (seconds < 5) {
+    return "";
+  }
+  const text = `  hace ${seconds}s`;
+  return seconds >= 30 ? red(text) : yellow(text);
+}
+
 export function renderTabBar(vm: ViewModel): string {
-  const cells = TABS.map((tab) => {
-    const text = ` ${tab.label} `;
+  const cells = TABS.map((tab, index) => {
+    // El número va delante porque la tecla existe desde siempre y no lo sabía nadie: el atajo más
+    // rápido de la TUI estaba escondido.
+    const text = ` ${index + 1} ${tab.label} `;
     return tab.id === vm.tab ? highlight(text) : dim(text);
   });
   return cells.join(gray("│"));
-}
-
-// visibleLen kept local to avoid importing theme's internal; re-uses the same stripping rule.
-function visibleLen(text: string): number {
-  return text.replace(/\x1b\[[0-9;]*m/g, "").length;
 }
 
 // ---- dashboard ---------------------------------------------------------------------------------
@@ -158,7 +207,7 @@ export function renderDashboard(vm: ViewModel): string[] {
   const stateLines: string[] = [];
   stateLines.push(labelValue("Bot", runningBadge(s)));
   if (s.uptimeSeconds !== undefined) {
-    stateLines.push(labelValue("Uptime", `${Math.floor(s.uptimeSeconds / 60)}m ${s.uptimeSeconds % 60}s`));
+    stateLines.push(labelValue("Uptime", fmtDuration(s.uptimeSeconds)));
   }
   const spend = `${fmtUsd(s.dailySpendUsd)}${s.dailySpendLimitUsd !== undefined ? ` / ${fmtUsd(s.dailySpendLimitUsd)}` : ""}`;
   stateLines.push(labelValue("Gasto hoy", spend));
@@ -288,12 +337,14 @@ export function renderDashboard(vm: ViewModel): string[] {
   // ask porque es el numero que enseña la web de Polymarket, y difieren 1-3 centavos.
   const marketLines = s.markets.length
     ? s.markets.flatMap((m) => {
-        const inWin = m.inEntryWindow ? green("● en ventana") : gray("○ fuera");
-        const secs = m.secondsToEnd !== undefined ? `${padStart(fmtInt(m.secondsToEnd), 3)}s` : "  —";
+        // Anchura fija: «● en ventana» ocupa 12 columnas y «○ fuera» siete, así que sin rellenar la
+        // insignia el resto de la fila bailaba y ninguna columna quedaba una debajo de otra.
+        const inWin = padEnd(m.inEntryWindow ? green("● en ventana") : gray("○ fuera"), 12);
+        const secs = m.secondsToEnd !== undefined ? `${padStart(fmtInt(m.secondsToEnd), 4)}s` : "    —";
         const side = m.outcome ? padEnd(m.outcome, 4) : "    ";
         const dist = m.distanceUsd !== undefined ? padStart(fmtUsd(m.distanceUsd), 8) : padStart("—", 8);
         const nombre = m.marketSymbol + (m.duration && m.duration !== "5m" ? `/${m.duration}` : "");
-        const cabecera = `${bold(padEnd(nombre, 9))} ${inWin}  ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 40))}`;
+        const cabecera = `${bold(padEnd(nombre, 9))} ${inWin} ${secs}  ${side} ${dist}  ${dim(truncate(humanSkipReason(m.reason), width - 45))}`;
         const precio = m.twapValue !== undefined ? `twap ${fmtPrecio(m.twapValue)}` : "twap —";
         const up = `UP a/m ${fmtBanda(m.upAsk)}/${fmtBanda(m.upMid)}`;
         const down = `DOWN a/m ${fmtBanda(m.downAsk)}/${fmtBanda(m.downMid)}`;
@@ -368,15 +419,40 @@ export function renderTrades(vm: ViewModel): string[] {
   if (vm.trades.length === 0) {
     return boxed("Trades", [dim("sin trades todavía")], width);
   }
-  const header = dim(`${padEnd("hora", 5)}   ${padEnd("mkt", 5)} ${padEnd("lado", 4)} ${padStart("ask", 5)} ${padStart("monto", 7)}  ${padEnd("res", 6)} ${padStart("net", 8)}`);
-  const rows = Math.max(3, vm.height - 10);
-  const visible = vm.trades.slice(vm.tradesScroll, vm.tradesScroll + rows);
+  // La cabecera se compone con los MISMOS anchos que `tradeRow`, incluida la columna de una letra del
+  // modo, que antes no estaba: sin ella todos los rótulos caían una columna a la izquierda de su dato.
+  const header = dim(
+    `${padEnd("hora", 5)} ${padEnd("m", 1)} ${padEnd("mkt", 5)} ${padEnd("lado", 4)} ${padStart("ask", 5)} ${padStart("monto", 7)}  ${padEnd("res", 6)} ${padStart("net", 8)}`,
+  );
+  const rows = tradeRowsPerPage(vm.height);
+  const scroll = clamp(vm.tradesScroll, 0, maxTradesScroll(vm.trades.length, vm.height));
+  const visible = vm.trades.slice(scroll, scroll + rows);
   const lines = [header, ...visible.map((t) => tradeRow(t, width))];
-  const more = vm.trades.length > vm.tradesScroll + rows || vm.tradesScroll > 0;
+  const more = vm.trades.length > rows;
   if (more) {
-    lines.push(dim(`— ${vm.tradesScroll + 1}‑${Math.min(vm.tradesScroll + rows, vm.trades.length)} de ${vm.trades.length} (↑/↓ desplaza) —`));
+    const hasta = Math.min(scroll + rows, vm.trades.length);
+    lines.push(dim(`— ${scroll + 1}‑${hasta} de ${vm.trades.length} · ↑/↓ PgUp/PgDn Inicio/Fin —`));
   }
   return boxed(`Trades (${vm.trades.length})`, lines, width);
+}
+
+/** Filas de trade que caben: alto menos cabeceras, marco, cabecera de tabla y pie de desplazamiento. */
+export function tradeRowsPerPage(height: number): number {
+  return Math.max(3, height - 10);
+}
+
+/**
+ * Tope del desplazamiento de Trades.
+ *
+ * Antes no había ninguno: `tradesScroll` solo crecía, así que mantener pulsado ↓ dejaba la caja vacía y
+ * la única salida era irse a otra pestaña y volver.
+ */
+export function maxTradesScroll(total: number, height: number): number {
+  return Math.max(0, total - tradeRowsPerPage(height));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 // ---- analysis ----------------------------------------------------------------------------------
@@ -415,6 +491,11 @@ export function renderAnalysis(vm: ViewModel): string[] {
 
 // ---- settings ----------------------------------------------------------------------------------
 
+/** Filas de ajuste visibles a la vez. La comparte el runtime para mantener la selección dentro de vista. */
+export function settingsRowsPerPage(height: number): number {
+  return Math.max(4, height - 13);
+}
+
 export function renderSettings(vm: ViewModel): string[] {
   const width = vm.width;
   const fields = vm.settingsFields;
@@ -426,9 +507,20 @@ export function renderSettings(vm: ViewModel): string[] {
   if (running) {
     lines.push(yellow("detén el bot para editar (los cambios se rechazan mientras corre)"));
   } else {
-    lines.push(dim("↑/↓ mueve · Enter alterna/edita"));
+    lines.push(dim("↑/↓ mueve · PgUp/PgDn salta · / filtra · Enter alterna/edita"));
   }
-  const rows = Math.max(4, vm.height - 11);
+  if (vm.settingsFilter) {
+    // El filtro tiene que verse SIEMPRE que esté puesto: una lista de sesenta filas reducida a tres sin
+    // decir por qué se lee como un ajuste que ha desaparecido.
+    const encontrados = fields.filter((f) => f.kind !== "header").length;
+    lines.push(
+      `${cyan("filtro")} ${highlight(` ${vm.settingsFilter} `)} ${dim(`${encontrados} coinciden · Esc limpia`)}`,
+    );
+    if (encontrados === 0) {
+      lines.push(yellow("  ningún ajuste coincide"));
+    }
+  }
+  const rows = settingsRowsPerPage(vm.height);
   const visible = fields.slice(vm.settingsScroll, vm.settingsScroll + rows);
   visible.forEach((field, index) => {
     const absolute = vm.settingsScroll + index;
@@ -437,12 +529,16 @@ export function renderSettings(vm: ViewModel): string[] {
       return;
     }
     const selected = absolute === vm.settingsSelected;
-    const marker = selected ? cyan("›") : " ";
     const label = padEnd(field.label, 30);
     const value = field.value ?? "";
-    const rowText = `${marker} ${label} ${value}`;
-    lines.push(selected ? highlight(` ${label} ${value} `) : rowText);
+    // El marcador va DENTRO del texto resaltado. Antes la fila seleccionada lo cambiaba por un espacio,
+    // así que la etiqueta se desplazaba una columna justo en la fila que estás mirando.
+    lines.push(selected ? highlight(`› ${label} ${value} `) : `${dim("·")} ${label} ${value}`);
   });
+  const total = fields.filter((f) => f.kind !== "header").length;
+  if (fields.length > rows) {
+    lines.push(dim(`— ${vm.settingsSelected + 1} de ${fields.length} filas (${total} ajustes) —`));
+  }
   // Ayuda de la fila seleccionada, como pie. Una linea por fila duplicaria la altura de una lista que
   // ya no cabe entera; asi cada ajuste puede explicarse sin costar sitio salvo cuando lo miras.
   const help = fields[vm.settingsSelected]?.help;
@@ -459,30 +555,81 @@ export function renderSettings(vm: ViewModel): string[] {
 
 // ---- action bar + status/prompt ----------------------------------------------------------------
 
+/**
+ * Barra de acciones: solo lo que se puede hacer AHORA, en esta pestaña y con el bot como está.
+ *
+ * Lo que está deshabilitado se sigue pintando pero apagado, porque desaparecer y reaparecer según el
+ * estado obliga a releer la barra entera cada vez. El repertorio completo vive en la ayuda de `?`: aquí
+ * cabían siete acciones y ya se salía por el borde en una terminal de ochenta columnas.
+ */
 export function renderActionBar(vm: ViewModel): string {
   const key = (k: string, label: string, enabled = true): string => {
     const chip = `${bold(`[${k}]`)}${label}`;
     return enabled ? chip : dim(`[${k}]${label}`);
   };
-  const parts: string[] = [key("←/→", " tabs"), key("g", " refrescar"), key("q", " salir")];
   const running = vm.status?.running ?? false;
-  if (vm.tab === "dashboard") {
-    parts.push(gray("│"));
-    parts.push(key("I", " sim", !running));
-    parts.push(key("S", " detener", running));
-    parts.push(key("L", " LIVE", !running));
-    parts.push(key("B", " freno"));
-    parts.push(key("P", " resetP&L"));
-    parts.push(key("X", " resetEstado", !running));
-  } else if (vm.tab === "trades") {
-    parts.push(gray("│"));
-    parts.push(key("↑/↓", " desplazar"));
-  } else if (vm.tab === "settings") {
-    parts.push(gray("│"));
-    parts.push(key("↑/↓", " mover"));
-    parts.push(key("Enter", " editar", !running));
+  const parts: string[] = [];
+  if (vm.help) {
+    // Con la ayuda abierta no se puede hacer nada más: anunciar [I] sim mientras la tecla está inerte
+    // es peor que no anunciar nada.
+    return `${key("?", " / ")}${key("Esc", " cerrar la ayuda")}  ${gray("│")}  ${key("↑/↓", " desplazar")}`;
   }
-  return parts.join(" ");
+  if (vm.tab === "dashboard") {
+    parts.push(key("I", " sim", !running), key("S", " detener", running), key("L", " LIVE", !running));
+    parts.push(gray("│"), key("↑/↓", " desplazar"));
+  } else if (vm.tab === "trades") {
+    parts.push(key("↑/↓", " desplazar"), key("PgUp/PgDn", " página"));
+  } else if (vm.tab === "settings") {
+    parts.push(key("↑/↓", " mover"), key("Enter", " editar", !running), key("/", " filtrar"));
+  } else {
+    parts.push(key("↑/↓", " desplazar"));
+  }
+  parts.push(gray("│"), key("g", " refrescar"), key("?", " ayuda"), key("q", " salir"));
+  return truncateBar(parts.join(" "), vm.width);
+}
+
+/** Recorta la barra por el borde en vez de dejar que envuelva: una línea envuelta descoloca el marco. */
+function truncateBar(text: string, width: number): string {
+  return visibleLength(text) <= width ? text : `${text.slice(0, Math.max(0, text.length - 1))}`;
+}
+
+/**
+ * Ayuda a pantalla completa. Existe porque los atajos que NO caben en la barra de acciones —saltar de
+ * pestaña con 1-4, el freno, los dos reinicios, el filtro— no estaban escritos en ninguna parte:
+ * funcionaban desde el primer día y solo los conocía quien hubiese leído el código.
+ */
+export function renderHelp(vm: ViewModel): string[] {
+  const fila = (keys: string, what: string): string => `${bold(padEnd(keys, 14))} ${what}`;
+  const navegar = [
+    fila("←/→  Tab", "pestaña anterior / siguiente"),
+    fila("1 … 4", "ir directo a una pestaña"),
+    fila("↑/↓", "desplazar línea a línea"),
+    fila("PgUp/PgDn", "desplazar una página"),
+    fila("Inicio/Fin", "principio / final"),
+    fila("g", "refrescar esta pestaña ahora"),
+    fila("?", "abrir y cerrar esta ayuda"),
+    fila("Esc", "cerrar ayuda, limpiar aviso o filtro"),
+    fila("q  Ctrl+C", "salir de la TUI (el bot sigue corriendo)"),
+  ];
+  const bot = [
+    fila("I", "arrancar en simulación"),
+    fila("S", "detener el bot"),
+    fila("L", `arrancar en LIVE — ${red("pide teclear la frase")}`),
+    fila("B", "re-armar el freno de riesgo (sim y live)"),
+    fila("P", "resetear el P&L de un modo"),
+    fila("X", "resetear estado y trades (archiva copia antes)"),
+    dim("I/S/L/B/P/X solo funcionan en la pestaña Dashboard."),
+  ];
+  const ajustes = [
+    fila("Enter", "alternar interruptor o editar número"),
+    fila("/", "filtrar la lista por texto"),
+    dim("Los ajustes solo se pueden editar con el bot detenido."),
+  ];
+  return [
+    ...boxed("Moverse", navegar, vm.width),
+    ...boxed("Bot", bot, vm.width),
+    ...boxed("Settings", ajustes, vm.width),
+  ];
 }
 
 export function renderStatusLine(vm: ViewModel): string {
@@ -505,6 +652,9 @@ function inverse(text: string): string {
 // ---- full screen composition -------------------------------------------------------------------
 
 export function renderBody(vm: ViewModel): string[] {
+  if (vm.help) {
+    return renderHelp(vm);
+  }
   switch (vm.tab) {
     case "dashboard":
       return renderDashboard(vm);
@@ -517,6 +667,36 @@ export function renderBody(vm: ViewModel): string[] {
     default:
       return [];
   }
+}
+
+/** Líneas de cuerpo que caben: alto total, menos título, pestañas, hueco, barra de acciones y estado. */
+function bodyViewport(height: number): number {
+  return Math.max(1, height - 5);
+}
+
+/**
+ * Cuánto se puede desplazar el cuerpo de esta pestaña, en líneas. Cero si cabe entero.
+ *
+ * Lo usa el runtime para no dejar que el desplazamiento se salga por abajo, y `renderScreen` para
+ * recortarlo por si acaso. Es caro (renderiza el cuerpo para medirlo) pero solo se llama al pulsar una
+ * tecla de desplazamiento, no en cada repintado.
+ */
+export function maxBodyScroll(vm: ViewModel): number {
+  if (!scrollsWhole(vm)) {
+    return 0;
+  }
+  const body = renderBody(vm);
+  const viewport = bodyViewport(vm.height);
+  // Cuando hay desbordamiento se reserva una línea para el indicador, así que se ve una menos.
+  return body.length <= viewport ? 0 : body.length - (viewport - 1);
+}
+
+/**
+ * Pestañas cuyo cuerpo se desplaza ENTERO. Trades y Settings ya paginan por dentro (su lista se ajusta
+ * al alto), así que desplazarlas otra vez desde fuera movería la caja y no su contenido.
+ */
+function scrollsWhole(vm: ViewModel): boolean {
+  return vm.help === true || vm.tab === "dashboard" || vm.tab === "analysis";
 }
 
 /**
@@ -537,20 +717,35 @@ function fmtPrecio(value: number): string {
 /** Compose the whole screen and pad/truncate to exactly `height` lines so the alt-screen repaint
  * leaves no stale rows behind. */
 export function renderScreen(vm: ViewModel): string[] {
-  const lines: string[] = [];
-  lines.push(renderTitleBar(vm));
-  lines.push(renderTabBar(vm));
-  lines.push("");
-  lines.push(...renderBody(vm));
+  const viewport = bodyViewport(vm.height);
+  const body = renderBody(vm);
 
-  const height = vm.height;
-  // Reserve the last two rows for the action bar and the status/prompt line.
-  const bodyMax = Math.max(0, height - 2);
-  while (lines.length < bodyMax) {
+  // El cuerpo se DESPLAZA en vez de recortarse por abajo. Recortar era una pérdida silenciosa: con el
+  // panel del maker y el del autoajuste en pantalla, la caja «Por qué no opera» se caía entera del
+  // dashboard y no había ninguna tecla que la trajera de vuelta.
+  let visible: string[];
+  if (!scrollsWhole(vm) || body.length <= viewport) {
+    visible = body.slice(0, viewport);
+  } else {
+    const max = body.length - (viewport - 1);
+    const offset = clamp(vm.bodyScroll, 0, max);
+    visible = [...body.slice(offset, offset + viewport - 1), scrollHint(offset, max, vm.width)];
+  }
+
+  const lines = [renderTitleBar(vm), renderTabBar(vm), "", ...visible];
+  while (lines.length < vm.height - 2) {
     lines.push("");
   }
-  const trimmed = lines.slice(0, bodyMax);
+  const trimmed = lines.slice(0, Math.max(0, vm.height - 2));
   trimmed.push(renderActionBar(vm));
   trimmed.push(renderStatusLine(vm));
   return trimmed;
+}
+
+/** Pie de desplazamiento: dice que hay más, en qué dirección y cuánto queda. */
+function scrollHint(offset: number, max: number, width: number): string {
+  const arriba = offset > 0 ? "▲" : " ";
+  const abajo = offset < max ? "▼" : " ";
+  const pct = max === 0 ? 100 : Math.round((offset / max) * 100);
+  return dim(padEnd(`${arriba}${abajo} ${pct}% — ↑/↓ PgUp/PgDn Inicio/Fin`, Math.max(0, width)));
 }
