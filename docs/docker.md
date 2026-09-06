@@ -162,17 +162,36 @@ responde **antes** de terminar. Su mensaje nombra al supervisor real y su plazo 
 
 ## La TUI
 
+Doble clic en **`TUI-POLYBOT.cmd`**, o desde una terminal:
+
 ```bash
 docker compose exec polybot node dist/src/tui/index.js
 ```
 
+Necesita una terminal **interactiva**: la TUI toma el teclado y pinta a pantalla completa, así que con
+la entrada redirigida se niega a abrir y lo dice. Para un vistazo dentro de un script, `--once`.
+
 Cerrarla (`q` / Ctrl+C) no apaga el servidor.
+
+El lanzador deduce de su propia ubicación en qué distro de WSL y en qué carpeta vive el repo, en vez de
+llevar la ruta escrita a mano. Dos detalles que explican su forma:
+
+- **cmd.exe no admite una ruta UNC como directorio actual.** Al abrirlo desde `\\wsl.localhost\...` el
+  directorio de trabajo se queda en `C:\Windows`, así que el lanzador no hace `cd`: traduce la ruta a
+  formato Linux y se la pasa a `wsl.exe --cd`.
+- **Si el servidor ya responde, no lo toca.** Solo levanta los contenedores cuando 8787 está mudo —
+  matar un servidor vivo podría cortar un live.
 
 ## Qué deja de aplicar
 
 Con Docker como supervisor, estas piezas del despliegue nativo **no intervienen**:
 
-- `INICIAR-POLYBOT.cmd`, `ABRIR-POLYBOT.cmd`, `REINICIAR-ADMIN.cmd`, `TUI-POLYBOT.cmd`.
+- `INICIAR-POLYBOT.cmd`, `ABRIR-POLYBOT.cmd` y `REINICIAR-ADMIN.cmd`. Los tres buscan `node` en el PATH
+  de **Windows** y asumen que `node_modules` trae shims `.cmd`; con el repo dentro de WSL las
+  dependencias están instaladas para Linux y esos shims no existen, así que fallan. Sus equivalentes
+  bajo Docker son `docker compose up -d --build`, abrir `http://127.0.0.1:8787` y
+  `docker compose restart`.
+  **`TUI-POLYBOT.cmd` es la excepción: se reescribió para este despliegue y sí funciona** (ver «La TUI»).
 - `scripts/watchdog.ps1`, `scripts/install-watchdog.ps1` y la tarea `PolybotWatchdog`.
 - `scripts/install-analytics-archive.ps1` y la tarea `PolybotArchivoAnalitica`.
 - El ajuste **«Watchdog (auto-reinicio de la UI)»**: sale visible pero **deshabilitado**, con el motivo.

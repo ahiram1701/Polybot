@@ -56,6 +56,13 @@ Tres cosas que conviene leer antes de dejarlo corriendo, todas en **[docs/docker
 
 ## Windows nativo
 
+> **Esta seccion es para un checkout en el sistema de archivos de Windows** (`C:\...`), con Node
+> instalado en Windows. Si tu repo vive dentro de WSL —lo normal con Docker— los lanzadores
+> `INICIAR-POLYBOT.cmd`, `ABRIR-POLYBOT.cmd` y `REINICIAR-ADMIN.cmd` **no pueden funcionar**: buscan
+> `node` en el PATH de Windows y llaman a shims `.cmd` de `node_modules` que no existen cuando las
+> dependencias estan instaladas para Linux. Usa la seccion **Docker** y, para el panel de terminal,
+> **[TUI](#tui-panel-en-terminal)** — su lanzador si esta preparado para WSL.
+
 ### Requisitos
 
 - Node.js 20 o superior.
@@ -142,38 +149,6 @@ La UI escucha solo en `127.0.0.1:8787`.
 
 Para verla desde el celular por Tailscale con Polybot en tu PC Windows: doble clic en `INICIAR-POLYBOT.cmd` (con `POLYBOT_UI_HOST=0.0.0.0` en `.env`) y en el celular, con Tailscale activo, abre la direccion `http://100.x:8787` que muestra la ventana. Guia: [`docs/windows-tailscale.md`](docs/windows-tailscale.md).
 
-### TUI (panel en terminal)
-
-> Bajo Docker no hay lanzador `.cmd`: la TUI se abre con
-> `docker compose exec polybot node dist/src/tui/index.js`.
-
-Si prefieres un panel en vivo dentro de una ventana de terminal (sin navegador), doble clic en:
-
-```text
-TUI-POLYBOT.cmd
-```
-
-Levanta el servidor en segundo plano si no estaba corriendo (sin arrancar el bot; si ya corre, **no lo
-toca**) y abre la TUI conectada a `http://127.0.0.1:8787`. Cerrarla (`q` / Ctrl+C) **no** apaga el
-servidor.
-
-Pestañas: **Dashboard** (estado, P&L post-reset por modo, win rate, circuit breaker, señal por mercado
-y "por qué no opera"), **Trades**, **Análisis** (EV por estrategia) y **Settings** (editable con el bot
-detenido). Teclas:
-
-- `←/→` o `Tab` o `1‑4` cambian de pestaña · `g` refresca · `q` sale.
-- Dashboard: `I` inicia **sim** · `S` detiene · `B` re-arma el circuit breaker · `P` resetea P&L · `X`
-  resetea estado.
-- `L` inicia **live**: pide teclear la frase exacta `ARRANCAR LIVE` (mismo candado que la web). **La
-  TUI nunca arranca live sola** — lo haces tú tecleando la frase.
-- Settings: `↑/↓` mueve, `Enter` alterna un toggle o edita un número.
-
-Para un vistazo puntual sin abrir la interfaz interactiva:
-
-```bash
-npm run tui -- --once
-```
-
 ### Watchdog En Windows
 
 > Bajo Docker esto **no aplica**: el supervisor es compose y el ajuste «Watchdog (auto-reinicio)» sale
@@ -191,6 +166,78 @@ Get-ScheduledTaskInfo -TaskName "PolybotWatchdog"
 ```
 
 `LastTaskResult: 0` y un `NextRunTime` ~5 minutos adelante = funcionando. Si no existe la tarea, registrala con `powershell -ExecutionPolicy Bypass -File scripts\install-watchdog.ps1` (sin admin). Corre sin abrir ninguna ventana, y se puede apagar y encender desde **Settings -> "Watchdog (auto-reinicio)"** en la UI web o la TUI, sin desregistrar la tarea. La prueba end-to-end y la solucion de problemas estan en [`docs/windows-watchdog.md`](docs/windows-watchdog.md).
+
+## TUI (panel en terminal)
+
+Un panel en vivo dentro de una ventana de terminal, sin navegador. Sirve para **los dos despliegues**:
+la TUI no arranca ni supervisa nada, solo se conecta como cliente a `http://127.0.0.1:8787`. Cerrarla
+(`q` / `Ctrl+C`) **no** apaga el servidor ni el bot.
+
+### Con doble clic
+
+```text
+TUI-POLYBOT.cmd
+```
+
+Funciona con Docker + WSL y con Windows nativo: deduce de su propia ubicación en qué distro y en qué
+carpeta vive el repo, comprueba si el servidor responde y, **solo si no responde**, levanta los
+contenedores. Si ya hay un servidor vivo no lo toca — matarlo podría cortar un live.
+
+### Desde una terminal
+
+**Dónde:** una terminal tuya, interactiva. La TUI toma el teclado y pinta a pantalla completa, así que
+no funciona con la entrada redirigida ni dentro de un script.
+
+Con Docker, desde Windows Terminal o PowerShell:
+
+```bash
+wsl.exe -d ubuntu --cd /home/ahiram/Polybot -- docker compose exec polybot node dist/src/tui/index.js
+```
+
+O, si ya estás dentro de una terminal de WSL situada en el repo:
+
+```bash
+docker compose exec polybot node dist/src/tui/index.js
+```
+
+En Windows nativo, desde la carpeta del proyecto:
+
+```bash
+npm run tui
+```
+
+### Qué muestra y cómo se maneja
+
+Pestañas: **Dashboard** (estado, P&L post-reset por modo, win rate, circuit breaker, señal por mercado
+y «por qué no opera»), **Trades**, **Análisis** (EV por estrategia) y **Settings** (editable **con el bot
+detenido**).
+
+| Tecla | Dónde | Qué hace |
+|---|---|---|
+| `1`‑`4` | siempre | Salta a Dashboard / Trades / Análisis / Settings |
+| `←` `→` o `Tab` | siempre | Pestaña anterior / siguiente |
+| `↑` `↓` | Trades / Settings | Hace scroll · mueve la selección |
+| `g` | siempre | Refresca la pestaña actual |
+| `q` o `Ctrl+C` | siempre | Sale |
+| `Enter` | Settings | Alterna un interruptor o edita un número |
+| `i` | Dashboard | Arranca en **sim** |
+| `s` | Dashboard | Detiene el bot |
+| `b` | Dashboard | Re-arma el circuit breaker |
+| `p` | Dashboard | Resetea P&L — pide escribir `sim` o `live` |
+| `x` | Dashboard | Resetea estado — pide escribir `RESET`, con backup previo |
+| `L` | Dashboard | Arranca en **live** — pide escribir `ARRANCAR LIVE` |
+
+`Esc` cancela cualquiera de esas preguntas. El estado se refresca solo cada 2 s.
+
+`L` es la única que exige mayúscula, y encender cualquier ajuste que abra dinero real pide la misma
+frase: **la TUI nunca arranca live sola**. Los números se recortan al rango del esquema antes de
+enviarse, así que no se puede guardar un valor que el servidor vaya a rechazar.
+
+Para un vistazo puntual, sin interfaz interactiva (esto sí funciona dentro de un script):
+
+```bash
+docker compose exec -T polybot node dist/src/tui/index.js --once --tab=trades
+```
 
 ## Linux VPS 24/7 Con Tailscale
 
