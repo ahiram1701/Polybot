@@ -3,7 +3,7 @@
 // by asserting on the returned strings. The runtime owns all side effects (polling, keypresses, the
 // screen buffer); it just feeds a ViewModel in and prints what comes out.
 
-import { splitCompactPnlByKind, VALIDATION_TARGET_TRADES } from "../agent/statusSummary.js";
+import { splitCompactPnlByKind } from "../agent/statusSummary.js";
 import type { CompactStatus, CompactStrategy, CompactTrade } from "../agent/statusSummary.js";
 import { humanSkipReason } from "../ui/shared.js";
 import {
@@ -261,19 +261,20 @@ export function renderDashboard(vm: ViewModel): string[] {
   if (vm.trades?.length) {
     const modo = s.mode ?? "sim";
     const split = splitCompactPnlByKind(vm.trades, modo, s.pnlResetAtMs);
-    if (split.arb.count > 0 || split.dir.count > 0) {
-      const fila = (etiqueta: string, parte: { netUsd: number; count: number }): string => {
+    // Una fila por estrategia, y solo las que han operado: una lista de ceros no informa de nada y
+    // ocupa el sitio de lo que sí está pasando.
+    const filas: [string, { netUsd: number; count: number }][] = [
+      ["ARB", split.arb],
+      ["FAV", split.fav],
+      ["DIR", split.dir],
+    ];
+    const conOperaciones = filas.filter(([, parte]) => parte.count > 0);
+    if (conOperaciones.length > 0) {
+      pnlBody.push(dim("— por estrategia —"));
+      for (const [etiqueta, parte] of conOperaciones) {
         const neto = parte.netUsd >= 0 ? green(fmtUsd(parte.netUsd)) : red(fmtUsd(parte.netUsd));
-        return `${bold(padEnd(etiqueta, 5))} ${padStart(neto, 18)}  ${dim(`${parte.count} ops`)}`;
-      };
-      pnlBody.push(dim("— por estrategia —"), fila("ARB", split.arb), fila("DIR", split.dir));
-      // El go/no-go se juzga sobre el ARBITRAJE, que es lo unico que corre en live mientras el
-      // capital siga por debajo del minimo del direccional. Mezclarlos daba un numero que no
-      // describe ninguna de las dos.
-      const meta = Math.min(split.arb.count, VALIDATION_TARGET_TRADES);
-      pnlBody.push(
-        `${dim("validación arb")} ${bold(String(meta))}${dim("/" + VALIDATION_TARGET_TRADES)} ${dim("operaciones")}`,
-      );
+        pnlBody.push(`${bold(padEnd(etiqueta, 5))} ${padStart(neto, 18)}  ${dim(`${parte.count} ops`)}`);
+      }
     }
   }
   out.push(...boxed("P&L (post-reset)", pnlBody, width));

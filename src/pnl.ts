@@ -175,6 +175,36 @@ export function esOperacionCerrada(trade: TradeAttempt): boolean {
   return trade.resolved !== undefined || esSalidaTotal(trade);
 }
 
+/** Las estrategias que escriben operaciones en el libro. El maker no: cobra fuera del P&L. */
+export type EstrategiaOperacion = "arb" | "favorito" | "direccional";
+
+/**
+ * A que estrategia se le apunta esta operacion.
+ *
+ * Tres cubos y no dos. Meter el favorito dentro del "direccional" enseñaba dinero en una estrategia
+ * apagada: son rutas distintas —una elige por el ask del libro, la otra por la distancia del oraculo—
+ * con interruptor propio, cierre de live propio y economias distintas.
+ *
+ * Orden de las preguntas:
+ *  1. Un par de arbitraje COMPLETO no tiene riesgo direccional. Una pata suelta si, y por eso cae al
+ *     direccional: ahi es donde quedo el riesgo, y no tiene estrategia escrita.
+ *  2. `strategy`, que el runner escribe desde el interruptor que de verdad decidio la ruta.
+ *  3. Solo para filas anteriores a ese campo: `entryKind`. Es una SUPOSICION —el direccional clasico
+ *     tambien lo rellenaba— pero es lo unico que hay, y acierta en el caso normal de que el favorito
+ *     fuese la estrategia encendida cuando se escribieron.
+ */
+export function clasificarEstrategia(
+  trade: Pick<TradeAttempt, "kind" | "arbPairComplete" | "strategy" | "entryKind">,
+): EstrategiaOperacion {
+  if (isCompleteArbPair(trade)) {
+    return "arb";
+  }
+  if (trade.strategy) {
+    return trade.strategy;
+  }
+  return trade.entryKind ? "favorito" : "direccional";
+}
+
 /**
  * Cuando dejo de estar abierta esta operacion, o `undefined` si sigue viva.
  *

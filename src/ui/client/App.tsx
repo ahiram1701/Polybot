@@ -36,7 +36,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { LogEntry } from "../../logger.js";
 import { summarizeLogs } from "../../agent/statusSummary.js";
 import type { ArbOpportunitySummary } from "../../arbMonitor.js";
-import { calculateTradePnl, esSalidaTotal, filterTradesForPnlReset, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
+import { calculateTradePnl, clasificarEstrategia, esSalidaTotal, filterTradesForPnlReset, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary, type TradePnl } from "../../pnl.js";
 import { hasResolvablePosition } from "../../tradeResolution.js";
 import {
   buildEquitySeries,
@@ -1496,14 +1496,20 @@ function PnlModeSummary({
       </div>
       {split ? (
         <ul className="pnl-kind-split">
-          {/* Arbitraje y direccional son estrategias con RIESGO distinto: el par completo redime $1/set
-              gane quien gane, el direccional puede perder el stake entero. Sumarlos en un solo numero
-              escondia cual de los dos gana dinero — justo lo que hay que saber para decidir cuando
-              activar el direccional. */}
+          {/* Una fila por ESTRATEGIA, porque tienen riesgo distinto: el par completo redime $1/set gane
+              quien gane, y las dos direccionales pueden perder el stake entero. El favorito va aparte
+              del direccional clasico: son rutas distintas —una elige por el ask del libro, la otra por
+              la distancia del oraculo— con interruptor propio y cierre de live propio. Mezclarlas
+              enseñaba dinero en una estrategia que estaba apagada. */}
           <li className="pnl-kind-row">
             <span className="pnl-kind-name">Arbitraje</span>
             <span className="pnl-kind-count">{split.arb.count} ops</span>
             <span className={`pnl-kind-net ${pnlTone(split.arb.netUsd)}`}>{money(formatSignedUsd(split.arb.netUsd))}</span>
+          </li>
+          <li className="pnl-kind-row">
+            <span className="pnl-kind-name">Favorito</span>
+            <span className="pnl-kind-count">{split.fav.count} ops</span>
+            <span className={`pnl-kind-net ${pnlTone(split.fav.netUsd)}`}>{money(formatSignedUsd(split.fav.netUsd))}</span>
           </li>
           <li className="pnl-kind-row">
             <span className="pnl-kind-name">Direccional</span>
@@ -1521,6 +1527,9 @@ function PnlModeSummary({
 
 export interface PnlKindSplit {
   arb: { netUsd: number; count: number };
+  /** La estrategia del favorito: elige el lado por el ask del libro. */
+  fav: { netUsd: number; count: number };
+  /** Direccional clasico (distancia del oraculo) y las patas sueltas de arbitraje. */
   dir: { netUsd: number; count: number };
 }
 
@@ -1528,26 +1537,29 @@ export interface PnlKindSplit {
  * Neto y numero de operaciones separando arbitraje de direccional, sobre los trades post-reset.
  *
  * Gemelo de `splitCompactPnlByKind`; el test de paridad exige que den lo mismo. Una salida por stop
- * cuenta SOLO en el direccional: un par completo se redime, no se vende, y el contador del arbitraje
- * decide el go/no-go y no debe moverse por esto.
+ * cuenta en los cubos direccionales y no en el arbitraje: un par completo se redime, no se vende.
  */
 export function splitPnlByKind(
   trades: TradeAttempt[],
   mode: Mode,
   resetAtMsByMode: PnlResetAtMsByMode = {},
 ): PnlKindSplit {
-  const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
+  const split: PnlKindSplit = {
+    arb: { netUsd: 0, count: 0 },
+    fav: { netUsd: 0, count: 0 },
+    dir: { netUsd: 0, count: 0 },
+  };
   for (const trade of filterTradesForPnlReset(trades, resetAtMsByMode)) {
     if (trade.mode !== mode) {
       continue;
     }
     // Una pata suelta (`arbPairComplete !== true`) NO es arbitraje: quedo como posicion direccional y
     // se contabiliza donde de verdad esta el riesgo.
-    const esArb = isCompleteArbPair(trade);
-    if (!trade.resolved && !(!esArb && esSalidaTotal(trade))) {
+    const estrategia = clasificarEstrategia(trade);
+    if (!trade.resolved && !(estrategia !== "arb" && esSalidaTotal(trade))) {
       continue;
     }
-    const bucket = esArb ? split.arb : split.dir;
+    const bucket = estrategia === "arb" ? split.arb : estrategia === "favorito" ? split.fav : split.dir;
     bucket.netUsd += calculateTradePnl(trade).netUsd ?? 0;
     bucket.count += 1;
   }

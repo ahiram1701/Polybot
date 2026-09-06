@@ -42,6 +42,8 @@ export interface ExecutionInput {
    * a la primera.
    */
   entryKind?: "banda" | "conviccion";
+  /** Que estrategia eligio el lado. Solo viaja para quedar escrita en el ledger; no decide nada aqui. */
+  strategy?: "favorito" | "direccional";
   /**
    * Ronda de rebalanceo de la ventana. Llega hasta el `TradeAttempt` por lo mismo que `entryKind`:
    * forma parte de su clave en el ledger, y sin ella la reentrada pisaria a la posicion vendida.
@@ -421,6 +423,7 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     distanceUsd: input.distanceUsd,
     entryWindowSeconds: input.entryWindowSeconds,
     entryKind: input.entryKind,
+    strategy: input.strategy,
     reentry: input.reentry,
     windowStartMs: input.market.windowStartMs,
     endMs: input.market.endMs,

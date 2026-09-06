@@ -719,6 +719,18 @@ export interface TradeAttempt {
    * exacta y no hay que migrar nada.
    */
   entryKind?: "banda" | "conviccion";
+  /**
+   * QUE ESTRATEGIA abrio esta posicion. Solo informativo: no entra en la clave del ledger.
+   *
+   * No se puede deducir de `entryKind`. Ese campo dice de que TRAMO salio la entrada y se rellena en
+   * las dos rutas —favorito y distancia del oraculo— porque se calcula despues de elegir el lado, sin
+   * mirar cual de las dos lo eligio. Sin este campo, el desglose de P&L metia el favorito en el cubo
+   * del direccional y enseñaba dinero en una estrategia que no estaba corriendo.
+   *
+   * Ausente en las filas anteriores a que existiera: `clasificarEstrategia` las reparte por `entryKind`,
+   * que es lo unico que hay, y lo documenta como lo que es — una suposicion sobre datos viejos.
+   */
+  strategy?: "favorito" | "direccional";
 }
 
 /**

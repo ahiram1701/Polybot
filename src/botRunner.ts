@@ -2656,6 +2656,16 @@ export class BotRunner {
         distanceUsd: candidate.distanceUsd,
         entryWindowSeconds: candidate.entryWindowSeconds,
         entryKind: candidate.entryKind,
+        // Que estrategia eligio el lado, escrito en el ledger para poder repartir el P&L despues.
+        // `entryKind` no vale: se calcula tras elegir el lado, igual en las dos rutas direccionales.
+        // Las patas del arbitraje se quedan sin marca — una pata suelta es una posición direccional
+        // que NO eligió el favorito, y marcarla como suya le apuntaría un dinero que no es suyo.
+        strategy:
+          candidate.strategy === "arb"
+            ? undefined
+            : this.config.favoriteStrategyEnabled === true
+              ? "favorito"
+              : "direccional",
         reentry: candidate.reentry,
       });
       return { candidate, trade };

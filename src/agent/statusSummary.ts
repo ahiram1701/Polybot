@@ -1,6 +1,13 @@
 import type { BandProgram } from "../bandProbeProgram.js";
 import type { LogEntry } from "../logger.js";
-import { calculateTradePnl, esSalidaTotal, isCompleteArbPair, type PnlResetAtMsByMode, type PnlSummary } from "../pnl.js";
+import {
+  calculateTradePnl,
+  clasificarEstrategia,
+  esSalidaTotal,
+  isCompleteArbPair,
+  type PnlResetAtMsByMode,
+  type PnlSummary,
+} from "../pnl.js";
 import type { RiskHaltStatus } from "../riskCircuitBreaker.js";
 import type { EffectiveModes } from "../ui/shared.js";
 import type {
@@ -226,6 +233,10 @@ export interface CompactTrade {
    * como arbitraje, que es exactamente al reves de donde esta el riesgo.
    */
   arbPairComplete?: boolean;
+  /** Que estrategia abrio la posicion. Junto a `entryKind`, lo que reparte el P&L entre los tres cubos. */
+  strategy?: TradeAttempt["strategy"];
+  /** Tramo del favorito. Se conserva para clasificar las filas anteriores a `strategy`. */
+  entryKind?: TradeAttempt["entryKind"];
   outcome: Outcome;
   amountUsd: number;
   bestAsk?: number;
@@ -256,6 +267,8 @@ export function summarizeTrade(trade: TradeAttempt): CompactTrade {
     mode: trade.mode,
     kind: trade.kind,
     arbPairComplete: trade.arbPairComplete,
+    strategy: trade.strategy,
+    entryKind: trade.entryKind,
     outcome: trade.outcome,
     amountUsd: trade.amountUsd,
     bestAsk: trade.bestAsk,
@@ -339,6 +352,9 @@ export function summarizeStrategyAnalysis(
 
 export interface PnlKindSplit {
   arb: { netUsd: number; count: number };
+  /** La estrategia del favorito: elige el lado por el ask del libro. */
+  fav: { netUsd: number; count: number };
+  /** Direccional clasico (distancia del oraculo) y las patas sueltas de arbitraje. */
   dir: { netUsd: number; count: number };
 }
 
@@ -351,20 +367,23 @@ export const VALIDATION_TARGET_TRADES = 50;
  * Es EL numero de la estrategia arb-first: el total mezclado no dice cual de las dos genera el dinero.
  * Vivia solo en la UI web; la TUI y los agentes veian un unico total.
  *
- * La clasificacion la decide `isCompleteArbPair`, la misma funcion que usa el calculo de P&L, para que
- * las dos superficies no puedan discrepar sobre que cuenta como arbitraje.
+ * La clasificacion la decide `clasificarEstrategia`, la misma funcion que usa la web, para que las dos
+ * superficies no puedan discrepar sobre a quien se le apunta el dinero.
  *
  * Una operacion cuenta cuando esta CERRADA, y cerrar tiene dos formas: resolver en el mercado o
- * venderse entera antes. La segunda solo existe en el direccional —un par completo se redime, no se
- * vende— asi que la salida se admite unicamente en ese cubo y el contador de validacion del arbitraje
- * queda exactamente como estaba: es el numero del go/no-go y no debe moverse por esto.
+ * venderse entera antes. La segunda no existe en el arbitraje —un par completo se redime, no se vende—
+ * asi que la salida se admite en los cubos direccionales y el arbitraje queda exactamente como estaba.
  */
 export function splitCompactPnlByKind(
   trades: readonly CompactTrade[],
   mode: Mode,
   resetAtMsByMode: PnlResetAtMsByMode = {},
 ): PnlKindSplit {
-  const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
+  const split: PnlKindSplit = {
+    arb: { netUsd: 0, count: 0 },
+    fav: { netUsd: 0, count: 0 },
+    dir: { netUsd: 0, count: 0 },
+  };
   const resetAtMs = resetAtMsByMode[mode];
   for (const trade of trades) {
     if (trade.mode !== mode) {
@@ -373,11 +392,11 @@ export function splitCompactPnlByKind(
     if (resetAtMs !== undefined && trade.createdAtMs <= resetAtMs) {
       continue;
     }
-    const esArb = isCompleteArbPair(trade);
-    if (!trade.resolved && !(!esArb && trade.exited === true)) {
+    const estrategia = clasificarEstrategia(trade);
+    if (!trade.resolved && !(estrategia !== "arb" && trade.exited === true)) {
       continue;
     }
-    const bucket = esArb ? split.arb : split.dir;
+    const bucket = estrategia === "arb" ? split.arb : estrategia === "favorito" ? split.fav : split.dir;
     bucket.netUsd += trade.netUsd ?? 0;
     bucket.count += 1;
   }

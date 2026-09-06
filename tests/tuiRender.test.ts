@@ -563,6 +563,38 @@ describe("TUI: precios del libro y ajustes del favorito", () => {
  * tienen algo que decir. Antes `renderScreen` lo RECORTABA por abajo sin avisar, y la caja que se caia
  * primero era la que se llama "Por que no opera": justo la que uno abre la TUI para leer.
  */
+/**
+ * El desglose reparte por ESTRATEGIA, y el favorito es una de ellas. Mientras compartia cubo con el
+ * direccional, la pantalla enseñaba dinero en una estrategia que no estaba corriendo.
+ */
+describe("TUI: desglose por estrategia", () => {
+  const favorita = (overrides: Partial<CompactTrade> = {}): CompactTrade =>
+    tradeFixture({ strategy: "favorito", entryKind: "banda", ...overrides });
+
+  it("el favorito lleva su propia fila", () => {
+    const texto = stripAnsi(
+      renderDashboard(baseVm({ status: statusFixture(), trades: [favorita()] })).join(NL),
+    );
+    expect(texto).toContain("FAV");
+  });
+
+  it("no pinta la fila de una estrategia que no ha operado", () => {
+    // Una lista de ceros no informa de nada y ocupa el sitio de lo que si esta pasando.
+    const texto = stripAnsi(
+      renderDashboard(baseVm({ status: statusFixture(), trades: [favorita()] })).join(NL),
+    );
+    expect(texto).not.toContain("ARB");
+    expect(texto).not.toContain("DIR");
+  });
+
+  it("ya no cuelga el contador de validacion del arbitraje", () => {
+    const texto = stripAnsi(
+      renderDashboard(baseVm({ status: statusFixture(), trades: [favorita()] })).join(NL),
+    );
+    expect(texto).not.toContain("validación arb");
+  });
+});
+
 describe("TUI: el cuerpo se desplaza en vez de recortarse", () => {
   const largo = () =>
     baseVm({

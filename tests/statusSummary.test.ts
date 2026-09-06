@@ -330,10 +330,53 @@ describe("splitCompactPnlByKind", () => {
     } as Partial<TradeAttempt>);
   }
 
-  it("la venta por stop cuenta en el direccional, y resta", () => {
-    const split = splitCompactPnlByKind([summarizeTrade(tradeVendido({ id: "vendida" }))], "sim");
+  /**
+   * El favorito es una ESTRATEGIA APARTE, no un sabor del direccional: elige el lado por el ask del
+   * libro y no por la distancia del oraculo, y tiene su propio interruptor y su propio cierre de live.
+   * Metido en el cubo del direccional, la pantalla enseñaba +$28 en una estrategia apagada.
+   */
+  it("el favorito tiene cubo propio y no ensucia el direccional", () => {
+    const trades = [
+      summarizeTrade(tradeConResultado({ id: "fav", strategy: "favorito", entryKind: "banda" })),
+      summarizeTrade(tradeConResultado({ id: "dir", strategy: "direccional" })),
+    ];
+    const split = splitCompactPnlByKind(trades, "sim");
+    expect(split.fav.count).toBe(1);
     expect(split.dir.count).toBe(1);
-    expect(split.dir.netUsd).toBeLessThan(0);
+    expect(split.arb.count).toBe(0);
+  });
+
+  it("con el direccional apagado su cubo queda en cero, no heredando lo del favorito", () => {
+    const solofav = [summarizeTrade(tradeConResultado({ id: "f", strategy: "favorito" }))];
+    const split = splitCompactPnlByKind(solofav, "sim");
+    expect(split.fav.count).toBe(1);
+    expect(split.dir.count).toBe(0);
+    expect(split.dir.netUsd).toBe(0);
+  });
+
+  it("una fila anterior al campo se reparte por entryKind, que es lo unico que hay", () => {
+    // `strategy` no existia cuando se escribieron. `entryKind` presente = salio del favorito.
+    const vieja = summarizeTrade(tradeConResultado({ id: "vieja", entryKind: "conviccion" }));
+    expect(splitCompactPnlByKind([vieja], "sim").fav.count).toBe(1);
+    const sinNada = summarizeTrade(tradeConResultado({ id: "sinNada" }));
+    expect(splitCompactPnlByKind([sinNada], "sim").dir.count).toBe(1);
+  });
+
+  it("una pata suelta va al direccional, nunca al favorito: no la eligio el favorito", () => {
+    const naked = summarizeTrade(tradeConResultado({ id: "naked", kind: "arb", arbPairComplete: false }));
+    const split = splitCompactPnlByKind([naked], "sim");
+    expect(split.dir.count).toBe(1);
+    expect(split.fav.count).toBe(0);
+    expect(split.arb.count).toBe(0);
+  });
+
+  it("la venta por stop cuenta, y resta, en el cubo de su estrategia", () => {
+    const split = splitCompactPnlByKind(
+      [summarizeTrade(tradeVendido({ id: "vendida", strategy: "favorito" }))],
+      "sim",
+    );
+    expect(split.fav.count).toBe(1);
+    expect(split.fav.netUsd).toBeLessThan(0);
   });
 
   it("una posicion todavia viva no cuenta en ningun cubo", () => {
