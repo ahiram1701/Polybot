@@ -1225,19 +1225,36 @@ describe("validationProgressByKind", () => {
     } as TradeAttempt;
   }
 
+  /** Posicion vendida ENTERA antes de que el mercado resolviera: sin `resolved`, y en perdida. */
+  function salida(overrides: Partial<TradeAttempt>): TradeAttempt {
+    return op({
+      resolved: undefined,
+      exit: {
+        exitedAtMs: 200_000,
+        reason: "stop_bajo_banda",
+        orderPrice: 0.4,
+        soldShares: 10,
+        proceedsUsd: 4,
+        averageExitPrice: 0.4,
+        feeUsd: 0,
+      },
+      ...overrides,
+    } as TradeAttempt);
+  }
+
   it("cuenta el arbitraje y el direccional por separado", () => {
     const trades = [
       op({ id: "a1", kind: "arb", arbPairComplete: true }),
       op({ id: "a2", kind: "arb", arbPairComplete: true }),
       op({ id: "d1" }),
     ];
-    const r = validationProgressByKind(trades);
+    const r = validationProgressByKind(trades, "sim");
     expect(r.arb.resolvedCount).toBe(2);
     expect(r.dir.resolvedCount).toBe(1);
   });
 
   it("una pata suelta cuenta como DIRECCIONAL: ahi quedo el riesgo", () => {
-    const r = validationProgressByKind([op({ id: "naked", kind: "arb", arbPairComplete: false })]);
+    const r = validationProgressByKind([op({ id: "naked", kind: "arb", arbPairComplete: false })], "sim");
     expect(r.arb.resolvedCount).toBe(0);
     expect(r.dir.resolvedCount).toBe(1);
   });
@@ -1248,9 +1265,33 @@ describe("validationProgressByKind", () => {
       op({ id: "gana", kind: "arb", arbPairComplete: true }),
       op({ id: "pierde", resolved: { resolvedAtMs: 1, finalPrice: 99, finalTickTimestampMs: 1, winningOutcome: "DOWN", won: false } as never }),
     ];
-    const r = validationProgressByKind(trades);
+    const r = validationProgressByKind(trades, "sim");
     expect(r.arb.netUsd).toBeGreaterThan(0);
     expect(r.dir.netUsd).toBeLessThan(0);
+  });
+
+  /**
+   * La linea del direccional se alimentaba de la lista ya cribada por `resolved`, asi que las ventas
+   * por stop —siempre perdidas— no llegaban. Enseñaba las ganancias sin las perdidas que las pagaron.
+   */
+  it("la venta por stop cuenta en el direccional, y baja el total", () => {
+    const sinVenta = validationProgressByKind([op({ id: "ganada" })], "sim");
+    const conVenta = validationProgressByKind([op({ id: "ganada" }), salida({ id: "vendida" })], "sim");
+
+    expect(sinVenta.dir.resolvedCount).toBe(1);
+    expect(conVenta.dir.resolvedCount).toBe(2);
+    // Lo que se caia del total: una perdida realizada que no aparecia por ningun lado.
+    expect(conVenta.dir.netUsd).toBeLessThan(sinVenta.dir.netUsd);
+  });
+
+  it("no cuenta una posicion todavia viva", () => {
+    const abierta = op({ id: "viva", resolved: undefined, exit: undefined });
+    expect(validationProgressByKind([abierta], "sim").dir.resolvedCount).toBe(0);
+  });
+
+  it("el avance del ARBITRAJE no se mueve: es el numero del go/no-go", () => {
+    const trades = [op({ id: "a", kind: "arb", arbPairComplete: true }), salida({ id: "v" })];
+    expect(validationProgressByKind(trades, "sim").arb.resolvedCount).toBe(1);
   });
 });
 

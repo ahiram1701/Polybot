@@ -1,5 +1,6 @@
 import {
   calculateTradePnl,
+  esOperacionCerrada,
   filterTradesForPnlReset,
   isCompleteArbPair,
   isWinningTrade,
@@ -296,15 +297,24 @@ export interface ValidationProgressByKind {
  *
  * Importa cual se mira: en live el direccional esta bloqueado por la puerta de capital, asi que lo que
  * de verdad va a correr es el arbitraje. Es SU avance el que decide.
+ *
+ * Recibe el LIBRO ENTERO y filtra por dentro, en vez de una lista ya cribada por `resolved`: el
+ * direccional cierra tambien vendiendo, y esas ventas son siempre perdidas. Cribarlas fuera dejaba la
+ * linea del direccional enseñando las ganancias sin las perdidas que las pagaron. El arbitraje sigue
+ * exigiendo `resolved` —un par completo se redime, no se vende— asi que el avance que decide el
+ * go/no-go no se mueve ni un trade.
  */
 export function validationProgressByKind(
   trades: TradeAttempt[],
+  mode: Mode,
+  resetAtMsByMode: PnlResetAtMsByMode = {},
   target = VALIDATION_TARGET_TRADES,
 ): ValidationProgressByKind {
+  const post = filterTradesForPnlReset(trades, resetAtMsByMode).filter((trade) => trade.mode === mode);
   // Misma clasificacion que el desglose de P&L: una pata suelta NO es arbitraje, es direccional, que
   // es donde de verdad quedo el riesgo.
-  const arb = trades.filter((trade) => isCompleteArbPair(trade));
-  const dir = trades.filter((trade) => !isCompleteArbPair(trade));
+  const arb = post.filter((trade) => isCompleteArbPair(trade) && trade.resolved !== undefined);
+  const dir = post.filter((trade) => !isCompleteArbPair(trade) && esOperacionCerrada(trade));
   return {
     arb: validationProgress(arb, target),
     dir: validationProgress(dir, target),

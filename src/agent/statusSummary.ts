@@ -353,6 +353,11 @@ export const VALIDATION_TARGET_TRADES = 50;
  *
  * La clasificacion la decide `isCompleteArbPair`, la misma funcion que usa el calculo de P&L, para que
  * las dos superficies no puedan discrepar sobre que cuenta como arbitraje.
+ *
+ * Una operacion cuenta cuando esta CERRADA, y cerrar tiene dos formas: resolver en el mercado o
+ * venderse entera antes. La segunda solo existe en el direccional —un par completo se redime, no se
+ * vende— asi que la salida se admite unicamente en ese cubo y el contador de validacion del arbitraje
+ * queda exactamente como estaba: es el numero del go/no-go y no debe moverse por esto.
  */
 export function splitCompactPnlByKind(
   trades: readonly CompactTrade[],
@@ -362,13 +367,17 @@ export function splitCompactPnlByKind(
   const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
   const resetAtMs = resetAtMsByMode[mode];
   for (const trade of trades) {
-    if (trade.mode !== mode || !trade.resolved) {
+    if (trade.mode !== mode) {
       continue;
     }
     if (resetAtMs !== undefined && trade.createdAtMs <= resetAtMs) {
       continue;
     }
-    const bucket = isCompleteArbPair(trade) ? split.arb : split.dir;
+    const esArb = isCompleteArbPair(trade);
+    if (!trade.resolved && !(!esArb && trade.exited === true)) {
+      continue;
+    }
+    const bucket = esArb ? split.arb : split.dir;
     bucket.netUsd += trade.netUsd ?? 0;
     bucket.count += 1;
   }

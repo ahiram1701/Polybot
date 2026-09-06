@@ -308,12 +308,56 @@ describe("splitCompactPnlByKind", () => {
     expect(split.dir.count).toBe(1);
   });
 
+  /**
+   * Una venta por stop cierra la posicion sin que el mercado resuelva, y SIEMPRE en perdida: acotar
+   * una perdida es realizarla. Filtrando por `resolved` a secas se caian del desglose, asi que el
+   * direccional enseñaba las ganancias sin las perdidas que las pagaron. Medido el 2026-09-05: decia
+   * +$28,22 en 36 operaciones, todas ganadas, con el P&L real en +$0,60.
+   */
+  function tradeVendido(overrides: Partial<TradeAttempt> = {}): TradeAttempt {
+    return tradeConResultado({
+      resolved: undefined,
+      exit: {
+        exitedAtMs: 200_000,
+        reason: "stop_bajo_banda",
+        orderPrice: 0.3,
+        soldShares: 20,
+        proceedsUsd: 6,
+        averageExitPrice: 0.3,
+        feeUsd: 0,
+      },
+      ...overrides,
+    } as Partial<TradeAttempt>);
+  }
+
+  it("la venta por stop cuenta en el direccional, y resta", () => {
+    const split = splitCompactPnlByKind([summarizeTrade(tradeVendido({ id: "vendida" }))], "sim");
+    expect(split.dir.count).toBe(1);
+    expect(split.dir.netUsd).toBeLessThan(0);
+  });
+
+  it("una posicion todavia viva no cuenta en ningun cubo", () => {
+    const viva = summarizeTrade(tradeConResultado({ id: "viva", resolved: undefined }));
+    const split = splitCompactPnlByKind([viva], "sim");
+    expect(split.dir.count).toBe(0);
+    expect(split.arb.count).toBe(0);
+  });
+
+  it("el cubo del ARBITRAJE no se mueve: es el numero del go/no-go", () => {
+    const trades = [
+      summarizeTrade(tradeConResultado({ id: "par", kind: "arb", arbPairComplete: true })),
+      summarizeTrade(tradeVendido({ id: "vendida" })),
+    ];
+    expect(splitCompactPnlByKind(trades, "sim").arb.count).toBe(1);
+  });
+
   it("coincide con el calculo de la UI web sobre los mismos trades", () => {
     const trades = [
       tradeConResultado({ id: "a", kind: "arb", arbPairComplete: true }),
       tradeConResultado({ id: "b", resolved: undefined }),
       tradeConResultado({ id: "c", kind: "arb", arbPairComplete: false }),
       tradeConResultado({ id: "d" }),
+      tradeVendido({ id: "e" }),
     ];
     const compacto = splitCompactPnlByKind(trades.map(summarizeTrade), "sim");
     const web = splitPnlByKind(trades, "sim");

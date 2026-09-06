@@ -163,6 +163,19 @@ export function esSalidaTotal(trade: TradeAttempt): boolean {
 }
 
 /**
+ * ¿Termino ya esta operacion? Resolvio en el mercado, o se vendio entera antes de resolver.
+ *
+ * Filtrar por `resolved` a secas deja fuera las salidas por stop, y esas son SIEMPRE perdidas —
+ * acotar una perdida es realizarla. Un total que las descarta no es un total conservador: enseña las
+ * ganancias sin las perdidas que las pagaron. Medido en el bot el 2026-09-05: el desglose por
+ * estrategia decia +$28,22 en 36 operaciones, todas ganadas, mientras el P&L real era +$0,60 — las 9
+ * ventas que faltaban sumaban -$27,65.
+ */
+export function esOperacionCerrada(trade: TradeAttempt): boolean {
+  return trade.resolved !== undefined || esSalidaTotal(trade);
+}
+
+/**
  * Cuando dejo de estar abierta esta operacion, o `undefined` si sigue viva.
  *
  * Existe porque una salida anticipada NO tiene `resolved`, y todo lo que filtraba por ese campo la

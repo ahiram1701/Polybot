@@ -1524,7 +1524,13 @@ export interface PnlKindSplit {
   dir: { netUsd: number; count: number };
 }
 
-/** Neto y numero de operaciones separando arbitraje de direccional, sobre los trades post-reset. */
+/**
+ * Neto y numero de operaciones separando arbitraje de direccional, sobre los trades post-reset.
+ *
+ * Gemelo de `splitCompactPnlByKind`; el test de paridad exige que den lo mismo. Una salida por stop
+ * cuenta SOLO en el direccional: un par completo se redime, no se vende, y el contador del arbitraje
+ * decide el go/no-go y no debe moverse por esto.
+ */
 export function splitPnlByKind(
   trades: TradeAttempt[],
   mode: Mode,
@@ -1532,12 +1538,16 @@ export function splitPnlByKind(
 ): PnlKindSplit {
   const split: PnlKindSplit = { arb: { netUsd: 0, count: 0 }, dir: { netUsd: 0, count: 0 } };
   for (const trade of filterTradesForPnlReset(trades, resetAtMsByMode)) {
-    if (trade.mode !== mode || !trade.resolved) {
+    if (trade.mode !== mode) {
       continue;
     }
     // Una pata suelta (`arbPairComplete !== true`) NO es arbitraje: quedo como posicion direccional y
     // se contabiliza donde de verdad esta el riesgo.
-    const bucket = isCompleteArbPair(trade) ? split.arb : split.dir;
+    const esArb = isCompleteArbPair(trade);
+    if (!trade.resolved && !(!esArb && esSalidaTotal(trade))) {
+      continue;
+    }
+    const bucket = esArb ? split.arb : split.dir;
     bucket.netUsd += calculateTradePnl(trade).netUsd ?? 0;
     bucket.count += 1;
   }
@@ -1568,7 +1578,9 @@ function PnlCharts({
   // Separado por estrategia: el total mezcla arbitraje (que paga) con direccional (que resta), y ese
   // numero mezclado puede aprobar el paso a live por el motivo equivocado. En live el direccional
   // esta bloqueado por la puerta de capital, asi que el avance que DECIDE es el del arbitraje.
-  const porTipo = validationProgressByKind(series);
+  // Sobre el libro entero, no sobre `series`: esa ya viene cribada por `resolved` y dejaría fuera las
+  // ventas del direccional, que son las que restan.
+  const porTipo = validationProgressByKind(trades, mode, resetAtMs ?? {});
   const progress = porTipo.arb;
   const band = hideAmounts ? MASKED_AMOUNT : `±${formatUsd(progress.varianceBandUsd)}`;
   return (
