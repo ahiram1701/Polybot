@@ -1563,6 +1563,11 @@ export function splitPnlByKind(
     bucket.netUsd += calculateTradePnl(trade).netUsd ?? 0;
     bucket.count += 1;
   }
+  // Una sola vez, al final. Aqui ya se sumaba en crudo, pero sin este redondeo el gemelo compacto y
+  // este daban decimales distintos y el test de paridad no podia exigir igualdad exacta.
+  for (const bucket of [split.arb, split.fav, split.dir]) {
+    bucket.netUsd = Math.round(bucket.netUsd * 100) / 100;
+  }
   return split;
 }
 

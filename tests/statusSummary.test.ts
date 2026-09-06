@@ -394,6 +394,37 @@ describe("splitCompactPnlByKind", () => {
     expect(splitCompactPnlByKind(trades, "sim").arb.count).toBe(1);
   });
 
+  /**
+   * El desglose SUMA antes de pintar, asi que no puede partir de importes ya recortados a centimos:
+   * cada operacion perdia hasta medio centimo y el resto se acumulaba, siempre hacia abajo. Medido con
+   * 121 operaciones reales: la caja de P&L decia $26,39 y el desglose $26,29, y el hueco crecia con
+   * cada operacion nueva.
+   */
+  it("suma con precision y redondea una sola vez, como el total del servidor", () => {
+    // Importes que NO caen en un centimo exacto: 20 participaciones a 0,333 pagan $6,666… por op.
+    const fraccionadas = Array.from({ length: 30 }, (_, i) =>
+      summarizeTrade(
+        tradeConResultado({
+          id: `f${i}`,
+          strategy: "favorito",
+          amountUsd: 6.666_66,
+          filledAmountUsd: 6.666_66,
+        }),
+      ),
+    );
+
+    const split = splitCompactPnlByKind(fraccionadas, "sim");
+    const crudo = fraccionadas.reduce((acc, t) => acc + (t.netUsd ?? 0), 0);
+
+    // El total del cubo es el redondeo del total exacto, no la suma de treinta redondeos.
+    expect(split.fav.netUsd).toBe(Math.round(crudo * 100) / 100);
+  });
+
+  it("el neto por operacion conserva mas de dos decimales para poder sumarse", () => {
+    const t = summarizeTrade(tradeConResultado({ amountUsd: 6.666_66, filledAmountUsd: 6.666_66 }));
+    expect(t.netUsd).not.toBe(Math.round((t.netUsd ?? 0) * 100) / 100);
+  });
+
   it("coincide con el calculo de la UI web sobre los mismos trades", () => {
     const trades = [
       tradeConResultado({ id: "a", kind: "arb", arbPairComplete: true }),

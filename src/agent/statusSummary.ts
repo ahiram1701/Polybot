@@ -222,6 +222,25 @@ function round(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined;
 }
 
+/**
+ * Redondeo para importes que se van a SUMAR antes de enseñarse.
+ *
+ * Dos decimales por operacion parecian suficientes —es lo que se pinta— pero el desglose por
+ * estrategia suma primero y pinta despues: cada operacion perdia hasta medio centimo y el resto se
+ * acumulaba. Medido con 121 operaciones reales, la caja de P&L decia $26,39 y el desglose $26,29, y el
+ * hueco crecia con cada operacion (3 centimos con 47, 10 con 121) y siempre hacia abajo.
+ *
+ * Seis decimales dejan el error por operacion en 5e-7: diez mil operaciones sumarian medio centimo.
+ */
+function round6(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? Math.round(value * 1e6) / 1e6 : undefined;
+}
+
+/** Redondeo a centimos del total de un cubo: se redondea UNA vez, al final, como hace el servidor. */
+function centimos(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 export interface CompactTrade {
   id: string;
   market?: MarketSymbol;
@@ -279,7 +298,8 @@ export function summarizeTrade(trade: TradeAttempt): CompactTrade {
       ? { won: trade.resolved.won, winningOutcome: trade.resolved.winningOutcome }
       : undefined,
     exited: esSalidaTotal(trade) ? true : undefined,
-    netUsd: round(pnl.netUsd),
+    // Seis decimales y no dos: este numero se SUMA en el desglose por estrategia antes de pintarse.
+    netUsd: round6(pnl.netUsd),
     ev: ev
       ? {
           edge: round(ev.edge),
@@ -399,6 +419,11 @@ export function splitCompactPnlByKind(
     const bucket = estrategia === "arb" ? split.arb : estrategia === "favorito" ? split.fav : split.dir;
     bucket.netUsd += trade.netUsd ?? 0;
     bucket.count += 1;
+  }
+  // Al final, y una sola vez: es lo que hace el servidor con su total, y es lo que permite que las dos
+  // cajas de la pantalla den el mismo numero.
+  for (const bucket of [split.arb, split.fav, split.dir]) {
+    bucket.netUsd = centimos(bucket.netUsd);
   }
   return split;
 }
