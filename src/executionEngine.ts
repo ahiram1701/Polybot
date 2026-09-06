@@ -427,6 +427,12 @@ function buildBaseTrade(input: ExecutionInput, mode: "sim" | "live"): TradeAttem
     reentry: input.reentry,
     windowStartMs: input.market.windowStartMs,
     endMs: input.market.endMs,
+    // La ventana de la serie que RESUELVE, estampada CON la operacion. Es lo unico que `resolveTrades`
+    // mira para pedirle el cierre al TWAP; sin ella cae al spot, y una apertura TWAP contra un cierre
+    // spot no es la misma medida. Medido en el ledger: 2.232 resoluciones por spot, 0 por TWAP, y 144
+    // de ellas (8,2%) las tuvo que corregir despues el verificador oficial — minutos de P&L, TUI y
+    // avisos diciendo lo contrario de lo que Polymarket acabo pagando.
+    twapWindowSeconds: input.market.twapLookbackSeconds,
     createdAtMs: Date.now(),
   };
 }

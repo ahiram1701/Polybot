@@ -188,7 +188,30 @@ describe("cada motor etiqueta la operacion con SU modo", () => {
   });
 });
 
-function executionInput() {
+describe("la operacion se lleva la ventana de la serie que la RESUELVE", () => {
+  it("estampa twapWindowSeconds del mercado", async () => {
+    const { SimulationExecutionEngine } = await import("../src/executionEngine.js");
+    const engine = new SimulationExecutionEngine({ mode: "sim" } as never);
+    // `resolveTrades` solo pide el cierre al TWAP si la operacion trae este campo. Nadie lo escribia,
+    // asi que TODAS caian al spot: 2.232 resoluciones por spot y 0 por TWAP en el ledger, con 144
+    // corregidas despues por el verificador oficial. El caso que lo destapo: BTC 3:09, DOWN a 0,90;
+    // el spot pego +8 $ en los ultimos diez segundos y cerro por encima de la apertura, pero el TWAP
+    // —el que paga— nunca cruzo. Se anuncio perdida y siete minutos despues era ganancia.
+    const trade = await engine.execute(executionInput({ twapLookbackSeconds: 60 }));
+    expect(trade.twapWindowSeconds).toBe(60);
+  });
+
+  it("lo deja ausente cuando el mercado no resuelve por TWAP", async () => {
+    const { SimulationExecutionEngine } = await import("../src/executionEngine.js");
+    const engine = new SimulationExecutionEngine({ mode: "sim" } as never);
+    // Ausente tiene que seguir significando "este mercado no tiene serie TWAP", no un 60 inventado:
+    // con un valor por defecto se le pediria a `getTwapAtOrBefore` una serie que nadie alimenta y el
+    // cierre se resolveria con lo que devolviera esa consulta a ciegas.
+    expect((await engine.execute(executionInput())).twapWindowSeconds).toBeUndefined();
+  });
+});
+
+function executionInput(market?: { twapLookbackSeconds?: number }) {
   return {
     market: {
       asset: "ETH",
@@ -198,6 +221,7 @@ function executionInput() {
       orderMinSize: 5,
       tickSize: "0.01",
       outcomes: { UP: { tokenId: "up" }, DOWN: { tokenId: "down" } },
+      ...market,
     },
     outcome: "UP",
     amountUsd: 5,
