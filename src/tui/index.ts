@@ -61,8 +61,10 @@ async function renderOnce(client: PolybotClient, tab: Tab): Promise<void> {
   let trades: ViewModel["trades"];
   let analysis: AnalysisData | undefined;
   let settingsFields: ViewModel["settingsFields"];
-  if (tab === "trades") {
-    const { trades: raw } = await client.listTrades(50);
+  // El dashboard los necesita igual que la pestaña de operaciones: sin ellos no puede repartir el P&L
+  // por estrategia y la caja desaparece sin decir por qué.
+  if (tab === "trades" || tab === "dashboard") {
+    const { trades: raw } = await client.listTrades(tab === "trades" ? 50 : 200);
     trades = raw.map(summarizeTrade).sort((a, b) => b.createdAtMs - a.createdAtMs);
   } else if (tab === "analysis") {
     const summary = summarizeStrategyAnalysis(await client.getStrategyAnalysis());

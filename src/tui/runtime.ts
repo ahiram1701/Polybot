@@ -483,7 +483,9 @@ export function startTui(client: PolybotClient): void {
     // Cada pestaña empieza por arriba: heredar el desplazamiento de la anterior aterriza a media caja.
     state.bodyScroll = 0;
     state.help = false;
-    if (tab === "trades" && !state.trades) {
+    // El Dashboard también necesita los trades: el desglose por estrategia se calcula sobre ellos, y sin
+    // pedirlos la caja solo aparecía después de haber visitado Trades y vuelto.
+    if ((tab === "trades" || tab === "dashboard") && !state.trades) {
       void refreshTrades();
     } else if (tab === "analysis" && !state.analysis) {
       void refreshAnalysis();
@@ -751,10 +753,12 @@ export function startTui(client: PolybotClient): void {
   // First paint + initial loads, then poll status on a timer.
   render();
   void refreshStatus();
+  void refreshTrades();
   void refreshSettings();
   pollTimer = setInterval(() => {
     void refreshStatus();
-    if (state.tab === "trades") {
+    // Las dos pestañas que leen operaciones: Trades las lista y el Dashboard las reparte por estrategia.
+    if (state.tab === "trades" || state.tab === "dashboard") {
       void refreshTrades();
     }
   }, POLL_MS);
