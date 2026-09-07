@@ -108,7 +108,8 @@ Tres cosas que no son obvias:
   antiguo. Un fallback silencioso pondría a operar con dinero real una estrategia distinta de la que el
   operador acaba de elegir.
 - **Opera durante toda la ventana, pero con DOS techos de tiempo, no uno.** El declarado es
-  `entryWindowSeconds` (150 desde 2026-09-04: se cuenta desde el cierre, así que son los 2:30 finales). El otro no se declara: `getAnalyticsQuotes` solo pedía
+  `entryWindowSeconds` (120 desde 2026-09-07; ver más abajo por qué ese número decide el signo del
+  resultado). El otro no se declara: `getAnalyticsQuotes` solo pedía
   los libros dentro de `ANALYTICS_WINDOW_SECONDS` (120 de 300), y el favorito ELIGE lado con esos
   libros — así que abrir la ventana declarada sin abrir el suministro dejaba la estrategia ciega,
   registrando `favorite_missing_quote` en bucle. Ahora el favorito también los pide fuera de esa
@@ -117,11 +118,50 @@ Tres cosas que no son obvias:
 - Por lo mismo, `getAnalyticsQuotes` cotiza aunque no haya `analyticsRecorder` montado: sin eso dejaría
   de operar en silencio.
 - **Abrir la ventana estrena un régimen sin muestras.** Un ask de 0,80 a 250 s del cierre refleja
-  incertidumbre real; a 15 s refleja un resultado casi decidido. Las 8 entradas 8/8 que el ledger tenía
-  al medir la banda son TODAS de la fase tardía. No extrapolar de unas a otras.
+  incertidumbre real; a 15 s refleja un resultado casi decidido. Esto se sospechaba desde el principio;
+  desde 2026-09-07 está medido, y resultó ser lo que más pesa de todo (siguiente apartado).
 - **El autoajuste tiraría la ventana hacia abajo.** Las rejillas de `recommendationEngine` y
   `strategyAnalysisEngine` topan en 120 s, con salto máximo de 60 s por aplicación. Con
   `aiAutoApplyLive` encendido, la ventana de 300 se iría reduciendo sola. Debe seguir apagado.
+
+### CUÁNDO entrar es lo que más pesa, y por mucho
+
+Medido el 2026-09-07 sobre las **1.098 operaciones del ledger con resultado conocido**, agrupadas por
+los segundos que le quedaban a la ventana en el momento de comprar:
+
+| segundos al cierre | n | aciertos | equilibrio | ventaja |
+|---|---|---|---|---|
+| 0 – 60 | 85 | 90,6% | 84,8% | **+5,83 pp** |
+| 60 – 100 | 223 | 86,1% | 84,9% | +1,21 pp |
+| 100 – 140 | 367 | 85,0% | 85,1% | −0,07 pp |
+| **140 – 300** | **423** | **81,1%** | **85,8%** | **−4,71 pp** (t = −2,48) |
+
+«Equilibrio» es lo que hay que acertar para empatar tras la comisión (`ask + 7%·ask·(1−ask)`).
+
+Monótono, y el resultado agregado **cambia de signo** al recortar la ventana: con 150 s son −5,85 $ por
+cada 100 operaciones de 5 $; con 120, +2,71 $; con 100, +12,47 $.
+
+Por qué importa tanto: con `entryWindowSeconds` en 150 el bot compraba **en cuanto el ask entraba en
+banda**, es decir con 2:30 por delante para que el precio se diera la vuelta. 423 de las 1.098 entradas
+caían en ese tramo. Es exactamente la diferencia entre la operativa manual —esperar a que esté
+decidido— y la del bot, que se lanzaba al primer precio válido.
+
+Tres avisos para quien mueva este número:
+
+- **Lo sólido es el lado negativo.** Que entrar con más de 140 s sea malo tiene t = −2,48. Que entrar
+  con menos de 60 sea *tan* bueno (+5,83 pp) está sugerido, no probado: ninguna fila positiva llega a
+  dos errores típicos por sí sola.
+- **120 cae en un bache de la serie** (140 da +1,09 pp y 100 da +2,48). La diferencia entre 140, 120 y
+  100 está dentro del ruido; lo que no lo está es no pasar de 140.
+- **Recortar cuesta volumen**, y el volumen es muestra: 120 s deja el 45% de las operaciones, 100 s el
+  28% y 60 s el 8%. Medido en dólares por hora los tres salen parecidos, así que la elección es sobre
+  cuánta varianza aguantas y cuánto tardas en acumular evidencia, no sobre cuánto ganas.
+
+Esto también explica por qué ninguna otra palanca funcionó. Sobre más de 10.000 ventanas se probaron 13
+bandas de ask, momento del precio, distancia normalizada por volatilidad (en spot y en TWAP), cuatro
+umbrales de salida y el disparo por libro frente al del oráculo: **ninguna daba ventaja neta.** El
+mercado está bien preciado en toda la curva de precios. La única dimensión donde aparece ventaja es el
+tiempo que le queda a la ventana.
 
 ### La certeza de la ventana: entrar solo cuando ya está decidido
 
