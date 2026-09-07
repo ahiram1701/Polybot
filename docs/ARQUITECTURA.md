@@ -214,7 +214,24 @@ Cuatro detalles que no son obvios:
 
 **El precio del filtro es el volumen: solo el 10% de las ventanas califican.**
 
-### El tramo de máxima convicción (ask > 0,98)
+### El tramo de máxima convicción (ask > 0,98) — APAGADO desde 2026-09-07
+
+> **Se apagó por aritmética, no por una mala racha.** Medido sobre sus 28 operaciones:
+>
+> | | |
+> |---|---|
+> | aciertos | 96,4% (el mejor de todo el bot) |
+> | ask medio | 0,989 |
+> | ganancia media por acierto | **+0,066 $** |
+> | pérdida media por fallo | **−5,564 $** |
+> | un fallo se come | **85 aciertos** |
+> | hace falta acertar | 98,94% |
+> | ROI | −2,23% |
+>
+> A 0,99 el mercado ya se quedó todo el premio: no queda margen para equivocarse ni una vez, y te
+> equivocas 4 de cada 100. Y lo peligroso no era el ROI sino el **tamaño** — apuesta una fracción del
+> capital libre en UNA entrada, así que el fallo llega de golpe. Reactivarlo exigiría bajar
+> `favoriteMaxSizeAsk` a donde todavía quede premio (~0,92), y eso **no está medido**.
 
 Por encima de `favoriteMaxSizeAsk` el favorito deja de usar el importe configurado y dimensiona contra
 una **fracción del capital disponible**. Seis cosas que no son obvias:
