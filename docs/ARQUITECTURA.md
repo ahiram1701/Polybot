@@ -184,24 +184,83 @@ ni entre mercados —dependen de la escala del precio— ni entre el principio y
 que es donde está toda la diferencia. Dividir por `σ·√T` es lo único que convierte un dato que ya
 existía en la señal que separa las ventanas que ganan de las que no.
 
-Medido sobre 1.484 ventanas de `data/analytics.jsonl`, aguantando hasta el cierre:
+#### La tabla que engañó, y por qué se deja escrita
 
-| umbral z | ops | % | aciertos | neto/op | 1ª mitad | 2ª mitad (fuera de muestra) |
+Durante cuatro días el umbral fue **1,0**, justificado por esto — medido sobre 1.484 ventanas de
+`data/analytics.jsonl`, **aguantando hasta el cierre**:
+
+| umbral z | ops | % | aciertos | neto/op | 1ª mitad | 2ª mitad |
 |---|---|---|---|---|---|---|
 | sin filtro | 1484 | 100% | 70,4% | −0,0670 | −0,1391 | +0,0051 |
 | z ≥ 0,5 | 508 | 34% | 82,5% | +0,2301 | +0,1201 | +0,3481 |
-| **z ≥ 1,0** | **152** | **10%** | **91,4%** | **+0,4623** | **+0,2355** | **+0,6610** |
+| z ≥ 1,0 | 152 | 10% | 91,4% | +0,4623 | +0,2355 | +0,6610 |
 | z ≥ 1,5 | 43 | 3% | 100,0% | +0,7372 | +0,3882 | +0,9885 |
 
-Monótono y positivo en las **dos** mitades. Con z ≥ 1 el favorito acierta el 91,4% mientras el precio
-medio del libro (0,83) solo cobra el 84,4%: **el mercado infravalora la certeza**. Y al revés, con
-z < 0 —el precio ya cruzado al lado malo pero el libro todavía marcando favorito— el acierto cae al
-53,4% contra un 62,0% de equilibrio. Ésas son las que sangraban.
+**Ninguna de esas cifras era falsa. Medían otro universo.** «Aguantando hasta el cierre» quiere decir
+sin la ventana de entrada de 120 s y sin la banda 0,79–0,90 — es decir, sobre ventanas que el bot no
+opera. El error no fue el número: fue no anotar **sobre qué** se había medido, y por eso este apartado
+se conserva entero en vez de sustituirse.
 
-Cuatro detalles que no son obvios:
+Se pudo detectar porque desde 2026-09-08 existe `src/favoriteReplay.ts`, que replica el camino real
+del favorito —selector, ventana, certeza, spread— llamando a los módulos de producción en lugar de
+reimplementarlos. Hasta entonces no había forma: todo el arsenal de backtest cuelga de
+`replaySignals`, que reconstruye la señal por distancia de Chainlink, o sea el camino direccional.
 
-- **El default es 1,0 y no 1,5.** El 100% de aciertos de 1,5 son 43 ventanas; 1,0 tiene 152 y sale
-  positivo en ambas mitades. La cola promete más de lo que puede sostener.
+#### Lo que mide el camino real
+
+`npx tsx src/smoke/favoritoReplay.ts`, sobre 4.176 ventanas, eligiendo por la primera mitad
+cronológica y juzgando por la segunda. Neto por operación de 5 $, **fuera de muestra**:
+
+| ventana ↓ / z → | apagado | ≥ 0,5 | ≥ 1,0 | ≥ 1,5 |
+|---|---|---|---|---|
+| 60 s | +0,056 | +0,058 | +0,374 | +0,489 |
+| **80 s** | −0,054 | −0,077 | +0,063 | **+0,417** |
+| 100 s | −0,092 | −0,105 | −0,114 | +0,156 |
+| 120 s | −0,082 | −0,085 | **−0,138** | −0,097 |
+| 140 s | −0,068 | −0,078 | −0,132 | −0,050 |
+
+La casilla en negrita de la fila de 120 s es **lo que corría hasta el 2026-09-08**: −1,08 pp de
+ventaja y −0,061 por operación en el conjunto, −0,138 fuera de muestra. Llevaba perdiendo.
+
+**Ninguno de los dos números vale por su cuenta.** De 100 s para arriba no hay umbral de certeza que
+salve nada; de 100 s para abajo la certeza multiplica por siete lo que ya había. Leer la tabla por
+filas o por columnas sueltas es exactamente el *confounding* que produjo la conclusión anterior:
+cuanto menos tiempo queda, mayor es z para la misma distancia, así que medir una sola le atribuye el
+efecto de la otra.
+
+**Por qué 80 s y no 60 s**, que promete más: los +0,489 de la fila de 60 salen de 50 operaciones. La
+de 80 tiene 179, t = 3,28 y bootstrap positivo el 100% de las veces. Se elige la casilla con muestra,
+no la que más brilla — es la misma lección que el z ≥ 1,5 con 43 ventanas de la tabla vieja.
+
+La configuración elegida —**ventana 80 s, z ≥ 1,5**— en detalle:
+
+| | |
+|---|---|
+| operaciones | 179 (4,3% de las ventanas) |
+| aciertos | 93,3% |
+| equilibrio | 87,2% |
+| ventaja | **+6,10 pp** |
+| neto por operación | **+0,3607** (t = 3,28; bootstrap positivo el 100%) |
+| primera mitad | +0,3043 |
+| segunda mitad | +0,4165 |
+| por mercado | BTC +6,5 pp (n=125) · ETH +4,8 pp (n=52) · DOGE no califica (n=2) |
+
+Tres cosas que se probaron y **no** aportan, anotadas para que nadie las reintente creyendo que están
+sin mirar:
+
+- **Apretar `favoriteMaxAskSum`.** Una tabla suelta decía que el tramo 1,06–1,10 pierde 13,5 pp. Por el
+  camino completo, 1,03 / 1,05 / 1,10 / 1,15 dan **las mismas 179 operaciones**: con la ventana en 80 s
+  y z ≥ 1,5 ya no queda ni un libro muerto que filtrar. Sería un guardarraíl que no guarda nada.
+- **Ensanchar la banda.** 0,82–0,92 deja la ventaja en +0,51 pp fuera de muestra y 0,86–0,94 en −1,33,
+  frente a los +6,98 pp de 0,79–0,90. La banda actual no es un accidente histórico: es donde está el
+  margen. Estrecharla a 0,76–0,85 da todavía más (+8,03 pp) pero sobre 83 operaciones, así que queda
+  como candidata a revisar cuando haya muestra, no como cambio.
+- **El gate de EV.** Recorta de 1.252 a 314 operaciones y sigue en −0,162 fuera de muestra. Además está
+  **apagado en producción** (`requirePositiveEv: false` en `data/ui-config.json`), así que la línea del
+  barrido que describe el bot real es la de «sin gate de EV».
+
+#### Detalles del filtro que no son obvios
+
 - **Una lectura AUSENTE no bloquea.** Sin ticks suficientes o con σ = 0, `readWindowCertainty` devuelve
   `undefined` y la entrada sigue su camino: convertir una laguna del feed en política de riesgo es el
   mismo error que evita la guarda de bankroll con un saldo ilegible. Una lectura que sí sale y da poco
@@ -212,7 +271,17 @@ Cuatro detalles que no son obvios:
   que `RunnerPriceFeed` ya expone. Se deduplica por marca de tiempo: sin eso, un feed más lento que el
   paso del muestreo inventaría saltos de valor cero y hundiría la σ, que es el denominador de todo.
 
-**El precio del filtro es el volumen: solo el 10% de las ventanas califican.**
+**El precio del filtro es el volumen: con z ≥ 1,5 y la ventana en 80 s califica el 4,3% de las
+ventanas**, frente al 30% de antes. Es deliberado, y es la única forma de que esto gane: a un ask medio
+de 0,86 hace falta acertar el 87,2% nada más que para empatar, así que un acierto del 85% suena bien y
+es una pérdida.
+
+> **Un número que se confundió al construir el replay, por si vuelve a pasar.** El suelo de la ventana
+> de entrada es `DEFAULT_MIN_SECONDS_TO_END` = **10 s** (`markets.ts`), no los 45 de
+> `FAVORITE_EXIT_MIN_SECONDS`, que es del stop de VENTA. Con 45 por error, el barrido se dejaba fuera
+> el tramo final —justo donde la ventana ya está resuelta— y medía la estrategia sin su mejor trozo:
+> la casilla ganadora bajaba de t = 3,28 a t = 2,65 y de 179 operaciones a 162. La conclusión aguantó,
+> pero podría no haberlo hecho.
 
 ### El tramo de máxima convicción (ask > 0,98) — APAGADO desde 2026-09-07
 
