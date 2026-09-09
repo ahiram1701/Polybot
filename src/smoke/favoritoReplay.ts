@@ -47,10 +47,28 @@ import { applySettings, UiSettingsStore } from "../ui/settings.js";
 import type { AnalyticsSample, BotConfig, MarketSymbol } from "../types.js";
 
 const STAKE_USD = 5;
-/** Los del gate de EV en produccion (`EV_SAFETY_MARGIN`, `EV_MIN_EXPECTED_ROI`, `evMaxClaimedEdge`). */
-const SAFETY_MARGIN = 0.03;
-const MIN_EXPECTED_ROI = 0.01;
-const REJECT_EDGE_ABOVE = 0.2;
+
+/**
+ * Los ajustes del gate de EV, LEIDOS de la configuracion viva y no escritos aqui.
+ *
+ * Importa desde que el gate dejo de ser irrelevante: con la ventana en 120 s y z>=1 salia en -0,162
+ * fuera de muestra y daba igual con que parametros se midiera, pero con 80 s y z>=1,5 sale en +0,4415.
+ * Una cifra que ya significa algo no puede depender de tres constantes que nadie actualiza cuando se
+ * mueve `evSafetyMargin` desde la UI. Los defaults son los del esquema de settings.
+ */
+interface AjustesEv {
+  safetyMargin: number;
+  minExpectedRoi: number;
+  rejectEdgeAbove?: number;
+}
+
+function ajustesEv(efectiva: BotConfig): AjustesEv {
+  return {
+    safetyMargin: efectiva.evSafetyMargin ?? 0.03,
+    minExpectedRoi: efectiva.evMinExpectedRoi ?? 0.01,
+    rejectEdgeAbove: efectiva.evMaxClaimedEdge ?? 0.2,
+  };
+}
 
 /**
  * La configuracion que corre AHORA MISMO, leida de donde manda de verdad.
@@ -64,17 +82,23 @@ const REJECT_EDGE_ABOVE = 0.2;
  * Son dos numeros distintos y confundirlos recorta del universo justo el tramo final, que es donde la
  * ventana ya esta resuelta: mide la estrategia sin su mejor trozo.
  */
-async function configuracionViva(dataDir: string, base: BotConfig): Promise<FavoriteReplayParams> {
+async function configuracionViva(
+  dataDir: string,
+  base: BotConfig,
+): Promise<{ params: FavoriteReplayParams; ev: AjustesEv }> {
   const settings = await new UiSettingsStore(dataDir).load(base);
   const efectiva = applySettings(base, settings);
   return {
-    entryWindowSeconds: efectiva.entryWindowSeconds,
-    minSecondsToEnd: efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
-    minAsk: efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
-    maxAsk: efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
-    maxAskSum: efectiva.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
-    maxAskSpread: efectiva.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
-    minCertainty: efectiva.favoriteMinCertainty ?? 1,
+    params: {
+      entryWindowSeconds: efectiva.entryWindowSeconds,
+      minSecondsToEnd: efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
+      minAsk: efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
+      maxAsk: efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
+      maxAskSum: efectiva.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
+      maxAskSpread: efectiva.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
+      minCertainty: efectiva.favoriteMinCertainty ?? 1,
+    },
+    ev: ajustesEv(efectiva),
   };
 }
 
@@ -120,7 +144,11 @@ interface Fila {
  * Con gate se delega en `simulateGate`, que es el mismo que corre el evaluador contrafactual del
  * autoajuste. Aqui no se reimplementa: tener dos versiones del gate ya se equivoco una vez.
  */
-function liquidar(signals: readonly FavoriteSignal[], market: MarketSymbol, conGateEv: boolean): SimulatedTrade[] {
+function liquidar(
+  signals: readonly FavoriteSignal[],
+  market: MarketSymbol,
+  conGateEv: AjustesEv | undefined,
+): SimulatedTrade[] {
   const feeRateBps = defaultTakerFeeRateBps(market);
   if (!conGateEv) {
     return settleFavoriteSignals(signals, { stakeUsd: STAKE_USD, feeRateBps });
@@ -129,11 +157,11 @@ function liquidar(signals: readonly FavoriteSignal[], market: MarketSymbol, conG
     // Sin recorte de banda: el favorito ya la aplico al elegir. Repetirla aqui la aplicaria dos veces.
     minAsk: 0,
     maxAsk: 1,
-    safetyMargin: SAFETY_MARGIN,
-    minExpectedRoi: MIN_EXPECTED_ROI,
+    safetyMargin: conGateEv.safetyMargin,
+    minExpectedRoi: conGateEv.minExpectedRoi,
     stakeUsd: STAKE_USD,
     feeRateBps,
-    rejectEdgeAbove: REJECT_EDGE_ABOVE,
+    rejectEdgeAbove: conGateEv.rejectEdgeAbove,
   });
 }
 
@@ -164,7 +192,7 @@ function evaluar(
   samples: readonly AnalyticsSample[],
   nombre: string,
   params: FavoriteReplayParams,
-  conGateEv: boolean,
+  conGateEv: AjustesEv | undefined,
 ): Fila {
   const todos: SimulatedTrade[] = [];
   const dentro: SimulatedTrade[] = [];
@@ -240,11 +268,12 @@ function nombreDe(params: FavoriteReplayParams): string {
 async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
   const samples = await readAnalyticsSamples(join(config.dataDir, "analytics.jsonl"));
-  const PRODUCCION = await configuracionViva(config.dataDir, config);
+  const { params: PRODUCCION, ev: EV } = await configuracionViva(config.dataDir, config);
 
   console.log(`FAVORITO — replay sobre ${samples.length} ventanas de ${join(config.dataDir, "analytics.jsonl")}`);
   console.log(`stake $${STAKE_USD} · ventaja = acierto - equilibrio · IS/OOS = mitades cronologicas por mercado`);
   console.log(`configuracion viva (data/ui-config.json sobre .env): ${nombreDe(PRODUCCION)} suelo=${PRODUCCION.minSecondsToEnd}s`);
+  console.log(`gate de EV: margen=${EV.safetyMargin} roiMin=${EV.minExpectedRoi} topeVentaja=${EV.rejectEdgeAbove}`);
   console.log("");
 
   const referencia = replayFavoriteSignals(samples, PRODUCCION);
@@ -254,7 +283,7 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  for (const conGateEv of [false, true]) {
+  for (const conGateEv of [undefined, EV]) {
     console.log(conGateEv ? "=== CON gate de EV ===" : "=== SIN gate de EV ===");
     const base = evaluar(samples, `PRODUCCION ${nombreDe(PRODUCCION)}`, PRODUCCION, conGateEv);
     console.log(linea(base));
@@ -270,7 +299,7 @@ async function main(): Promise<void> {
   for (const entryWindowSeconds of VENTANAS) {
     for (const minCertainty of CERTEZAS) {
       const params = { ...PRODUCCION, entryWindowSeconds, minCertainty };
-      rejilla.push(evaluar(samples, nombreDe(params), params, false));
+      rejilla.push(evaluar(samples, nombreDe(params), params, undefined));
     }
   }
   for (const fila of rejilla) {
@@ -299,11 +328,11 @@ async function main(): Promise<void> {
     console.log(`   ${porMercado(base)}`);
     for (const maxAskSum of SUMAS) {
       const candidata = { ...params, maxAskSum };
-      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, false)));
+      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, undefined)));
     }
     for (const [minAsk, maxAsk] of BANDAS) {
       const candidata = { ...params, minAsk, maxAsk };
-      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, false)));
+      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, undefined)));
     }
     console.log("");
   }

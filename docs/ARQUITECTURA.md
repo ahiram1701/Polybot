@@ -245,7 +245,7 @@ La configuración elegida —**ventana 80 s, z ≥ 1,5**— en detalle:
 | segunda mitad | +0,4165 |
 | por mercado | BTC +6,5 pp (n=125) · ETH +4,8 pp (n=52) · DOGE no califica (n=2) |
 
-Tres cosas que se probaron y **no** aportan, anotadas para que nadie las reintente creyendo que están
+Dos cosas que se probaron y **no** aportan, anotadas para que nadie las reintente creyendo que están
 sin mirar:
 
 - **Apretar `favoriteMaxAskSum`.** Una tabla suelta decía que el tramo 1,06–1,10 pierde 13,5 pp. Por el
@@ -255,9 +255,26 @@ sin mirar:
   frente a los +6,98 pp de 0,79–0,90. La banda actual no es un accidente histórico: es donde está el
   margen. Estrecharla a 0,76–0,85 da todavía más (+8,03 pp) pero sobre 83 operaciones, así que queda
   como candidata a revisar cuando haya muestra, no como cambio.
-- **El gate de EV.** Recorta de 1.252 a 314 operaciones y sigue en −0,162 fuera de muestra. Además está
-  **apagado en producción** (`requirePositiveEv: false` en `data/ui-config.json`), así que la línea del
-  barrido que describe el bot real es la de «sin gate de EV».
+
+#### El gate de EV: la respuesta depende de la configuración que lleve debajo
+
+Merece apartado propio porque **cambia de signo con el resto**, y por eso una frase suelta del tipo «el
+gate de EV no aporta» es falsa la mitad del tiempo:
+
+| configuración debajo | n | ventaja | neto/op | t | fuera de muestra |
+|---|---|---|---|---|---|
+| ventana 120 s, z ≥ 1 (la vieja) | 314 | −1,10 pp | −0,0661 | −0,50 | **−0,162** |
+| ventana 80 s, z ≥ 1,5 (la actual) | 122 | +5,76 pp | +0,3493 | 2,36 | **+0,4415** |
+
+Con la configuración vieja el gate no salvaba nada: recortaba de 1.252 operaciones a 314 y seguía
+perdiendo. Con la actual **no estorba** — se queda con dos tercios menos de operaciones para dar
+prácticamente lo mismo que sin él (+0,3493 frente a +0,3607).
+
+Aun así **sigue apagado** (`requirePositiveEv: false` en `data/ui-config.json`), y la línea del barrido
+que describe el bot real es la de «sin gate de EV». El motivo no es que sea peor: es que recorta la
+muestra de 179 a 122 y el estadístico de 3,28 a 2,36 sin comprar nada a cambio. Encenderlo sería pagar
+un tercio de la evidencia por una ventaja que no mejora. Cuando haya muestra de sobra, vuelve a ser una
+pregunta abierta.
 
 #### Detalles del filtro que no son obvios
 
