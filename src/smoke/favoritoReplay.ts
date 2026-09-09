@@ -34,11 +34,17 @@ import {
   type FavoriteReplayParams,
   type FavoriteSignal,
 } from "../favoriteReplay.js";
+import {
+  DEFAULT_FAVORITE_MAX_ASK,
+  DEFAULT_FAVORITE_MIN_ASK,
+  DEFAULT_MAX_ASK_SUM,
+} from "../favoriteSelector.js";
 import { defaultTakerFeeRateBps } from "../fees.js";
 import { simulateGate, summarizeGateTrades, type SimulatedTrade } from "../gateSimulation.js";
-import { SUPPORTED_MARKETS } from "../markets.js";
+import { DEFAULT_MIN_SECONDS_TO_END, SUPPORTED_MARKETS } from "../markets.js";
 import { bootstrapCI } from "../tradeStats.js";
-import type { AnalyticsSample, MarketSymbol } from "../types.js";
+import { applySettings, UiSettingsStore } from "../ui/settings.js";
+import type { AnalyticsSample, BotConfig, MarketSymbol } from "../types.js";
 
 const STAKE_USD = 5;
 /** Los del gate de EV en produccion (`EV_SAFETY_MARGIN`, `EV_MIN_EXPECTED_ROI`, `evMaxClaimedEdge`). */
@@ -47,21 +53,33 @@ const MIN_EXPECTED_ROI = 0.01;
 const REJECT_EDGE_ABOVE = 0.2;
 
 /**
- * La configuracion VIVA del `.env`, no un valor bonito.
+ * La configuracion que corre AHORA MISMO, leida de donde manda de verdad.
  *
- * Es la linea de referencia contra la que se compara todo lo demas, asi que si deja de coincidir con
- * produccion el barrido entero mide una cosa y decide sobre otra — el mismo fallo que tenia el
- * backtest del tuner comparando contra un tope fijo impreso como "(actual)".
+ * No es una constante escrita a mano a proposito. `data/ui-config.json` PISA a `.env` en caliente, asi
+ * que una copia aqui se queda desfasada justo cuando importa y el barrido acaba midiendo una cosa y
+ * decidiendo sobre otra — el mismo fallo que tenia el backtest del tuner comparando contra un tope
+ * fijo impreso como "(actual)".
+ *
+ * `minSecondsToEnd` sale de `DEFAULT_MIN_SECONDS_TO_END` (10 s) y NO de los 45 del stop de salida.
+ * Son dos numeros distintos y confundirlos recorta del universo justo el tramo final, que es donde la
+ * ventana ya esta resuelta: mide la estrategia sin su mejor trozo.
  */
-const PRODUCCION: FavoriteReplayParams = {
-  entryWindowSeconds: 120,
-  minSecondsToEnd: 45,
-  minAsk: 0.79,
-  maxAsk: 0.9,
-  maxAskSum: 1.15,
-  maxAskSpread: 0.02,
-  minCertainty: 1,
-};
+async function configuracionViva(dataDir: string, base: BotConfig): Promise<FavoriteReplayParams> {
+  const settings = await new UiSettingsStore(dataDir).load(base);
+  const efectiva = applySettings(base, settings);
+  return {
+    entryWindowSeconds: efectiva.entryWindowSeconds,
+    minSecondsToEnd: efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
+    minAsk: efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
+    maxAsk: efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
+    maxAskSum: efectiva.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
+    maxAskSpread: efectiva.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
+    minCertainty: efectiva.favoriteMinCertainty ?? 1,
+  };
+}
+
+/** `DEFAULT_MAX_ASK_SPREAD` vive privado en `botRunner`; el valor se repite aqui y solo aqui. */
+const DEFAULT_MAX_ASK_SPREAD = 0.02;
 
 const VENTANAS = [60, 80, 100, 120, 140];
 /** `-Infinity` = filtro APAGADO. Hay que saber cuanto aporta, no solo cual es su mejor umbral. */
@@ -222,9 +240,11 @@ function nombreDe(params: FavoriteReplayParams): string {
 async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
   const samples = await readAnalyticsSamples(join(config.dataDir, "analytics.jsonl"));
+  const PRODUCCION = await configuracionViva(config.dataDir, config);
 
   console.log(`FAVORITO — replay sobre ${samples.length} ventanas de ${join(config.dataDir, "analytics.jsonl")}`);
-  console.log(`stake $${STAKE_USD} · ventaja = acierto - equilibrio · OOS = segunda mitad cronologica por mercado`);
+  console.log(`stake $${STAKE_USD} · ventaja = acierto - equilibrio · IS/OOS = mitades cronologicas por mercado`);
+  console.log(`configuracion viva (data/ui-config.json sobre .env): ${nombreDe(PRODUCCION)} suelo=${PRODUCCION.minSecondsToEnd}s`);
   console.log("");
 
   const referencia = replayFavoriteSignals(samples, PRODUCCION);
@@ -274,7 +294,7 @@ async function main(): Promise<void> {
   for (const mejor of mejores) {
     const base = rejilla.find((fila) => fila.nombre === mejor.nombre);
     if (!base) continue;
-    const params = paramsDe(mejor.nombre);
+    const params = paramsDe(mejor.nombre, PRODUCCION);
     console.log(`-- sobre ${mejor.nombre}`);
     console.log(`   ${porMercado(base)}`);
     for (const maxAskSum of SUMAS) {
@@ -290,11 +310,11 @@ async function main(): Promise<void> {
 }
 
 /** Reconstruye los parametros desde el nombre impreso. Evita arrastrar la tupla por toda la rejilla. */
-function paramsDe(nombre: string): FavoriteReplayParams {
-  const ventana = Number(/v=(\d+)s/.exec(nombre)?.[1] ?? PRODUCCION.entryWindowSeconds);
+function paramsDe(nombre: string, base: FavoriteReplayParams): FavoriteReplayParams {
+  const ventana = Number(/v=(\d+)s/.exec(nombre)?.[1] ?? base.entryWindowSeconds);
   const crudo = /z>=([^\s]+)/.exec(nombre)?.[1] ?? "1.0";
   return {
-    ...PRODUCCION,
+    ...base,
     entryWindowSeconds: ventana,
     minCertainty: crudo === "off" ? Number.NEGATIVE_INFINITY : Number(crudo),
   };

@@ -7,10 +7,16 @@ const WINDOW_START_MS = 0;
 const END_MS = 300_000;
 const OPENING = 100;
 
-/** La configuracion viva del `.env` al escribir esto, para que los tests hablen del bot que corre. */
+/**
+ * Configuracion de los tests. La ventana de 120 s es holgada a proposito —deja sitio para colocar
+ * varias cotizaciones y comprobar cual se elige—, pero el SUELO es el de verdad:
+ * `DEFAULT_MIN_SECONDS_TO_END` = 10 s de `markets.ts`, y no los 45 de `FAVORITE_EXIT_MIN_SECONDS`,
+ * que pertenecen al stop de VENTA. Confundirlos recorta del universo el tramo final, que es justo
+ * donde la ventana ya esta resuelta.
+ */
 const PRODUCCION = {
   entryWindowSeconds: 120,
-  minSecondsToEnd: 45,
+  minSecondsToEnd: 10,
   minAsk: 0.79,
   maxAsk: 0.9,
   maxAskSum: 1.15,
@@ -185,10 +191,10 @@ describe("replayFavoriteSignals", () => {
       calentamiento(),
       muestra({
         ganador: "UP",
-        // Una demasiado pronto (200 s) y otra demasiado tarde (20 s): ninguna es operable.
+        // Una demasiado pronto (200 s) y otra pasado el suelo de 10 s: ninguna es operable.
         quotes: [
           quote({ secondsToEnd: 200, upAsk: 0.85, downAsk: 0.14 }),
-          quote({ secondsToEnd: 20, upAsk: 0.85, downAsk: 0.14 }),
+          quote({ secondsToEnd: 8, upAsk: 0.85, downAsk: 0.14 }),
         ],
       }),
     ]);
