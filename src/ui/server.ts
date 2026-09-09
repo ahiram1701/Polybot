@@ -69,6 +69,14 @@ const fiscalFxPatchSchema = z.object({
 
 export interface UiAppOptions {
   staticClient?: boolean;
+  /**
+   * Permisos del MCP que se sirve en /mcp. Sin valor mandan POLYBOT_MCP_ALLOW_WRITE y
+   * POLYBOT_MCP_ALLOW_LIVE, que es como se configura en produccion. Quien llama puede fijarlos para
+   * no quedar a merced del entorno: los tests lo hacen, porque el .env de la maquina se cuela en
+   * process.env via `import "dotenv/config"` y decidia por ellos que herramientas veian.
+   */
+  mcpAllowWrite?: boolean;
+  mcpAllowLive?: boolean;
 }
 
 export function createUiApp(controller: BotController, options: UiAppOptions = {}): Express {
@@ -304,8 +312,10 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
   // connector (e.g. Claude Cowork/Desktop) control Polybot via the same tools as the stdio server.
   // Reachable wherever the UI is served (localhost by default; also over Tailscale if POLYBOT_UI_HOST
   // is opened up). Clients call POST /mcp with `initialize`, get an Mcp-Session-Id, then reuse it.
-  const mcpAllowWrite = (process.env.POLYBOT_MCP_ALLOW_WRITE ?? "true").toLowerCase() !== "false";
-  const mcpAllowLive = (process.env.POLYBOT_MCP_ALLOW_LIVE ?? "true").toLowerCase() !== "false";
+  const mcpAllowWrite =
+    options.mcpAllowWrite ?? (process.env.POLYBOT_MCP_ALLOW_WRITE ?? "true").toLowerCase() !== "false";
+  const mcpAllowLive =
+    options.mcpAllowLive ?? (process.env.POLYBOT_MCP_ALLOW_LIVE ?? "true").toLowerCase() !== "false";
   const mcpTransports = new Map<string, StreamableHTTPServerTransport>();
 
   app.post("/mcp", asyncHandler(async (req, res) => {

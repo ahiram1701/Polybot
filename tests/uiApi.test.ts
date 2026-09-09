@@ -828,7 +828,7 @@ describe("MCP over HTTP (/mcp)", () => {
       snapshotProvider: fixedSnapshot,
       runnerFactory: () => new FakeRunner(),
     });
-    const app = createUiApp(controller);
+    const app = createUiApp(controller, { mcpAllowWrite: true, mcpAllowLive: true });
 
     const init = await request(app)
       .post("/mcp")
@@ -886,52 +886,42 @@ describe("MCP over HTTP (/mcp)", () => {
     controller.dispose();
   });
 
-  it("hides write/control tools when POLYBOT_MCP_ALLOW_WRITE=false", async () => {
-    const prev = process.env.POLYBOT_MCP_ALLOW_WRITE;
-    process.env.POLYBOT_MCP_ALLOW_WRITE = "false";
-    try {
-      const controller = new BotController(await baseConfig(false), {
-        startPriceFeed: false,
-        snapshotProvider: fixedSnapshot,
-        runnerFactory: () => new FakeRunner(),
-      });
-      const app = createUiApp(controller);
+  it("hides write/control tools when write access is off", async () => {
+    const controller = new BotController(await baseConfig(false), {
+      startPriceFeed: false,
+      snapshotProvider: fixedSnapshot,
+      runnerFactory: () => new FakeRunner(),
+    });
+    const app = createUiApp(controller, { mcpAllowWrite: false });
 
-      const init = await request(app)
-        .post("/mcp")
-        .set("Accept", MCP_ACCEPT)
-        .send({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } },
-        })
-        .expect(200);
-      const sessionId = init.headers["mcp-session-id"];
-      await request(app)
-        .post("/mcp")
-        .set("Accept", MCP_ACCEPT)
-        .set("mcp-session-id", sessionId)
-        .send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    const init = await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } },
+      })
+      .expect(200);
+    const sessionId = init.headers["mcp-session-id"];
+    await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .set("mcp-session-id", sessionId)
+      .send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
-      const tools = await request(app)
-        .post("/mcp")
-        .set("Accept", MCP_ACCEPT)
-        .set("mcp-session-id", sessionId)
-        .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
-        .expect(200);
-      const names = (tools.body.result.tools as Array<{ name: string }>).map((t) => t.name);
-      expect(names).toContain("polybot_get_status");
-      expect(names).not.toContain("polybot_start_bot");
-      expect(names).not.toContain("polybot_update_settings");
-      controller.dispose();
-    } finally {
-      if (prev === undefined) {
-        delete process.env.POLYBOT_MCP_ALLOW_WRITE;
-      } else {
-        process.env.POLYBOT_MCP_ALLOW_WRITE = prev;
-      }
-    }
+    const tools = await request(app)
+      .post("/mcp")
+      .set("Accept", MCP_ACCEPT)
+      .set("mcp-session-id", sessionId)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
+      .expect(200);
+    const names = (tools.body.result.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(names).toContain("polybot_get_status");
+    expect(names).not.toContain("polybot_start_bot");
+    expect(names).not.toContain("polybot_update_settings");
+    controller.dispose();
   });
 });
 
