@@ -75,6 +75,70 @@ export function bootstrapCI(nets: number[], options: { iterations?: number; seed
   };
 }
 
+export interface BootstrapPorBloques extends BootstrapCI {
+  /** Percentil 5 del neto total: lo que sale en uno de cada veinte remuestreos malos. */
+  p5Usd: number;
+  /** Grupos independientes remuestreados. Es el tamaño de muestra de verdad, no el numero de filas. */
+  bloques: number;
+}
+
+/**
+ * `bootstrapCI`, pero remuestreando BLOQUES enteros en vez de operaciones sueltas.
+ *
+ * Existe porque las operaciones del favorito no son independientes. Los tres mercados cierran a la
+ * vez, y cuando cripto se da la vuelta en el ultimo minuto se dan la vuelta juntos. Medido sobre 181
+ * pares de operaciones de la misma ventana: si una pierde, la otra pierde el 47,5% de las veces,
+ * frente a un 13,2% sin esa condicion. Remuestrear filas sueltas trata esas dos perdidas como dos
+ * sorteos cuando son uno, y el intervalo sale mas estrecho de lo que es. Asi se llego a anunciar
+ * "bootstrap positivo el 100%" para una configuracion que perdio en cuanto se probo hacia delante.
+ *
+ * Con cada operacion en su propio bloque da EXACTAMENTE lo mismo que `bootstrapCI` con la misma
+ * semilla: es la misma cuenta, sin nada mas.
+ */
+export function bootstrapCIPorBloques(
+  nets: readonly number[],
+  bloques: readonly (string | number)[],
+  options: { iterations?: number; seed?: number; confidence?: number } = {},
+): BootstrapPorBloques {
+  if (nets.length !== bloques.length) {
+    throw new Error("bootstrapCIPorBloques: nets y bloques deben tener la misma longitud.");
+  }
+  const iterations = options.iterations ?? 5_000;
+  const confidence = options.confidence ?? 0.95;
+  // Map conserva el orden de aparicion, y eso es lo que hace que el caso de un bloque por operacion
+  // sortee los mismos indices que `bootstrapCI`.
+  const sumasPorBloque = new Map<string | number, number>();
+  nets.forEach((net, i) => {
+    sumasPorBloque.set(bloques[i], (sumasPorBloque.get(bloques[i]) ?? 0) + net);
+  });
+  const sumas = [...sumasPorBloque.values()];
+  const g = sumas.length;
+  if (g === 0) {
+    return { meanUsd: 0, lowerUsd: 0, upperUsd: 0, positiveShare: 0, p5Usd: 0, bloques: 0 };
+  }
+  const rand = mulberry32(options.seed ?? 12345);
+  const totals: number[] = [];
+  let positives = 0;
+  for (let iter = 0; iter < iterations; iter += 1) {
+    let total = 0;
+    for (let i = 0; i < g; i += 1) {
+      total += sumas[Math.floor(rand() * g)];
+    }
+    totals.push(total);
+    if (total > 0) positives += 1;
+  }
+  totals.sort((a, b) => a - b);
+  const tail = (1 - confidence) / 2;
+  return {
+    meanUsd: sum([...nets]),
+    lowerUsd: totals[Math.floor(tail * iterations)],
+    upperUsd: totals[Math.min(iterations - 1, Math.floor((1 - tail) * iterations))],
+    positiveShare: positives / iterations,
+    p5Usd: totals[Math.floor(0.05 * iterations)],
+    bloques: g,
+  };
+}
+
 export interface WinLossProfile {
   wins: number;
   losses: number;

@@ -1,352 +1,503 @@
 /**
- * Barrido de configuraciones del FAVORITO sobre las ventanas ya observadas, con particion fuera de
- * muestra.
+ * Barrido del FAVORITO sobre las ventanas ya observadas: entradas por TRAMOS cronologicos, salidas, y
+ * seguimiento hacia delante con cruce contra el ledger.
  *
- * La pregunta que responde: de todo lo que se puede tocar del favorito, ¿algo tiene ventaja de verdad,
- * o la banda 0,79-0,90 esta simplemente bien preciada? Hasta ahora no habia forma de preguntarlo — el
- * replay del repo solo sabe reconstruir el camino direccional, asi que cada ajuste del favorito se
- * decidio con una tabla escrita a mano sobre un universo distinto y sin particion. Ver `favoriteReplay`.
+ *   npx tsx src/smoke/favoritoReplay.ts                             rejilla de entradas + salidas
+ *   npx tsx src/smoke/favoritoReplay.ts --desde 2026-09-11T12:00:00Z  solo lo posterior + cruce con ledger
  *
- * Como se lee la salida, y cual es la unica columna que importa:
+ * POR QUE TRAMOS Y NO MITADES. La primera version elegia la casilla con mas neto por operacion en la
+ * primera mitad y la juzgaba en la segunda. Eligio 80 s con z>=1,5: 179 operaciones, "t=3,28,
+ * bootstrap 100%". Hacia delante perdio (49 entradas, 83,7% de acierto contra 88,0% de equilibrio) y en
+ * seis tramos solo salia positiva en cuatro, con los dos ultimos negativos. Maximizar el neto medio
+ * premia a las casillas pequeñas con suerte; con dos mitades hay demasiado poco para verlo.
  *
- *   - `acierto` a secas NO dice nada. A un ask de 0,86 hace falta acertar el 87,3% solo para empatar.
- *   - `ventaja` = acierto - equilibrio, en puntos porcentuales. Esa es la cifra.
- *   - `IS` / `OOS` = primera y segunda mitad cronologica. Se ELIGE por la primera y se JUZGA por la
- *     segunda. Una ventaja que solo aparece en el conjunto entero es ruido de barrido: la rejilla
- *     tiene decenas de casillas y alguna sale bien por sorteo. Y elegir mirando la segunda mitad
- *     tampoco vale: entonces deja de ser fuera de muestra y solo se esta sobreajustando mas tarde.
- *   - `boot+` = fraccion de remuestreos con neto total positivo (`bootstrapCI`). El estadistico t
- *     asume normalidad y esta distribucion es asimetrica por construccion —las perdidas estan topadas
- *     en el stake y las ganancias no— asi que el bootstrap es la vara correcta.
+ * REGLA DE ELECCION, y esta escrita aqui para que nadie la cambie sin leer lo de arriba: entre las
+ * casillas con al menos `N_MINIMO` operaciones y datos en todos los tramos, se ordena por el PEOR tramo
+ * y despues por el P5 del bootstrap por ventanas. Nunca por el neto medio.
  *
- * Se imprimen DOS lineas por configuracion: sin el gate de EV y con el. No es redundante — es la
- * leccion de DOGE: una tabla que evaluaba banda+momentum sin el gate real declaro perdedora una
- * ventana que el gate hacia ganadora. Si las dos lineas se parecen, el gate no esta aportando nada
- * sobre este camino y esa tambien es informacion.
+ * POR QUE BOOTSTRAP POR VENTANAS. Los tres mercados cierran a la vez y pierden juntos: si uno pierde,
+ * otro de la misma ventana pierde el 47,5% de las veces, frente a un 13,2% sin esa condicion. Ver
+ * `bootstrapCIPorBloques`.
+ *
+ * COMO SE LEE: el acierto a secas no dice nada. A un ask de 0,86 hace falta acertar el 87,2% solo para
+ * empatar. La cifra es la `ventaja` = acierto - equilibrio, en puntos porcentuales.
+ *
+ * `--desde` NO corre la rejilla, a proposito. Esa ventana es la prueba pre-registrada de la config
+ * elegida (docs/ARQUITECTURA.md), y buscar la mejor casilla dentro de ella la gastaria: es exactamente
+ * como se fabrico el sobreajuste de 80 s y z>=1,5.
  */
+import { createReadStream } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 import { readAnalyticsSamples } from "../analyticsRecorder.js";
 import { loadConfig } from "../config.js";
+import { resolveStopAsk } from "../favoriteExit.js";
 import {
+  CERTEZA_NUNCA,
+  replayFavoriteExit,
+  summarizeExitReplay,
+  type ExitReplayPolicy,
+  type ExitReplayResult,
+} from "../favoriteExitReplay.js";
+import {
+  breakEvenWinRate,
   replayFavoriteSignals,
   settleFavoriteSignals,
   type FavoriteReplayParams,
   type FavoriteSignal,
 } from "../favoriteReplay.js";
-import {
-  DEFAULT_FAVORITE_MAX_ASK,
-  DEFAULT_FAVORITE_MIN_ASK,
-  DEFAULT_MAX_ASK_SUM,
-} from "../favoriteSelector.js";
+import { DEFAULT_FAVORITE_MAX_ASK, DEFAULT_FAVORITE_MIN_ASK, DEFAULT_MAX_ASK_SUM } from "../favoriteSelector.js";
 import { defaultTakerFeeRateBps } from "../fees.js";
-import { simulateGate, summarizeGateTrades, type SimulatedTrade } from "../gateSimulation.js";
+import { simulateGate } from "../gateSimulation.js";
 import { DEFAULT_MIN_SECONDS_TO_END, SUPPORTED_MARKETS } from "../markets.js";
-import { bootstrapCI } from "../tradeStats.js";
-import { applySettings, UiSettingsStore } from "../ui/settings.js";
+import { bootstrapCIPorBloques } from "../tradeStats.js";
 import type { AnalyticsSample, BotConfig, MarketSymbol } from "../types.js";
+import { applySettings, UiSettingsStore } from "../ui/settings.js";
 
 const STAKE_USD = 5;
+const TRAMOS = 6;
+/** Por debajo de esto una casilla no compite: un 100% sobre 40 operaciones es suerte hasta que se demuestre. */
+const N_MINIMO = 150;
+/** Certezas por debajo de esto se leen como "filtro apagado". La config viva usa -1000. */
+const CERTEZA_APAGADA = -100;
+/** `DEFAULT_MAX_ASK_SPREAD` vive privado en `botRunner`; el valor se repite aqui y solo aqui. */
+const DEFAULT_MAX_ASK_SPREAD = 0.02;
+/**
+ * Antes de esta fecha las muestras resolvian por snapshot y no por TWAP: son otro mercado. Ver el commit
+ * `fafb5d4`, donde un "edge" de esa epoca no sobrevivio al cambio.
+ */
+const REGIMEN_TWAP_MS = Date.parse("2026-08-08T00:00:00Z");
+
+const VENTANAS = [40, 50, 60, 80, 120];
+const CERTEZAS = [Number.NEGATIVE_INFINITY, 0.5, 1, 1.5];
+const BANDAS: Array<[number, number]> = [
+  [0.79, 0.88],
+  [0.79, 0.9],
+  [0.82, 0.88],
+];
 
 /**
- * Los ajustes del gate de EV, LEIDOS de la configuracion viva y no escritos aqui.
+ * Entradas contra las que se miden las SALIDAS cuando la config viva no deja salir.
  *
- * Importa desde que el gate dejo de ser irrelevante: con la ventana en 120 s y z>=1 salia en -0,162
- * fuera de muestra y daba igual con que parametros se midiera, pero con 80 s y z>=1,5 sale en +0,4415.
- * Una cifra que ya significa algo no puede depender de tres constantes que nadie actualiza cuando se
- * mueve `evSafetyMargin` desde la UI. Los defaults son los del esquema de settings.
+ * Con entradas a <= 50 s las salidas no pueden dispararse (10 s de permanencia y >= 45 s al cierre),
+ * asi que medirlas solo sobre la config viva daria una tabla de ceros que no dice nada. Estas son las
+ * entradas de 80 s y z>=1,5 sobre las que se midio que ninguna salida mejora a aguantar.
  */
+const ENTRADAS_REFERENCIA_SALIDAS: Omit<FavoriteReplayParams, "minSecondsToEnd" | "maxAskSum" | "maxAskSpread"> = {
+  entryWindowSeconds: 80,
+  minCertainty: 1.5,
+  minAsk: 0.79,
+  maxAsk: 0.9,
+};
+
+const POLITICAS_SALIDA: Array<[string, ExitReplayPolicy]> = [
+  ["certeza<=0 + stop 0,35", { exitCertainty: 0, stopAsk: 0.35 }],
+  ["solo certeza<=0", { exitCertainty: 0, stopAsk: 0 }],
+  ["solo stop 0,35", { exitCertainty: CERTEZA_NUNCA, stopAsk: 0.35 }],
+  ["certeza<=0,5 + stop 0,35", { exitCertainty: 0.5, stopAsk: 0.35 }],
+  ["certeza<=0 + stop 0,35, hasta 30 s", { exitCertainty: 0, stopAsk: 0.35, minSecondsToEnd: 30 }],
+];
+
 interface AjustesEv {
   safetyMargin: number;
   minExpectedRoi: number;
   rejectEdgeAbove?: number;
 }
 
-function ajustesEv(efectiva: BotConfig): AjustesEv {
-  return {
-    safetyMargin: efectiva.evSafetyMargin ?? 0.03,
-    minExpectedRoi: efectiva.evMinExpectedRoi ?? 0.01,
-    rejectEdgeAbove: efectiva.evMaxClaimedEdge ?? 0.2,
-  };
+interface ConfigViva {
+  params: FavoriteReplayParams;
+  /** `undefined` = salidas apagadas en produccion. */
+  salida?: ExitReplayPolicy;
+  ev: AjustesEv;
+  requirePositiveEv: boolean;
 }
 
 /**
- * La configuracion que corre AHORA MISMO, leida de donde manda de verdad.
+ * La configuracion que corre AHORA, leida de donde manda: `data/ui-config.json` PISA a `.env` en
+ * caliente. Una copia escrita a mano aqui se queda desfasada justo cuando importa.
  *
- * No es una constante escrita a mano a proposito. `data/ui-config.json` PISA a `.env` en caliente, asi
- * que una copia aqui se queda desfasada justo cuando importa y el barrido acaba midiendo una cosa y
- * decidiendo sobre otra — el mismo fallo que tenia el backtest del tuner comparando contra un tope
- * fijo impreso como "(actual)".
- *
- * `minSecondsToEnd` sale de `DEFAULT_MIN_SECONDS_TO_END` (10 s) y NO de los 45 del stop de salida.
- * Son dos numeros distintos y confundirlos recorta del universo justo el tramo final, que es donde la
- * ventana ya esta resuelta: mide la estrategia sin su mejor trozo.
+ * `minSecondsToEnd` sale de `DEFAULT_MIN_SECONDS_TO_END` (10 s) y NO de los 45 del stop de salida:
+ * confundirlos recorta el tramo final, que es donde la ventana ya esta resuelta.
  */
-async function configuracionViva(
-  dataDir: string,
-  base: BotConfig,
-): Promise<{ params: FavoriteReplayParams; ev: AjustesEv }> {
+async function configuracionViva(dataDir: string, base: BotConfig): Promise<ConfigViva> {
   const settings = await new UiSettingsStore(dataDir).load(base);
-  const efectiva = applySettings(base, settings);
+  const e = applySettings(base, settings);
+  const minAsk = e.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK;
   return {
     params: {
-      entryWindowSeconds: efectiva.entryWindowSeconds,
-      minSecondsToEnd: efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
-      minAsk: efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
-      maxAsk: efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
-      maxAskSum: efectiva.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
-      maxAskSpread: efectiva.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
-      minCertainty: efectiva.favoriteMinCertainty ?? 1,
+      entryWindowSeconds: e.entryWindowSeconds,
+      minSecondsToEnd: e.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
+      minAsk,
+      maxAsk: e.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
+      maxAskSum: e.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
+      maxAskSpread: e.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
+      minCertainty: e.favoriteMinCertainty ?? 1,
     },
-    ev: ajustesEv(efectiva),
+    salida: e.favoriteExitEnabled
+      ? {
+          exitCertainty: e.favoriteExitCertainty ?? 0,
+          stopAsk: resolveStopAsk(minAsk, e.favoriteExitStopMargin, e.favoriteExitStopAsk),
+          minSecondsToEnd: e.favoriteExitMinSecondsToEnd,
+          minBid: e.favoriteExitMinBid,
+          minSellFillRatio: e.favoriteExitMinFillRatio,
+          maxAskSum: e.favoriteMaxAskSum,
+          maxSpread: e.favoriteExitMaxSpread,
+          minHoldMs: e.favoriteExitMinHoldSeconds === undefined ? undefined : e.favoriteExitMinHoldSeconds * 1000,
+        }
+      : undefined,
+    ev: {
+      safetyMargin: e.evSafetyMargin ?? 0.03,
+      minExpectedRoi: e.evMinExpectedRoi ?? 0.01,
+      rejectEdgeAbove: e.evMaxClaimedEdge ?? 0.2,
+    },
+    requirePositiveEv: e.requirePositiveEv === true,
   };
 }
 
-/** `DEFAULT_MAX_ASK_SPREAD` vive privado en `botRunner`; el valor se repite aqui y solo aqui. */
-const DEFAULT_MAX_ASK_SPREAD = 0.02;
-
-const VENTANAS = [60, 80, 100, 120, 140];
-/** `-Infinity` = filtro APAGADO. Hay que saber cuanto aporta, no solo cual es su mejor umbral. */
-const CERTEZAS = [Number.NEGATIVE_INFINITY, 0, 0.5, 1, 1.5];
-const SUMAS = [1.03, 1.05, 1.1, 1.15];
-const BANDAS: Array<[number, number]> = [
-  [0.76, 0.85],
-  [0.79, 0.9],
-  [0.82, 0.92],
-  [0.86, 0.94],
-  [0.7, 0.95],
-];
+/** Una operacion ya liquidada, venga del replay directo o del gate de EV. */
+interface Operacion {
+  market: MarketSymbol;
+  windowStartMs: number;
+  won: boolean;
+  breakEven: number;
+  netUsd: number;
+}
 
 interface Medida {
   n: number;
   aciertoPct: number;
   equilibrioPct: number;
   ventajaPp: number;
-  netPerTradeUsd: number;
-  netUsd: number;
-  tStat: number;
-  bootPositivo: number;
+  netoUsd: number;
+  tramos: Array<{ n: number; ventajaPp?: number }>;
+  tramosConDatos: number;
+  tramosPositivos: number;
+  peorTramoPp: number;
+  pPositivo: number;
+  p5Usd: number;
+  porMercado: Map<MarketSymbol, { n: number; ventajaPp?: number }>;
 }
 
-interface Fila {
-  nombre: string;
-  ejecucionPct: number;
-  todo: Medida;
-  /** Primera mitad cronologica. Es donde se ELIGE, y por eso nunca se usa para presumir. */
-  dentro: Medida;
-  oos: Medida;
-  porMercado: Map<MarketSymbol, Medida>;
+function ventajaPp(ops: readonly Operacion[]): number | undefined {
+  if (ops.length === 0) return undefined;
+  const aciertos = ops.filter((op) => op.won).length / ops.length;
+  const equilibrio = ops.reduce((suma, op) => suma + op.breakEven, 0) / ops.length;
+  return 100 * (aciertos - equilibrio);
 }
 
-/**
- * Liquida las señales de un mercado, con o sin el gate de EV.
- *
- * Con gate se delega en `simulateGate`, que es el mismo que corre el evaluador contrafactual del
- * autoajuste. Aqui no se reimplementa: tener dos versiones del gate ya se equivoco una vez.
- */
-function liquidar(
-  signals: readonly FavoriteSignal[],
-  market: MarketSymbol,
-  conGateEv: AjustesEv | undefined,
-): SimulatedTrade[] {
-  const feeRateBps = defaultTakerFeeRateBps(market);
-  if (!conGateEv) {
-    return settleFavoriteSignals(signals, { stakeUsd: STAKE_USD, feeRateBps });
-  }
-  return simulateGate(signals, {
-    // Sin recorte de banda: el favorito ya la aplico al elegir. Repetirla aqui la aplicaria dos veces.
-    minAsk: 0,
-    maxAsk: 1,
-    safetyMargin: conGateEv.safetyMargin,
-    minExpectedRoi: conGateEv.minExpectedRoi,
-    stakeUsd: STAKE_USD,
-    feeRateBps,
-    rejectEdgeAbove: conGateEv.rejectEdgeAbove,
+function liquidarSinGate(signals: readonly FavoriteSignal[]): Operacion[] {
+  return signals.map((signal) => {
+    const [liquidada] = settleFavoriteSignals([signal], {
+      stakeUsd: STAKE_USD,
+      feeRateBps: defaultTakerFeeRateBps(signal.market),
+    });
+    return { market: signal.market, windowStartMs: signal.windowStartMs, won: signal.won, breakEven: signal.breakEven, netUsd: liquidada.netUsd };
   });
 }
 
-/** El equilibrio medio de un conjunto de operaciones: lo que hay que acertar para no perder. */
-function medir(trades: readonly SimulatedTrade[], breakEvenPorAsk: Map<number, number>): Medida {
-  const resumen = summarizeGateTrades(trades);
-  const n = resumen.trades;
-  if (n === 0) {
-    return { n: 0, aciertoPct: 0, equilibrioPct: 0, ventajaPp: 0, netPerTradeUsd: 0, netUsd: 0, tStat: 0, bootPositivo: 0 };
+/**
+ * Con el gate de EV, delegando en `simulateGate`: el mismo que usa el evaluador contrafactual del
+ * autoajuste. Por mercado, porque la calibracion de produccion es por mercado.
+ */
+function liquidarConGate(signals: readonly FavoriteSignal[], ev: AjustesEv): Operacion[] {
+  const ops: Operacion[] = [];
+  for (const market of SUPPORTED_MARKETS) {
+    const feeRateBps = defaultTakerFeeRateBps(market);
+    const delMercado = signals.filter((signal) => signal.market === market);
+    for (const trade of simulateGate(delMercado, {
+      // Sin recorte de banda: el favorito ya la aplico al elegir.
+      minAsk: 0,
+      maxAsk: 1,
+      safetyMargin: ev.safetyMargin,
+      minExpectedRoi: ev.minExpectedRoi,
+      stakeUsd: STAKE_USD,
+      feeRateBps,
+      rejectEdgeAbove: ev.rejectEdgeAbove,
+    })) {
+      ops.push({ market, windowStartMs: trade.windowStartMs, won: trade.won, breakEven: breakEvenWinRate(trade.ask, feeRateBps), netUsd: trade.netUsd });
+    }
   }
-  const equilibrio = trades.reduce((suma, t) => suma + (breakEvenPorAsk.get(t.ask) ?? t.ask), 0) / n;
-  const aciertoPct = (100 * resumen.wins) / n;
-  const equilibrioPct = 100 * equilibrio;
-  const boot = bootstrapCI(trades.map((t) => t.netUsd));
-  return {
-    n,
-    aciertoPct,
-    equilibrioPct,
-    ventajaPp: aciertoPct - equilibrioPct,
-    netPerTradeUsd: resumen.netPerTradeUsd ?? 0,
-    netUsd: resumen.netUsd,
-    tStat: Number.isFinite(resumen.tStat ?? 0) ? (resumen.tStat ?? 0) : 0,
-    bootPositivo: boot.positiveShare,
-  };
+  return ops.sort((izq, der) => izq.windowStartMs - der.windowStartMs);
 }
 
-function evaluar(
-  samples: readonly AnalyticsSample[],
-  nombre: string,
-  params: FavoriteReplayParams,
-  conGateEv: AjustesEv | undefined,
-): Fila {
-  const todos: SimulatedTrade[] = [];
-  const dentro: SimulatedTrade[] = [];
-  const fuera: SimulatedTrade[] = [];
-  const porMercado = new Map<MarketSymbol, Medida>();
-  const breakEvenPorAsk = new Map<number, number>();
-  let windows = 0;
-
+function medir(ops: readonly Operacion[], cortes: readonly number[]): Medida {
+  const n = ops.length;
+  const tramoDe = (ws: number): number => cortes.filter((corte) => ws >= corte).length;
+  const porTramo: Operacion[][] = Array.from({ length: cortes.length + 1 }, () => []);
+  for (const op of ops) porTramo[tramoDe(op.windowStartMs)].push(op);
+  const tramos = porTramo.map((grupo) => ({ n: grupo.length, ventajaPp: ventajaPp(grupo) }));
+  const conDatos = tramos.filter((tramo) => tramo.ventajaPp !== undefined);
+  const boot = bootstrapCIPorBloques(
+    ops.map((op) => op.netUsd),
+    ops.map((op) => op.windowStartMs),
+  );
+  const porMercado = new Map<MarketSymbol, { n: number; ventajaPp?: number }>();
   for (const market of SUPPORTED_MARKETS) {
-    const delMercado = samples.filter((sample) => sample.market === market);
-    const { signals, windows: vistas } = replayFavoriteSignals(delMercado, params);
-    windows += vistas;
-    for (const signal of signals) {
-      breakEvenPorAsk.set(signal.ask, signal.breakEven);
-    }
-
-    const trades = liquidar(signals, market, conGateEv);
-    todos.push(...trades);
-    // Particion CRONOLOGICA por mercado, no sobre la mezcla: si un mercado empezo a registrarse mas
-    // tarde, cortar el conjunto unido por la mitad le daria todas sus operaciones a la segunda mitad.
-    const corte = Math.floor(trades.length / 2);
-    dentro.push(...trades.slice(0, corte));
-    fuera.push(...trades.slice(corte));
-    porMercado.set(market, medir(trades, breakEvenPorAsk));
+    const delMercado = ops.filter((op) => op.market === market);
+    porMercado.set(market, { n: delMercado.length, ventajaPp: ventajaPp(delMercado) });
   }
-
-  todos.sort((izq, der) => izq.windowStartMs - der.windowStartMs);
   return {
-    nombre,
-    ejecucionPct: windows > 0 ? (100 * todos.length) / windows : 0,
-    todo: medir(todos, breakEvenPorAsk),
-    dentro: medir(dentro, breakEvenPorAsk),
-    oos: medir(fuera, breakEvenPorAsk),
+    n,
+    aciertoPct: n ? (100 * ops.filter((op) => op.won).length) / n : 0,
+    equilibrioPct: n ? (100 * ops.reduce((suma, op) => suma + op.breakEven, 0)) / n : 0,
+    ventajaPp: ventajaPp(ops) ?? 0,
+    netoUsd: ops.reduce((suma, op) => suma + op.netUsd, 0),
+    tramos,
+    tramosConDatos: conDatos.length,
+    tramosPositivos: conDatos.filter((tramo) => (tramo.ventajaPp ?? 0) > 0).length,
+    peorTramoPp: conDatos.length ? Math.min(...conDatos.map((tramo) => tramo.ventajaPp ?? 0)) : 0,
+    pPositivo: boot.positiveShare,
+    p5Usd: boot.p5Usd,
     porMercado,
   };
 }
 
-function linea(fila: Fila): string {
-  const m = fila.todo;
-  const o = fila.oos;
-  const pp = (valor: number): string => `${valor >= 0 ? "+" : ""}${valor.toFixed(2)}pp`;
-  const usd = (valor: number): string => `${valor >= 0 ? "+" : ""}${valor.toFixed(4)}`;
+/** Cortes de tiempo que parten las ventanas en `TRAMOS` grupos de igual numero de ventanas. */
+function cortesDeTramos(samples: readonly AnalyticsSample[]): number[] {
+  const tiempos = samples.map((sample) => sample.windowStartMs).sort((a, b) => a - b);
+  if (tiempos.length < TRAMOS) return [];
+  return Array.from({ length: TRAMOS - 1 }, (_, i) => tiempos[Math.floor(((i + 1) * tiempos.length) / TRAMOS)]);
+}
+
+const pp = (valor: number | undefined): string => (valor === undefined ? "-" : `${valor >= 0 ? "+" : ""}${valor.toFixed(2)}pp`);
+const usd = (valor: number): string => `${valor >= 0 ? "+" : ""}${valor.toFixed(2)}$`;
+
+function linea(nombre: string, m: Medida, dias: number): string {
   return [
-    fila.nombre.padEnd(34),
+    nombre.padEnd(34),
     `n=${String(m.n).padStart(4)}`,
-    `ejec=${fila.ejecucionPct.toFixed(1).padStart(4)}%`,
-    `acierto=${m.aciertoPct.toFixed(1).padStart(5)}%`,
-    `equil=${m.equilibrioPct.toFixed(1).padStart(5)}%`,
+    `${(m.n / dias).toFixed(0).padStart(3)}/dia`,
+    `acierto=${m.aciertoPct.toFixed(1)}%`,
+    `equil=${m.equilibrioPct.toFixed(1)}%`,
     `ventaja=${pp(m.ventajaPp).padStart(8)}`,
-    `neto/op=${usd(m.netPerTradeUsd).padStart(8)}`,
-    `t=${m.tStat.toFixed(2).padStart(6)}`,
-    `boot+=${(100 * m.bootPositivo).toFixed(0).padStart(3)}%`,
-    `| IS neto/op=${usd(fila.dentro.netPerTradeUsd).padStart(8)}`,
-    `| OOS n=${String(o.n).padStart(4)} ventaja=${pp(o.ventajaPp).padStart(8)} neto/op=${usd(o.netPerTradeUsd).padStart(8)}`,
+    `neto=${usd(m.netoUsd).padStart(9)}`,
+    `${usd(m.netoUsd / dias).padStart(7)}/dia`,
+    `tramos+=${m.tramosPositivos}/${m.tramosConDatos}`,
+    `peor=${pp(m.peorTramoPp).padStart(8)}`,
+    `P(+)=${(100 * m.pPositivo).toFixed(0).padStart(3)}%`,
+    `P5=${usd(m.p5Usd).padStart(8)}`,
   ].join(" ");
 }
 
-function porMercado(fila: Fila): string {
-  return SUPPORTED_MARKETS.map((market) => {
-    const m = fila.porMercado.get(market);
-    if (!m || m.n === 0) {
-      return `${market} -`;
-    }
-    return `${market} n=${m.n} ventaja=${m.ventajaPp >= 0 ? "+" : ""}${m.ventajaPp.toFixed(1)}pp neto/op=${m.netPerTradeUsd >= 0 ? "+" : ""}${m.netPerTradeUsd.toFixed(3)}`;
-  }).join("  |  ");
+function detalle(m: Medida): string {
+  const tramos = m.tramos.map((tramo) => `${tramo.ventajaPp === undefined ? "-" : tramo.ventajaPp.toFixed(1)}(${tramo.n})`).join(" ");
+  const mercados = SUPPORTED_MARKETS.map((market) => {
+    const x = m.porMercado.get(market);
+    return `${market} ${pp(x?.ventajaPp)}(${x?.n ?? 0})`;
+  }).join(" · ");
+  return `    tramos: ${tramos}   |   ${mercados}`;
 }
 
-function nombreDe(params: FavoriteReplayParams): string {
-  const certeza = params.minCertainty === Number.NEGATIVE_INFINITY ? "off" : params.minCertainty.toFixed(1);
-  return `v=${params.entryWindowSeconds}s z>=${certeza} suma<=${params.maxAskSum} ${params.minAsk}-${params.maxAsk}`;
+function nombreDe(params: Pick<FavoriteReplayParams, "entryWindowSeconds" | "minCertainty" | "minAsk" | "maxAsk">): string {
+  const certeza = params.minCertainty <= CERTEZA_APAGADA ? "off" : String(params.minCertainty);
+  return `v=${params.entryWindowSeconds}s z>=${certeza} ${params.minAsk}-${params.maxAsk}`;
 }
+
+function leerDesde(argv: readonly string[]): number | undefined {
+  const i = argv.findIndex((arg) => arg === "--desde" || arg.startsWith("--desde="));
+  if (i < 0) return undefined;
+  const crudo = argv[i].includes("=") ? argv[i].split("=")[1] : argv[i + 1];
+  const ms = Date.parse(crudo ?? "");
+  if (!Number.isFinite(ms)) {
+    throw new Error(`--desde necesita una fecha ISO valida, no "${crudo}".`);
+  }
+  return ms;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Salidas
+
+function medirSalidas(
+  titulo: string,
+  signals: readonly FavoriteSignal[],
+  porSlug: ReadonlyMap<string, AnalyticsSample>,
+  viva: ExitReplayPolicy | undefined,
+): void {
+  const politicas: Array<[string, ExitReplayPolicy]> = viva ? [["VIVA", viva], ...POLITICAS_SALIDA] : POLITICAS_SALIDA;
+  const aguantar = signals
+    .map((signal) => {
+      const sample = porSlug.get(signal.slug);
+      return sample ? replayFavoriteExit({ sample, signal, stakeUsd: STAKE_USD }) : undefined;
+    })
+    .filter((r): r is ExitReplayResult => r !== undefined);
+  const base = summarizeExitReplay(aguantar);
+  console.log(`-- ${titulo}: ${base.entradas} entradas, aguantar siempre = ${usd(base.holdNetUsd)}${viva ? "" : "   (salidas APAGADAS en produccion)"}`);
+  for (const [nombre, politica] of politicas) {
+    const resultados = signals
+      .map((signal) => {
+        const sample = porSlug.get(signal.slug);
+        return sample ? replayFavoriteExit({ sample, signal, policy: politica, stakeUsd: STAKE_USD }) : undefined;
+      })
+      .filter((r): r is ExitReplayResult => r !== undefined);
+    const resumen = summarizeExitReplay(resultados);
+    const boot = bootstrapCIPorBloques(
+      resultados.map((r) => r.netUsd - r.holdNetUsd),
+      resultados.map((r) => r.windowStartMs),
+    );
+    console.log(
+      [
+        `   ${nombre.padEnd(36)}`,
+        `ventas=${String(resumen.ventas).padStart(4)}`,
+        `que ganaban=${String(resumen.ventasQueGanaban).padStart(3)} (${resumen.ventas ? ((100 * resumen.ventasQueGanaban) / resumen.ventas).toFixed(0) : 0}%)`,
+        `frente a aguantar=${usd(resumen.deltaUsd).padStart(8)}`,
+        `por venta=${usd(resumen.ventas ? resumen.deltaUsd / resumen.ventas : 0).padStart(7)}`,
+        `P(mejora)=${(100 * boot.positiveShare).toFixed(0)}%`,
+      ].join("  "),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Cruce con el ledger (solo --desde)
+
+interface FilaLedger {
+  id: string;
+  slug: string;
+  asset: MarketSymbol;
+  outcome: string;
+  bestAsk: number;
+  createdAtMs: number;
+  endMs: number;
+  windowStartMs: number;
+  mode: string;
+  strategy?: string;
+  reentry?: number;
+}
+
+async function leerLedger(path: string): Promise<{ trades: FilaLedger[]; ganador: Map<string, string> }> {
+  const porId = new Map<string, FilaLedger>();
+  const ganador = new Map<string, string>();
+  const rl = createInterface({ input: createReadStream(path) });
+  for await (const linea of rl) {
+    if (!linea.trim()) continue;
+    let fila: { trade?: FilaLedger & { officialResolution?: { winningOutcome?: string } }; officialResolution?: { winningOutcome?: string } };
+    try {
+      fila = JSON.parse(linea);
+    } catch {
+      continue;
+    }
+    if (!fila.trade?.id) continue;
+    porId.set(fila.trade.id, { ...(porId.get(fila.trade.id) ?? {}), ...fila.trade });
+    const w = fila.officialResolution?.winningOutcome ?? fila.trade.officialResolution?.winningOutcome;
+    if (w) ganador.set(fila.trade.id, w);
+  }
+  return { trades: [...porId.values()], ganador };
+}
+
+function mediana(xs: readonly number[]): number {
+  if (xs.length === 0) return 0;
+  const ordenados = [...xs].sort((a, b) => a - b);
+  return ordenados[Math.floor(ordenados.length / 2)];
+}
+
+async function cruzarConLedger(dataDir: string, desde: number, replay: readonly FavoriteSignal[], cortes: readonly number[], dias: number): Promise<void> {
+  const { trades, ganador } = await leerLedger(join(dataDir, "trades.jsonl"));
+  // Solo la entrada ORIGINAL de cada ventana: el replay no modela reentradas.
+  const ledger = trades.filter((t) => t.strategy === "favorito" && t.mode === "sim" && (t.reentry ?? 0) === 0 && t.windowStartMs >= desde);
+  const ledgerPorSlug = new Map(ledger.map((t) => [t.slug, t]));
+  const replayPorSlug = new Map(replay.map((s) => [s.slug, s]));
+  const ambos = [...ledgerPorSlug.keys()].filter((slug) => replayPorSlug.has(slug));
+  const soloLedger = ledger.length - ambos.length;
+  const soloReplay = replay.length - ambos.length;
+  const ladoDistinto = ambos.filter((slug) => ledgerPorSlug.get(slug)!.outcome !== replayPorSlug.get(slug)!.outcome).length;
+  const difAsk = ambos.map((slug) => ledgerPorSlug.get(slug)!.bestAsk - replayPorSlug.get(slug)!.ask);
+  const difSegundos = ambos.map((slug) => {
+    const t = ledgerPorSlug.get(slug)!;
+    return (t.endMs - t.createdAtMs) / 1000 - replayPorSlug.get(slug)!.secondsToEnd;
+  });
+
+  console.log("=== CRUCE con el ledger (entradas originales del favorito en sim) ===");
+  console.log(`ledger=${ledger.length} replay=${replay.length} | en ambos=${ambos.length} solo ledger=${soloLedger} solo replay=${soloReplay}`);
+  console.log(`en las compartidas: lado distinto=${ladoDistinto} | ask ledger-replay (mediana)=${mediana(difAsk).toFixed(3)} | segundos al cierre ledger-replay (mediana)=${mediana(difSegundos).toFixed(1)}`);
+  if (ladoDistinto > 0) {
+    console.log("AVISO: el bot y el replay eligen lados distintos. No se juzga la estrategia hasta explicar esto.");
+  }
+
+  const resueltas: Operacion[] = ledger
+    .filter((t) => ganador.has(t.id))
+    .map((t) => {
+      const feeRateBps = defaultTakerFeeRateBps(t.asset);
+      const won = ganador.get(t.id) === t.outcome;
+      const [liquidada] = settleFavoriteSignals(
+        [{ predicted: t.bestAsk, won, ask: t.bestAsk, windowStartMs: t.windowStartMs, market: t.asset, slug: t.slug, outcome: t.outcome as FavoriteSignal["outcome"], secondsToEnd: 0, breakEven: breakEvenWinRate(t.bestAsk, feeRateBps) }],
+        { stakeUsd: STAKE_USD, feeRateBps },
+      );
+      return { market: t.asset, windowStartMs: t.windowStartMs, won, breakEven: breakEvenWinRate(t.bestAsk, feeRateBps), netUsd: liquidada.netUsd };
+    });
+  const m = medir(resueltas, cortes);
+  console.log(linea("LEDGER (verdad oficial, a 5 $)", m, dias));
+  console.log(detalle(m));
+}
+
+// ---------------------------------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
-  const samples = await readAnalyticsSamples(join(config.dataDir, "analytics.jsonl"));
-  const { params: PRODUCCION, ev: EV } = await configuracionViva(config.dataDir, config);
+  const desde = leerDesde(process.argv.slice(2));
+  const todas = (await readAnalyticsSamples(join(config.dataDir, "analytics.jsonl")))
+    .filter((sample) => sample.windowStartMs >= REGIMEN_TWAP_MS)
+    .sort((izq, der) => izq.windowStartMs - der.windowStartMs);
+  const viva = await configuracionViva(config.dataDir, config);
+  const universo = desde === undefined ? todas : todas.filter((sample) => sample.windowStartMs >= desde);
+  if (universo.length === 0) {
+    console.log("No hay ventanas en el periodo pedido.");
+    return;
+  }
+  const dias = Math.max((universo[universo.length - 1].windowStartMs - universo[0].windowStartMs) / 86_400_000, 1 / 288);
+  const cortes = cortesDeTramos(universo);
+  const porSlug = new Map(todas.map((sample) => [sample.slug, sample]));
+  // Siempre sobre TODO el historico y filtrando despues: asi la primera ventana del periodo no se pierde
+  // como "calentamiento" del `predicted` walk-forward.
+  const enUniverso = (signals: FavoriteSignal[]): FavoriteSignal[] =>
+    desde === undefined ? signals : signals.filter((signal) => signal.windowStartMs >= desde);
 
-  console.log(`FAVORITO — replay sobre ${samples.length} ventanas de ${join(config.dataDir, "analytics.jsonl")}`);
-  console.log(`stake $${STAKE_USD} · ventaja = acierto - equilibrio · IS/OOS = mitades cronologicas por mercado`);
-  console.log(`configuracion viva (data/ui-config.json sobre .env): ${nombreDe(PRODUCCION)} suelo=${PRODUCCION.minSecondsToEnd}s`);
-  console.log(`gate de EV: margen=${EV.safetyMargin} roiMin=${EV.minExpectedRoi} topeVentaja=${EV.rejectEdgeAbove}`);
+  console.log(`FAVORITO — ${universo.length} ventanas del regimen TWAP en ${dias.toFixed(1)} dias${desde === undefined ? "" : ` desde ${new Date(desde).toISOString()}`}`);
+  console.log(`config viva (data/ui-config.json sobre .env): ${nombreDe(viva.params)} suma<=${viva.params.maxAskSum} suelo=${viva.params.minSecondsToEnd}s | salidas ${viva.salida ? "ENCENDIDAS" : "apagadas"} | gate de EV ${viva.requirePositiveEv ? "encendido" : "apagado"}`);
+  console.log(`stake ${STAKE_USD}$ · ventaja = acierto - equilibrio · ${TRAMOS} tramos cronologicos · bootstrap por ventanas`);
   console.log("");
 
-  const referencia = replayFavoriteSignals(samples, PRODUCCION);
-  console.log("Por que NO entra, con la configuracion de produccion:");
-  for (const [motivo, veces] of Object.entries(referencia.skips).sort((izq, der) => der[1] - izq[1])) {
-    console.log(`  ${motivo.padEnd(32)} ${String(veces).padStart(5)}`);
-  }
+  const vivaSignals = enUniverso(replayFavoriteSignals(todas, viva.params).signals);
+  console.log("=== CONFIG VIVA ===");
+  const sinGate = medir(liquidarSinGate(vivaSignals), cortes);
+  console.log(linea(`sin gate de EV${viva.requirePositiveEv ? "" : " (lo que corre)"}`, sinGate, dias));
+  console.log(detalle(sinGate));
+  const conGate = medir(liquidarConGate(vivaSignals, viva.ev), cortes);
+  console.log(linea(`con gate de EV${viva.requirePositiveEv ? " (lo que corre)" : ""}`, conGate, dias));
   console.log("");
 
-  for (const conGateEv of [undefined, EV]) {
-    console.log(conGateEv ? "=== CON gate de EV ===" : "=== SIN gate de EV ===");
-    const base = evaluar(samples, `PRODUCCION ${nombreDe(PRODUCCION)}`, PRODUCCION, conGateEv);
-    console.log(linea(base));
-    console.log(`  ${porMercado(base)}`);
-    console.log("");
-  }
-
-  // Rejilla CONJUNTA de tiempo y certeza. Por separado no vale: cuanto menos tiempo queda, mayor es z
-  // para la misma distancia, asi que medir una sola le atribuye el efecto de la otra. Ese confounding
-  // es la explicacion mas probable de que la tabla original viera en z una ventaja que era del tiempo.
-  console.log("=== rejilla conjunta: ventana de entrada x certeza (sin gate de EV) ===");
-  const rejilla: Fila[] = [];
-  for (const entryWindowSeconds of VENTANAS) {
-    for (const minCertainty of CERTEZAS) {
-      const params = { ...PRODUCCION, entryWindowSeconds, minCertainty };
-      rejilla.push(evaluar(samples, nombreDe(params), params, undefined));
-    }
-  }
-  for (const fila of rejilla) {
-    console.log(linea(fila));
-  }
-  console.log("");
-
-  // Se elige por la PRIMERA mitad y se juzga por la segunda. Elegir por la segunda y reportar la
-  // segunda es circular: la casilla ganadora lo es porque se la escogio mirando justo esa cifra, y el
-  // "fuera de muestra" deja de serlo. Es el sobreajuste que `outOfSample` existe para evitar.
-  const mejores = [...rejilla]
-    .filter((fila) => fila.dentro.n >= 30)
-    .sort((izq, der) => der.dentro.netPerTradeUsd - izq.dentro.netPerTradeUsd)
-    .slice(0, 3);
-  if (mejores.length === 0) {
-    console.log("Ninguna casilla de la rejilla llega a 30 operaciones DENTRO de muestra.");
+  if (desde !== undefined) {
+    await cruzarConLedger(config.dataDir, desde, vivaSignals, cortes, dias);
     return;
   }
 
-  console.log("=== las 3 mejores DENTRO de muestra, cruzadas con el libro y la banda (se juzgan por OOS) ===");
-  for (const mejor of mejores) {
-    const base = rejilla.find((fila) => fila.nombre === mejor.nombre);
-    if (!base) continue;
-    const params = paramsDe(mejor.nombre, PRODUCCION);
-    console.log(`-- sobre ${mejor.nombre}`);
-    console.log(`   ${porMercado(base)}`);
-    for (const maxAskSum of SUMAS) {
-      const candidata = { ...params, maxAskSum };
-      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, undefined)));
+  console.log(`=== REJILLA — ordenada por la regla: peor tramo, despues P5 (n >= ${N_MINIMO} y datos en los ${TRAMOS} tramos) ===`);
+  const filas: Array<{ nombre: string; m: Medida; compite: boolean }> = [];
+  for (const entryWindowSeconds of VENTANAS) {
+    for (const minCertainty of CERTEZAS) {
+      for (const [minAsk, maxAsk] of BANDAS) {
+        const params: FavoriteReplayParams = { ...viva.params, entryWindowSeconds, minCertainty, minAsk, maxAsk };
+        const m = medir(liquidarSinGate(replayFavoriteSignals(todas, params).signals), cortes);
+        filas.push({ nombre: nombreDe(params), m, compite: m.n >= N_MINIMO && m.tramosConDatos === TRAMOS });
+      }
     }
-    for (const [minAsk, maxAsk] of BANDAS) {
-      const candidata = { ...params, minAsk, maxAsk };
-      console.log(linea(evaluar(samples, nombreDe(candidata), candidata, undefined)));
-    }
-    console.log("");
   }
-}
+  filas.sort((izq, der) => {
+    if (izq.compite !== der.compite) return izq.compite ? -1 : 1;
+    return der.m.peorTramoPp - izq.m.peorTramoPp || der.m.p5Usd - izq.m.p5Usd;
+  });
+  const nombreViva = nombreDe(viva.params);
+  for (const fila of filas) {
+    const marca = fila.nombre === nombreViva ? " <- viva" : fila.compite ? "" : " (no compite)";
+    console.log(linea(fila.nombre + marca, fila.m, dias));
+    if (fila.compite) console.log(detalle(fila.m));
+  }
+  console.log("");
 
-/** Reconstruye los parametros desde el nombre impreso. Evita arrastrar la tupla por toda la rejilla. */
-function paramsDe(nombre: string, base: FavoriteReplayParams): FavoriteReplayParams {
-  const ventana = Number(/v=(\d+)s/.exec(nombre)?.[1] ?? base.entryWindowSeconds);
-  const crudo = /z>=([^\s]+)/.exec(nombre)?.[1] ?? "1.0";
-  return {
-    ...base,
-    entryWindowSeconds: ventana,
-    minCertainty: crudo === "off" ? Number.NEGATIVE_INFINITY : Number(crudo),
-  };
+  console.log("=== SALIDAS — frente a aguantar hasta la resolucion, sobre las MISMAS entradas ===");
+  medirSalidas(`entradas de la config viva (${nombreViva})`, vivaSignals, porSlug, viva.salida);
+  const referencia: FavoriteReplayParams = { ...viva.params, ...ENTRADAS_REFERENCIA_SALIDAS };
+  medirSalidas(`entradas de referencia (${nombreDe(referencia)})`, replayFavoriteSignals(todas, referencia).signals, porSlug, viva.salida);
 }
 
 await main();

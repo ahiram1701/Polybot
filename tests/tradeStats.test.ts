@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bootstrapCI, trimmedNet, winLossProfile } from "../src/tradeStats.js";
+import { bootstrapCI, bootstrapCIPorBloques, trimmedNet, winLossProfile } from "../src/tradeStats.js";
 
 describe("tradeStats", () => {
   it("trims BOTH tails, not just the winners", () => {
@@ -49,5 +49,53 @@ describe("tradeStats", () => {
     expect(p.payoffRatio).toBeCloseTo(1.6);
     expect(p.bestUsd).toBe(14);
     expect(p.worstUsd).toBe(-5); // la cola baja esta topada; la alta no
+  });
+});
+
+describe("bootstrapCIPorBloques", () => {
+  // Si esto se rompe, el bootstrap por bloques deja de ser "el mismo con otra unidad" y pasa a ser otro
+  // estimador distinto, con otra forma de equivocarse.
+  it("con un bloque por operacion da exactamente lo mismo que bootstrapCI", () => {
+    const nets = Array.from({ length: 80 }, (_v, i) => (i % 3 === 0 ? -5 : 0.9));
+    const plano = bootstrapCI(nets, { iterations: 400, seed: 3 });
+    const porBloques = bootstrapCIPorBloques(nets, nets.map((_v, i) => i), { iterations: 400, seed: 3 });
+
+    expect(porBloques.lowerUsd).toBe(plano.lowerUsd);
+    expect(porBloques.upperUsd).toBe(plano.upperUsd);
+    expect(porBloques.positiveShare).toBe(plano.positiveShare);
+    expect(porBloques.meanUsd).toBe(plano.meanUsd);
+    expect(porBloques.bloques).toBe(80);
+  });
+
+  // El caso que motiva la funcion: tres mercados de la misma ventana que ganan o pierden JUNTOS. Son 60
+  // sorteos, no 180, y el intervalo tiene que decirlo (en teoria sale raiz de 3 veces mas ancho).
+  it("ensancha el intervalo cuando las operaciones de una misma ventana van juntas", () => {
+    const nets: number[] = [];
+    const ventanas: number[] = [];
+    for (let v = 0; v < 60; v += 1) {
+      const resultado = v % 2 === 0 ? 4 : -3;
+      for (let mercado = 0; mercado < 3; mercado += 1) {
+        nets.push(resultado);
+        ventanas.push(v * 300_000);
+      }
+    }
+    const sueltas = bootstrapCI(nets, { iterations: 2000, seed: 5 });
+    const porVentana = bootstrapCIPorBloques(nets, ventanas, { iterations: 2000, seed: 5 });
+
+    expect(porVentana.bloques).toBe(60);
+    expect(porVentana.upperUsd - porVentana.lowerUsd).toBeGreaterThan(1.4 * (sueltas.upperUsd - sueltas.lowerUsd));
+    expect(porVentana.p5Usd).toBeLessThan(porVentana.meanUsd);
+  });
+
+  it("es reproducible con la misma semilla", () => {
+    const nets = [1, -5, 0.8, 0.8, -5, 1.2];
+    const bloques = ["a", "a", "b", "c", "c", "d"];
+
+    expect(bootstrapCIPorBloques(nets, bloques, { seed: 9 })).toEqual(bootstrapCIPorBloques(nets, bloques, { seed: 9 }));
+  });
+
+  it("rechaza listas de distinta longitud y devuelve ceros sin datos", () => {
+    expect(() => bootstrapCIPorBloques([1, 2], [1])).toThrow();
+    expect(bootstrapCIPorBloques([], [])).toEqual({ meanUsd: 0, lowerUsd: 0, upperUsd: 0, positiveShare: 0, p5Usd: 0, bloques: 0 });
   });
 });

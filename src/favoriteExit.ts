@@ -87,16 +87,21 @@ export const DEFAULT_EXIT_MIN_HOLD_MS = 10_000;
 /**
  * Certeza a la que se vende. Cero = se vende cuando la ventaja se ha evaporado del todo.
  *
- * Es el disparador BUENO, el que mide el oraculo en vez del libro. Barrido sobre las 152 entradas con
- * certeza alta del historico:
+ * AVISO (2026-09-11): la tabla que justificaba este valor —152 entradas, aguantar +0,4623 frente a
+ * vender con certeza <= 0 +0,5686— se midio sobre el mismo universo equivocado que la tabla vieja de
+ * `FAVORITE_MIN_CERTAINTY`: "aguantando hasta el cierre", sin la ventana de entrada ni la banda de
+ * produccion. Replicada de verdad (`src/favoriteExitReplay.ts` y la seccion de salidas de
+ * `src/smoke/favoritoReplay.ts`), ninguna variante mejora a aguantar:
  *
- *   aguantar siempre          +0,4623 por operacion    0 ventas
- *   vender con certeza <= 0   +0,5686                  9 ventas
- *   vender con certeza <= 0,25 +0,5166                14 ventas
- *   vender con certeza <= 0,50 +0,4876                19 ventas
+ *   ledger, 156 salidas reales (6-10 sep)               -5,50 $ frente a aguantar
+ *   replay, entradas de 80 s y z>=1,5, certeza <= 0     -4,01 $
+ *   replay, mismas entradas, certeza <= 0,5            -31,08 $
+ *   vendiendo hasta 30 / 20 / 10 s del cierre           no mejora
  *
- * Cero, no 0,25: cuanto antes se vende mas se paga el ancho del libro por ventanas que se habrian
- * recuperado solas. En cero se vende solo cuando el precio ya esta al otro lado del strike.
+ * El problema es de fondo, no de umbral: cuando la certeza cae a cero el bid ya esta en ~0,20. El libro
+ * descuenta la caida a la vez que el oraculo, asi que queda poco que salvar, y cada falsa alarma cuesta
+ * ~3,6 $ frente a los ~1,8 $ que ahorra una buena. Por eso la salida esta APAGADA en produccion
+ * (`favoriteExitEnabled: false`). El codigo se conserva para poder volver a medir.
  */
 export const DEFAULT_EXIT_CERTAINTY = 0;
 
