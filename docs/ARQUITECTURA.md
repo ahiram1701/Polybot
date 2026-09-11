@@ -108,8 +108,9 @@ Tres cosas que no son obvias:
   antiguo. Un fallback silencioso pondría a operar con dinero real una estrategia distinta de la que el
   operador acaba de elegir.
 - **Opera durante toda la ventana, pero con DOS techos de tiempo, no uno.** El declarado es
-  `entryWindowSeconds` (120 desde 2026-09-07; ver más abajo por qué ese número decide el signo del
-  resultado). El otro no se declara: `getAnalyticsQuotes` solo pedía
+  `entryWindowSeconds`: 50 desde 2026-09-11, antes 80 (08-sep) y 120 (07-sep). Más abajo, en "CUÁNDO
+  entrar" y "La certeza de la ventana", se explica por qué este número decide el signo del resultado.
+  El otro no se declara: `getAnalyticsQuotes` solo pedía
   los libros dentro de `ANALYTICS_WINDOW_SECONDS` (120 de 300), y el favorito ELIGE lado con esos
   libros — así que abrir la ventana declarada sin abrir el suministro dejaba la estrategia ciega,
   registrando `favorite_missing_quote` en bucle. Ahora el favorito también los pide fuera de esa
@@ -206,99 +207,143 @@ del favorito —selector, ventana, certeza, spread— llamando a los módulos de
 reimplementarlos. Hasta entonces no había forma: todo el arsenal de backtest cuelga de
 `replaySignals`, que reconstruye la señal por distancia de Chainlink, o sea el camino direccional.
 
-#### Lo que mide el camino real
+#### 80 s y z ≥ 1,5 (del 8 al 11 de septiembre): la segunda tabla que engañó
 
-`npx tsx src/smoke/favoritoReplay.ts`, sobre 4.176 ventanas, eligiendo por la primera mitad
-cronológica y juzgando por la segunda. Neto por operación de 5 $, **fuera de muestra**:
+Con el replay recién hecho se midió esto, eligiendo por la primera mitad cronológica y juzgando por la
+segunda. Neto por operación de 5 $ en la segunda mitad:
 
 | ventana ↓ / z → | apagado | ≥ 0,5 | ≥ 1,0 | ≥ 1,5 |
 |---|---|---|---|---|
 | 60 s | +0,056 | +0,058 | +0,374 | +0,489 |
-| **80 s** | −0,054 | −0,077 | +0,063 | **+0,417** |
+| 80 s | −0,054 | −0,077 | +0,063 | **+0,417** |
 | 100 s | −0,092 | −0,105 | −0,114 | +0,156 |
-| 120 s | −0,082 | −0,085 | **−0,138** | −0,097 |
+| 120 s | −0,082 | −0,085 | −0,138 | −0,097 |
 | 140 s | −0,068 | −0,078 | −0,132 | −0,050 |
 
-La casilla en negrita de la fila de 120 s es **lo que corría hasta el 2026-09-08**: −1,08 pp de
-ventaja y −0,061 por operación en el conjunto, −0,138 fuera de muestra. Llevaba perdiendo.
+Se eligió **80 s con z ≥ 1,5**: 179 operaciones, +6,10 pp de ventaja, "t = 3,28, bootstrap positivo
+el 100%". **Esas dos últimas cifras estaban infladas, y se corrigen aquí.**
 
-**Ninguno de los dos números vale por su cuenta.** De 100 s para arriba no hay umbral de certeza que
-salve nada; de 100 s para abajo la certeza multiplica por siete lo que ya había. Leer la tabla por
-filas o por columnas sueltas es exactamente el *confounding* que produjo la conclusión anterior:
-cuanto menos tiempo queda, mayor es z para la misma distancia, así que medir una sola le atribuye el
-efecto de la otra.
+- **Hacia delante perdió.** 49 entradas, 83,7% de acierto contra 88,0% de equilibrio, −13 $. El bot
+  hacía exactamente lo que medía el replay: en las 38 ventanas compartidas, mismo lado, mismo ask y
+  mismo segundo. No era un fallo del bot.
+- **La elección premiaba la suerte.** Se escogió la casilla con más neto medio dentro de muestra, y eso
+  favorece las casillas pequeñas que salieron bien. Con dos mitades hay muy poco para verlo. Con seis
+  tramos cronológicos, esa config es positiva en 4 de 6 y los dos últimos son negativos.
+- **Las operaciones no son independientes.** Los tres mercados cierran a la vez y pierden juntos: si
+  uno pierde, otro de la misma ventana pierde el 47,5% de las veces, frente a un 13,2% sin esa
+  condición (181 pares). El t y el bootstrap de operaciones sueltas cuentan esas pérdidas como
+  sorteos distintos. Con bootstrap por ventanas (`bootstrapCIPorBloques`), el P5 del total cae a +5 $.
+- **La lectura de "interacción" era cierta a medias.** A 80 s la certeza sí mejora el resultado. Lo
+  que no se vio es que entrar más tarde consigue lo mismo sin filtro y con cuatro veces más muestra.
 
-**Por qué 80 s y no 60 s**, que promete más: los +0,489 de la fila de 60 salen de 50 operaciones. La
-de 80 tiene 179, t = 3,28 y bootstrap positivo el 100% de las veces. Se elige la casilla con muestra,
-no la que más brilla — es la misma lección que el z ≥ 1,5 con 43 ventanas de la tabla vieja.
+#### Lo que es robusto: seis tramos y bootstrap por ventanas
 
-La configuración elegida —**ventana 80 s, z ≥ 1,5**— en detalle:
+`npx tsx src/smoke/favoritoReplay.ts`, sobre 5.739 ventanas del régimen TWAP (7,8 días) partidas en
+6 tramos cronológicos de igual número de ventanas.
+
+**Regla de elección** (escrita también en el smoke): entre las casillas con al menos 150 operaciones y
+datos en los 6 tramos, gana la de **mejor peor tramo**, y en empate la de mejor P5. Nunca el neto medio.
+
+| config | ops/día | ventaja | neto (7,8 d) | tramos + | peor tramo | P(+) | P5 del total |
+|---|---|---|---|---|---|---|---|
+| 40 s, sin certeza, 0,79–0,88 | 50 | +4,85 pp | +114 $ | 6/6 | +2,59 pp | 100% | +48 $ |
+| 50 s, sin certeza, 0,79–0,90 | 94 | +4,17 pp | +185 $ | 6/6 | +2,58 pp | 100% | +98 $ |
+| **50 s, sin certeza, 0,79–0,88** | **84** | **+4,49 pp** | **+179 $** | **6/6** | **+2,42 pp** | **100%** | **+93 $** |
+| 60 s, z ≥ 1, 0,82–0,88 | 22 | +6,40 pp | +63 $ | 6/6 | +0,09 pp | 100% | +30 $ |
+| 80 s, z ≥ 1, 0,79–0,88 | 69 | +3,51 pp | +114 $ | 5/6 | −0,24 pp | 99% | +36 $ |
+| 80 s, z ≥ 1,5, 0,79–0,90 (la del día 8) | 30 | +4,01 pp | +54 $ | 4/6 | −0,80 pp | 97% | +5 $ |
+| 120 s, z ≥ 1, 0,79–0,90 (la vieja) | 224 | −0,32 pp | −30 $ | 3/6 | −3,87 pp | 38% | −188 $ |
+
+Las tres primeras filas están separadas por 0,17 pp de peor tramo: eso es ruido. Entre ellas se elige
+por otras dos razones. **50 s** duplica el volumen de 40 s, así que se valida hacia delante en la mitad
+de tiempo y gana más dinero. **0,88** frente a 0,90: a 50 s están empatadas (0,90 añade 76 operaciones y
++5,6 $), pero el tramo de ask 0,88–0,90 pierde −1,77 pp a 80 s (n = 461), y ante un empate se prefiere
+no incluirlo.
+
+#### La config elegida el 2026-09-11: 50 s, sin certeza, 0,79–0,88, sin salidas
 
 | | |
 |---|---|
-| operaciones | 179 (4,3% de las ventanas) |
-| aciertos | 93,3% |
-| equilibrio | 87,2% |
-| ventaja | **+6,10 pp** |
-| neto por operación | **+0,3607** (t = 3,28; bootstrap positivo el 100%) |
-| primera mitad | +0,3043 |
-| segunda mitad | +0,4165 |
-| por mercado | BTC +6,5 pp (n=125) · ETH +4,8 pp (n=52) · DOGE no califica (n=2) |
+| operaciones | 656 en 7,8 días (84 al día) |
+| aciertos | 88,7% |
+| equilibrio | 84,2% |
+| ventaja | **+4,49 pp** |
+| neto | +179,11 $ a 5 $ por operación (+23,07 $/día) |
+| por tramo (pp) | 3,0 · 2,4 · 4,0 · 3,5 · 4,8 · 9,5 |
+| por mercado | BTC +3,65 pp (330) · ETH +5,53 pp (313) · DOGE +0,85 pp (13) |
+| bootstrap por ventanas | positivo el 100%, P5 del total +93 $ |
 
-Dos cosas que se probaron y **no** aportan, anotadas para que nadie las reintente creyendo que están
-sin mirar:
+El último tramo (+9,5 pp) es el periodo posterior al cambio del día 8, que fue especialmente bueno para
+esta config. Sin él, los otros cinco siguen entre +2,4 y +4,8 pp.
 
-- **Apretar `favoriteMaxAskSum`.** Una tabla suelta decía que el tramo 1,06–1,10 pierde 13,5 pp. Por el
-  camino completo, 1,03 / 1,05 / 1,10 / 1,15 dan **las mismas 179 operaciones**: con la ventana en 80 s
-  y z ≥ 1,5 ya no queda ni un libro muerto que filtrar. Sería un guardarraíl que no guarda nada.
-- **Ensanchar la banda.** 0,82–0,92 deja la ventaja en +0,51 pp fuera de muestra y 0,86–0,94 en −1,33,
-  frente a los +6,98 pp de 0,79–0,90. La banda actual no es un accidente histórico: es donde está el
-  margen. Estrecharla a 0,76–0,85 da todavía más (+8,03 pp) pero sobre 83 operaciones, así que queda
-  como candidata a revisar cuando haya muestra, no como cambio.
+**Por qué sin certeza.** A 50 s del cierre, un ask de 0,79–0,88 ya descuenta lo decidida que está la
+ventana, y aun así sale barato. El filtro no mejora el peor caso y se come la muestra: a 50 s, z ≥ 1 deja
+80 operaciones y no llega a competir. Encaja con lo medido en "CUÁNDO entrar": la ventaja la lleva el
+tiempo. La certeza se apaga con `favoriteMinCertainty: -1000`, porque el esquema no tiene mínimo y JSON
+no admite `-Infinity`. El código se queda.
 
-#### El gate de EV: la respuesta depende de la configuración que lleve debajo
+**Por qué sin salidas.** Ninguna variante medida mejora a aguantar (ver "La salida por stop"). Además,
+con entradas a ≤ 50 s ni siquiera podrían dispararse: hacen falta 10 s de permanencia y ≥ 45 s al
+cierre.
 
-Merece apartado propio porque **cambia de signo con el resto**, y por eso una frase suelta del tipo «el
-gate de EV no aporta» es falsa la mitad del tiempo:
+**Aviso de honestidad.** Esta config también se eligió mirando esos mismos 7,8 días. Los tramos reducen
+el riesgo de sobreajuste, pero no lo eliminan. Por eso lo que sigue se escribe antes de tener el dato.
 
-| configuración debajo | n | ventaja | neto/op | t | fuera de muestra |
-|---|---|---|---|---|---|
-| ventana 120 s, z ≥ 1 (la vieja) | 314 | −1,10 pp | −0,0661 | −0,50 | **−0,162** |
-| ventana 80 s, z ≥ 1,5 (la actual) | 122 | +5,76 pp | +0,3493 | 2,36 | **+0,4415** |
+#### Prueba hacia delante, pre-registrada
 
-Con la configuración vieja el gate no salvaba nada: recortaba de 1.252 operaciones a 314 y seguía
-perdiendo. Con la actual **no estorba** — se queda con dos tercios menos de operaciones para dar
-prácticamente lo mismo que sin él (+0,3493 frente a +0,3607).
+Config aplicada en `data/ui-config.json` el **2026-09-11T05:25:47Z**, con el bot parado y antes de
+volver a arrancarlo. Se evalúa con:
 
-Aun así **sigue apagado** (`requirePositiveEv: false` en `data/ui-config.json`), y la línea del barrido
-que describe el bot real es la de «sin gate de EV». El motivo no es que sea peor: es que recorta la
-muestra de 179 a 122 y el estadístico de 3,28 a 2,36 sin comprar nada a cambio. Encenderlo sería pagar
-un tercio de la evidencia por una ventaja que no mejora. Cuando haya muestra de sobra, vuelve a ser una
-pregunta abierta.
+```
+npx tsx src/smoke/favoritoReplay.ts --desde 2026-09-11T05:25:47Z
+```
 
-#### Detalles del filtro que no son obvios
+| | |
+|---|---|
+| esperado | ventaja ≈ +4,5 pp, unas 84 entradas al día |
+| hito | 300 entradas nuevas (≈ 3,5 días) |
+| se mantiene si | ventaja > 0 **y** P(+) del bootstrap por ventanas ≥ 80% |
+| se para si | ventaja < 0 **y** P(+) ≤ 20% → el favorito se apaga en sim y se documenta que no hay ventaja |
+| entre medias | se sigue sin tocar nada hasta 600 entradas (≈ 7 días) y se vuelve a aplicar la misma regla |
+
+Tres reglas para esa ventana:
+
+- **No se busca otra casilla dentro de ella.** El modo `--desde` del smoke no corre la rejilla, a
+  propósito: buscar la mejor casilla sobre el periodo de prueba lo gasta, y así se fabricó lo del día 8.
+- **Si el cruce ledger ↔ replay no coincide** (lados distintos en ventanas compartidas), se explica eso
+  antes de juzgar la estrategia.
+- **Live sigue apagado** pase lo que pase en el hito.
+
+#### Lo que se probó y no aporta
+
+- **Apretar `favoriteMaxAskSum`** (medido sobre 80 s y z ≥ 1,5). 1,03 / 1,05 / 1,10 / 1,15 dan las
+  mismas operaciones: con esos filtros ya no queda libro muerto que filtrar.
+- **Subir el techo de la banda.** El tramo de ask 0,88–0,90 mide −1,77 pp a 80 s (n = 461), y
+  0,86–0,94 se va a −1,33 pp fuera de muestra.
+- **Corregir z con el horizonte del TWAP**, z·√(T/(T−20)): separa peor. Da +2,83 pp en z 1,5–2 frente a
+  +5,36 pp de la z de producción.
+- **El gate de EV.** Sobre la config del día 8, con tramos: +2,82 pp, 4/6 y P5 −15 $, frente a +4,01 pp
+  y P5 +5 $ sin él. Sobre la config elegida sube la ventaja por operación (+5,81 pp frente a +4,49), pero
+  empeora lo que decide la regla: peor tramo +0,36 pp frente a +2,52 pp, P5 +82 $ frente a +93 $, y un
+  tercio menos de operaciones. Sigue apagado (`requirePositiveEv: false`). El smoke imprime siempre las
+  dos líneas para la config viva.
+
+#### Detalles del filtro de certeza que no son obvios (por si se vuelve a encender)
 
 - **Una lectura AUSENTE no bloquea.** Sin ticks suficientes o con σ = 0, `readWindowCertainty` devuelve
-  `undefined` y la entrada sigue su camino: convertir una laguna del feed en política de riesgo es el
+  `undefined` y la entrada sigue su camino. Convertir una laguna del feed en política de riesgo es el
   mismo error que evita la guarda de bankroll con un saldo ilegible. Una lectura que sí sale y da poco
   es información, y ésa sí frena.
 - **σ = 0 no es certeza infinita**, es un feed congelado. Dejarla pasar daría z infinito y convertiría
   una avería en la señal más fuerte posible.
-- **Los ticks salen de muestrear `getTickAtOrBefore` hacia atrás**, que es la única lectura de historia
-  que `RunnerPriceFeed` ya expone. Se deduplica por marca de tiempo: sin eso, un feed más lento que el
-  paso del muestreo inventaría saltos de valor cero y hundiría la σ, que es el denominador de todo.
-
-**El precio del filtro es el volumen: con z ≥ 1,5 y la ventana en 80 s califica el 4,3% de las
-ventanas**, frente al 30% de antes. Es deliberado, y es la única forma de que esto gane: a un ask medio
-de 0,86 hace falta acertar el 87,2% nada más que para empatar, así que un acierto del 85% suena bien y
-es una pérdida.
+- **Los ticks salen de muestrear `getTickAtOrBefore` hacia atrás**, la única lectura de historia que
+  `RunnerPriceFeed` expone. Se deduplica por marca de tiempo: sin eso, un feed más lento que el paso
+  del muestreo inventaría saltos de valor cero y hundiría la σ, que es el denominador de todo.
 
 > **Un número que se confundió al construir el replay, por si vuelve a pasar.** El suelo de la ventana
 > de entrada es `DEFAULT_MIN_SECONDS_TO_END` = **10 s** (`markets.ts`), no los 45 de
 > `FAVORITE_EXIT_MIN_SECONDS`, que es del stop de VENTA. Con 45 por error, el barrido se dejaba fuera
-> el tramo final —justo donde la ventana ya está resuelta— y medía la estrategia sin su mejor trozo:
-> la casilla ganadora bajaba de t = 3,28 a t = 2,65 y de 179 operaciones a 162. La conclusión aguantó,
-> pero podría no haberlo hecho.
+> el tramo final —justo donde la ventana ya está resuelta— y medía la estrategia sin su mejor trozo.
 
 ### El tramo de máxima convicción (ask > 0,98) — APAGADO desde 2026-09-07
 
@@ -349,6 +394,35 @@ una **fracción del capital disponible**. Seis cosas que no son obvias:
   aplastaría el tamaño a $5 sin decir nada.
 
 ### La salida por stop (el primer camino de venta)
+
+> **APAGADA desde el 2026-09-11 (`favoriteExitEnabled: false`).** Las tablas de este apartado —las 152
+> entradas "aguantando hasta el cierre"— se midieron sobre el universo equivocado, el mismo error que la
+> tabla vieja de la certeza, y no se sostienen. Esto es lo medido con `src/favoriteExitReplay.ts`, que
+> llama a `decideFavoriteExit` de producción, y contrastado con el ledger:
+>
+> | | salidas | vendidas que ganaban | frente a aguantar |
+> |---|---|---|---|
+> | ledger real, 6–10 sep | 156 | 34% | −5,50 $ (certeza +5,49 · stop −11,00) |
+> | replay, entradas 80 s z ≥ 1,5, política viva | 16 | 31% | −4,01 $ |
+> | replay, solo certeza ≤ 0 | 12 | 33% | −5,33 $ |
+> | replay, certeza ≤ 0,5 | 36 | 67% | −32,89 $ |
+> | replay, vendiendo hasta 30 s del cierre | 22 | 32% | +3,13 $ (mejora solo el 55% de los remuestreos) |
+>
+> **El problema no es el umbral, es de fondo.**
+>
+> - Cuando la certeza cae a cero, el bid ya está en ~0,20: el libro descuenta la caída a la vez que el
+>   oráculo.
+> - Cada falsa alarma cuesta ~3,62 $ y cada acierto ahorra ~1,82 $, así que hay que acertar el 66,5%
+>   de las salidas para empatar. Acertaba el 66,0%.
+> - Esas ventanas perdieron −478,65 $ vendiendo y −474,64 $ aguantando: **la salida no creaba las
+>   pérdidas, las marcaba**.
+> - Con entradas a ≤ 50 s ni siquiera puede dispararse: exige 10 s de permanencia y ≥ 45 s hasta el
+>   cierre.
+> - El segundo exacto en que el CLOB pasa a post-only sigue sin medir. Los 45 s son una decisión de
+>   diseño, y la documentación de Polymarket no lo dice.
+>
+> El código se conserva, y la sección de salidas del smoke lo vuelve a medir en cada corrida. Lo que
+> sigue es la historia de cómo se llegó hasta aquí.
 
 Hasta que existió esto, el bot **solo compraba**: toda posición se mantenía hasta la redención, y
 `resolveCompletedTrades` ni miraba una fila antes de `endMs`. Con `favoriteExitEnabled`, si el ask del
