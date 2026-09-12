@@ -1739,7 +1739,15 @@ export class BotRunner {
       const saldo = resolveEffectiveBankrollUsd(this.lastBankrollReading, this.config.liveBankrollUsd, args.nowMs);
       if (saldo.source !== "unknown") {
         const libreUsd = saldo.usd - this.openStakeUsd() - this.directionalCommittedUsdThisIteration;
-        if (libreUsd < amountUsd) {
+        // El DESCARTE solo en live, por el mismo motivo por el que `minBankrollForDirectionalUsd` solo
+        // aplica en live (ver arriba): en sim no se gasta nada, asi que frenar por un saldo real no
+        // protege de nada y deja de generar muestras.
+        //
+        // Costo 27 horas de papel en blanco. Con la cartera en 4,47 $ y el minimo de orden del exchange
+        // en 5 $ —`autoMinLive` sustituye el importe configurado en AMBOS modos—, esta guarda descarto
+        // 168 ventanas seguidas el 2026-09-11/12, y lo hizo justo al empezar una prueba hacia delante
+        // pre-registrada, que se quedo en 7 entradas de las 300 del hito.
+        if (libreUsd < amountUsd && this.modeFor("dir") === "live") {
           this.logSkipOnce(args.market.slug, "favorite_banda_sin_capital", {
             market: args.market.asset,
             outcome: winner.outcome,
@@ -1750,7 +1758,9 @@ export class BotRunner {
           });
           return undefined;
         }
-        // Reserva: las siguientes señales de esta misma pasada ya no cuentan con este dinero.
+        // La RESERVA si se hace en los dos modos: el tramo de conviccion dimensiona contra este
+        // contador, y en sim tiene que ver el mismo dinero comprometido que veria en live o el papel
+        // dejaria de predecir el tamaño real.
         this.directionalCommittedUsdThisIteration += amountUsd;
       }
     }

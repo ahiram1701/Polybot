@@ -1274,6 +1274,13 @@ describe("BotRunner", () => {
         fraccion?: number;
         /** Deja la clave FUERA de la config, para comprobar el default del codigo. */
         omitirFraccion?: boolean;
+        /**
+         * Modo del runner. Importa para las guardas de CAPITAL: el descarte por saldo insuficiente
+         * solo frena en live, porque en sim no se gasta nada y frenar el papel solo deja de generar
+         * muestras. `minBankrollForDirectionalUsd` se pone a 0 en live para que la guarda del saldo
+         * minimo no se coma el caso antes de llegar a la que se quiere medir.
+         */
+        modo?: "sim" | "live";
       } = {},
     ) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
@@ -1336,7 +1343,10 @@ describe("BotRunner", () => {
           executed.push({ amountUsd: input.amountUsd, entryKind: input.entryKind });
           operados.add(input.market.slug + ":" + (input.entryKind ?? "banda"));
           abiertas.push({
-            mode: "sim",
+            // El MODO del runner, no "sim" fijo: `openStakeUsd()` solo cuenta las posiciones de su
+            // modo, asi que con el doble apuntando "sim" en una corrida live el capital atado se
+            // volvia invisible entre pasadas y la cuenta parecia intacta.
+            mode: opts.modo ?? "sim",
             market: input.market.asset,
             slug: input.market.slug,
             outcome: input.outcome,
@@ -1353,6 +1363,9 @@ describe("BotRunner", () => {
       } as unknown as TradeExecutor;
       const config: BotConfig = {
         ...baseConfig(),
+        ...(opts.modo === "live"
+          ? { mode: "live" as const, favoriteAllowLive: true, minBankrollForDirectionalUsd: 0 }
+          : {}),
         favoriteStrategyEnabled: true,
         favoriteMinAsk: 0.79,
         favoriteMaxAsk: 0.9,
@@ -1510,7 +1523,7 @@ describe("BotRunner", () => {
       expect(totalTrasTercera).toBeLessThanOrEqual(300.01);
     });
 
-it("tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
+it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
       vi.spyOn(console, "log").mockImplementation(() => undefined);
       // Medido en produccion antes de arreglarlo: BTC, ETH y DOGE entraban a $5 cada uno contra un
       // saldo de $12,42. Los tres se evaluan en la MISMA pasada y sus operaciones no llegan al ledger
@@ -1518,6 +1531,7 @@ it("tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
       // Saldo por debajo de lo que suman las tres entradas ($1 cada una en este doble): sin la reserva
       // intra-iteracion las tres pasan la guarda, porque ninguna ha llegado aun al ledger.
       const { runner, executed, nowMs } = escenario({
+        modo: "live",
         saldoUsd: 2.5,
         mercados: ["BTC", "ETH", "DOGE"],
         profundidadUsd: 5_000,
@@ -1526,12 +1540,43 @@ it("tres mercados de banda NO pueden sumar mas que la cuenta", async () => {
         bandaYaOperada: false,
       });
 
+      // UNA sola pasada: el incidente es intra-pasada, y es el unico caso que el doble representa con
+      // fidelidad. El capital que queda atado ENTRE pasadas lo cubre "los tres mercados COMPARTEN la
+      // cuenta", porque aqui `openStakeUsd()` solo cuenta posiciones del modo del runner y el doble no
+      // reproduce el ledger real de una corrida live.
       await runner.runOnce(nowMs);
-      await runner.runOnce(nowMs + 1_000);
 
       const total = executed.reduce((sum, t) => sum + t.amountUsd, 0);
       expect(executed.length).toBeGreaterThan(0);
       expect(total).toBeLessThanOrEqual(2.51);
+    });
+
+    /**
+     * El DESCARTE por saldo es de live, y esto lo fija.
+     *
+     * Costo 27 horas de papel en blanco: con la cartera real en 4,47 $ y el minimo de orden del
+     * exchange en 5 $ —`autoMinLive` sustituye el importe configurado en los dos modos— la guarda
+     * descarto 168 ventanas seguidas el 2026-09-11/12, y justo al empezar una prueba hacia delante
+     * pre-registrada, que se quedo en 7 entradas de las 300 del hito. En sim no se gasta nada, asi que
+     * frenar no protege de nada: solo deja de generar muestras. La RESERVA si sigue ocurriendo, porque
+     * el tramo de conviccion dimensiona contra ella.
+     */
+    it("en SIM el saldo real no frena el papel", async () => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { runner, executed, nowMs } = escenario({
+        saldoUsd: 2.5,
+        mercados: ["BTC", "ETH", "DOGE"],
+        profundidadUsd: 5_000,
+        askUp: 0.85,
+        bandaYaOperada: false,
+      });
+
+      await runner.runOnce(nowMs);
+      await runner.runOnce(nowMs + 1_000);
+
+      const total = executed.reduce((sum, t) => sum + t.amountUsd, 0);
+      expect(executed).toHaveLength(3);
+      expect(total).toBeGreaterThan(2.51);
     });
 
     it("recotiza con el importe grande: sin eso el P&L puntuaria otra operacion", async () => {

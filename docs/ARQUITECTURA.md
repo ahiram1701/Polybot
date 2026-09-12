@@ -314,6 +314,23 @@ Tres reglas para esa ventana:
   antes de juzgar la estrategia.
 - **Live sigue apagado** pase lo que pase en el hito.
 
+**El parón del 11 al 12 de septiembre: 27 horas sin operar, y no fue la estrategia.** El bot hizo 7
+entradas y se detuvo. La guarda `favorite_banda_sin_capital` descartó 168 ventanas seguidas porque la
+cartera real tenía 4,47 $ y el importe es el mínimo de orden del exchange, 5 $ — `autoMinLive`
+sustituye el importe configurado en los dos modos. Lo delató el cruce que exige la regla de arriba: 7
+entradas en el ledger frente a 127 del replay, con las 7 compartidas idénticas (mismo lado, mismo ask,
+mismo segundo). Arreglado el 2026-09-12 limitando **el descarte** a live, con el mismo criterio que ya
+tenía `minBankrollForDirectionalUsd`: en sim no se gasta nada, así que frenar el papel no protege de
+nada. La **reserva** intra-pasada sigue ocurriendo en los dos modos, porque la convicción dimensiona
+contra ella. Tres consecuencias:
+
+- **El hito de 300 entradas se cuenta desde que el papel vuelve a operar**, no desde el 11. Las 7
+  entradas de ese arranque siguen contando como datos.
+- Esas 7 dieron −12,15 pp, y **eso no es un veredicto**: con n = 7 no se decide nada. Leerlo como
+  fracaso es exactamente el error que este apartado existe para evitar.
+- El papel deja de predecir lo que la cuenta puede ejecutar hoy: con 4,47 $, live no colocaría ni una
+  orden de 5 $. Fondear la cartera es requisito para plantearse live, no para la prueba en sim.
+
 #### Lo que se probó y no aporta
 
 - **Apretar `favoriteMaxAskSum`** (medido sobre 80 s y z ≥ 1,5). 1,03 / 1,05 / 1,10 / 1,15 dan las
