@@ -60,6 +60,21 @@ const optionalUrlString = z.preprocess(
  *
  * Se recortan los espacios ademas de la cadena vacia: un `DATA_DIR= ` con un espacio de mas al final
  * de la linea produce un directorio llamado " " y el mismo desconcierto.
+ *
+ * Las otras dos que lo usan tienen consecuencias muy distintas, y conviene no confundirlas:
+ *
+ * - **`ENABLED_MARKETS`** vacio dejaba al bot SIN NINGUN MERCADO, en silencio. La cadena vacia
+ *   normaliza a una lista vacia, ningun lado queda encendido y no se opera nada. Falla cerrado, que
+ *   es el lado bueno, pero un valor vacio debe significar el default declarado y no "ninguno".
+ *
+ *   Solo decide algo cuando los SEIS `ENABLED_<MERCADO>_<LADO>` estan AUSENTES: `defaultOutcomeBooleans`
+ *   les da prioridad y solo cae a esta lista cuando no existen. En un `.env` que los ponga —como el de
+ *   esta maquina— `ENABLED_MARKETS` es inerte; en el `.env.example` van vacios, que es como queda una
+ *   instalacion nueva, y entonces es lo unico que decide.
+ * - **`POLYBOT_TIMEZONE`** vacio NO cambia el comportamiento. `resolveTimeZone` (`timezone.ts`) ya
+ *   trata `""` igual que `"auto"`: las dos devuelven `undefined` y caen a la zona del sistema. Aqui
+ *   se normaliza solo para que la configuracion guardada y la que ve la pantalla digan `auto` en vez
+ *   de una cadena vacia que hay que ir a `timezone.ts` a interpretar.
  */
 function stringWithDefault(fallback: string) {
   return z.preprocess((value) => {
@@ -73,7 +88,7 @@ function stringWithDefault(fallback: string) {
 
 const envSchema = z.object({
   MODE: z.enum(["sim", "live"]).default("sim"),
-  ENABLED_MARKETS: z.string().default("BTC"),
+  ENABLED_MARKETS: stringWithDefault("BTC"),
   ENABLED_BTC_UP: optionalBoolean,
   ENABLED_BTC_DOWN: optionalBoolean,
   ENABLED_ETH_UP: optionalBoolean,
@@ -261,7 +276,7 @@ const envSchema = z.object({
   MAX_PERPS_SAMPLES: z.coerce.number().int().positive().default(5_000),
   PERPS_HOST: optionalUrlString,
   PERPS_WS_URL: optionalUrlString,
-  POLYBOT_TIMEZONE: z.string().default("auto"),
+  POLYBOT_TIMEZONE: stringWithDefault("auto"),
   AI_AUTO_TUNE_ASK_CAP: z
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
