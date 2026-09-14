@@ -44,6 +44,33 @@ const optionalUrlString = z.preprocess(
   z.string().url().optional(),
 );
 
+/**
+ * Cadena con valor por defecto que trata la VACIA como ausente.
+ *
+ * `z.string().default(x)` solo cubre `undefined`. Una variable declarada pero vacia —`DATA_DIR=` en el
+ * `.env`, o un script que exporta `DATA_DIR=$SIN_DEFINIR`— pasa el esquema como `""` y se lleva el
+ * default por delante sin que nada se queje.
+ *
+ * Con `DATA_DIR` eso no es cosmetico: `resolve(cwd, "")` devuelve el cwd, asi que `state.json`,
+ * `trades.jsonl` y toda la analitica se escriben en la RAIZ DEL REPOSITORIO en vez de en `data/`. Paso
+ * de verdad el 2026-09-14 probando la captura de perps, y dejo un `perps-analytics.jsonl` suelto en la
+ * raiz. Va justo en contra de la invariante que el describe "aislamiento de los tests" ya protege por
+ * el otro lado — alli se vigila que los TESTS no ensucien produccion; esto es produccion ensuciando el
+ * repositorio.
+ *
+ * Se recortan los espacios ademas de la cadena vacia: un `DATA_DIR= ` con un espacio de mas al final
+ * de la linea produce un directorio llamado " " y el mismo desconcierto.
+ */
+function stringWithDefault(fallback: string) {
+  return z.preprocess((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }, z.string().default(fallback));
+}
+
 const envSchema = z.object({
   MODE: z.enum(["sim", "live"]).default("sim"),
   ENABLED_MARKETS: z.string().default("BTC"),
@@ -245,7 +272,7 @@ const envSchema = z.object({
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
   OPENING_CAPTURE_GRACE_MS: z.coerce.number().positive().default(15_000),
-  DATA_DIR: z.string().default("data"),
+  DATA_DIR: stringWithDefault("data"),
   GAMMA_HOST: z.string().url().default(DEFAULT_GAMMA_HOST),
   CLOB_HOST: z.string().url().default(DEFAULT_CLOB_HOST),
   RTDS_URL: z.string().url().default(DEFAULT_RTDS_URL),
