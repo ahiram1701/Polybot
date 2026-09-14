@@ -161,6 +161,23 @@ export function createUiApp(controller: BotController, options: UiAppOptions = {
     res.json(await controller.getAskBandSummary(mode));
   }));
 
+  // Perps: SOLO LECTURA, sin excepcion.
+  //
+  // No hay endpoint que abra, cierre ni dimensione nada, y no es un olvido: mientras la entrega solo
+  // observe, la API local no debe ofrecer un boton que no existe por debajo. El plano de control de
+  // este servidor lo consumen tambien la CLI y el MCP, y el MCP viene con `POLYBOT_MCP_ALLOW_WRITE`
+  // en true de fabrica.
+  app.get("/api/perps/instruments", asyncHandler(async (_req, res) => {
+    res.json(await controller.getPerpsInstruments());
+  }));
+
+  app.get("/api/perps/samples/export", asyncHandler(async (_req, res) => {
+    const exported = await controller.exportPerpsSamples();
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${exported.filename}"`);
+    res.send(exported.contents);
+  }));
+
   app.get("/api/analysis/samples/export", asyncHandler(async (_req, res) => {
     const exported = await controller.exportAnalysisSamples();
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");

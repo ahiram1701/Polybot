@@ -265,6 +265,57 @@ export interface BotConfig {
    * precio del libro — te llenan antes. Sale a 1 hasta que la seleccion adversa este medida.
    */
   makerTicksDelMedio?: number;
+  /**
+   * Perpetuos de Polymarket (`api.perpetuals.polymarket.com`). Apagado de fabrica.
+   *
+   * Es OTRA plataforma, no otra ruta del CLOB: cuenta aparte, sesion aparte y un producto que no
+   * resuelve nunca — posicion, funding horario y liquidacion en vez de redencion a $1. Por eso no
+   * comparte ni tipos ni ficheros con el resto; ver `perpsTypes.ts`.
+   *
+   * Esta entrega solo OBSERVA y MIDE: captura cubos de 5 minutos a `data/perps-analytics.jsonl` y
+   * deja el arnes de replay. La ejecucion existe y esta probada, pero en papel.
+   */
+  perpsEnabled?: boolean;
+  /**
+   * Modo del camino de perps. Cae a `sim`, NUNCA al modo global — igual que `makerMode`.
+   *
+   * Heredar un arranque en live aqui seria empezar a operar derivados apalancados en una plataforma
+   * recien lanzada, contra una cuenta que ademas hay que fondear aparte, sin que nadie lo pidiera.
+   */
+  perpsMode?: Mode;
+  /**
+   * Cierre APARTE para dinero real, igual que `favoriteAllowLive`. Sin esto no hay camino a
+   * `openPerpsSession` y por tanto no hay forma tecnica de mandar una orden.
+   */
+  perpsAllowLive?: boolean;
+  /**
+   * Declaracion del operador de que opera desde una jurisdiccion permitida.
+   *
+   * Polymarket bloquea perpetuos en EE. UU., Canada, Cuba, Iran, Corea del Norte, Siria, Crimea,
+   * Donetsk y Lugansk, y su documentacion pide explicitamente BLOQUEAR el envio de ordenes, no avisar.
+   * Se declara y no se detecta: una deteccion que falla en silencio es peor que no tenerla.
+   */
+  perpsJurisdictionOk?: boolean;
+  /** Simbolos a seguir. Por defecto los dos para los que el bot ya recibe oraculo de Chainlink. */
+  perpsInstruments?: string[];
+  /** Cadencia propia del camino de perps, en ms. Nunca corre dentro del camino caliente. */
+  perpsIntervalMs?: number;
+  /**
+   * Tope de apalancamiento del OPERADOR, no del venue.
+   *
+   * El exchange llega a 20x. Este numero es el techo de esta cuenta y se aplica ademas de los del
+   * instrumento y su tramo de riesgo: ver `resolveMaxLeverage`. Confundirlos seria dejar que
+   * Polymarket decida cuanto riesgo se corre aqui.
+   */
+  perpsMaxLeverage?: number;
+  /** Nocional maximo por posicion, en dolares. 0 = sin tope propio. */
+  perpsMaxNotionalUsd?: number;
+  /** Margen total maximo comprometido a la vez, en dolares. 0 = sin tope propio. */
+  perpsMaxMarginUsd?: number;
+  /** Cubos que se conservan en `data/perps-analytics.jsonl`. */
+  maxPerpsSamples?: number;
+  perpsHost?: string;
+  perpsWsUrl?: string;
   arbMode?: Mode;
   directionalMode?: Mode;
   arb15mEnabled?: boolean;

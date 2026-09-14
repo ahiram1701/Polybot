@@ -911,6 +911,198 @@ El rendimiento. La estimación de `elegirMercados` es **lineal** y por tanto opt
 es cuadrático— y sirve para *ordenar* mercados, no para prometer cuánto se cobrará. Eso solo lo dice
 una orden real y su pago a 24 h.
 
+## Perps: otra plataforma, y de momento solo se mira
+
+Polymarket lanzó **Perps** el 2026-09-03: futuros perpetuos con apalancamiento de hasta 20x. Polybot los
+sigue desde el 2026-09-14, y **solo los observa**. No hay ni una hipótesis de perps validada.
+
+### No es otra ruta del CLOB
+
+| | Binario 5m | Perps |
+|---|---|---|
+| Host | `clob.polymarket.com` | `api.perpetuals.polymarket.com` + `wss://ws.perpetuals.polymarket.com/v1/ws` |
+| Autenticación | clave L2 derivada con EIP-712 | sesión con **proxy delegado**, cabeceras `polymarket-proxy`/`polymarket-secret`, **caduca** |
+| Cuenta | el saldo pUSD de la cartera | **otra cuenta**: hay que depositarle pUSD (mínimo 10) |
+| Unidad | `tokenId`, resuelve a $1 o $0 | `instrument_id`, **no resuelve nunca** |
+| Riesgo | perder el importe | **liquidación**: a 20x, perder ~2,5% del nocional |
+| Comisión | `shares × 7% × p × (1−p)`, máxima en 0,50 | **lineal**: `|precio × cantidad| × tasa`, 0,0400% taker al tramo base |
+| Geografía | — | **bloqueado en EE. UU., Canadá, Cuba, Irán, Corea del Norte, Siria, Crimea, Donetsk y Lugansk** |
+
+De ahí que **no comparta ni un tipo con el binario**. `Outcome`, `tokenId`, `conditionId`,
+`windowStartMs`, `winningOutcome` y la redención a $1 recorren `types.ts`, `botRunner.ts`, el ledger y
+la analítica enteros; meter un perpetuo ahí habría dejado la mitad de esos campos condicionalmente
+falsos sin que nada lo señalara. El precedente es del propio proyecto: `makerMarket.ts` existe porque
+`MarketInfo` «es un tipo de cripto». Aquí la distancia es mayor.
+
+Módulos, todos con prefijo `perps` y planos como los seis del maker:
+
+| Módulo | Qué hace |
+|---|---|
+| `perpsTypes.ts` | El dominio. `PerpsSide = LONG\|SHORT`, **no** `Outcome` |
+| `perpsClient.ts` | Lectura: catálogo, tickers, libro. **Sin credenciales** |
+| `perpsFeed.ts` | WebSocket de `tickers` y `bbo`. **No** el canal `book` (ver abajo) |
+| `perpsMarkets.ts` | Símbolo → instrumento, y el apalancamiento máximo real |
+| `perpsRecorder.ts` | Cubos de 5 min a `data/perps-analytics.jsonl` |
+| `perpsSignal.ts` | Observables puros: carry, base, volatilidad, spread |
+| `perpsEngine.ts` | Ejecución sim y live, con liquidación y funding |
+| `perpsSession.ts` | La sesión live y sus tres cierres |
+| `perpsLoop.ts` | Ata todo con cadencia propia desde `cerrarIteracion` |
+| `perpsReplay.ts` | El arnés de medición |
+
+### La unidad de muestra es un cubo de 5 minutos, y de ahí cuelga todo
+
+Un perpetuo no tiene ventanas, pero **toda la maquinaria de medición honesta de este repo es de
+ventanas**: `bootstrapCIPorBloques` remuestrea ventanas enteras porque las operaciones de dentro no son
+independientes, y la regla de elección parte el histórico en 6 tramos de ventanas.
+
+Así que la muestra es **un instrumento durante un cubo fijo de 5 minutos**, alineado al MISMO reloj que
+las ventanas del binario (`getWindowStartMs`). Tres cosas que eso compra:
+
+- La «verdad» es `closeMarkPrice`, el precio con el que el exchange valora la posición al cerrar el
+  cubo. **No hace falta un juez como `analyticsTruth`**: no se deduce quién ganó, se lee cuánto vale.
+- El bootstrap por bloques y los 6 tramos se reutilizan **sin tocarlos**, con el cubo donde iba la
+  ventana. El bloque es el CUBO y no la operación: BTC y ETH del mismo cubo se mueven juntos, igual que
+  los tres mercados binarios que cierran a la vez.
+- Las dos series son comparables instante a instante, que es lo que permitirá preguntar más adelante si
+  la señal del binario dice algo del perpetuo.
+
+### El simulador modela LIQUIDACIÓN, y no es opcional
+
+`SimulationPerpsEngine` cobra la comisión de perps, devenga el funding y, cuando la marca cruza el
+precio de liquidación, **se lleva el margen entero** en vez de cerrar «un poco peor».
+
+El precio sale de igualar patrimonio y requisito de mantenimiento, con el margen de mantenimiento en la
+mitad del inicial:
+
+```
+LARGO:  P = entrada × (1 − 1/L) / (1 − mmr)
+CORTO:  P = entrada × (1 + 1/L) / (1 + mmr)      mmr = 0,5 / L
+```
+
+Esto existe por una lección que ya está escrita más arriba, en el tramo de máxima convicción: *«el
+saldo on-chain es una constante que las operaciones de papel no mueven, así que **la sim no mostrará
+esta ruina**»*. Con 20x disponibles, un simulador de perps sin liquidación miente igual y más rápido.
+
+### El canal `book` del WebSocket NO se escucha, a propósito
+
+`tickers` y `bbo` llegan como fotos completas: se leen y ya está. `book` manda **deltas**, y aplicarlos
+exige llevar el libro en memoria y reconciliarlo por número de secuencia. Un desfase ahí no da un
+error: da **un libro plausible y equivocado**, que es la peor clase de fallo que este proyecto tiene
+documentada. La profundidad se lee por REST a la cadencia de perps (2 peticiones cada 5 s con dos
+instrumentos), donde una foto de hace cinco segundos vale.
+
+### El contraste con Chainlink es la única ventaja de medición que hay aquí
+
+La marca, el índice y el funding **los publica Polymarket**, así que compararlos entre sí solo dice si
+Polymarket es coherente consigo mismo. Polybot ya recibe el TWAP de Chainlink por la RTDS para BTC y
+ETH, y lo graba en cada tick del cubo (`chainlinkTwapPrice`): es la única serie independiente.
+
+Por eso los instrumentos por defecto son **BTC-USD y ETH-USD** y no otros de los 83 listados. Y por eso
+el oráculo **se declara** en una tabla y no se deduce partiendo el símbolo por el guion: eso emparejaría
+cualquier símbolo nuevo con un oráculo que no le corresponde, en silencio y grabándolo como bueno.
+
+Cuando no hay TWAP, el campo se queda **vacío**. No se cae al spot: son series distintas y meterlas en
+el mismo campo produce exactamente la etiqueta corrupta que `priceSource` existe para evitar.
+
+### Lo que NO está medido — y una cuenta que ya descarta lo obvio
+
+**No hay ninguna hipótesis de perps validada.** El carry de funding y la base contra Chainlink son lo
+que se va a medir, no lo que se cree.
+
+Y de la primera sonda contra la API real (2026-09-14) sale una cuenta que conviene tener delante antes
+de entusiasmarse con el carry:
+
+| | |
+|---|---|
+| funding observado (BTC-USD y ETH-USD) | **0,0013% por hora** |
+| ida y vuelta al tramo base | **0,0800% del nocional** (0,04% × 2) |
+| horas de funding para cubrir una entrada y una salida | **~62** |
+
+Es decir: **un carry de un solo cubo no puede salir a cuenta, y no por falta de ventaja sino por
+aritmética.** Por eso `replayCarry` tiene `holdBuckets` y el smoke barre duraciones en horas (1, 6, 12,
+24, 48, 72) en vez de operar cada cinco minutos. La pregunta que sí se puede probar es la otra: cuántas
+horas hay que aguantar para que el funding cubra las comisiones, y cuánto movimiento de precio te comes
+mientras tanto.
+
+Dos datos más de esa sonda, para tener la escala: el spread es de **0,4-0,9 bps** (contra los 150-450
+bps de los binarios de 5 min) y hay ~4 millones de dólares de profundidad por lado. La liquidez no es
+el problema aquí.
+
+### Regla de evaluación, escrita ANTES de tener los datos
+
+Esto se escribe ahora precisamente porque todavía no hay nada que mirar. Es el mismo compromiso que la
+prueba pre-registrada del favorito, y por la misma razón: buscar la mejor casilla después de ver el
+periodo lo gasta.
+
+- **Hito:** 2.000 cubos puntuables (≈ 3,5 días con dos instrumentos), y al menos 6 tramos con datos.
+- **Criterio:** gana la casilla con **mejor PEOR TRAMO** entre las que tengan ≥ 150 operaciones. Nunca
+  el neto medio: elegir por la media premia las casillas pequeñas que salieron bien por suerte, que es
+  literalmente cómo se fabricó la configuración del 8 de septiembre que luego perdió hacia delante.
+- **Se descarta la hipótesis si** el peor tramo es negativo en todas las duraciones, o si P(+) del
+  bootstrap por bloques queda por debajo del 80% en la mejor.
+- **No se busca otra casilla dentro del periodo de prueba.** `--desde <ISO>` no corre la rejilla, igual
+  que el del favorito.
+- **Pase lo que pase, live sigue cerrado en esta entrega.** Encenderlo es una decisión aparte y exige
+  además fondear la cuenta de perps, que tampoco se hace aquí.
+
+### Los tres cierres de live, y por qué son tres
+
+`perpsLiveBlockedReason` (`perpsSession.ts`) devuelve el MOTIVO y no un booleano, porque «no está
+configurado», «el operador no lo ha abierto» y «esta jurisdicción no puede» llevan a acciones distintas
+y un `false` único las hace indistinguibles.
+
+1. **`PERPS_ALLOW_LIVE`** — cierre aparte, como `favoriteAllowLive`. Sin él no existe camino a
+   `openPerpsSession`, y eso está **verificado por test, no por lectura**.
+2. **`POLYMARKET_PERPS_JURISDICTION_OK`** — la documentación de Polymarket pide literalmente *«Block
+   order submission entirely… Do not only display a warning»*. Se **declara**, no se detecta, por el
+   mismo criterio que `POLYBOT_SUPERVISOR`: una detección que falla en silencio produce justo la
+   mentira que la comprobación viene a evitar.
+3. **Credenciales** — clave y dirección, como en el binario.
+
+Los tres se comprueban **al arrancar** (`validatePerpsLiveConfig`), no al mandar la primera orden:
+enterarse de que falta la declaración cuando ya hay una señal que ejecutar es enterarse tarde.
+
+`perpsMode` cae a `sim` y **nunca hereda el modo global**, igual que `makerMode`. Y la credencial de
+sesión se pide para **12 horas** y no para la semana que admite el SDK: su vida útil es exactamente el
+tiempo durante el que una copia robada sirve.
+
+### Decisiones que no son obvias
+
+- **No hay ajustes de perps en la interfaz, y es deliberado.** El criterio de la trampa 8 es «se expone
+  lo que acota dinero o riesgo»: observar no acota nada. Y `PERPS_ALLOW_LIVE` como casilla web sería un
+  interruptor de un clic para operar derivados apalancados que nadie ha medido; en `.env` hay que
+  editar un fichero y reiniciar, que es fricción a propósito. El panel sí publica `perpsSummary`, para
+  que «no está capturando» y «no se está ejecutando» no se vean igual.
+- **La API local de perps es solo de lectura, sin excepción.** El mismo plano de control lo consumen la
+  CLI y el MCP, y el MCP viene con `POLYBOT_MCP_ALLOW_WRITE` en `true` de fábrica.
+- **Un fallo de perps nunca tumba la iteración del binario.** `runPerps` traga y registra. La API del
+  SDK está marcada `@experimental` —«may change in a breaking way in any release, including patch
+  releases»— y es justo el tipo de dependencia que rompe sin avisar; parar por ella la estrategia que sí
+  lleva meses midiéndose sería el peor intercambio posible. Por eso `@polymarket/client` va **fijado a
+  `0.10.0` sin caret**.
+- **Dos SDK conviviendo.** `@polymarket/clob-client-v2` para el binario y `@polymarket/client` para
+  perps. Migrar el camino binario tocaría la única estrategia con una prueba en curso.
+- **El fichero de cubos es SUYO.** Mezclarlo con `analytics.jsonl` rompería el lector incremental del
+  binario y la aritmética de retención. El tope sale en 5.000 y no más: `analytics.jsonl` creció muy por
+  encima de su propia proyección y ahí la poda llegó a congelar el bucle ~8 segundos.
+- **El funding se suma por CAMBIOS, no por ticks.** La tasa se publica repetida en cada tick del mismo
+  periodo; sumarla toda contaría el mismo cobro decenas de veces.
+- **Las posiciones del replay no se solapan.** Con `holdBuckets` > 1, el índice avanza de tramo en
+  tramo: solapándolas, el mismo movimiento de precio entraría en varias operaciones y el bootstrap por
+  bloques dejaría de proteger de nada.
+- **Los cubos no consecutivos se saltan.** Un hueco significa que el bot estuvo parado; encadenar a
+  través de él es inventarse el resultado de un periodo que nadie observó.
+- **`flush()` al parar.** Un cubo dura 5 minutos y el watchdog relanza el proceso a diario: sin
+  guardarlos, cada reinicio tiraría el cubo abierto de cada instrumento.
+
+### Herramientas
+
+| Herramienta | Responde a |
+|---|---|
+| `npx tsx src/smoke/perpsMarket.ts` | ¿Ve Polybot el mercado de perpetuos? Solo lectura, **sin credenciales** |
+| `npx tsx src/smoke/perpsReplay.ts` | ¿Paga el carry de funding? Rejilla de duración × umbral con la regla de los 6 tramos |
+| `npx tsx src/smoke/perpsReplay.ts --desde <ISO>` | Evaluación pre-registrada. **No corre la rejilla**, a propósito |
+
 ## Quién relanza el proceso
 
 Polybot **cuenta con que alguien lo supervise**: `POST /api/system/restart` detiene el bot y hace

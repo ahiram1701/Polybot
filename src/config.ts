@@ -217,6 +217,23 @@ const envSchema = z.object({
     .transform((value) => value === "true" || value === "1"),
   ARB_MAX_USD_PER_OPPORTUNITY: z.coerce.number().positive().default(25),
   ARB_MIN_NET_PER_SET: z.coerce.number().nonnegative().default(0.02),
+  // --- Perps (perpetuos de Polymarket). Apagado de fabrica; ver la seccion de ARQUITECTURA.md.
+  PERPS_ENABLED: optionalBoolean,
+  PERPS_MODE: z.enum(["sim", "live"]).optional(),
+  PERPS_ALLOW_LIVE: optionalBoolean,
+  // Declaracion del operador, no deteccion. Polymarket exige BLOQUEAR el envio de ordenes en las
+  // jurisdicciones restringidas, no avisar — ver `PERPS_RESTRICTED_JURISDICTIONS`.
+  POLYMARKET_PERPS_JURISDICTION_OK: optionalBoolean,
+  PERPS_INSTRUMENTS: z.string().default("BTC-USD,ETH-USD"),
+  PERPS_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  // Tope del OPERADOR. El venue llega a 20x; 2 es un techo deliberadamente bajo para una plataforma
+  // recien lanzada sobre la que no hay ni una medicion propia.
+  PERPS_MAX_LEVERAGE: z.coerce.number().positive().default(2),
+  PERPS_MAX_NOTIONAL_USD: z.coerce.number().nonnegative().default(0),
+  PERPS_MAX_MARGIN_USD: z.coerce.number().nonnegative().default(0),
+  MAX_PERPS_SAMPLES: z.coerce.number().int().positive().default(5_000),
+  PERPS_HOST: optionalUrlString,
+  PERPS_WS_URL: optionalUrlString,
   POLYBOT_TIMEZONE: z.string().default("auto"),
   AI_AUTO_TUNE_ASK_CAP: z
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
@@ -424,6 +441,20 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     arbEnabled: env.ARB_ENABLED,
     arbMaxUsdPerOpportunity: env.ARB_MAX_USD_PER_OPPORTUNITY,
     arbMinNetPerSet: env.ARB_MIN_NET_PER_SET,
+    perpsEnabled: env.PERPS_ENABLED,
+    perpsMode: env.PERPS_MODE,
+    perpsAllowLive: env.PERPS_ALLOW_LIVE,
+    perpsJurisdictionOk: env.POLYMARKET_PERPS_JURISDICTION_OK,
+    perpsInstruments: env.PERPS_INSTRUMENTS.split(",")
+      .map((symbol) => symbol.trim().toUpperCase())
+      .filter((symbol) => symbol.length > 0),
+    perpsIntervalMs: env.PERPS_INTERVAL_MS,
+    perpsMaxLeverage: env.PERPS_MAX_LEVERAGE,
+    perpsMaxNotionalUsd: env.PERPS_MAX_NOTIONAL_USD,
+    perpsMaxMarginUsd: env.PERPS_MAX_MARGIN_USD,
+    maxPerpsSamples: env.MAX_PERPS_SAMPLES,
+    perpsHost: env.PERPS_HOST?.replace(/\/$/, ""),
+    perpsWsUrl: env.PERPS_WS_URL,
     timezone: env.POLYBOT_TIMEZONE,
     aiAutoTuneAskCap: env.AI_AUTO_TUNE_ASK_CAP,
     maxAnalyticsSamples: env.MAX_ANALYTICS_SAMPLES,
@@ -491,6 +522,12 @@ function normalizeAddress(value?: string): `0x${string}` | undefined {
 }
 
 function validateLiveConfig(config: BotConfig): void {
+  // Perps se valida ANTES y al margen del modo global, porque su cierre live es independiente: igual
+  // que `favoriteAllowLive`, `perpsAllowLive` puede estar abierto con el bot entero en sim.
+  //
+  // Y se valida al arrancar, no al mandar la primera orden. La diferencia importa: enterarse de que
+  // falta la declaracion de jurisdiccion cuando ya hay una senal que ejecutar es enterarse tarde.
+  validatePerpsLiveConfig(config);
   if (config.mode !== "live") {
     return;
   }
@@ -502,5 +539,31 @@ function validateLiveConfig(config: BotConfig): void {
   }
   if (!config.funderAddress) {
     throw new Error("Live mode requires POLYMARKET_FUNDER_ADDRESS.");
+  }
+}
+
+/**
+ * Perps en dinero real exige tres cosas, y ninguna se deduce de las otras.
+ *
+ * La de la jurisdiccion no es burocracia: Polymarket bloquea los perpetuos en EE. UU., Canada, Cuba,
+ * Iran, Corea del Norte, Siria, Crimea, Donetsk y Lugansk, y su documentacion pide explicitamente
+ * bloquear el ENVIO de ordenes, no ensenar un aviso. Se declara y no se detecta por el mismo criterio
+ * que `POLYBOT_SUPERVISOR`: una deteccion que falla en silencio produce exactamente la mentira que la
+ * comprobacion viene a evitar.
+ */
+function validatePerpsLiveConfig(config: BotConfig): void {
+  if (config.perpsAllowLive !== true) {
+    return;
+  }
+  if (config.perpsJurisdictionOk !== true) {
+    throw new Error(
+      "PERPS_ALLOW_LIVE requires POLYMARKET_PERPS_JURISDICTION_OK=true (Perps is blocked in the US, Canada and other jurisdictions).",
+    );
+  }
+  if (!config.privateKey) {
+    throw new Error("PERPS_ALLOW_LIVE requires POLYMARKET_PRIVATE_KEY.");
+  }
+  if (!config.funderAddress) {
+    throw new Error("PERPS_ALLOW_LIVE requires POLYMARKET_FUNDER_ADDRESS.");
   }
 }
