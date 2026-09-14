@@ -64,11 +64,20 @@ export class PerpsFeed {
   ) {}
 
   start(instrumentIds: readonly number[]): void {
-    this.instrumentIds = [...new Set(instrumentIds)];
+    const proximos = [...new Set(instrumentIds)].sort((left, right) => left - right);
+    const cambio = proximos.join(",") !== this.instrumentIds.join(",");
+    this.instrumentIds = proximos;
     if (!this.stopped) {
-      // Ya corriendo: solo cambio la lista. Re-suscribir sobre el socket vivo evita tirar una conexion
-      // sana cada vez que el catalogo se relee.
-      this.subscribe();
+      // Ya corriendo: re-suscribir SOLO si la lista cambio de verdad.
+      //
+      // `PerpsLoop` llama aqui en cada pasada, o sea cada 5 segundos, y la lista casi nunca cambia.
+      // Sin esta comparacion se mandaria una trama de suscripcion cada 5 s para siempre —17.280 al
+      // dia— que no aporta nada y es justo la clase de ruido sostenido por el que un exchange te
+      // limita o te cierra la conexion. Se descubrio antes de la primera corrida larga; en una de dos
+      // dias habria dado la cara sola.
+      if (cambio) {
+        this.subscribe();
+      }
       return;
     }
     if (this.instrumentIds.length === 0) {

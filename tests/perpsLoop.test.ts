@@ -196,6 +196,7 @@ describe("PerpsLoop", () => {
     });
     await loop.pasada(BASE + 1_000);
     expect(feed.start).toHaveBeenCalledWith([6]);
+    expect(feed.ticker).toHaveBeenCalledWith(6);
     // El tercer argumento de `quote` es el ticker ya conocido: con el, no se pide por REST.
     expect((data.quote as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2]).toMatchObject({ markPrice: 123 });
   });
