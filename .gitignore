@@ -15,3 +15,6 @@ _trades*.json
 trades_temp.txt
 pnl_calc.py
 data/archive/archive-state.json
+
+# Permisos de Claude Code: son de ESTA maquina (cadenas de comando aprobadas), no del proyecto.
+.claude/settings.local.json
