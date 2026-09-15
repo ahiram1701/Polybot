@@ -351,13 +351,23 @@ para» (pide ventaja < 0). Cae en la banda intermedia, así que **se sigue sin t
 entradas** y se vuelve a aplicar la misma regla. La ventaja esperada era +4,5 pp y va por +0,66: con
 esta muestra, indistinguible de empatar.
 
-**Lo que hay que explicar antes del siguiente hito.** El bot entró en 296 de las 419 ventanas que el
-replay da por válidas: 123 menos, 66 al día frente a 91. En las compartidas coinciden al 100% —mismo
-lado, mismo ask, mismo segundo, 0 lados distintos—, así que no es divergencia de criterio sino
-cobertura. Y no es neutro: el replay saca +1,37 pp y el ledger +0,66, o sea que las ventanas que el bot
-se pierde son mejores que la media. Candidatos a revisar, por orden: `stale_chainlink_tick` (el tick
-llega con 13 s cuando el tope es 10), el emparejamiento entre la cotización que graba la analítica y la
-que ve el bucle, y los filtros que el replay no modela (`MIN_FILL_RATIO`, profundidad bajo el tope).
+**El hueco de 123 ventanas entre ledger y replay era el parón, no un problema de cobertura.** La
+comparación de arriba no es equivalente: el replay incluye las ~109 ventanas de las 28,8 h en que la
+guarda de capital tuvo el papel parado, y el ledger no podía tener ninguna. Igualando las dos ventanas
+—`--desde 2026-09-12T11:49:23Z`, desde que se reanudó— el bot entró en **289 de las 290** que el replay
+da por válidas: 1 de más para el replay y 8 en las que entró el bot y el replay no (cotizaciones que la
+analítica no grabó en ese segundo). Con las ventanas igualadas, las dos medidas coinciden:
+
+| | ledger | replay |
+|---|---|---|
+| n | 296 | 290 |
+| ventaja | +0,92 pp | +0,95 pp |
+| P(+) | 66% | 67% |
+| neto a 5 $ | +15,22 $ | +15,78 $ |
+
+Misma decisión con las dos ventanas, así que el veredicto no depende de cuál se mire. De paso queda
+medido que **el gate de EV sobre este periodo es claramente malo** —−3,55 pp, 2/6 tramos, P(+) 16%—,
+lo que refuerza dejarlo apagado.
 
 #### Lo que se probó y no aporta
 
