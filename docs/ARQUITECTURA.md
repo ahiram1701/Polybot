@@ -331,6 +331,34 @@ contra ella. Tres consecuencias:
 - El papel deja de predecir lo que la cuenta puede ejecutar hoy: con 4,47 $, live no colocaría ni una
   orden de 5 $. Fondear la cartera es requisito para plantearse live, no para la prueba en sim.
 
+#### Hito de 300 entradas (2026-09-15): se sigue hasta 600, sin tocar nada
+
+304 entradas desde el cambio (297 desde que el papel se reanudó el 2026-09-12T11:49Z). Medido con
+`favoritoReplay.ts --desde 2026-09-11T05:25:47Z`:
+
+| | ledger (verdad oficial) | replay, misma ventana |
+|---|---|---|
+| n | 304 | 419 |
+| aciertos | 84,9% | 85,4% |
+| equilibrio | 84,2% | 84,1% |
+| **ventaja** | **+0,66 pp** | +1,37 pp |
+| **P(+) bootstrap por ventanas** | **62%** | 78% |
+| tramos positivos | 3/6 | 4/6 |
+| neto a 5 $ | +11,05 $ | +34,37 $ |
+
+**Decisión por la regla escrita antes del dato:** no cumple «se mantiene» (pide P(+) ≥ 80%) ni «se
+para» (pide ventaja < 0). Cae en la banda intermedia, así que **se sigue sin tocar nada hasta 600
+entradas** y se vuelve a aplicar la misma regla. La ventaja esperada era +4,5 pp y va por +0,66: con
+esta muestra, indistinguible de empatar.
+
+**Lo que hay que explicar antes del siguiente hito.** El bot entró en 296 de las 419 ventanas que el
+replay da por válidas: 123 menos, 66 al día frente a 91. En las compartidas coinciden al 100% —mismo
+lado, mismo ask, mismo segundo, 0 lados distintos—, así que no es divergencia de criterio sino
+cobertura. Y no es neutro: el replay saca +1,37 pp y el ledger +0,66, o sea que las ventanas que el bot
+se pierde son mejores que la media. Candidatos a revisar, por orden: `stale_chainlink_tick` (el tick
+llega con 13 s cuando el tope es 10), el emparejamiento entre la cotización que graba la analítica y la
+que ve el bucle, y los filtros que el replay no modela (`MIN_FILL_RATIO`, profundidad bajo el tope).
+
 #### Lo que se probó y no aporta
 
 - **Apretar `favoriteMaxAskSum`** (medido sobre 80 s y z ≥ 1,5). 1,03 / 1,05 / 1,10 / 1,15 dan las
