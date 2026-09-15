@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && npx tsx src/smoke/perpsReplay.ts 2>&1 | head -60\")",
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && wc -l < data/perps-analytics.jsonl\")",
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && curl -s http://127.0.0.1:8787/api/health\")",
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && curl -s http://127.0.0.1:8787/api/status\")",
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && curl -s http://127.0.0.1:8787/api/status | node -e \\\\\"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\(JSON.stringify\\(j.perpsSummary,null,2\\)\\)}\\)\\\\\"\")",
+      "Bash(wsl.exe -d ubuntu -- bash -lc \"cd ~/Polybot && npx tsx src/smoke/perpsReplay.ts 2>&1 | head -n 40\")"
+    ]
+  }
+}
