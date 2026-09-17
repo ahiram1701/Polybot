@@ -168,7 +168,9 @@ const settingsSchema = z.object({
    * fichero asi congela el proceso ~17 segundos. El defecto del codigo no basta: este ajuste es el que
    * llega al grabador, y un valor guardado de 20.000 lo pisaria.
    */
-  maxAnalyticsSamples: z.coerce.number().int().positive().default(10_000),
+  // 5.000 y no 10.000: a ~58 KB por muestra son 580 MB en disco y ~1 GB de heap, y con ese tope la poda
+  // no podia ni reescribir su propio fichero (ver MAX_ANALYTICS_SAMPLES en analyticsRecorder).
+  maxAnalyticsSamples: z.coerce.number().int().positive().default(5_000),
   aiAutoApplyLive: z.boolean().default(false),
   aiAutoTuneAskCap: z.boolean().default(false),
   /**
@@ -331,7 +333,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     openingCaptureGraceMs: config.openingCaptureGraceMs,
     minDistanceFloorUsdByMarket: defaultMarketDistances(config.minDistanceFloorUsdByMarket),
     liveMaxSlippage: config.liveMaxSlippage ?? 0.02,
-    maxAnalyticsSamples: config.maxAnalyticsSamples ?? 10_000,
+    maxAnalyticsSamples: config.maxAnalyticsSamples ?? 5_000,
     aiAutoApplyLive: false,
     aiAutoTuneAskCap: Boolean(config.aiAutoTuneAskCap ?? false),
     aiAutoProbeBands: Boolean(config.aiAutoProbeBands ?? false),

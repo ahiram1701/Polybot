@@ -2,7 +2,7 @@ import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { averageFillPrice } from "./orderbookService.js";
-import { writeFileAtomic } from "./atomicWrite.js";
+import { writeFileAtomic, writeLinesAtomic } from "./atomicWrite.js";
 import { marketSymbolFromSlug } from "./markets.js";
 import { secondsToEnd } from "./time.js";
 import type {
@@ -55,15 +55,19 @@ const ANALYTICS_RECORD_TYPE = "analytics_sample";
 /**
  * Muestras que se conservan en disco.
  *
- * Bajado de 20.000 a 10.000. Con la muestra en ~31 KB —crecio desde 12,8 KB al empezar a grabar
- * profundidad del libro, ticks de ventana completa y la serie TWAP— el tope anterior proyectaba un
- * fichero de 608 MB, y podar un fichero asi congela el proceso ~17 segundos.
+ * 5.000 desde el 2026-09-17, bajado de 10.000 (y antes de 20.000). La muestra ya no pesa ~31 KB sino
+ * ~58 KB —medido: 736 MB para 12.753 muestras—, asi que 10.000 proyectaban 580 MB y eso esta POR
+ * ENCIMA de los 512 MB que Node admite en una sola cadena. El tope era literalmente imposible de
+ * reescribir: la poda fallaba con `Invalid string length`, el fichero solo crecia y el bot estuvo
+ * 7,5 horas sin operar sin que nada avisara. La poda ya escribe por lineas (`writeLinesAtomic`), asi
+ * que ese techo desaparece, pero el tope baja igual por una segunda razon: 10.000 muestras cargadas
+ * dejaban el proceso en 1,3 GB de RSS.
  *
- * Lo que se pierde es historial, y por una vez es facil: Polymarket cambio la regla de resolucion el
- * 2026-08-07, asi que todo lo anterior describe un juego que ya no se juega. 10.000 muestras siguen
- * siendo ~11 dias, muy por encima de lo que existe de la regla nueva.
+ * A 58 KB, 5.000 muestras son ~290 MB y unos 5,8 dias. Lo que sale del fichero vivo no se pierde: el
+ * archivador lo acumula en `data/archive/analytics-archive.jsonl`, y el barrido del favorito lee las
+ * dos fuentes.
  */
-const MAX_ANALYTICS_SAMPLES = 10_000;
+const MAX_ANALYTICS_SAMPLES = 5_000;
 const ANALYTICS_PRUNE_SLACK = 600;
 
 export interface AnalyticsObservation {
@@ -787,6 +791,13 @@ async function appendAnalyticsSamples(path: string, samples: AnalyticsSample[], 
  * Trim the analytics file so it keeps at most `maxSamples` of the most recent (highest windowStartMs)
  * resolved samples. Reads via readAnalyticsSamples (deduped + sorted ascending), keeps the tail, and
  * rewrites atomically via temp + rename. No-op when already within the limit. Returns the kept count.
+ *
+ * Escribe POR LINEAS (`writeLinesAtomic`) y no con `serializeAnalyticsSamples`. Serializar las
+ * muestras conservadas en una sola cadena es lo que rompio el 2026-09-17: con la muestra en ~58 KB,
+ * las 10.000 que entonces se conservaban pasaban de los 512 MB que Node admite en un string, la poda
+ * fallaba con `Invalid string length`, el fichero solo podia crecer y el bot estuvo 7,5 horas sin
+ * operar. Es el mismo punto muerto que la lectura por tramos resolvio en agosto, por el lado de la
+ * escritura: no basta con poder leer un fichero que no se puede reescribir.
  */
 export async function trimAnalyticsFileToMostRecent(path: string, maxSamples: number): Promise<number> {
   const samples = await readAnalyticsSamples(path);
@@ -794,8 +805,15 @@ export async function trimAnalyticsFileToMostRecent(path: string, maxSamples: nu
     return samples.length;
   }
   const kept = samples.slice(-maxSamples);
-  await writeFileAtomic(path, serializeAnalyticsSamples(kept));
+  await writeLinesAtomic(path, lineasDeMuestras(kept, new Date()));
   return kept.length;
+}
+
+/** Las lineas una a una: un generador, para que nunca exista el fichero entero en memoria. */
+function* lineasDeMuestras(samples: readonly AnalyticsSample[], at: Date): Generator<string> {
+  for (const sample of samples) {
+    yield formatAnalyticsSampleLine(sample, at);
+  }
 }
 
 function formatAnalyticsSampleLine(sample: AnalyticsSample, at = new Date()): string {

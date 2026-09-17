@@ -281,9 +281,12 @@ const envSchema = z.object({
     .preprocess((value) => String(value ?? "false").toLowerCase(), z.enum(["true", "false"]))
     .transform((value) => value === "true")
     .default(false),
-  // 10.000, no 20.000: a ese tope la proyeccion es de 608 MB, y podar un fichero asi congelaba el
-  // bucle ~17 s. Un bot congelado no ve los arbitrajes, que duran segundos.
-  MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(10_000),
+  // 5.000 desde el 2026-09-17. La muestra pesa ya ~58 KB (medido: 736 MB / 12.753), asi que el tope
+  // anterior de 10.000 proyectaba 580 MB — por encima de los 512 MB que Node puede tener en una sola
+  // cadena, y por tanto IMPOSIBLE de reescribir. El bot estuvo 7,5 h sin operar por eso. Ver
+  // `MAX_ANALYTICS_SAMPLES` en analyticsRecorder: la poda ya escribe por lineas, pero el tope tambien
+  // baja porque 10.000 muestras en memoria dejaban el proceso en 1,3 GB.
+  MAX_ANALYTICS_SAMPLES: z.coerce.number().int().positive().default(5_000),
   TICK_STALE_MS: z.coerce.number().positive().default(10_000),
   POLL_INTERVAL_MS: z.coerce.number().positive().default(1_000),
   OPENING_CAPTURE_GRACE_MS: z.coerce.number().positive().default(15_000),

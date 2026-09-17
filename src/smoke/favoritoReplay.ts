@@ -155,6 +155,32 @@ async function configuracionViva(dataDir: string, base: BotConfig): Promise<Conf
   };
 }
 
+/**
+ * Muestras del regimen TWAP, del fichero vivo Y del archivo historico.
+ *
+ * El vivo esta topado por `MAX_ANALYTICS_SAMPLES` (5.000, unos 5,8 dias) y una ventana pre-registrada
+ * puede ser mas larga, asi que leer solo el vivo dejaria la evaluacion sin su propio principio en
+ * cuanto la poda hiciera su trabajo. Es exactamente para lo que existe `data/archive`.
+ *
+ * Se deduplica por slug quedandose con la del VIVO: es la que puede traer la resolucion oficial ya
+ * corregida. Un archivo ausente no es un error — `readAnalyticsSamples` devuelve vacio.
+ *
+ * Con las dos fuentes el pico de memoria ronda el giga. Si algun dia no cabe:
+ * `node --max-old-space-size=8192 --import tsx/esm src/smoke/favoritoReplay.ts`.
+ */
+async function cargarMuestras(dataDir: string): Promise<AnalyticsSample[]> {
+  const porSlug = new Map<string, AnalyticsSample>();
+  for (const sample of await readAnalyticsSamples(join(dataDir, "archive", "analytics-archive.jsonl"))) {
+    porSlug.set(sample.slug, sample);
+  }
+  for (const sample of await readAnalyticsSamples(join(dataDir, "analytics.jsonl"))) {
+    porSlug.set(sample.slug, sample);
+  }
+  return [...porSlug.values()]
+    .filter((sample) => sample.windowStartMs >= REGIMEN_TWAP_MS)
+    .sort((izq, der) => izq.windowStartMs - der.windowStartMs);
+}
+
 /** Una operacion ya liquidada, venga del replay directo o del gate de EV. */
 interface Operacion {
   market: MarketSymbol;
@@ -435,9 +461,7 @@ async function cruzarConLedger(dataDir: string, desde: number, replay: readonly 
 async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
   const desde = leerDesde(process.argv.slice(2));
-  const todas = (await readAnalyticsSamples(join(config.dataDir, "analytics.jsonl")))
-    .filter((sample) => sample.windowStartMs >= REGIMEN_TWAP_MS)
-    .sort((izq, der) => izq.windowStartMs - der.windowStartMs);
+  const todas = await cargarMuestras(config.dataDir);
   const viva = await configuracionViva(config.dataDir, config);
   const universo = desde === undefined ? todas : todas.filter((sample) => sample.windowStartMs >= desde);
   if (universo.length === 0) {

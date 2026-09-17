@@ -730,10 +730,26 @@ Tres casos que parecen ajustes y no lo son a propósito:
 
 ## La retención recicla datos, no los acumula
 
-`data/analytics.jsonl` está acotado a `maxAnalyticsSamples` (10.000). Cuando se llena, **cada muestra
-nueva borra la más vieja** — así que a partir de ese punto esperar más tiempo no acumula más historia,
-la recicla. Con ~730 muestras al día son unas dos semanas de memoria, y validar una estrategia fuera de
-muestra necesita más que eso.
+`data/analytics.jsonl` está acotado a `maxAnalyticsSamples` (5.000 desde el 2026-09-17, antes 10.000).
+Cuando se llena, **cada muestra nueva borra la más vieja** — así que a partir de ese punto esperar más
+tiempo no acumula más historia, la recicla. Con ~730 muestras al día y la muestra en ~58 KB, 5.000 son
+unos 290 MB y 5,8 días, y validar una estrategia fuera de muestra necesita más que eso.
+
+> **El tope de 10.000 era imposible de mantener, y dejó el bot 7,5 horas sin operar (2026-09-17).**
+> La muestra creció de ~31 KB a ~58 KB (medido: 736 MB para 12.753 muestras), así que 10.000
+> proyectaban 580 MB. La poda serializaba las muestras conservadas en **una sola cadena**, y Node no
+> admite cadenas de más de 512 MB: fallaba con `Invalid string length`. Como la poda es lo único que
+> puede encoger el fichero, a partir de ahí el fichero solo podía crecer, y con él el proceso: 1,3 GB
+> de RSS. A las 13:14 el bot dejó de escribir analítica, trades y estado.
+>
+> **Es el mismo punto muerto que la lectura por tramos resolvió en agosto, por el lado de la
+> escritura**: no sirve de nada poder leer un fichero que no se puede reescribir. Arreglado con
+> `writeLinesAtomic` (vuelca por lotes de líneas y nunca construye el fichero entero) y bajando el
+> tope, que devolvió el proceso a 207 MB de RSS.
+>
+> **Lo que sigue sin arreglar es lo peor: nada avisó.** La API respondía, el healthcheck estaba en
+> verde y los logs seguían saliendo mientras el bot no operaba ni escribía. Lo delató el ledger, al
+> mirarlo a mano. Un bot que no graba una muestra en media hora debería decirlo, y hoy no lo dice.
 
 Por eso existe `src/archiveAnalytics.ts`, que copia lo nuevo a `data/archive/analytics-archive.jsonl`,
 sin tope. Tres decisiones que no son arbitrarias:
@@ -744,6 +760,11 @@ sin tope. Tres decisiones que no son arbitrarias:
   pasada serían 326 MB de los que el 90% ya estaría dentro.
 - **Busca el corte en la cola del archivo**, no releyéndolo entero: el archivo crece sin límite por
   diseño, y releerlo completo convertiría al archivador en el problema que viene a evitar.
+- **El barrido del favorito lee las DOS fuentes** (`cargarMuestras` en `src/smoke/favoritoReplay.ts`,
+  deduplicando por slug y quedándose con la del fichero vivo, que es la que puede traer la resolución
+  oficial corregida). Con el tope en 5.000 el vivo cubre 5,8 días, y una ventana pre-registrada puede
+  ser más larga: sin el archivo, la evaluación se quedaría sin su propio principio en cuanto la poda
+  hiciera su trabajo.
 
 Usa el mismo serializador que la exportación de la UI, así que el archivo se puede reimportar con
 `POST /api/analysis/samples/import` sin conversiones.
