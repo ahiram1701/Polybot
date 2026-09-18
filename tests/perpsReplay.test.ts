@@ -35,7 +35,7 @@ function cubo(args: {
     bucketEndMs: bucketStartMs + FIVE_MINUTES_MS,
     openMarkPrice: args.open,
     closeMarkPrice: args.close,
-    fundingRateSum: args.funding,
+    fundingIntervalHours: 1,
     ticks,
     quotes: [],
   };

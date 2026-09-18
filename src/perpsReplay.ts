@@ -118,8 +118,12 @@ export function replayCarry(samples: readonly PerpsSample[], params: PerpsReplay
       }
       // AQUI vive el invariante: el lado sale de `metricasPrevias`, nunca de los cubos que se van a
       // mantener.
-      const side = fundingReceiverSide(metricasPrevias.fundingRateSum);
-      if (!side || Math.abs(metricasPrevias.fundingRateSum) < params.minFundingRate) {
+      //
+      // Y se decide con la TASA horaria, no con lo devengado: el umbral es "solo opera cuando el
+      // funding esta caro", y "caro" se mide en tasa. Hasta el 2026-09-18 se comparaba contra un
+      // resumen inflado 12-400x, y el umbral seleccionaba justo los cubos mas inflados.
+      const side = fundingReceiverSide(metricasPrevias.fundingRate);
+      if (!side || Math.abs(metricasPrevias.fundingRate) < params.minFundingRate) {
         continue;
       }
       const agregado = agregarTramo(metricas as PerpsBucketMetrics[]);
@@ -169,15 +173,21 @@ function sonConsecutivos(previo: PerpsSample, tramo: readonly PerpsSample[]): bo
  */
 function agregarTramo(metricas: readonly PerpsBucketMetrics[]): PerpsBucketMetrics {
   let compuesto = 1;
-  let funding = 0;
+  let devengado = 0;
+  let tasas = 0;
   for (const metrica of metricas) {
     compuesto *= 1 + metrica.markReturn;
-    funding += metrica.fundingRateSum;
+    // Se suma lo DEVENGADO de cada cubo, que ya es la fraccion del nocional pagada en ese tramo de
+    // tiempo. Sumar TASAS aqui volveria a contar una hora entera por cada cinco minutos.
+    devengado += metrica.fundingAccrued;
+    tasas += metrica.fundingRate;
   }
   return {
     ...metricas[0],
     markReturn: compuesto - 1,
-    fundingRateSum: funding,
+    fundingAccrued: devengado,
+    // La tasa del tramo es la media: describe cuanto de caro estuvo el funding, no cuanto se pago.
+    fundingRate: metricas.length > 0 ? tasas / metricas.length : 0,
   };
 }
 

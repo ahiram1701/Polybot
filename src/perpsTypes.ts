@@ -154,8 +154,29 @@ export interface PerpsSample {
   openMarkPrice?: number;
   /** La verdad del cubo. Ausente = el cubo no se pudo cerrar (feed caido) y NO debe puntuarse. */
   closeMarkPrice?: number;
-  /** Suma de las tasas de funding publicadas durante el cubo, en tanto por uno. */
+  /**
+   * @deprecated INFLADO EN TODAS LAS FILAS. No leer.
+   *
+   * Se calculaba sumando cada CAMBIO de la tasa publicada, y eso estaba mal dos veces. La tasa del
+   * ticker es HORARIA, asi que incluso con una sola tasa en todo el cubo se guardaba la hora entera
+   * para cinco minutos: 12x de mas. Y esa tasa es una PREVISION que se actualiza sin parar, asi que
+   * cada actualizacion se sumaba como si fuera otro cobro: hasta ~400x en los cubos agitados. Medido
+   * el 2026-09-18 sobre 2.282 cubos: mediana 12x, p90 395x.
+   *
+   * El error iba en la direccion peligrosa: el carry COBRA funding, asi que inflarlo hacia que todo
+   * pareciera mejor de lo que era. Se deja el campo en el tipo solo para que las filas viejas sigan
+   * siendo legibles. El funding se recalcula de los ticks en `summarizePerpsBucket`, que son la
+   * fuente de verdad y estan intactos.
+   */
   fundingRateSum?: number;
+  /**
+   * Cada cuanto se liquida el funding de este instrumento, en horas. Hace falta para convertir la
+   * tasa HORARIA en lo que de verdad se devenga en un cubo de cinco minutos.
+   *
+   * Ausente en las filas anteriores al 2026-09-18: ahi se asume 1 h, que es lo que publica el
+   * catalogo para BTC-USD y ETH-USD, los dos unicos instrumentos capturados hasta entonces.
+   */
+  fundingIntervalHours?: number;
   ticks: PerpsTickPoint[];
   quotes: PerpsQuotePoint[];
   closedAtMs?: number;

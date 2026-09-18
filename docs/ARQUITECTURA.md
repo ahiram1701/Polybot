@@ -1104,6 +1104,99 @@ periodo lo gasta.
 - **Pase lo que pase, live sigue cerrado en esta entrega.** Encenderlo es una decisión aparte y exige
   además fondear la cuenta de perps, que tampoco se hace aquí.
 
+### Resultado del 2026-09-18: el carry de funding queda DESCARTADO
+
+2.284 cubos puntuables (100%) de BTC-USD y ETH-USD, 115 h, 4 huecos por instrumento y una racha
+consecutiva máxima de 41 h. Rejilla corregida (ver abajo por qué «corregida»), nocional 100 $:
+
+| duración, umbral | ops | neto | /op | peor tramo | P(+) |
+|---|---|---|---|---|---|
+| **1 h, ≥ 0,000%** | **182** | **−27,53 $** | **−0,151 $** | **−10,91 $** | **0%** |
+| 6 h, ≥ 0,000% | 22 | −15,37 $ | −0,699 $ | −8,79 $ | 2% |
+| 12 h, ≥ 0,000% | 6 | −6,55 $ | −1,092 $ | −2,23 $ | 0% |
+| cualquier otra | 0 | — | — | — | — |
+
+La única casilla con ≥ 150 operaciones y los 6 tramos es la primera. **Se cumplen las dos condiciones
+de descarte**: el peor tramo es negativo en todas las duraciones con datos, y la P(+) de la mejor
+casilla es 0%, muy lejos del 80%.
+
+#### Por qué pierde: no es carry, es estar siempre corto
+
+| | precio en la captura | el carry elige CORTO en |
+|---|---|---|
+| BTC-USD | 77.544 → 81.100 (**+4,59%**) | **100%** de los cubos |
+| ETH-USD | 2.512 → 2.616 (**+4,14%**) | **93%** de los cubos |
+
+El funding fue positivo casi todo el tiempo —pagan los largos—, así que cobrarlo significó en la
+práctica **estar corto en cripto sin interrupción**. Desglose de los −0,151 $ por operación de una
+hora: ~0,08 $ de comisiones, ~0,07 $ de haber estado corto en un mercado que subió, y el funding
+cobrado aporta **~0,001 $**. El funding medido fue ~0,0008 %/h: hacen falta ~94 h (BTC) y ~113 h
+(ETH) de funding solo para pagar la ida y vuelta, y durante todas esas horas se carga el riesgo de
+precio entero, que en cripto es del orden del 2-3 % diario — cien veces el carry que se cobra.
+
+**Y esto es lo que convierte el resultado en una lección y no solo en un número negativo:** si la
+captura hubiera caído en cuatro días bajistas, la misma estrategia habría salido rentable, y quizá la
+regla la habría aprobado. Habría sido un falso positivo por el mismo mecanismo exacto: un corto con
+suerte con la etiqueta de carry. Un resultado positivo aquí no habría demostrado nada sobre el
+funding.
+
+#### La tabla que engañó, y por qué se deja escrita
+
+La primera pasada de la rejilla, ese mismo día, dio esto:
+
+| duración, umbral | ops | neto | /op | peor tramo | P(+) |
+|---|---|---|---|---|---|
+| 1 h, ≥ 0,000% | 182 | −15,68 $ | −0,086 $ | −10,06 $ | 3% |
+| **1 h, ≥ 0,010%** | **23** | **+3,61 $** | **+0,157 $** | **+0,05 $** | **99%** |
+
+**La segunda fila no existía.** El grabador resumía el funding en un `fundingRateSum` que sumaba cada
+cambio de la tasa publicada, y estaba mal dos veces:
+
+- **La tasa es horaria.** Con una sola tasa en todo el cubo se guardaba la hora entera para cinco
+  minutos: **12×** de más. Era la mediana de los 2.282 cubos.
+- **La tasa es una previsión que se actualiza sin parar.** Cada revisión se sumaba como si fuera otro
+  cobro: **~400×** en el p90.
+
+El umbral de 0,010 % comparaba contra esas sumas infladas, así que seleccionaba justo los cubos más
+inflados — y su «ganancia» salía de ahí. Con la tasa bien medida, el funding **nunca** llegó al
+0,01 %/h (el p90 fue 0,0012 %/h): esa casilla tiene cero operaciones.
+
+Tres cosas de este fallo que conviene no olvidar:
+
+1. **El error iba en la dirección peligrosa.** El carry cobra funding, así que inflarlo hacía parecer
+   rentable lo que no lo era. Es la trampa 1 de este documento —el backtest que se puntuaba a sí
+   mismo— con otro disfraz.
+2. **Lo destapó un número que no cuadraba, no el resultado.** 5.729 valores distintos de funding para
+   BTC en 115 h, cuando se liquida una vez por hora. La casilla del +3,61 $ con P(+) 99% tenía toda
+   la pinta de hallazgo; la señal de alarma fue la aritmética de fondo.
+3. **Arreglarlo no fue mover la portería.** La rejilla, los umbrales y la regla quedaron idénticos;
+   solo cambió cómo se mide el funding, y se re-puntuaron los mismos cubos. Los ticks crudos estaban
+   intactos: el fallo vivía en un campo derivado guardado junto a ellos, que es por lo que ahora no se
+   guarda ningún resumen y se calcula de los ticks cada vez (`fundingDelCubo`, `perpsSignal.ts`).
+
+#### Un fallo de la propia regla, que tampoco se esconde
+
+La regla exigía ≥ 150 operaciones, y eso la hacía **incapaz de evaluar las posiciones largas** — que
+eran la única versión de la hipótesis que la aritmética dejaba en pie. Con ~100 h de funding para
+cubrir comisiones, 150 posiciones de ese tamaño con dos instrumentos exigen del orden de 300 días de
+datos. En 115 h no se formó ni una posición de 24 h.
+
+O sea: **la regla, tal como se escribió, solo podía juzgar las duraciones cortas, y de esas ya se
+sabía por aritmética que perdían.** El descarte es correcto, pero no porque la regla pusiera a prueba
+la versión interesante; es correcto porque la versión interesante no necesita backtest para juzgarse
+— cobrar un 0,02 % diario cargando un riesgo del 2-3 % diario no es una estrategia. Una regla futura
+tiene que comprobar ANTES de fijar el umbral de operaciones que las duraciones que importan pueden
+llegar a él con el tiempo de captura previsto.
+
+#### Lo que sigue sin medir
+
+- **La base contra Chainlink** (media +0,75 bps) queda muy por debajo de los 8 bps de ida y vuelta, así
+  que tampoco da para operarla en el perp. Lo que no se ha medido es si la marca del perp **adelanta**
+  a Chainlink, que importaría como señal para el binario y no como operación en perps. No hay replay
+  para eso: sería una hipótesis nueva y tendría que pre-registrarse aparte.
+- **Ninguna otra estrategia de perps.** Esto descarta el carry de funding en BTC y ETH en este periodo,
+  no «perps».
+
 ### Los tres cierres de live, y por qué son tres
 
 `perpsLiveBlockedReason` (`perpsSession.ts`) devuelve el MOTIVO y no un booleano, porque «no está

@@ -98,10 +98,9 @@ describe("PerpsRecorder", () => {
     expect(cerrada?.closeMarkPrice).toBe(110);
   });
 
-  it("el funding se suma por CAMBIOS, no por ticks", async () => {
+  it("NO guarda un resumen de funding: se calcula de los ticks, que son la verdad", async () => {
     const dir = dirTemporal();
     const recorder = new PerpsRecorder(dir);
-    // La misma tasa repetida en cada tick: sumarla toda contaria el mismo cobro tres veces.
     for (const t of [1_000, 2_000, 3_000]) {
       await recorder.observe({ instrument: INSTRUMENTO, quote: quote(100, 0.0002), nowMs: BUCKET_0 + t });
     }
@@ -110,7 +109,19 @@ describe("PerpsRecorder", () => {
       quote: quote(100, 0.0002),
       nowMs: BUCKET_0 + FIVE_MINUTES_MS + 1_000,
     });
-    expect(cerrada?.fundingRateSum).toBeCloseTo(0.0002, 9);
+    // Aqui vivia `fundingRateSum`, que sumaba cada cambio de la tasa y salio inflado 12-400x. Guardar
+    // un derivado junto a los datos crudos es lo que permitio el fallo: el derivado mentia y los ticks,
+    // que decian la verdad, no los leia nadie.
+    expect(cerrada?.fundingRateSum).toBeUndefined();
+    // Los ticks, en cambio, conservan cada tasa leida: de ahi sale la cuenta buena.
+    expect(cerrada?.ticks.map((tick) => tick.fundingRate)).toEqual([0.0002, 0.0002, 0.0002]);
+  });
+
+  it("guarda el intervalo de funding, que hace falta para pasar de tasa a devengado", async () => {
+    const dir = dirTemporal();
+    const recorder = new PerpsRecorder(dir);
+    await recorder.observe({ instrument: INSTRUMENTO, quote: quote(100), nowMs: BUCKET_0 + 1_000 });
+    expect(recorder.activeSamples()[0].fundingIntervalHours).toBe(1);
   });
 
   it("flush guarda los cubos abiertos", async () => {

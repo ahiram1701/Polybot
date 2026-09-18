@@ -158,6 +158,7 @@ function crearCubo(observation: PerpsObservation, bucketStartMs: number): PerpsS
     bucketStartMs,
     bucketEndMs: bucketStartMs + FIVE_MINUTES_MS,
     openMarkPrice: observation.quote.markPrice,
+    fundingIntervalHours: observation.instrument.fundingIntervalHours,
     ticks: [],
     quotes: [],
   };
@@ -190,27 +191,24 @@ function anotar(sample: PerpsSample, observation: PerpsObservation): void {
   }
 }
 
+/**
+ * Cierra el cubo. El funding NO se resume aqui, a proposito.
+ *
+ * Aqui vivia un `fundingRateSum` que sumaba cada cambio de la tasa publicada, y estaba mal dos veces:
+ * la tasa es HORARIA (con una sola tasa en el cubo ya guardaba la hora entera para cinco minutos, 12x
+ * de mas) y es una PREVISION que se actualiza sin parar (cada actualizacion contaba como otro cobro,
+ * hasta ~400x). Inflaba el ingreso del carry y hacia que la estrategia pareciera mejor de lo que era.
+ *
+ * Ahora no se guarda ningun resumen: el funding se calcula de los TICKS en `summarizePerpsBucket`.
+ * Guardar un derivado junto a los datos crudos es lo que permitio el fallo —el derivado mentia y los
+ * ticks, que decian la verdad, no los leia nadie—. Los ticks son la fuente de verdad; se calcula de
+ * ellos cada vez.
+ */
 function cerrarCubo(sample: PerpsSample, nowMs: number): PerpsSample {
   const ultimoConMarca = [...sample.ticks].reverse().find((tick) => tick.markPrice !== undefined);
-  // Las tasas de funding se publican repetidas en cada tick del mismo periodo, asi que sumarlas todas
-  // contaria el mismo cobro decenas de veces. Se suman los CAMBIOS: cada valor distinto del anterior.
-  let anterior: number | undefined;
-  let fundingRateSum = 0;
-  let vioAlguna = false;
-  for (const tick of sample.ticks) {
-    if (tick.fundingRate === undefined) {
-      continue;
-    }
-    if (anterior === undefined || tick.fundingRate !== anterior) {
-      fundingRateSum += tick.fundingRate;
-      anterior = tick.fundingRate;
-      vioAlguna = true;
-    }
-  }
   return {
     ...sample,
     closeMarkPrice: ultimoConMarca?.markPrice,
-    fundingRateSum: vioAlguna ? fundingRateSum : undefined,
     closedAtMs: nowMs,
   };
 }

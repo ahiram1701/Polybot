@@ -19,8 +19,22 @@ export interface PerpsBucketMetrics {
   bucketStartMs: number;
   /** Rendimiento del precio de marca dentro del cubo, en tanto por uno. */
   markReturn: number;
-  /** Suma de tasas de funding publicadas en el cubo. Positiva = los largos pagan. */
-  fundingRateSum: number;
+  /**
+   * Tasa de funding HORARIA media durante el cubo, en tanto por uno. Positiva = los largos pagan.
+   *
+   * Es una TASA, no un pago: dice cuanto de caro esta el funding ahora, y por eso es lo que decide el
+   * lado y lo que se compara con un umbral. NO sirve para el P&L — para eso esta `fundingAccrued`.
+   * Confundir las dos cosas en un solo campo es exactamente el fallo que tuvo este modulo.
+   */
+  fundingRate: number;
+  /**
+   * Lo que de verdad se DEVENGA en el cubo, como fraccion del nocional. Es lo que va al P&L.
+   *
+   *   devengado = tasa horaria media x (duracion del cubo / intervalo de funding)
+   *
+   * Para un cubo de 5 minutos y funding horario, la doceava parte de la tasa.
+   */
+  fundingAccrued: number;
   /** (marca - indice) / indice, promediado. Mide si el perpetuo cotiza caro o barato contra su indice. */
   basisVsIndex?: number;
   /**
@@ -71,12 +85,15 @@ export function summarizePerpsBucket(sample: PerpsSample): PerpsBucketMetrics | 
     .filter((quote) => isPositive(quote.bestAsk) && isPositive(quote.bestBid) && isPositive(quote.mid))
     .map((quote) => (((quote.bestAsk as number) - (quote.bestBid as number)) / (quote.mid as number)) * 10_000);
 
+  const funding = fundingDelCubo(sample);
+
   return {
     instrumentId: sample.instrumentId,
     symbol: sample.symbol,
     bucketStartMs: sample.bucketStartMs,
     markReturn: cierre / apertura - 1,
-    fundingRateSum: sample.fundingRateSum ?? 0,
+    fundingRate: funding.rate,
+    fundingAccrued: funding.accrued,
     basisVsIndex: basisIndice,
     basisVsOracle: basisOraculo,
     volPerSecond: volatilidadPorSegundo(marcas),
@@ -85,6 +102,41 @@ export function summarizePerpsBucket(sample: PerpsSample): PerpsBucketMetrics | 
     meanBidNotionalUsd: promedio(sample.quotes.map((quote) => quote.bidNotionalUsd).filter(isPositive) as number[]),
     markTickCount: marcas.length,
   };
+}
+
+/** Intervalo de funding que se asume si la muestra no lo trae: el de BTC-USD y ETH-USD. */
+const INTERVALO_FUNDING_POR_DEFECTO_H = 1;
+
+/**
+ * Tasa horaria media y funding devengado de un cubo, calculados de los TICKS.
+ *
+ * Aqui y solo aqui. Antes este dato se resumia al grabar, en un `fundingRateSum` que sumaba cada
+ * cambio de la tasa, y salio inflado dos veces:
+ *
+ * - **La tasa es horaria.** Con una sola tasa en todo el cubo, ese resumen guardaba la hora entera
+ *   para cinco minutos: 12x de mas. Era la MEDIANA de los 2.282 cubos medidos el 2026-09-18.
+ * - **La tasa es una PREVISION que se actualiza sin parar**, no un cobro por cada valor. Sumar cada
+ *   actualizacion contaba como otro pago lo que era la misma tasa corrigiendose: ~400x en el p90.
+ *
+ * Y el error iba en la direccion peligrosa: el carry COBRA funding, asi que inflarlo hacia parecer
+ * rentable lo que no lo era. Por eso se calcula de los ticks, que son la fuente de verdad y estaban
+ * intactos, y se promedia la tasa en vez de sumarla — que es lo que de verdad liquida el exchange:
+ * la tasa vigente, una vez por intervalo.
+ */
+export function fundingDelCubo(sample: PerpsSample): { rate: number; accrued: number } {
+  const tasas = sample.ticks
+    .map((tick) => tick.fundingRate)
+    .filter((valor): valor is number => typeof valor === "number" && Number.isFinite(valor));
+  if (tasas.length === 0) {
+    return { rate: 0, accrued: 0 };
+  }
+  const rate = tasas.reduce((sum, valor) => sum + valor, 0) / tasas.length;
+  const intervaloH =
+    typeof sample.fundingIntervalHours === "number" && sample.fundingIntervalHours > 0
+      ? sample.fundingIntervalHours
+      : INTERVALO_FUNDING_POR_DEFECTO_H;
+  const duracionH = (sample.bucketEndMs - sample.bucketStartMs) / 3_600_000;
+  return { rate, accrued: rate * (duracionH / intervaloH) };
 }
 
 export interface CarryOutcome {
@@ -129,10 +181,12 @@ export function carryOutcome(args: {
   const signo = args.side === "LONG" ? 1 : -1;
   const priceUsd = signo * args.notionalUsd * args.metrics.markReturn;
   // `calculateFundingCostUsd` devuelve el COSTE (positivo = se paga), asi que aqui se resta.
+  // Lo DEVENGADO, no la tasa. Pasar la tasa horaria aqui es cobrar una hora entera por cada cubo de
+  // cinco minutos, que es el 12x que tuvo este calculo hasta el 2026-09-18.
   const fundingUsd = calculateFundingCostUsd({
     side: args.side,
     notionalUsd: args.notionalUsd,
-    fundingRate: args.metrics.fundingRateSum,
+    fundingRate: args.metrics.fundingAccrued,
   });
   const precioRef = isPositive(args.entryPrice) ? (args.entryPrice as number) : 1;
   const cantidadRef = args.notionalUsd / precioRef;
@@ -155,11 +209,11 @@ export function carryOutcome(args: {
  * lado: devolverlo como "LONG" por defecto meteria en la muestra operaciones que no persiguen ninguna
  * ventaja y diluiria lo que se quiere medir.
  */
-export function fundingReceiverSide(fundingRateSum: number): PerpsSide | undefined {
-  if (!Number.isFinite(fundingRateSum) || fundingRateSum === 0) {
+export function fundingReceiverSide(fundingRate: number): PerpsSide | undefined {
+  if (!Number.isFinite(fundingRate) || fundingRate === 0) {
     return undefined;
   }
-  return fundingRateSum > 0 ? "SHORT" : "LONG";
+  return fundingRate > 0 ? "SHORT" : "LONG";
 }
 
 /**
