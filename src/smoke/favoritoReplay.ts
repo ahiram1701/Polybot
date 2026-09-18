@@ -162,19 +162,32 @@ async function configuracionViva(dataDir: string, base: BotConfig): Promise<Conf
  * puede ser mas larga, asi que leer solo el vivo dejaria la evaluacion sin su propio principio en
  * cuanto la poda hiciera su trabajo. Es exactamente para lo que existe `data/archive`.
  *
- * Se deduplica por slug quedandose con la del VIVO: es la que puede traer la resolucion oficial ya
- * corregida. Un archivo ausente no es un error — `readAnalyticsSamples` devuelve vacio.
+ * Se deduplica por slug quedandose con la MAS COMPLETA —mas ticks y cotizaciones—, y a igualdad con la
+ * del vivo, que es la que puede traer la resolucion oficial corregida. Preferir el vivo a secas estaba
+ * mal: hay ventanas cuya ultima linea en el vivo es una reescritura degradada de 1 tick y 1 cotizacion
+ * (2026-09-15 al 17, cuatro casos), y esa copia tapaba la completa que si estaba archivada. Una muestra
+ * con una sola cotizacion no produce entrada, asi que la ventana desaparecia del analisis en silencio.
+ *
+ * Un archivo ausente no es un error — `readAnalyticsSamples` devuelve vacio.
  *
  * Con las dos fuentes el pico de memoria ronda el giga. Si algun dia no cabe:
  * `node --max-old-space-size=8192 --import tsx/esm src/smoke/favoritoReplay.ts`.
  */
 async function cargarMuestras(dataDir: string): Promise<AnalyticsSample[]> {
   const porSlug = new Map<string, AnalyticsSample>();
+  const detalle = (sample: AnalyticsSample): number => sample.ticks.length + sample.quotes.length;
+  const quedarse = (sample: AnalyticsSample): void => {
+    const previa = porSlug.get(sample.slug);
+    // `>=` y no `>`: con el mismo detalle gana la ultima vista, y el vivo se carga despues del archivo.
+    if (!previa || detalle(sample) >= detalle(previa)) {
+      porSlug.set(sample.slug, sample);
+    }
+  };
   for (const sample of await readAnalyticsSamples(join(dataDir, "archive", "analytics-archive.jsonl"))) {
-    porSlug.set(sample.slug, sample);
+    quedarse(sample);
   }
   for (const sample of await readAnalyticsSamples(join(dataDir, "analytics.jsonl"))) {
-    porSlug.set(sample.slug, sample);
+    quedarse(sample);
   }
   return [...porSlug.values()]
     .filter((sample) => sample.windowStartMs >= REGIMEN_TWAP_MS)
