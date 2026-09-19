@@ -970,290 +970,38 @@ El rendimiento. La estimación de `elegirMercados` es **lineal** y por tanto opt
 es cuadrático— y sirve para *ordenar* mercados, no para prometer cuánto se cobrará. Eso solo lo dice
 una orden real y su pago a 24 h.
 
-## Perps: otra plataforma, y de momento solo se mira
+## Perps: probado y descartado (2026-09-14 → 2026-09-18)
 
-Polymarket lanzó **Perps** el 2026-09-03: futuros perpetuos con apalancamiento de hasta 20x. Polybot los
-sigue desde el 2026-09-14, y **solo los observa**. No hay ni una hipótesis de perps validada.
+Se evaluaron 2.284 cubos de 5 minutos de los perpetuos BTC-USD y ETH-USD de Polymarket, solo
+observando, para medir el **carry de funding**: cobrar el funding quedándose del lado que lo recibe.
+La regla se pre-registró antes de tener datos (mejor peor tramo, ≥ 150 operaciones, 6 tramos,
+bootstrap por bloques) y **la descartó por sus dos condiciones**: la única casilla evaluable (posiciones
+de 1 h) dio −27,53 $ sobre 182 operaciones, peor tramo −10,91 $ y P(+) del 0%.
 
-### No es otra ruta del CLOB
+**No era carry, era estar siempre corto.** El funding fue positivo casi todo el tiempo, así que
+«cobrarlo» significó estar corto en el 100% de los cubos de BTC y el 93% de ETH mientras subían un
+4,6% y un 4,1%. El funding cobrado aportó ~0,001 $ por operación, frente a 0,08 $ de comisiones: a
+~0,0008 %/h hacen falta ~100 h solo para pagar la ida y vuelta, cargando entretanto un riesgo de precio
+cien veces mayor. En días bajistas habría salido rentable por suerte, que es lo peligroso.
 
-| | Binario 5m | Perps |
-|---|---|---|
-| Host | `clob.polymarket.com` | `api.perpetuals.polymarket.com` + `wss://ws.perpetuals.polymarket.com/v1/ws` |
-| Autenticación | clave L2 derivada con EIP-712 | sesión con **proxy delegado**, cabeceras `polymarket-proxy`/`polymarket-secret`, **caduca** |
-| Cuenta | el saldo pUSD de la cartera | **otra cuenta**: hay que depositarle pUSD (mínimo 10) |
-| Unidad | `tokenId`, resuelve a $1 o $0 | `instrument_id`, **no resuelve nunca** |
-| Riesgo | perder el importe | **liquidación**: a 20x, perder ~2,5% del nocional |
-| Comisión | `shares × 7% × p × (1−p)`, máxima en 0,50 | **lineal**: `|precio × cantidad| × tasa`, 0,0400% taker al tramo base |
-| Geografía | — | **bloqueado en EE. UU., Canadá, Cuba, Irán, Corea del Norte, Siria, Crimea, Donetsk y Lugansk** |
+Dos lecciones que valen más allá de perps:
 
-De ahí que **no comparta ni un tipo con el binario**. `Outcome`, `tokenId`, `conditionId`,
-`windowStartMs`, `winningOutcome` y la redención a $1 recorren `types.ts`, `botRunner.ts`, el ledger y
-la analítica enteros; meter un perpetuo ahí habría dejado la mitad de esos campos condicionalmente
-falsos sin que nada lo señalara. El precedente es del propio proyecto: `makerMarket.ts` existe porque
-`MarketInfo` «es un tipo de cripto». Aquí la distancia es mayor.
+- **Un derivado guardado junto a los datos crudos mintió.** El funding se resumía sumando cada cambio
+  de la tasa, y la tasa era horaria (12× de más) y una previsión que se actualiza sin parar (~400× en
+  el p90). Eso fabricó una casilla con +3,61 $ y P(+) del 99% que no existía. Lo destapó un número de
+  fondo —5.729 tasas distintas en 115 h, cuando se liquida cada hora—, no el resultado. Es la trampa 1
+  de este documento con otro disfraz.
+- **La propia regla no podía evaluar lo que importaba.** Exigir 150 operaciones hacía imposibles las
+  posiciones largas, que eran la única versión que la aritmética dejaba en pie. Una regla tiene que
+  comprobar antes de fijar el umbral que las duraciones que importan pueden llegar a él.
 
-Módulos, todos con prefijo `perps` y planos como los seis del maker:
-
-| Módulo | Qué hace |
-|---|---|
-| `perpsTypes.ts` | El dominio. `PerpsSide = LONG\|SHORT`, **no** `Outcome` |
-| `perpsClient.ts` | Lectura: catálogo, tickers, libro. **Sin credenciales** |
-| `perpsFeed.ts` | WebSocket de `tickers` y `bbo`. **No** el canal `book` (ver abajo) |
-| `perpsMarkets.ts` | Símbolo → instrumento, y el apalancamiento máximo real |
-| `perpsRecorder.ts` | Cubos de 5 min a `data/perps-analytics.jsonl` |
-| `perpsSignal.ts` | Observables puros: carry, base, volatilidad, spread |
-| `perpsEngine.ts` | Ejecución sim y live, con liquidación y funding |
-| `perpsSession.ts` | La sesión live y sus tres cierres |
-| `perpsLoop.ts` | Ata todo con cadencia propia desde `cerrarIteracion` |
-| `perpsReplay.ts` | El arnés de medición |
-
-### La unidad de muestra es un cubo de 5 minutos, y de ahí cuelga todo
-
-Un perpetuo no tiene ventanas, pero **toda la maquinaria de medición honesta de este repo es de
-ventanas**: `bootstrapCIPorBloques` remuestrea ventanas enteras porque las operaciones de dentro no son
-independientes, y la regla de elección parte el histórico en 6 tramos de ventanas.
-
-Así que la muestra es **un instrumento durante un cubo fijo de 5 minutos**, alineado al MISMO reloj que
-las ventanas del binario (`getWindowStartMs`). Tres cosas que eso compra:
-
-- La «verdad» es `closeMarkPrice`, el precio con el que el exchange valora la posición al cerrar el
-  cubo. **No hace falta un juez como `analyticsTruth`**: no se deduce quién ganó, se lee cuánto vale.
-- El bootstrap por bloques y los 6 tramos se reutilizan **sin tocarlos**, con el cubo donde iba la
-  ventana. El bloque es el CUBO y no la operación: BTC y ETH del mismo cubo se mueven juntos, igual que
-  los tres mercados binarios que cierran a la vez.
-- Las dos series son comparables instante a instante, que es lo que permitirá preguntar más adelante si
-  la señal del binario dice algo del perpetuo.
-
-### El simulador modela LIQUIDACIÓN, y no es opcional
-
-`SimulationPerpsEngine` cobra la comisión de perps, devenga el funding y, cuando la marca cruza el
-precio de liquidación, **se lleva el margen entero** en vez de cerrar «un poco peor».
-
-El precio sale de igualar patrimonio y requisito de mantenimiento, con el margen de mantenimiento en la
-mitad del inicial:
-
-```
-LARGO:  P = entrada × (1 − 1/L) / (1 − mmr)
-CORTO:  P = entrada × (1 + 1/L) / (1 + mmr)      mmr = 0,5 / L
-```
-
-Esto existe por una lección que ya está escrita más arriba, en el tramo de máxima convicción: *«el
-saldo on-chain es una constante que las operaciones de papel no mueven, así que **la sim no mostrará
-esta ruina**»*. Con 20x disponibles, un simulador de perps sin liquidación miente igual y más rápido.
-
-### El canal `book` del WebSocket NO se escucha, a propósito
-
-`tickers` y `bbo` llegan como fotos completas: se leen y ya está. `book` manda **deltas**, y aplicarlos
-exige llevar el libro en memoria y reconciliarlo por número de secuencia. Un desfase ahí no da un
-error: da **un libro plausible y equivocado**, que es la peor clase de fallo que este proyecto tiene
-documentada. La profundidad se lee por REST a la cadencia de perps (2 peticiones cada 5 s con dos
-instrumentos), donde una foto de hace cinco segundos vale.
-
-### El contraste con Chainlink es la única ventaja de medición que hay aquí
-
-La marca, el índice y el funding **los publica Polymarket**, así que compararlos entre sí solo dice si
-Polymarket es coherente consigo mismo. Polybot ya recibe el TWAP de Chainlink por la RTDS para BTC y
-ETH, y lo graba en cada tick del cubo (`chainlinkTwapPrice`): es la única serie independiente.
-
-Por eso los instrumentos por defecto son **BTC-USD y ETH-USD** y no otros de los 83 listados. Y por eso
-el oráculo **se declara** en una tabla y no se deduce partiendo el símbolo por el guion: eso emparejaría
-cualquier símbolo nuevo con un oráculo que no le corresponde, en silencio y grabándolo como bueno.
-
-Cuando no hay TWAP, el campo se queda **vacío**. No se cae al spot: son series distintas y meterlas en
-el mismo campo produce exactamente la etiqueta corrupta que `priceSource` existe para evitar.
-
-### Lo que NO está medido — y una cuenta que ya descarta lo obvio
-
-**No hay ninguna hipótesis de perps validada.** El carry de funding y la base contra Chainlink son lo
-que se va a medir, no lo que se cree.
-
-Y de la primera sonda contra la API real (2026-09-14) sale una cuenta que conviene tener delante antes
-de entusiasmarse con el carry:
-
-| | |
-|---|---|
-| funding observado (BTC-USD y ETH-USD) | **0,0013% por hora** |
-| ida y vuelta al tramo base | **0,0800% del nocional** (0,04% × 2) |
-| horas de funding para cubrir una entrada y una salida | **~62** |
-
-Es decir: **un carry de un solo cubo no puede salir a cuenta, y no por falta de ventaja sino por
-aritmética.** Por eso `replayCarry` tiene `holdBuckets` y el smoke barre duraciones en horas (1, 6, 12,
-24, 48, 72) en vez de operar cada cinco minutos. La pregunta que sí se puede probar es la otra: cuántas
-horas hay que aguantar para que el funding cubra las comisiones, y cuánto movimiento de precio te comes
-mientras tanto.
-
-Dos datos más de esa sonda, para tener la escala: el spread es de **0,4-0,9 bps** (contra los 150-450
-bps de los binarios de 5 min) y hay ~4 millones de dólares de profundidad por lado. La liquidez no es
-el problema aquí.
-
-### Regla de evaluación, escrita ANTES de tener los datos
-
-Esto se escribe ahora precisamente porque todavía no hay nada que mirar. Es el mismo compromiso que la
-prueba pre-registrada del favorito, y por la misma razón: buscar la mejor casilla después de ver el
-periodo lo gasta.
-
-- **Hito:** 2.000 cubos puntuables (≈ 3,5 días con dos instrumentos), y al menos 6 tramos con datos.
-- **Criterio:** gana la casilla con **mejor PEOR TRAMO** entre las que tengan ≥ 150 operaciones. Nunca
-  el neto medio: elegir por la media premia las casillas pequeñas que salieron bien por suerte, que es
-  literalmente cómo se fabricó la configuración del 8 de septiembre que luego perdió hacia delante.
-- **Se descarta la hipótesis si** el peor tramo es negativo en todas las duraciones, o si P(+) del
-  bootstrap por bloques queda por debajo del 80% en la mejor.
-- **No se busca otra casilla dentro del periodo de prueba.** `--desde <ISO>` no corre la rejilla, igual
-  que el del favorito.
-- **Pase lo que pase, live sigue cerrado en esta entrega.** Encenderlo es una decisión aparte y exige
-  además fondear la cuenta de perps, que tampoco se hace aquí.
-
-### Resultado del 2026-09-18: el carry de funding queda DESCARTADO
-
-2.284 cubos puntuables (100%) de BTC-USD y ETH-USD, 115 h, 4 huecos por instrumento y una racha
-consecutiva máxima de 41 h. Rejilla corregida (ver abajo por qué «corregida»), nocional 100 $:
-
-| duración, umbral | ops | neto | /op | peor tramo | P(+) |
-|---|---|---|---|---|---|
-| **1 h, ≥ 0,000%** | **182** | **−27,53 $** | **−0,151 $** | **−10,91 $** | **0%** |
-| 6 h, ≥ 0,000% | 22 | −15,37 $ | −0,699 $ | −8,79 $ | 2% |
-| 12 h, ≥ 0,000% | 6 | −6,55 $ | −1,092 $ | −2,23 $ | 0% |
-| cualquier otra | 0 | — | — | — | — |
-
-La única casilla con ≥ 150 operaciones y los 6 tramos es la primera. **Se cumplen las dos condiciones
-de descarte**: el peor tramo es negativo en todas las duraciones con datos, y la P(+) de la mejor
-casilla es 0%, muy lejos del 80%.
-
-#### Por qué pierde: no es carry, es estar siempre corto
-
-| | precio en la captura | el carry elige CORTO en |
-|---|---|---|
-| BTC-USD | 77.544 → 81.100 (**+4,59%**) | **100%** de los cubos |
-| ETH-USD | 2.512 → 2.616 (**+4,14%**) | **93%** de los cubos |
-
-El funding fue positivo casi todo el tiempo —pagan los largos—, así que cobrarlo significó en la
-práctica **estar corto en cripto sin interrupción**. Desglose de los −0,151 $ por operación de una
-hora: ~0,08 $ de comisiones, ~0,07 $ de haber estado corto en un mercado que subió, y el funding
-cobrado aporta **~0,001 $**. El funding medido fue ~0,0008 %/h: hacen falta ~94 h (BTC) y ~113 h
-(ETH) de funding solo para pagar la ida y vuelta, y durante todas esas horas se carga el riesgo de
-precio entero, que en cripto es del orden del 2-3 % diario — cien veces el carry que se cobra.
-
-**Y esto es lo que convierte el resultado en una lección y no solo en un número negativo:** si la
-captura hubiera caído en cuatro días bajistas, la misma estrategia habría salido rentable, y quizá la
-regla la habría aprobado. Habría sido un falso positivo por el mismo mecanismo exacto: un corto con
-suerte con la etiqueta de carry. Un resultado positivo aquí no habría demostrado nada sobre el
-funding.
-
-#### La tabla que engañó, y por qué se deja escrita
-
-La primera pasada de la rejilla, ese mismo día, dio esto:
-
-| duración, umbral | ops | neto | /op | peor tramo | P(+) |
-|---|---|---|---|---|---|
-| 1 h, ≥ 0,000% | 182 | −15,68 $ | −0,086 $ | −10,06 $ | 3% |
-| **1 h, ≥ 0,010%** | **23** | **+3,61 $** | **+0,157 $** | **+0,05 $** | **99%** |
-
-**La segunda fila no existía.** El grabador resumía el funding en un `fundingRateSum` que sumaba cada
-cambio de la tasa publicada, y estaba mal dos veces:
-
-- **La tasa es horaria.** Con una sola tasa en todo el cubo se guardaba la hora entera para cinco
-  minutos: **12×** de más. Era la mediana de los 2.282 cubos.
-- **La tasa es una previsión que se actualiza sin parar.** Cada revisión se sumaba como si fuera otro
-  cobro: **~400×** en el p90.
-
-El umbral de 0,010 % comparaba contra esas sumas infladas, así que seleccionaba justo los cubos más
-inflados — y su «ganancia» salía de ahí. Con la tasa bien medida, el funding **nunca** llegó al
-0,01 %/h (el p90 fue 0,0012 %/h): esa casilla tiene cero operaciones.
-
-Tres cosas de este fallo que conviene no olvidar:
-
-1. **El error iba en la dirección peligrosa.** El carry cobra funding, así que inflarlo hacía parecer
-   rentable lo que no lo era. Es la trampa 1 de este documento —el backtest que se puntuaba a sí
-   mismo— con otro disfraz.
-2. **Lo destapó un número que no cuadraba, no el resultado.** 5.729 valores distintos de funding para
-   BTC en 115 h, cuando se liquida una vez por hora. La casilla del +3,61 $ con P(+) 99% tenía toda
-   la pinta de hallazgo; la señal de alarma fue la aritmética de fondo.
-3. **Arreglarlo no fue mover la portería.** La rejilla, los umbrales y la regla quedaron idénticos;
-   solo cambió cómo se mide el funding, y se re-puntuaron los mismos cubos. Los ticks crudos estaban
-   intactos: el fallo vivía en un campo derivado guardado junto a ellos, que es por lo que ahora no se
-   guarda ningún resumen y se calcula de los ticks cada vez (`fundingDelCubo`, `perpsSignal.ts`).
-
-#### Un fallo de la propia regla, que tampoco se esconde
-
-La regla exigía ≥ 150 operaciones, y eso la hacía **incapaz de evaluar las posiciones largas** — que
-eran la única versión de la hipótesis que la aritmética dejaba en pie. Con ~100 h de funding para
-cubrir comisiones, 150 posiciones de ese tamaño con dos instrumentos exigen del orden de 300 días de
-datos. En 115 h no se formó ni una posición de 24 h.
-
-O sea: **la regla, tal como se escribió, solo podía juzgar las duraciones cortas, y de esas ya se
-sabía por aritmética que perdían.** El descarte es correcto, pero no porque la regla pusiera a prueba
-la versión interesante; es correcto porque la versión interesante no necesita backtest para juzgarse
-— cobrar un 0,02 % diario cargando un riesgo del 2-3 % diario no es una estrategia. Una regla futura
-tiene que comprobar ANTES de fijar el umbral de operaciones que las duraciones que importan pueden
-llegar a él con el tiempo de captura previsto.
-
-#### Lo que sigue sin medir
-
-- **La base contra Chainlink** (media +0,75 bps) queda muy por debajo de los 8 bps de ida y vuelta, así
-  que tampoco da para operarla en el perp. Lo que no se ha medido es si la marca del perp **adelanta**
-  a Chainlink, que importaría como señal para el binario y no como operación en perps. No hay replay
-  para eso: sería una hipótesis nueva y tendría que pre-registrarse aparte.
-- **Ninguna otra estrategia de perps.** Esto descarta el carry de funding en BTC y ETH en este periodo,
-  no «perps».
-
-### Los tres cierres de live, y por qué son tres
-
-`perpsLiveBlockedReason` (`perpsSession.ts`) devuelve el MOTIVO y no un booleano, porque «no está
-configurado», «el operador no lo ha abierto» y «esta jurisdicción no puede» llevan a acciones distintas
-y un `false` único las hace indistinguibles.
-
-1. **`PERPS_ALLOW_LIVE`** — cierre aparte, como `favoriteAllowLive`. Sin él no existe camino a
-   `openPerpsSession`, y eso está **verificado por test, no por lectura**.
-2. **`POLYMARKET_PERPS_JURISDICTION_OK`** — la documentación de Polymarket pide literalmente *«Block
-   order submission entirely… Do not only display a warning»*. Se **declara**, no se detecta, por el
-   mismo criterio que `POLYBOT_SUPERVISOR`: una detección que falla en silencio produce justo la
-   mentira que la comprobación viene a evitar.
-3. **Credenciales** — clave y dirección, como en el binario.
-
-Los tres se comprueban **al arrancar** (`validatePerpsLiveConfig`), no al mandar la primera orden:
-enterarse de que falta la declaración cuando ya hay una señal que ejecutar es enterarse tarde.
-
-`perpsMode` cae a `sim` y **nunca hereda el modo global**, igual que `makerMode`. Y la credencial de
-sesión se pide para **12 horas** y no para la semana que admite el SDK: su vida útil es exactamente el
-tiempo durante el que una copia robada sirve.
-
-### Decisiones que no son obvias
-
-- **No hay ajustes de perps en la interfaz, y es deliberado.** El criterio de la trampa 8 es «se expone
-  lo que acota dinero o riesgo»: observar no acota nada. Y `PERPS_ALLOW_LIVE` como casilla web sería un
-  interruptor de un clic para operar derivados apalancados que nadie ha medido; en `.env` hay que
-  editar un fichero y reiniciar, que es fricción a propósito. El panel sí publica `perpsSummary`, para
-  que «no está capturando» y «no se está ejecutando» no se vean igual.
-- **La API local de perps es solo de lectura, sin excepción.** El mismo plano de control lo consumen la
-  CLI y el MCP, y el MCP viene con `POLYBOT_MCP_ALLOW_WRITE` en `true` de fábrica.
-- **Un fallo de perps nunca tumba la iteración del binario.** `runPerps` traga y registra. La API del
-  SDK está marcada `@experimental` —«may change in a breaking way in any release, including patch
-  releases»— y es justo el tipo de dependencia que rompe sin avisar; parar por ella la estrategia que sí
-  lleva meses midiéndose sería el peor intercambio posible. Por eso `@polymarket/client` va **fijado a
-  `0.10.0` sin caret**.
-- **Dos SDK conviviendo.** `@polymarket/clob-client-v2` para el binario y `@polymarket/client` para
-  perps. Migrar el camino binario tocaría la única estrategia con una prueba en curso.
-- **El fichero de cubos es SUYO.** Mezclarlo con `analytics.jsonl` rompería el lector incremental del
-  binario y la aritmética de retención. El tope sale en 5.000 y no más: `analytics.jsonl` creció muy por
-  encima de su propia proyección y ahí la poda llegó a congelar el bucle ~8 segundos.
-- **El funding se suma por CAMBIOS, no por ticks.** La tasa se publica repetida en cada tick del mismo
-  periodo; sumarla toda contaría el mismo cobro decenas de veces.
-- **Las posiciones del replay no se solapan.** Con `holdBuckets` > 1, el índice avanza de tramo en
-  tramo: solapándolas, el mismo movimiento de precio entraría en varias operaciones y el bootstrap por
-  bloques dejaría de proteger de nada.
-- **Los cubos no consecutivos se saltan.** Un hueco significa que el bot estuvo parado; encadenar a
-  través de él es inventarse el resultado de un periodo que nadie observó.
-- **`flush()` al parar.** Un cubo dura 5 minutos y el watchdog relanza el proceso a diario: sin
-  guardarlos, cada reinicio tiraría el cubo abierto de cada instrumento.
-
-### Herramientas
-
-| Herramienta | Responde a |
-|---|---|
-| `npx tsx src/smoke/perpsMarket.ts` | ¿Ve Polybot el mercado de perpetuos? Solo lectura, **sin credenciales** |
-| `npx tsx src/smoke/perpsReplay.ts` | ¿Paga el carry de funding? Rejilla de duración × umbral con la regla de los 6 tramos |
-| `npx tsx src/smoke/perpsReplay.ts --desde <ISO>` | Evaluación pre-registrada. **No corre la rejilla**, a propósito |
+Si alguien lo retoma: Perps es **otra plataforma** (cuenta aparte que hay que fondear, sesión propia que
+caduca, **bloqueado en EE. UU. y Canadá**), y su SDK (`@polymarket/client`) estaba marcado
+`@experimental`. El código completo y el análisis detallado siguen en el historial de git (commit
+`f18f927`, el último con todo dentro). Los datos capturados están en
+`data/archive/perps-analytics-2026-09.jsonl`, fuera de git: 2.308 cubos, los 2.284 evaluados más los
+que entraron hasta que se apagó la captura. Ojo si se re-puntúan: el campo `fundingRateSum` de esas
+filas está inflado y no debe leerse; el funding se calcula de los ticks.
 
 ## Quién relanza el proceso
 

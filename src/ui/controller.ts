@@ -7,9 +7,6 @@ import {
   readAnalyticsSamples,
   serializeAnalyticsSamples,
 } from "../analyticsRecorder.js";
-import { PerpsMarketData } from "../perpsClient.js";
-import { readPerpsSamples, serializePerpsSamples } from "../perpsRecorder.js";
-import type { PerpsInstrumentInfo } from "../perpsTypes.js";
 import {
   reviewArbOpportunities,
   type ArbOpportunity,
@@ -159,14 +156,6 @@ export interface RunnerLike {
     canceladas: number;
     comprometidoUsd: number;
     mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
-  } | undefined;
-  /** Lo que vio el camino de perps en su ultima pasada. Opcional: los dobles de test no lo traen. */
-  getPerpsSummary?(): {
-    observados: number;
-    cubosCerrados: number;
-    instrumentos: string[];
-    faltantes: string[];
-    sinCatalogo: boolean;
   } | undefined;
   getBankroll?(): {
     usd: number;
@@ -1116,35 +1105,6 @@ export class BotController {
     };
   }
 
-  /**
-   * Catalogo de instrumentos de perps, con lo que el operador necesita para decidir.
-   *
-   * Lee del exchange y no de disco: el catalogo no se graba en ningun sitio. `undefined` del cliente
-   * significa "no pude leer", que no es lo mismo que una lista vacia, asi que sube como un 503 y no
-   * como un catalogo sin nada.
-   */
-  async getPerpsInstruments(): Promise<{ instruments: PerpsInstrumentInfo[]; maxLeverageOperador: number }> {
-    const data = PerpsMarketData.create({
-      perpsHost: this.baseConfig.perpsHost,
-      perpsWsUrl: this.baseConfig.perpsWsUrl,
-    });
-    const instruments = await data.instruments();
-    if (!instruments) {
-      throw new ControllerError("No se pudo leer el catalogo de instrumentos de perps.", 503);
-    }
-    return { instruments, maxLeverageOperador: this.baseConfig.perpsMaxLeverage ?? 0 };
-  }
-
-  /** Exporta los cubos de perps en el mismo formato JSONL en que se graban. */
-  async exportPerpsSamples(now = new Date()): Promise<AnalysisExport> {
-    const samples = await readPerpsSamples(join(this.baseConfig.dataDir, "perps-analytics.jsonl"));
-    return {
-      filename: `polybot-perps-${now.toISOString().slice(0, 10)}.jsonl`,
-      contents: serializePerpsSamples(samples, now),
-      sampleCount: samples.length,
-    };
-  }
-
   async importAnalysisSamples(contents: string): Promise<AnalysisImportResponse> {
     if (this.runnerPromise || this.runner) {
       throw new ControllerError("Stop the bot before importing analysis data.", 409);
@@ -1405,7 +1365,6 @@ export class BotController {
       snapshotError: snapshot.snapshotError,
       loopHealth: this.runner?.getLoopHealth?.(),
       makerSummary: this.runner?.getMakerSummary?.(),
-      perpsSummary: this.runner?.getPerpsSummary?.(),
       bankroll: this.runner?.getBankroll?.(),
       bandPrograms: this.bandProgramStoreCache?.list() as never,
     };

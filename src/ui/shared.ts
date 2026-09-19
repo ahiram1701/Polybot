@@ -287,24 +287,6 @@ export interface UiStatus {
     llenadas?: number;
     mercados: Array<{ slug: string; motivo?: string; esperadoUsdDia?: number }>;
   };
-  /**
-   * Que vio el camino de perps en su ultima pasada.
-   *
-   * Existe por lo mismo que `makerSummary`: sin esto, "perps no esta capturando nada" y "perps no se
-   * esta ejecutando" se ven igual desde fuera. Y aqui la ambiguedad seria peor, porque este camino no
-   * opera — su unico producto son datos, asi que la unica forma de saber si funciona es ver cuantos
-   * ha guardado.
-   *
-   * `sinCatalogo` NO es lo mismo que `observados: 0`: uno es un fallo de lectura y el otro es que no
-   * hay nada que mirar.
-   */
-  perpsSummary?: {
-    observados: number;
-    cubosCerrados: number;
-    instrumentos: string[];
-    faltantes: string[];
-    sinCatalogo: boolean;
-  };
   bankroll?: {
     usd: number;
     source: "onchain" | "declared" | "unknown";

@@ -73,10 +73,6 @@ import { dailySpendKey, sleep } from "./time.js";
 import { LiveMakerEngine, SimulationMakerEngine } from "./makerEngine.js";
 import type { MakerEngine } from "./makerEngine.js";
 import { MakerLoop } from "./makerLoop.js";
-import { PerpsMarketData } from "./perpsClient.js";
-import { PerpsFeed } from "./perpsFeed.js";
-import { PerpsLoop, type ResumenPerps } from "./perpsLoop.js";
-import { PerpsRecorder } from "./perpsRecorder.js";
 import { leerPosicionesAbiertas } from "./makerPositions.js";
 import type { ResumenPasada } from "./makerLoop.js";
 import { RewardMarketScanner } from "./rewardMarketScanner.js";
@@ -107,15 +103,6 @@ import type {
  * cinco las lecturas de libro para decidir, casi siempre, no hacer nada.
  */
 const INTERVALO_MAKER_MS = 15_000;
-/**
- * Cadencia del camino de perps. Mas rapida que la del maker y mas lenta que la del bucle.
- *
- * Es una cadencia de OBSERVACION, no de decision: marca cada cuanto se toma una foto del libro para el
- * cubo de 5 minutos. Con dos instrumentos son dos peticiones cada cinco segundos, muy lejos del sondeo
- * que saturo al exchange desde el maker. La marca, el indice y el funding no pasan por aqui — llegan
- * por WebSocket y se leen de memoria.
- */
-const INTERVALO_PERPS_MS = 5_000;
 
 /**
  * Motivo del selector de favorito -> etiqueta de descarte del panel.
@@ -438,9 +425,6 @@ export class BotRunner {
   /** Slugs cuya apertura salio de la serie TWAP y no del spot, entre la lectura y el guardado. */
   private readonly aperturasPorTwap = new Set<string>();
   private makerLoopCache?: MakerLoop;
-  private perpsLoopCache?: PerpsLoop;
-  private ultimaPasadaPerpsMs = 0;
-  private ultimoResumenPerps?: ResumenPerps;
   /** Ultimos mercados vistos, para poder retirar ordenes al parar sin volver a consultarlos. */
   private ultimosMercados: MarketInfo[] = [];
 
@@ -621,14 +605,6 @@ export class BotRunner {
             error: error instanceof Error ? error.message : String(error),
           });
         });
-        // El de perps cuelga del mismo temporizador, y a proposito NO construye el bucle: se poda lo
-        // que ya existe. Crearlo aqui montaria un WebSocket a otra plataforma para quien tiene perps
-        // apagado.
-        void this.perpsLoopCache?.podar().catch((error) => {
-          logger.warn("La poda de la analitica de perps fallo; se reintenta en el proximo ciclo.", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
       },
       30 * 60_000,
     );
@@ -701,19 +677,6 @@ export class BotRunner {
     if (loop && mercados.length > 0) {
       void loop.retirarTodo(mercados).catch((error) => {
         logger.error("No se pudieron retirar las ordenes maker al parar. PUEDE HABER ORDENES VIVAS.", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-    // Perps: cerrar el WebSocket y GUARDAR los cubos en curso.
-    //
-    // El guardado no es cosmetico. Un cubo dura 5 minutos y el watchdog relanza el proceso a diario,
-    // asi que sin esto cada reinicio tira el cubo abierto de cada instrumento. `stop()` es sincrono por
-    // contrato, igual que con el maker: se lanza y se deja correr, y si falla se dice.
-    const perps = this.perpsLoopCache;
-    if (perps) {
-      void perps.detener().catch((error) => {
-        logger.warn("No se pudieron guardar los cubos de perps al parar.", {
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -971,19 +934,6 @@ export class BotRunner {
       if (nowMs - this.ultimaPasadaMakerMs >= (this.config.makerIntervalMs ?? INTERVALO_MAKER_MS)) {
         this.ultimaPasadaMakerMs = nowMs;
         await timer.time("maker", () => this.runMaker(markets, nowMs));
-      }
-    }
-
-    // Perps: observar y grabar. Va DESPUES de todo lo demas y con su propia cadencia.
-    //
-    // Es el camino con menos derecho a retrasar a nadie: no decide, no ejecuta y no compite por el
-    // capital de ninguna otra estrategia. Si algun dia costara tiempo, se ve en la fase `perps` del
-    // cronometro en vez de esconderse en `unaccountedMs` — que es justo para lo que existe esa
-    // instrumentacion.
-    if (this.config.perpsEnabled === true) {
-      if (nowMs - this.ultimaPasadaPerpsMs >= (this.config.perpsIntervalMs ?? INTERVALO_PERPS_MS)) {
-        this.ultimaPasadaPerpsMs = nowMs;
-        await timer.time("perps", () => this.runPerps(nowMs));
       }
     }
 
@@ -1290,64 +1240,6 @@ export class BotRunner {
   /** Ultimo resumen del maker, para que la UI pueda mostrar que esta pasando. */
   getMakerSummary(): ResumenPasada | undefined {
     return this.ultimaPasadaMaker;
-  }
-
-  /** Ultimo resumen del camino de perps, para la UI. */
-  getPerpsSummary(): ResumenPerps | undefined {
-    return this.ultimoResumenPerps;
-  }
-
-  /**
-   * El bucle de perps, construido perezosamente.
-   *
-   * Perezoso por lo mismo que el maker: montar el cliente y el WebSocket de otra plataforma no debe
-   * costarle nada a quien tiene perps apagado, que es todo el mundo de fabrica.
-   */
-  private perpsLoop(): PerpsLoop {
-    this.perpsLoopCache ??= new PerpsLoop({
-      marketData: PerpsMarketData.create({
-        perpsHost: this.config.perpsHost,
-        perpsWsUrl: this.config.perpsWsUrl,
-      }),
-      recorder: new PerpsRecorder(this.config.dataDir, this.config.maxPerpsSamples),
-      feed: new PerpsFeed(this.config.perpsWsUrl ?? "wss://ws.perpetuals.polymarket.com/v1/ws"),
-      instruments: this.config.perpsInstruments,
-      oracleTwap: (market, nowMs) => this.leerTwapParaPerps(market, nowMs),
-    });
-    return this.perpsLoopCache;
-  }
-
-  /**
-   * El TWAP de Chainlink con el que se contrasta la marca del perpetuo.
-   *
-   * Se pide la serie de 60 s y, si no hay, la de 30 s. Lo que NO se hace es caer al spot: el spot y el
-   * TWAP son series distintas, y meterlas en el mismo campo sin decirlo produce exactamente la
-   * etiqueta corrupta que `priceSource` existe para evitar en el binario. Sin TWAP, el campo se queda
-   * vacio y la muestra dice la verdad sobre lo que se pudo ver.
-   */
-  private leerTwapParaPerps(market: MarketSymbol, nowMs: number): number | undefined {
-    const leer = this.deps.priceFeed.getTwapAtOrBefore?.bind(this.deps.priceFeed);
-    if (!leer) {
-      return undefined;
-    }
-    return leer(market, nowMs, 60)?.value ?? leer(market, nowMs, 30)?.value;
-  }
-
-  /**
-   * Una pasada del camino de perps. Nunca lanza hacia el bucle.
-   *
-   * Perps es una plataforma recien lanzada y su SDK esta marcado `@experimental`: es justo el tipo de
-   * dependencia que rompe sin avisar. Dejar que un fallo suyo se propague pararia la iteracion del
-   * binario — la estrategia que si lleva meses midiendose — por culpa de la que solo observa.
-   */
-  private async runPerps(nowMs: number): Promise<void> {
-    try {
-      this.ultimoResumenPerps = await this.perpsLoop().pasada(nowMs);
-    } catch (error) {
-      logger.warn("Fallo la pasada de perps; el resto del bucle sigue.", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   /** Observa y ejecuta arbitraje en las ventanas de 15m. Nunca genera señales direccionales. */
@@ -2843,14 +2735,7 @@ export class BotRunner {
    * pasar por aqui y no por `config.mode`. Si una estrategia opera en live y su P&L se anota en sim,
    * el dinero real desaparece de las cuentas.
    */
-  private modeFor(strategy: "arb" | "dir" | "maker" | "perps"): Mode {
-    if (strategy === "perps") {
-      // Cae a "sim" y NO al modo global, por lo mismo que el maker y con un motivo mas: perps es OTRA
-      // plataforma, con cuenta y saldo propios que hay que fondear aparte, y un producto apalancado
-      // que puede liquidar. Heredar un arranque en live aqui seria empezar a operar derivados en un
-      // sitio donde el bot no tiene ni una medicion propia.
-      return this.config.perpsMode ?? "sim";
-    }
+  private modeFor(strategy: "arb" | "dir" | "maker"): Mode {
     if (strategy === "maker") {
       // El maker cae a "sim" y NO al modo global: es la estrategia mas nueva y la unica que deja
       // ordenes vivas en el libro, asi que heredar un arranque en live seria empezar a inmovilizar
