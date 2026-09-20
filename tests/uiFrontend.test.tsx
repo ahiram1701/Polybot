@@ -377,7 +377,7 @@ describe("UI frontend components", () => {
         onResetRiskHalt={vi.fn()}
         status={{
           ...status({ liveReady: true }),
-          riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 50, consecutiveLosses: 0 },
+          riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 50, dailyNetUsd: -50, consecutiveLosses: 0 },
         }}
       />,
     );
@@ -934,6 +934,7 @@ function settings(): UiSettings {
   liveBankrollUsd: 0,
   minBankrollForDirectionalUsd: 50,
     maxConsecutiveLosses: 0,
+    dailyProfitTargetUsd: 0,
     requirePositiveEv: true,
     explorationEnabled: true,
     autoStartSimOnBoot: false,

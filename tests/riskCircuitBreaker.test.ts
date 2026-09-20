@@ -265,6 +265,97 @@ describe("evaluateRiskCircuitBreaker", () => {
 });
 
 /**
+ * El unico limite que para por ir BIEN. Se comporta distinto de los otros dos a proposito, y cada una de
+ * esas diferencias esta aqui: no se enfria, no se suelta, y se mide sobre lo realizado del dia.
+ */
+describe("objetivo del dia", () => {
+  // A 0,50 de ask, 10 $ compran 20 participaciones: una ganadora deja +10 $ netos menos comision.
+  const gana = (id: string, resolvedAtMs: number) => trade({ id, won: true, resolvedAtMs });
+  const pierde = (id: string, resolvedAtMs: number) => trade({ id, won: false, resolvedAtMs });
+
+  it("no hace nada mientras el dia no llegue al objetivo", () => {
+    const status = evaluateRiskCircuitBreaker(
+      [gana("g1", NOW - 3 * 60_000)],
+      "sim",
+      { dailyProfitTargetUsd: 50 },
+      NOW,
+    );
+
+    expect(status.tripped).toBe(false);
+    expect(status.dailyNetUsd).toBeGreaterThan(0);
+  });
+
+  it("para el dia cuando lo ganado alcanza el objetivo", () => {
+    const status = evaluateRiskCircuitBreaker(
+      [gana("g1", NOW - 3 * 60_000), gana("g2", NOW - 2 * 60_000)],
+      "sim",
+      { dailyProfitTargetUsd: 15 },
+      NOW,
+    );
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_profit_target");
+  });
+
+  it("NO se suelta aunque lo que seguia abierto hunda el dia despues", () => {
+    // Dos ganadoras cruzan el objetivo y luego tres perdedoras lo dejan en rojo. El dia sigue cerrado:
+    // reabrir seria haber perdido lo ganado y ademas volver a jugar para recuperarlo.
+    const trades = [
+      gana("g1", NOW - 6 * 60_000),
+      gana("g2", NOW - 5 * 60_000),
+      pierde("p1", NOW - 4 * 60_000),
+      pierde("p2", NOW - 3 * 60_000),
+      pierde("p3", NOW - 2 * 60_000),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 15 }, NOW);
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_profit_target");
+    expect(status.dailyNetUsd).toBeLessThan(0);
+  });
+
+  it("el enfriamiento NO lo rearma: un objetivo cumplido dura hasta el corte del dia", () => {
+    const trades = [gana("g1", NOW - 6 * 60 * 60_000), gana("g2", NOW - 6 * 60 * 60_000 + 1000)];
+    // Seis horas despues, con enfriamiento de 2 h: un freno de perdida ya se habria rearmado.
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 15, cooldownHours: 2 }, NOW);
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_profit_target");
+    expect(status.resumeAtMs).toBeUndefined();
+  });
+
+  it("empieza de cero cada dia: lo de ayer no cierra el dia de hoy", () => {
+    const trades = [gana("ayer1", YESTERDAY), gana("ayer2", YESTERDAY + 1000)];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 15 }, NOW);
+
+    expect(status.tripped).toBe(false);
+    expect(status.dailyNetUsd).toBe(0);
+  });
+
+  it("el freno de perdida manda si llega antes", () => {
+    // Primero dos perdidas que cruzan el limite, y solo despues las ganancias. Lo que decide es el orden
+    // CRONOLOGICO, no cual de los dos limites se mire primero.
+    const trades = [
+      pierde("p1", NOW - 6 * 60_000),
+      pierde("p2", NOW - 5 * 60_000),
+      gana("g1", NOW - 4 * 60_000),
+      gana("g2", NOW - 3 * 60_000),
+      gana("g3", NOW - 2 * 60_000),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 15, dailyProfitTargetUsd: 15 }, NOW);
+
+    expect(status.reason).toBe("daily_loss_limit");
+  });
+
+  it("con el objetivo en 0 no existe, pase lo que pase", () => {
+    const trades = [gana("g1", NOW - 3 * 60_000), gana("g2", NOW - 2 * 60_000), gana("g3", NOW - 60_000)];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 0 }, NOW);
+
+    expect(status.tripped).toBe(false);
+  });
+});
+
+/**
  * El cortacircuitos del direccional, compartido por el bucle y por la UI.
  *
  * Existe porque los dos lo calculaban por separado y se desincronizaron: el bucle excluia los trades

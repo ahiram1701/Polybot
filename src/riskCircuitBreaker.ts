@@ -5,6 +5,22 @@ import type { Mode, TradeAttempt } from "./types.js";
 export interface RiskLimits {
   maxDailyLossUsd?: number;
   maxConsecutiveLosses?: number;
+  /**
+   * Objetivo del dia: cuando lo GANADO hoy llega a esto, se deja de entrar hasta mañana.
+   *
+   * Es el unico limite que para por ir BIEN, y por eso se comporta distinto de los otros dos:
+   *
+   * - **No usa enfriamiento.** Un objetivo cumplido no se "enfria": dura hasta el corte del dia. Con
+   *   enfriamiento de 2 h el dia volveria a abrirse dos horas despues, que es lo contrario de asegurar
+   *   lo ganado.
+   * - **No se suelta si el dia se tuerce despues.** Las posiciones que seguian abiertas al alcanzarlo
+   *   pueden hundir el neto por debajo del objetivo; el dia sigue cerrado igual. Reabrir seria haber
+   *   perdido lo ganado Y volver a jugar para recuperarlo, que es la conducta que esto evita.
+   *
+   * Esto NO sube la ganancia esperada: si cada entrada tiene ventaja, dejar de entrar quita entradas
+   * buenas. Lo que compra es regularidad, y se paga en media. Medido en `cerrarEnVerde.ts`.
+   */
+  dailyProfitTargetUsd?: number;
   // Hours the halt lasts after tripping; the breaker then RE-ARMS ITSELF with a clean slate (losses
   // before the re-arm moment stop counting, exactly like a manual reset). 0 = legacy behavior: halted
   // for the rest of the day.
@@ -13,12 +29,14 @@ export interface RiskLimits {
   timeZone?: string;
 }
 
-export type RiskHaltReason = "daily_loss_limit" | "consecutive_losses";
+export type RiskHaltReason = "daily_loss_limit" | "consecutive_losses" | "daily_profit_target";
 
 export interface RiskHaltStatus {
   tripped: boolean;
   reason?: RiskHaltReason;
   dailyLossUsd: number;
+  /** Lo realizado hoy, con signo. Positivo es ganancia: es lo que mira el objetivo diario. */
+  dailyNetUsd: number;
   consecutiveLosses: number;
   // When a cooldown-based halt will auto-re-arm (epoch ms). Absent when not tripped or in legacy mode.
   resumeAtMs?: number;
@@ -65,11 +83,15 @@ export function evaluateRiskCircuitBreaker(
   let baseline = haltResetAtMs;
   for (;;) {
     const evaluation = evaluateFromBaseline(resolvedToday, limits, baseline);
-    if (!evaluation.reason || cooldownMs === 0) {
+    // El objetivo del dia no se enfria: cumplido, dura hasta el corte del dia. Cualquier enfriamiento
+    // configurado es para los frenos de perdida, no para este.
+    const duraTodoElDia = evaluation.reason === "daily_profit_target";
+    if (!evaluation.reason || cooldownMs === 0 || duraTodoElDia) {
       return {
         tripped: evaluation.reason !== undefined,
         reason: evaluation.reason,
         dailyLossUsd: evaluation.dailyLossUsd,
+        dailyNetUsd: evaluation.dailyNetUsd,
         consecutiveLosses: evaluation.consecutiveLosses,
       };
     }
@@ -79,6 +101,7 @@ export function evaluateRiskCircuitBreaker(
         tripped: true,
         reason: evaluation.reason,
         dailyLossUsd: evaluation.dailyLossUsd,
+        dailyNetUsd: evaluation.dailyNetUsd,
         consecutiveLosses: evaluation.consecutiveLosses,
         resumeAtMs,
       };
@@ -91,12 +114,23 @@ function evaluateFromBaseline(
   resolvedToday: TradeAttempt[],
   limits: RiskLimits,
   baselineMs: number,
-): { reason?: RiskHaltReason; trippedAtMs: number; dailyLossUsd: number; consecutiveLosses: number } {
+): {
+  reason?: RiskHaltReason;
+  trippedAtMs: number;
+  dailyLossUsd: number;
+  dailyNetUsd: number;
+  consecutiveLosses: number;
+} {
   const maxDailyLossUsd = limits.maxDailyLossUsd ?? 0;
   const maxConsecutiveLosses = limits.maxConsecutiveLosses ?? 0;
+  const dailyProfitTargetUsd = limits.dailyProfitTargetUsd ?? 0;
   const counted = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > baselineMs);
 
   // Walk chronologically so we know the exact moment each limit was crossed (the cooldown anchors there).
+  //
+  // Recorrer el dia entero es lo que hace que el objetivo NO SE SUELTE: el motivo se fija la primera vez
+  // que se cruza y no se borra aunque el neto baje despues. Y sale gratis en persistencia — igual que el
+  // resto del freno, se deduce del ledger y no de una bandera guardada, asi que sobrevive a un reinicio.
   let netUsd = 0;
   let consecutiveLosses = 0;
   let reason: RiskHaltReason | undefined;
@@ -112,11 +146,14 @@ function evaluateFromBaseline(
       } else if (maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
         reason = "consecutive_losses";
         trippedAtMs = tradeClosedAtMs(trade) ?? 0;
+      } else if (dailyProfitTargetUsd > 0 && netUsd >= dailyProfitTargetUsd) {
+        reason = "daily_profit_target";
+        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
       }
     }
   }
 
-  return { reason, trippedAtMs, dailyLossUsd: Math.max(0, -netUsd), consecutiveLosses };
+  return { reason, trippedAtMs, dailyLossUsd: Math.max(0, -netUsd), dailyNetUsd: netUsd, consecutiveLosses };
 }
 
 /**

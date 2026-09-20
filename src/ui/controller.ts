@@ -354,6 +354,7 @@ export class BotController {
         limits: {
           maxDailyLossUsd: config.maxDailyLossUsd,
           maxConsecutiveLosses: config.maxConsecutiveLosses,
+          dailyProfitTargetUsd: config.dailyProfitTargetUsd,
           cooldownHours: config.riskHaltCooldownHours,
           timeZone: config.timezone,
         },
@@ -1403,6 +1404,7 @@ export class BotController {
       limits: {
         maxDailyLossUsd: config.maxDailyLossUsd,
         maxConsecutiveLosses: config.maxConsecutiveLosses,
+        dailyProfitTargetUsd: config.dailyProfitTargetUsd,
         cooldownHours: config.riskHaltCooldownHours,
         timeZone: config.timezone,
       },
@@ -1804,6 +1806,7 @@ export class BotController {
       arbMinNetPerSet: config.arbMinNetPerSet ?? settings.arbMinNetPerSet,
       timezone: config.timezone ?? settings.timezone,
       maxConsecutiveLosses: config.maxConsecutiveLosses ?? settings.maxConsecutiveLosses,
+      dailyProfitTargetUsd: config.dailyProfitTargetUsd ?? settings.dailyProfitTargetUsd,
       requirePositiveEv: config.requirePositiveEv ?? settings.requirePositiveEv,
       explorationEnabled: config.explorationEnabled ?? settings.explorationEnabled,
       evUseSimilarity: config.evUseSimilarity ?? settings.evUseSimilarity,

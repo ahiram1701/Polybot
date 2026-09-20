@@ -276,7 +276,7 @@ describe("TUI render", () => {
 
   it("shows the risk halt banner when tripped", () => {
     const status = statusFixture({
-      riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 30, consecutiveLosses: 3 },
+      riskHalt: { tripped: true, reason: "daily_loss_limit", dailyLossUsd: 30, dailyNetUsd: -30, consecutiveLosses: 3 },
     });
     const text = stripAnsi(renderDashboard(baseVm({ status })).join("\n"));
     expect(text).toContain("FRENO");

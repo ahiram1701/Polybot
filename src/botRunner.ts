@@ -786,6 +786,7 @@ export class BotRunner {
       limits: {
         maxDailyLossUsd: this.config.maxDailyLossUsd,
         maxConsecutiveLosses: this.config.maxConsecutiveLosses,
+        dailyProfitTargetUsd: this.config.dailyProfitTargetUsd,
         cooldownHours: this.config.riskHaltCooldownHours,
         timeZone: this.config.timezone,
       },
@@ -849,6 +850,7 @@ export class BotRunner {
           reason: riskHalt.reason,
           dailyLossUsd: riskHalt.dailyLossUsd,
           consecutiveLosses: riskHalt.consecutiveLosses,
+          dailyNetUsd: riskHalt.dailyNetUsd,
         });
         continue;
       }
@@ -1472,6 +1474,20 @@ export class BotRunner {
   }
 
   private notifyRiskHalt(status: RiskHaltStatus, nowMs: number): void {
+    // El objetivo del dia no es una alarma: es la buena noticia. Anunciarlo como "circuit breaker de
+    // riesgo activado" haria buscar un problema donde no lo hay.
+    if (status.reason === "daily_profit_target") {
+      void this.deps.notifier?.notify({
+        key: `dia-cerrado:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}`,
+        level: "info",
+        title: "Objetivo del dia cumplido",
+        body:
+          `+$${status.dailyNetUsd.toFixed(2)} realizados hoy (modo ${this.config.mode}). No se abren mas ` +
+          "entradas del direccional hasta mañana; lo que quedara abierto sigue su curso y la analitica sigue grabando.",
+        minIntervalMs: 6 * 60 * 60_000,
+      });
+      return;
+    }
     const body =
       status.reason === "daily_loss_limit"
         ? `Perdida diaria $${status.dailyLossUsd.toFixed(2)} (modo ${this.config.mode}).`

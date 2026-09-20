@@ -176,6 +176,9 @@ export interface BotConfig {
   // streak crosses these. Optional so config/test literals may omit.
   maxDailyLossUsd?: number;
   maxConsecutiveLosses?: number;
+  // Objetivo del dia (0 = desactivado): al alcanzar esta ganancia REALIZADA se deja de entrar
+  // hasta el corte del dia. Es el unico limite que para por ir BIEN, y no usa enfriamiento.
+  dailyProfitTargetUsd?: number;
   // Hours a tripped breaker stays halted before auto re-arming with a clean slate. 0 = legacy: halted
   // for the rest of the UTC day.
   riskHaltCooldownHours?: number;

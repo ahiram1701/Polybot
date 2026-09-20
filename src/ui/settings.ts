@@ -147,6 +147,7 @@ const settingsSchema = z.object({
     .default("auto")
     .transform((value) => (value === "auto" || isValidTimeZone(value) ? value : "auto")),
   maxConsecutiveLosses: z.coerce.number().int().nonnegative().default(0),
+  dailyProfitTargetUsd: z.coerce.number().nonnegative().default(0),
   // EV gate (defaults chosen so existing ui-config.json without these keys gets the relaxed gate).
   requirePositiveEv: z.boolean().default(true),
   explorationEnabled: z.boolean().default(true),
@@ -318,6 +319,7 @@ export function settingsFromConfig(config: BotConfig): UiSettings {
     arbMinNetPerSet: config.arbMinNetPerSet ?? 0.02,
     timezone: config.timezone ?? "auto",
     maxConsecutiveLosses: config.maxConsecutiveLosses ?? 0,
+    dailyProfitTargetUsd: config.dailyProfitTargetUsd ?? 0,
     requirePositiveEv: config.requirePositiveEv ?? true,
     explorationEnabled: config.explorationEnabled ?? true,
     autoStartSimOnBoot: false,
@@ -435,6 +437,7 @@ export function applySettings(config: BotConfig, settings: UiSettings): BotConfi
     arbMinNetPerSet: settings.arbMinNetPerSet,
     timezone: settings.timezone,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
+    dailyProfitTargetUsd: settings.dailyProfitTargetUsd,
     requirePositiveEv: settings.requirePositiveEv,
     explorationEnabled: settings.explorationEnabled,
     evUseSimilarity: settings.evUseSimilarity,

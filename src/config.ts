@@ -252,6 +252,7 @@ const envSchema = z.object({
   LIVE_BANKROLL_USD: z.coerce.number().nonnegative().default(0),
   MIN_BANKROLL_FOR_DIRECTIONAL_USD: z.coerce.number().nonnegative().default(10),
   MAX_CONSECUTIVE_LOSSES: z.coerce.number().int().nonnegative().default(0),
+  DAILY_PROFIT_TARGET_USD: z.coerce.number().nonnegative().default(0),
   RISK_HALT_COOLDOWN_HOURS: z.coerce.number().nonnegative().default(2),
   ARB_ENABLED: z
     .string()
@@ -465,6 +466,7 @@ export function loadConfig(argv = process.argv.slice(2)): { config: BotConfig; c
     liveBankrollUsd: env.LIVE_BANKROLL_USD,
     minBankrollForDirectionalUsd: env.MIN_BANKROLL_FOR_DIRECTIONAL_USD,
     maxConsecutiveLosses: env.MAX_CONSECUTIVE_LOSSES,
+    dailyProfitTargetUsd: env.DAILY_PROFIT_TARGET_USD,
     riskHaltCooldownHours: env.RISK_HALT_COOLDOWN_HOURS,
     arbEnabled: env.ARB_ENABLED,
     arbMaxUsdPerOpportunity: env.ARB_MAX_USD_PER_OPPORTUNITY,

@@ -127,6 +127,13 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
     format: (v) => String(v),
   },
   {
+    key: "dailyProfitTargetUsd",
+    label: "Objetivo del día",
+    help: "Para el DIRECCIONAL cuando lo GANADO hoy lo alcanza, hasta el día siguiente. No se rearma con el enfriamiento ni se suelta si el día se tuerce después. 0 = desactivado.",
+    min: 0,
+    format: fmtUsd,
+  },
+  {
     key: "riskHaltCooldownHours",
     label: "Enfriamiento (horas)",
     help: "Tras saltar el freno, cuánto espera antes de rearmarse. No espera al día siguiente.",

@@ -264,6 +264,7 @@ const emptySettings: UiSettings = {
   liveBankrollUsd: 0,
   minBankrollForDirectionalUsd: 10,
   maxConsecutiveLosses: 0,
+  dailyProfitTargetUsd: 0,
   riskHaltCooldownHours: 2,
   arbEnabled: false,
   makerEnabled: false,
@@ -913,6 +914,22 @@ export function Dashboard({
                 : `${riskHalt?.consecutiveLosses ?? 0}`
             }
             tone={riskHalt?.reason === "consecutive_losses" ? "negative" : "neutral"}
+          />
+          <Metric
+            label="Hoy / objetivo"
+            value={
+              status?.settings.dailyProfitTargetUsd
+                ? `${formatUsd(riskHalt?.dailyNetUsd ?? 0)} / ${formatUsd(status.settings.dailyProfitTargetUsd)}`
+                : money(formatUsd(riskHalt?.dailyNetUsd ?? 0))
+            }
+            // Verde cuando el dia ya esta cerrado por objetivo: no es una alarma, es la buena noticia.
+            tone={
+              riskHalt?.reason === "daily_profit_target"
+                ? "positive"
+                : (riskHalt?.dailyNetUsd ?? 0) < 0
+                  ? "negative"
+                  : "neutral"
+            }
           />
         </div>
       </section>
@@ -2340,6 +2357,13 @@ export function SettingsPanel({
             min={0}
             step={1}
             onChange={(value) => update("maxConsecutiveLosses", value)}
+          />
+          <NumberField
+            label="Objetivo del día (USD, 0 = off)"
+            value={draft.dailyProfitTargetUsd}
+            min={0}
+            step={1}
+            onChange={(value) => update("dailyProfitTargetUsd", value)}
           />
           <NumberField
             label="Cooldown del freno (horas)"

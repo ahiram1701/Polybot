@@ -102,6 +102,7 @@ export interface UiSettings {
   liveBankrollUsd: number;
   minBankrollForDirectionalUsd: number;
   maxConsecutiveLosses: number;
+  dailyProfitTargetUsd: number;
   riskHaltCooldownHours: number;
   // Complete-set arbitrage execution (buy both sides when the pair costs < $1 after fees).
   arbEnabled: boolean;
