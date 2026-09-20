@@ -369,6 +369,128 @@ Misma decisión con las dos ventanas, así que el veredicto no depende de cuál 
 medido que **el gate de EV sobre este periodo es claramente malo** —−3,55 pp, 2/6 tramos, P(+) 16%—,
 lo que refuerza dejarlo apagado.
 
+#### Hito de 600 entradas (2026-09-19): sigue sin estar demostrada, y la regla no lo preveía
+
+631 entradas del ledger desde la reanudación, medidas con
+`favoritoReplay.ts --desde 2026-09-12T11:49:23Z`:
+
+| | ledger (verdad oficial) | replay, misma ventana |
+|---|---|---|
+| n | 631 | 616 |
+| aciertos | 85,1% | 85,7% |
+| equilibrio | 84,2% | 84,3% |
+| **ventaja** | **+0,86 pp** | +1,46 pp |
+| **P(+) bootstrap por ventanas** | **73%** | 84% |
+| tramos positivos | 5/6 | 5/6 |
+| peor tramo | −2,10 pp | −0,49 pp |
+| neto a 5 $ | +31,92 $ | +53,85 $ |
+
+**La regla escrita antes del dato no cubría este caso.** Decía «se mantiene si P(+) ≥ 80%», «se para si
+ventaja < 0 y P(+) ≤ 20%», y «entre medias, se sigue hasta 600 y se vuelve a aplicar la misma regla».
+A las 600 vuelve a caer en la banda intermedia —+0,86 pp con P(+) 73%— y **la regla ya no tenía
+cláusula de salida**: no dice qué hacer cuando el hito final también queda en medio. Eso es un fallo de
+quien la escribió, no del dato. Se cierra así, y queda por escrito:
+
+- **La ventaja sigue sin estar demostrada.** Cinco veces menor que los +4,5 pp esperados, y con P(+) 73%
+  el bootstrap no descarta que sea cero. Positiva en 5 de 6 tramos, pero el peor es −2,10 pp.
+- **Se decide seguir en papel y añadir el freno de riesgo** (abajo), no porque la ventaja esté probada,
+  sino porque el problema que se ataca es otro: la caída, no la media.
+- **Live sigue apagado**, como decía la regla original pasara lo que pasara.
+
+**El peaje de la comisión, que es el segundo motivo para no operar de más.** De las 632 operaciones que
+contabiliza el ledger con su propio P&L, el bruto son 66,33 $ y la comisión 36,95 $: **la comisión se
+lleva el 56% de la ganancia bruta**. A ~83 entradas al día, cada entrada de más paga peaje aunque la
+ventaja por operación sea positiva.
+
+> **Dos cuentas del mismo ledger que no coinciden, y por qué.** El smoke dice 631 entradas y +31,92 $;
+> el simulador del freno dice 632 y +29,38 $. Las dos están bien. El smoke corta por **inicio de
+> ventana** y el simulador por **instante de creación**, y hay exactamente una operación
+> (`btc-updown-5m-1789213500`) creada 10 ms después de la reanudación cuya ventana había empezado
+> antes. El neto difiere porque el smoke **revalora** todo a un importe uniforme de 5 $ con comisión
+> modelada —así compara replay y ledger en la misma escala— mientras que el simulador suma el P&L que
+> el ledger tiene grabado. Para dinero manda el ledger; para comparar estrategias, la revaloración.
+
+### El freno de riesgo: encendido el 2026-09-19, con lo que se midió
+
+**El problema.** Sobre las 632 operaciones resueltas del papel entre el 12 y el 19 de septiembre el
+neto fue +29,38 $, pero la peor caída desde el pico fue **−43,45 $**: la caída es mayor que todo lo
+ganado. Por días: +10,08 · +15,88 · −0,99 · −10,24 · +4,68 · +0,82 · +5,50 · +3,65 $. Un día malo borra
+dos buenos.
+
+**Dónde ocurrió esa caída, que es lo que decide si un freno puede tocarla.** Del 2026-09-17T01:45Z al
+12:35Z: **10,8 horas y 44 operaciones seguidas**, dentro de un mismo día UTC. Que quepa en un día es
+justo lo que hace que un freno *diario* pueda verla. Medido con la zona del portátil (CST, UTC−6) esa
+caída se parte en dos días y ningún límite la alcanza — y la primera vez la medí así, con otra tabla y
+otra ganadora. **El bot corre en un contenedor con TZ=UTC, así que `timezone: "auto"` resuelve a UTC**,
+y el contrafactual tiene que medirse en UTC.
+
+**Cómo se midió.** `npx tsx src/smoke/frenoRiesgo.ts`. No reimplementa el freno: llama a
+`evaluateDirectionalRiskHalt`, el mismo que aplican el bucle y la UI, y solo le enseña lo que ya había
+**cerrado** en el instante de decidir cada entrada — sin eso, el freno frenaría por pérdidas que
+todavía no han ocurrido. El contrafactual es exacto porque las operaciones de papel no mueven el
+mercado: saltarse una entrada no cambia el resultado de las demás. **En live no valdría.**
+
+Elección con lo anterior al 2026-09-11T05:25Z (658 entradas del replay), juicio con lo posterior al
+2026-09-12T11:49Z (632 entradas reales). Criterio escrito antes de mirar: entre las reglas que
+conservan **≥75% del neto** en el periodo de elección, gana la de **menor caída máxima**; empate, la que
+menos opera. Nunca al revés.
+
+**Regla elegida: tres pérdidas seguidas → parado 24 h** (`maxConsecutiveLosses: 3`,
+`riskHaltCooldownHours: 24`, `maxDailyLossUsd: 0`).
+
+| | sin freno | con la regla elegida |
+|---|---|---|
+| **elección** — n | 658 | 602 |
+| **elección** — neto | +180,45 $ | +144,80 $ (−20%) |
+| **elección** — caída máxima | 25,85 $ | **25,85 $ (sin cambio)** |
+| **prueba** — n | 632 | 480 (−24%) |
+| **prueba** — neto | +29,38 $ | +35,97 $ (+22%) |
+| **prueba** — caída máxima | 43,45 $ | **28,75 $ (−34%)** |
+| **prueba** — comisión | 36,95 $ | 28,00 $ (−24%) |
+
+**Lo que hay que leer de esa tabla, y no es lo bonito.** En el periodo con el que se eligió, la regla
+**no redujo la caída ni un céntimo** y costó 36 $ de neto; ganó por el desempate, porque ninguna regla
+de la rejilla movía la caída ahí. En el periodo de juicio sí la redujo un 34% y encima subió el neto.
+Y el diagnóstico que lo explica: **lo que el freno tira cambia de signo**. Las 56 entradas saltadas en
+elección valían **+35,65 $** (+0,64 $/op: tiró ganadoras); las 152 de prueba valían **−6,59 $**
+(−0,04 $/op: tiró perdedoras). Un freno no distingue buenas de malas —**acota la cola, no crea
+ventaja**— y aquí eso está medido, no supuesto.
+
+Lo único monótono y limpio de toda la rejilla es el enfriamiento: con racha 3, la caída máxima en el
+periodo de juicio fue 51,63 $ con 2 h, 39,07 $ con 4 h y 28,75 $ con 24 h. Tras tres pérdidas seguidas,
+el mal rato dura horas, no minutos. `maxDailyLossUsd` se queda apagado porque sobre la racha no aportó
+nada: con racha 3, ponerle 8, 10, 15 o 20 $ daba exactamente el mismo resultado.
+
+Los topes de gasto diario (50–200 $/día) sí recortan la caída en los dos periodos —son la única palanca
+con signo estable— pero recortan el neto en proporción: es apostar más pequeño con otro nombre. Fallan
+el suelo del 75% en el periodo de elección, así que el criterio los descarta y **no se cambian después
+de ver el dato**, que es exactamente como se fabricaron dos configuraciones sobreajustadas en este
+mismo documento.
+
+#### Prueba hacia delante del freno, pre-registrada
+
+Aplicado el **2026-09-19T20:49Z** con el bot parado (`PATCH /api/settings` lo exige), respaldo en
+`data/ui-config.json.bak-antes-freno`.
+
+| | |
+|---|---|
+| hito | 7 días o 400 entradas, lo que llegue antes |
+| se mantiene si | la caída máxima baja **al menos a la mitad** frente al contrafactual sin freno **y** el neto no cae más de un 25% |
+| se quita si | recorta el neto más de un 25% **sin** reducir la caída al menos a la mitad |
+| entre medias | se deja puesto y se documenta que no decidió nada |
+
+El contrafactual «sin freno» sale del replay sobre las mismas ventanas, no del ledger: el bot con freno
+no ejecuta las entradas saltadas, así que el ledger ya no las contiene. Esa es justamente la razón de
+que el replay exista.
+
+Dos avisos por escrito antes de verlo:
+
+- **El listón de «la mitad» es más exigente que lo medido** (−34% en el periodo de juicio). Se deja así
+  a propósito: si la mejora real fuera del tamaño de la medida, el hito no la certificaría y el freno
+  seguiría puesto pero sin poder presumir de nada.
+- **Con 400 entradas, un freno que dispara 3 veces en 8 días deja muy pocos disparos que observar.** El
+  resultado va a ser ruidoso, y eso no se arregla mirándolo más veces.
+
 #### Lo que se probó y no aporta
 
 - **Apretar `favoriteMaxAskSum`** (medido sobre 80 s y z ≥ 1,5). 1,03 / 1,05 / 1,10 / 1,15 dan las
@@ -1076,5 +1198,20 @@ Todas en `src/smoke/`, todas de solo lectura:
 | `estimatorBacktest.ts` | ¿Qué estimador alimenta mejor el gate? Con columna fuera de muestra |
 | `capTunerBacktest.ts` | ¿El tuner de ventana de ask suma o resta? |
 | `arbScan.ts` | ¿Cuántas oportunidades de arbitraje hubo y de qué tamaño? |
+| `favoritoReplay.ts` | El camino del favorito sobre las ventanas ya vistas; con `--desde`, cruce con el ledger |
+| `frenoRiesgo.ts` | ¿Cuánto habría protegido el cortacircuitos, y a qué precio? |
+
+> **La analítica ya no cabe en memoria: 1,3 GB entre el archivo y el fichero vivo, 17.812 ventanas.**
+> Cargarla entera con `readAnalyticsSamples` —que devuelve el fichero completo como array— agotó la
+> memoria de la máquina de desarrollo (3,8 GB) y la dejó sin responder, WSL incluido. Para eso está
+> `analyticsStream.ts`: indexa cada línea sin parsear el JSON (contar `"secondsToEnd"` da
+> ticks + cotizaciones) y luego entrega las ventanas **en orden cronológico, una a una**. El replay del
+> favorito tiene una entrada incremental (`crearReplayFavorito`) para consumirlas así, y
+> `replayFavoriteSignals` ordena y llama ahí: la decisión sigue teniendo una sola implementación.
+>
+> Un detalle que costó un cuelgue y no es evidente: **un trozo sacado con una expresión regular no es
+> una cadena nueva**. En V8, un `exec` de más de 12 caracteres devuelve una *sliced string* que
+> mantiene viva la línea original entera, así que guardar 17.812 slugs retenía 17.812 líneas de ~76 KB
+> — 1,5 GB para un índice que debería ocupar dos megas. Por eso el índice copia el slug a propósito.
 
 **Regla al usarlas:** cualquier resultado espectacular es sospechoso antes que prometedor. Un edge que no sobrevive `outOfSample.ts` es ruido de barrido.
