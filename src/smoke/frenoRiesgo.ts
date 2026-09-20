@@ -26,15 +26,14 @@
  * otro de esa ventana pierde el 47,5% de las veces frente al 13,2% habitual— pero eso lo dice la tabla, no
  * el deseo. Si el freno cuesta ganancia media, es una compra consciente de proteccion.
  */
-import { createReadStream } from "node:fs";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 
 import { muestrasEnOrden } from "../analyticsStream.js";
 import { loadConfig } from "../config.js";
 import { crearReplayFavorito, type FavoriteSignal } from "../favoriteReplay.js";
 import { DEFAULT_FAVORITE_MAX_ASK, DEFAULT_FAVORITE_MIN_ASK, DEFAULT_MAX_ASK_SUM } from "../favoriteSelector.js";
 import { netoDeLasSaltadas, simular, type Regla, type Resultado } from "../frenoSimulacion.js";
+import { cargarLedgerFavorito } from "../ledgerFavorito.js";
 import { DEFAULT_MIN_SECONDS_TO_END } from "../markets.js";
 import { resolveTimeZone } from "../timezone.js";
 import type { BotConfig, MarketSymbol, TradeAttempt } from "../types.js";
@@ -47,31 +46,6 @@ const CAMBIO_MS = Date.parse("2026-09-11T05:25:47Z");
 /** Cuando el papel volvio a operar tras el paron de la poda. Desde aqui es el periodo de PRUEBA. */
 const REANUDACION_MS = Date.parse("2026-09-12T11:49:23Z");
 const DEFAULT_MAX_ASK_SPREAD = 0.02;
-
-/** El ledger real: entradas originales del favorito en sim, con el ganador OFICIAL. */
-async function cargarLedger(dataDir: string): Promise<TradeAttempt[]> {
-  const porId = new Map<string, TradeAttempt & { officialResolution?: { winningOutcome?: string } }>();
-  const oficial = new Map<string, string>();
-  const rl = createInterface({ input: createReadStream(join(dataDir, "trades.jsonl")) });
-  for await (const linea of rl) {
-    if (!linea.trim()) continue;
-    let fila: { trade?: TradeAttempt & { officialResolution?: { winningOutcome?: string } }; officialResolution?: { winningOutcome?: string } };
-    try {
-      fila = JSON.parse(linea);
-    } catch {
-      continue;
-    }
-    if (!fila.trade?.id) continue;
-    porId.set(fila.trade.id, { ...(porId.get(fila.trade.id) ?? {}), ...fila.trade });
-    const ganador = fila.officialResolution?.winningOutcome ?? fila.trade.officialResolution?.winningOutcome;
-    if (ganador) oficial.set(fila.trade.id, ganador);
-  }
-  return [...porId.values()]
-    .filter((t) => t.strategy === "favorito" && t.mode === "sim" && (t.reentry ?? 0) === 0 && oficial.has(t.id))
-    // `resolved.won` lo calcula el bot con el spot y se equivoca un 8% de las veces; el que paga es el
-    // oficial. Sin esta correccion el freno contaria como perdida lo que Polymarket pago como ganancia.
-    .map((t) => ({ ...t, resolved: { ...(t.resolved ?? {}), won: oficial.get(t.id) === t.outcome } }) as TradeAttempt);
-}
 
 /**
  * Las señales del replay como operaciones. Solo se rellena lo que el freno mira: modo, importe,
@@ -180,7 +154,7 @@ async function main(): Promise<void> {
   });
 
   const eleccion = signals.map((s) => comoOperacion(s, endMsPorSlug.get(s.slug) as number));
-  const prueba = (await cargarLedger(config.dataDir)).filter((t) => t.createdAtMs >= REANUDACION_MS);
+  const prueba = (await cargarLedgerFavorito(config.dataDir)).filter((t) => t.createdAtMs >= REANUDACION_MS);
 
   console.log(`FRENO DE RIESGO — contrafactual sobre operaciones ya resueltas, zona ${timeZone}`);
   console.log(`ELECCION: ${eleccion.length} entradas del replay sobre ${ventanas} ventanas anteriores al ${new Date(CAMBIO_MS).toISOString()}`);
