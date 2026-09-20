@@ -1480,7 +1480,13 @@ export class BotRunner {
       key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}:${status.reason}`,
       level: "warn",
       title: "Circuit breaker de riesgo activado",
-      body: `${body} Trading detenido hasta el proximo dia UTC.`,
+      // Con enfriamiento configurado el freno NO dura hasta el proximo dia: se re-arma a las
+      // `cooldownHours` del disparo, y decirlo mal en el aviso manda a mirar la pantalla a la hora que no es.
+      body: `${body} Direccional detenido ${
+        status.resumeAtMs === undefined
+          ? "hasta el proximo dia"
+          : `hasta ${new Date(status.resumeAtMs).toISOString().slice(11, 16)} UTC`
+      }. La analitica sigue grabando.`,
       minIntervalMs: 6 * 60 * 60_000,
     });
   }
