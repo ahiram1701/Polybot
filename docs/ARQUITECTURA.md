@@ -491,6 +491,74 @@ Dos avisos por escrito antes de verlo:
 - **Con 400 entradas, un freno que dispara 3 veces en 8 días deja muy pocos disparos que observar.** El
   resultado va a ser ruidoso, y eso no se arregla mirándolo más veces.
 
+### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
+
+El freno acota la caída pero **no toca el operar de más**: siguen entrando ~83 veces al día y la
+comisión se lleva el 64% del bruto en el periodo de juicio (38,35 $ de comisión sobre 60,13 $ brutos
+para un neto de +21,78 $). La pregunta que queda es si hay volumen que no paga su peaje.
+
+`npx tsx src/smoke/filtrosEntrada.ts`. Mismo reparto: **elección** = 658 entradas del replay anteriores
+al 2026-09-11T05:25Z, **juicio** = 656 entradas reales del ledger desde el 2026-09-12T11:49Z. 16
+candidatos escritos antes de mirar. Criterio, también escrito antes: n ≥ 150, los 6 tramos con datos,
+gana el **mayor peor-tramo** (nunca la media), desempate por neto por operación.
+
+**Mi hipótesis de partida era falsa.** Dije que BTC era el problema: +0,12 pp en 331 operaciones en el
+hito de 600. Medido con los dos periodos, el mercado **no separa nada estable**:
+
+| | elección | juicio |
+|---|---|---|
+| solo BTC | +3,67 pp | −0,40 pp |
+| solo ETH | +5,55 pp | +1,46 pp |
+| sin BTC | +5,36 pp | +1,84 pp |
+| sin ETH | +3,57 pp | −0,02 pp |
+
+ETH mide mejor que BTC en los dos, pero los dos cambian de signo y la diferencia entre «sin BTC» y la
+referencia cabe dentro del ruido. **Dejar de operar BTC no está justificado por esto.**
+
+**Lo único que mantiene el signo en los dos periodos es la hora.**
+
+| franja UTC | elección | juicio | qué es |
+|---|---|---|---|
+| 12–18 | **−1,67 pp**, P(+) 32% | **−3,44 pp**, P(+) 13% | mañana de Nueva York |
+| sin 12–18 | +6,63 pp | +2,10 pp | el resto del día |
+| 00–06 | +6,49 pp | +3,49 pp | madrugada asiática |
+
+Hora a hora, el tramo **12:00–15:00 UTC mide negativo en los dos periodos** (12 h: −3,29 / −4,95;
+14 h: −13,54 / −1,52; 15 h: −2,46 / −5,74), que es ~8–11 de la mañana en Nueva York. Hay un mecanismo
+plausible: es cuando la cripto se mueve más, y el favorito de una ventana de cinco minutos tiene más
+ocasiones de darse la vuelta. No es una hora suelta rescatada de un barrido: son cuatro horas seguidas
+con el mismo signo en dos periodos independientes.
+
+**Lo que la regla eligió, y por qué no se aplica.** El criterio pre-registrado eligió **«solo 00–06
+UTC»** (peor tramo +3,08 pp en elección). Fuera de muestra gana en dinero —184 operaciones en vez de
+656, neto +36,55 $ frente a +21,78 $, comisión 10,55 $ frente a 38,35 $, seis veces más neto por
+operación— pero **por dentro no se sostiene**: sus horas cambian de signo entre periodos (02 h: +5,80
+→ −4,16; 04 h: +15,34 → −1,25) y su peor tramo fuera de muestra es −8,55 pp. Ganó una casilla, no un
+mecanismo. Con 16 candidatos sobre ~650 operaciones, la mejor de todas se ve bien por azar aunque
+ninguna sirva: eso estaba escrito antes de correrlo.
+
+**Nada de esto se aplica todavía**, por dos razones: la prueba del freno está corriendo y meter un
+filtro de entradas ahora haría imposible saber cuál hizo qué; y la hipótesis de las 12–18 salió de
+mirar esta tabla, así que juzgarla con esta misma tabla es el error circular de siempre.
+
+#### Pre-registro: el filtro horario se juzga con datos que todavía no existen
+
+Escrito el 2026-09-20, **antes** de ver ningún dato posterior:
+
+| | |
+|---|---|
+| hipótesis | las entradas creadas entre las 12:00 y las 18:00 UTC tienen ventaja ≤ 0 |
+| cuándo se evalúa | al cerrar el hito del freno (7 días o 400 entradas) |
+| con qué | `filtrosEntrada.ts`, franja «sin 12–18 UTC» frente a la referencia, **solo con entradas nuevas** |
+| se aplica si | la franja 12–18 vuelve a medir ventaja ≤ 0 **y** «sin 12–18» tiene mejor peor-tramo que la referencia |
+| se descarta si | la franja 12–18 mide ventaja > 0, o mejora el peor-tramo menos que la referencia |
+| no cuenta como confirmación | que el neto total suba: quitar horas sube el neto por operación casi siempre, porque quita operaciones |
+
+Aviso que ya se puede escribir: **el periodo de juicio deja de ser limpio en cuanto el freno dispare
+por primera vez.** A partir de ahí faltan entradas del ledger, y faltan por una razón que depende del
+resultado de las anteriores. El smoke avisa solo cuando hay entradas posteriores al encendido
+(2026-09-19T20:49Z); al primer disparo hay que cortar el periodo ahí y contar el siguiente aparte.
+
 #### Lo que se probó y no aporta
 
 - **Apretar `favoriteMaxAskSum`** (medido sobre 80 s y z ≥ 1,5). 1,03 / 1,05 / 1,10 / 1,15 dan las
