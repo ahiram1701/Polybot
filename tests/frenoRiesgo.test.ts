@@ -123,6 +123,70 @@ describe("simulacion del freno de riesgo", () => {
     expect(r.diasConFreno).toBe(0);
   });
 
+  it("con objetivo diario, el dia se para en cuanto lo GANADO llega al objetivo", () => {
+    // Cuatro ganadoras de ~0,57 $ netos cada una y luego seis entradas mas. Con el objetivo en 1,50 $ el
+    // dia se cierra cuando lo realizado lo alcanza, y lo que venga despues no ocurre.
+    const candidatas = serie(DIA + 9 * HORA, [true, true, true, true, false, false, false, false, false, false]);
+    const regla: Regla = { nombre: "objetivo 1,50$", limites: {}, topeGastoDiarioUsd: 0, objetivoDiarioUsd: 1.5 };
+
+    const r = simular(candidatas, regla, "UTC");
+
+    expect(r.n).toBeLessThan(candidatas.length);
+    expect(r.netoUsd).toBeGreaterThan(0);
+    // El dia cierra en verde: es justo lo que se le pide a esta regla.
+    expect(r.dias).toHaveLength(1);
+    expect(r.dias[0].netoUsd).toBeGreaterThan(0);
+  });
+
+  it("el objetivo mira lo COBRADO, no lo que esta en el aire", () => {
+    // Diez ganadoras creadas de golpe, todas antes de que ninguna cierre. Al decidir, lo realizado sigue
+    // siendo cero, asi que el objetivo no puede haberse alcanzado y entran todas. Contar posiciones
+    // abiertas como ganancia seria cerrar el dia con dinero sin cobrar.
+    const creadas = Array.from({ length: 10 }, (_, i) =>
+      entrada({ id: `g${i}`, creadaMs: DIA + 9 * HORA + i * 1000, gana: true }),
+    );
+    const regla: Regla = { nombre: "objetivo 1$", limites: {}, topeGastoDiarioUsd: 0, objetivoDiarioUsd: 1 };
+
+    expect(simular(creadas, regla, "UTC").n).toBe(10);
+  });
+
+  it("un dia parado en verde puede acabar en rojo: lo ya abierto sigue su curso", () => {
+    // Dos ganadoras cierran y disparan el objetivo, pero para entonces ya hay tres perdedoras en vuelo
+    // creadas antes. El dia acaba en rojo aunque se haya "parado ganando". No se idealiza.
+    // Una ganadora a 0,80 deja +1,18 $ netos, asi que el objetivo de 2 $ necesita DOS.
+    const candidatas = [
+      entrada({ id: "g0", creadaMs: DIA + 9 * HORA, gana: true }),
+      entrada({ id: "g1", creadaMs: DIA + 9 * HORA + MINUTO, gana: true }),
+      // Entran a las 09:02-09:04, cuando todavia no ha cerrado nada: el objetivo no puede estar hecho.
+      ...[0, 1, 2].map((i) => entrada({ id: `p${i}`, creadaMs: DIA + 9 * HORA + (2 + i) * MINUTO, gana: false })),
+      // A las 09:06:30 las dos ganadoras ya cerraron (+2,36 $) y las tres perdedoras siguen en vuelo: el
+      // dia se cierra aqui, en verde, y lo que resuelva despues ya no se puede evitar.
+      entrada({ id: "tarde0", creadaMs: DIA + 9 * HORA + 6 * MINUTO + 30_000, gana: true }),
+      ...serie(DIA + 10 * HORA, [true, true], "tarde"),
+    ];
+    const regla: Regla = { nombre: "objetivo 2$", limites: {}, topeGastoDiarioUsd: 0, objetivoDiarioUsd: 2 };
+
+    const r = simular(candidatas, regla, "UTC");
+
+    expect(r.dias[0].picoUsd).toBeGreaterThan(0);
+    expect(r.dias[0].netoUsd).toBeLessThan(0);
+    // Las tres de la tarde no llegan a ocurrir: el dia ya estaba cerrado por objetivo.
+    expect(r.n).toBe(5);
+  });
+
+  it("el objetivo se reinicia cada dia", () => {
+    const candidatas = [
+      ...serie(DIA + 9 * HORA, [true, true, true, true], "a"),
+      ...serie(DIA + 24 * HORA + 9 * HORA, [true, true, true, true], "b"),
+    ];
+    const regla: Regla = { nombre: "objetivo 1$", limites: {}, topeGastoDiarioUsd: 0, objetivoDiarioUsd: 1 };
+
+    const r = simular(candidatas, regla, "UTC");
+
+    expect(r.dias).toHaveLength(2);
+    for (const dia of r.dias) expect(dia.netoUsd).toBeGreaterThan(0);
+  });
+
   it("no mira el futuro: no frena por perdidas que aun no han cerrado", () => {
     // Tres perdidas que se crean seguidas pero cierran DESPUES de la cuarta entrada. Cuando el bucle decide
     // la cuarta, ninguna ha resuelto todavia, asi que el freno no puede saber nada y la cuarta ocurre.
