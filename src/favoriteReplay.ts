@@ -121,7 +121,32 @@ export function replayFavoriteSignals(
   samples: readonly AnalyticsSample[],
   params: FavoriteReplayParams,
 ): FavoriteReplayResult {
-  const ordenadas = [...samples].sort((izq, der) => izq.windowStartMs - der.windowStartMs);
+  const replay = crearReplayFavorito(params);
+  for (const sample of [...samples].sort((izq, der) => izq.windowStartMs - der.windowStartMs)) {
+    replay.observa(sample);
+  }
+  return replay.resultado();
+}
+
+export interface ReplayFavoritoIncremental {
+  /** Una ventana mas, y ya en orden cronologico. */
+  observa(sample: AnalyticsSample): void;
+  resultado(): FavoriteReplayResult;
+}
+
+/**
+ * El mismo replay, pero muestra a muestra, para quien no puede tener todas a la vez en memoria.
+ *
+ * `replayFavoriteSignals` ordena y va llamando aqui: hay UNA sola implementacion de la decision. Lo que
+ * cambia es quien manda las ventanas. El backtest sobre el historico completo son 1,3 GB de JSONL que no
+ * caben como objetos en esta maquina (ver `analyticsStream.ts`), asi que las lee en flujo y las entrega
+ * aqui de una en una.
+ *
+ * CONDICION: las ventanas tienen que llegar EN ORDEN. El historial que alimenta `predicted` es
+ * walk-forward, o sea que una ventana solo debe ver las anteriores; darselas desordenadas le enseña el
+ * futuro sin que nada chille.
+ */
+export function crearReplayFavorito(params: FavoriteReplayParams): ReplayFavoritoIncremental {
   const signals: FavoriteSignal[] = [];
   const skips: FavoriteReplaySkips = {};
   const historial = new Map<MarketSymbol, { wins: number; trades: number }>();
@@ -131,20 +156,20 @@ export function replayFavoriteSignals(
     skips[motivo] = (skips[motivo] ?? 0) + 1;
   };
 
-  for (const sample of ordenadas) {
+  const observa = (sample: AnalyticsSample): void => {
     windows += 1;
     // Sin veredicto fiable la muestra no puede puntuar nada. `scoringOutcome` NUNCA cae de vuelta a
     // `winningOutcome`: sus errores van correlacionados con la señal y enseñarian el sesgo entero.
     const verdad = scoringOutcome(sample);
     if (!verdad) {
       anota("sin_veredicto");
-      continue;
+      return;
     }
 
     const entrada = primeraEntrada(sample, params);
     if (typeof entrada === "string") {
       anota(entrada);
-      continue;
+      return;
     }
 
     const previo = historial.get(sample.market) ?? { wins: 0, trades: 0 };
@@ -166,9 +191,9 @@ export function replayFavoriteSignals(
       });
     }
     historial.set(sample.market, { wins: previo.wins + (won ? 1 : 0), trades: previo.trades + 1 });
-  }
+  };
 
-  return { signals, skips, windows };
+  return { observa, resultado: () => ({ signals, skips, windows }) };
 }
 
 interface Entrada {

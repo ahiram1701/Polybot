@@ -820,7 +820,7 @@ function formatAnalyticsSampleLine(sample: AnalyticsSample, at = new Date()): st
   return JSON.stringify({ at: at.toISOString(), type: ANALYTICS_RECORD_TYPE, sample });
 }
 
-function parseAnalyticsLine(line: string): AnalyticsSample | undefined {
+export function parseAnalyticsLine(line: string): AnalyticsSample | undefined {
   try {
     const parsed = JSON.parse(line) as unknown;
     const sample = isRecord(parsed) && isRecord(parsed.sample) ? parsed.sample : parsed;
@@ -853,7 +853,7 @@ function isAnalyticsSample(value: unknown): value is AnalyticsSample {
   );
 }
 
-function isResolvedAnalyticsSample(value: AnalyticsSample): boolean {
+export function isResolvedAnalyticsSample(value: AnalyticsSample): boolean {
   return isFiniteNumber(value.resolvedAtMs) && isOutcome(value.winningOutcome);
 }
 
