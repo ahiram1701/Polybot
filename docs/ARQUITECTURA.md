@@ -467,29 +467,95 @@ el suelo del 75% en el periodo de elección, así que el criterio los descarta y
 de ver el dato**, que es exactamente como se fabricaron dos configuraciones sobreajustadas en este
 mismo documento.
 
-#### Prueba hacia delante del freno, pre-registrada
+#### El freno por racha se quitó al día siguiente (2026-09-20)
 
-Aplicado el **2026-09-19T20:49Z** con el bot parado (`PATCH /api/settings` lo exige), respaldo en
-`data/ui-config.json.bak-antes-freno`.
+Estuvo puesto unas horas y no llegó a dispararse ni una vez. Se quita porque **resolvía un problema que
+no era el que había que resolver**: acotaba la caída del acumulado de todo el periodo, y lo que se pedía
+era que **cada día cerrara en verde**. Son cosas distintas y yo medí la primera. `maxConsecutiveLosses`
+vuelve a 0 y el enfriamiento a 2 h; lo medido arriba se queda escrito porque sigue siendo verdad sobre
+la pregunta que respondía, y porque la prueba pre-registrada que llevaba no llegó a ejecutarse.
+
+### Que cada día cierre en verde: el objetivo del día (2026-09-20)
+
+**El problema, día a día.** Nueve días de papel, sin ninguna regla, con lo que cada día llegó a tener y
+lo que cerró:
+
+| día | entradas | llegó a | cerró |
+|---|---|---|---|
+| 09-12 | 58 | +5,45 $ | **−3,89 $** |
+| 09-13 | 101 | +21,57 $ | +11,79 $ |
+| 09-14 | 71 | +25,42 $ | +11,62 $ |
+| 09-15 | 74 | +10,92 $ | **−11,14 $** |
+| 09-16 | 92 | +27,72 $ | +27,72 $ |
+| 09-17 | 75 | +4,06 $ | **−20,11 $** |
+| 09-18 | 71 | +13,38 $ | +0,27 $ |
+| 09-19 | 81 | +23,48 $ | +16,45 $ |
+| 09-20 | 35 | +0,91 $ | **−9,12 $** |
+
+**Ningún día conserva su máximo**, cuatro de nueve cierran en rojo y tres de ésos habían estado en
+verde. El cortacircuitos que existía no podía hacer nada contra esto: sabe parar cuando se pierde,
+nunca cuando ya se ha ganado.
+
+**Lo que se añadió.** `dailyProfitTargetUsd` dentro de `evaluateRiskCircuitBreaker`, para que el bucle y
+el chip lo vean por el mismo sitio que los otros dos límites. Dos diferencias deliberadas respecto a
+ellos:
+
+- **No usa enfriamiento.** Un objetivo cumplido dura hasta el corte del día. Con las 2 h configuradas el
+  día volvería a abrirse dos horas después, que es lo contrario de asegurar lo ganado.
+- **No se suelta si el día se tuerce después.** Las posiciones que seguían abiertas al alcanzarlo pueden
+  hundir el neto por debajo del objetivo; el día sigue cerrado. Reabrir sería haber perdido lo ganado
+  **y además** volver a jugar para recuperarlo. Esto lo destapó un test, no el diseño: la primera
+  versión reabría.
+
+Sale gratis en persistencia porque, como el resto del freno, se deduce del ledger recorriendo el día en
+orden y no de una bandera guardada: sobrevive a un reinicio.
+
+**La frontera medida** (`npx tsx src/smoke/cerrarEnVerde.ts`), elección con lo anterior al 11 de
+septiembre, juicio con lo posterior al 12:
+
+| regla | elección: días verde / neto | juicio: días verde / neto |
+|---|---|---|
+| sin nada | 8/9 · +180,45 $ | 5/9 · +23,59 $ |
+| racha 3 (lo del día 19) | 7/9 · +144,80 $ | 5/9 · +30,18 $ |
+| **objetivo 15 $** | 9/9 · +121,31 $ | **6/9 · +45,42 $** |
+| objetivo 10 $ | 9/9 · +91,28 $ | 6/9 · +30,98 $ |
+| objetivo 5 $ | 9/9 · +49,87 $ | 7/9 · +8,60 $ |
+| objetivo 3 $ | 9/9 · +33,38 $ | 8/9 · +17,51 $ |
+
+**Es monótona en los dos periodos**: cuanto más bajo el objetivo, más días cierran en verde y menos
+dinero se hace. Elegido **15 $**, que es el único punto que en el periodo de juicio mejora a la vez los
+días en verde (6/9 frente a 5/9) y el neto (+45,42 $ frente a +30,18 $), y en el de elección cuesta un
+16% del neto a cambio de cerrar los nueve días en verde.
+
+Tres cosas que esto **no** hace, y conviene que estén escritas antes de que decepcionen:
+
+1. **No sube la ganancia esperada.** Si cada entrada tiene ventaja positiva, dejar de entrar cuando vas
+   ganando quita entradas buenas. Lo que compra es regularidad y se paga en media. El criterio que se
+   había pre-registrado —más días en verde **sin** ganar menos— no lo cumplió ninguna regla, y ése es el
+   resultado honesto: no se puede tener las dos cosas.
+2. **No garantiza cerrar en verde.** Al parar quedan posiciones abiertas que aún tienen que resolver.
+3. **No salva un día que nunca sube.** El 09-20 no pasó de +0,91 $: ningún objetivo lo alcanza. Para eso
+   está `MAX_DAILY_LOSS_USD`, que sigue en 0 porque el dueño no lo quiso.
+
+#### Prueba hacia delante del objetivo, pre-registrada
+
+Aplicado el **2026-09-20T02:55Z** con el bot parado y la imagen reconstruida (el campo es nuevo, así que
+el contenedor viejo no lo conocía). Respaldo en `data/ui-config.json.bak-antes-objetivo`.
 
 | | |
 |---|---|
-| hito | 7 días o 400 entradas, lo que llegue antes |
-| se mantiene si | la caída máxima baja **al menos a la mitad** frente al contrafactual sin freno **y** el neto no cae más de un 25% |
-| se quita si | recorta el neto más de un 25% **sin** reducir la caída al menos a la mitad |
-| entre medias | se deja puesto y se documenta que no decidió nada |
+| hito | 14 días naturales, para que haya al menos 14 cierres de día que observar |
+| se mantiene si | cierran en verde **≥ 7 de cada 9 días** (lo medido fuera de muestra, 6/9, más un día) **y** el neto por día no cae por debajo de +2,42 $, que es lo que daba sin nada |
+| se baja el objetivo si | se cierran en verde menos de 6 de cada 9 días: el objetivo de 15 $ no se alcanza lo bastante a menudo y hay que mirar 10 $ |
+| se quita si | el neto por día cae por debajo de +2,42 $ **y** los días en verde no mejoran |
+| no cuenta como confirmación | que suba el neto total: eso depende del régimen, no de la regla |
 
-El contrafactual «sin freno» sale del replay sobre las mismas ventanas, no del ledger: el bot con freno
-no ejecuta las entradas saltadas, así que el ledger ya no las contiene. Esa es justamente la razón de
-que el replay exista.
+El contrafactual sale del replay sobre las mismas ventanas, no del ledger: el bot con objetivo no
+ejecuta las entradas del resto del día, así que el ledger ya no las contiene.
 
-Dos avisos por escrito antes de verlo:
-
-- **El listón de «la mitad» es más exigente que lo medido** (−34% en el periodo de juicio). Se deja así
-  a propósito: si la mejora real fuera del tamaño de la medida, el hito no la certificaría y el freno
-  seguiría puesto pero sin poder presumir de nada.
-- **Con 400 entradas, un freno que dispara 3 veces en 8 días deja muy pocos disparos que observar.** El
-  resultado va a ser ruidoso, y eso no se arregla mirándolo más veces.
+Aviso por escrito: **14 días son 14 observaciones.** La diferencia entre 6/9 y 7/9 días en verde no se
+va a poder distinguir del azar con esa muestra. El hito sirve para detectar un fallo grande —que el
+objetivo no se alcance casi nunca, o que el neto se hunda—, no para certificar una mejora fina.
 
 ### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
 
@@ -1268,6 +1334,8 @@ Todas en `src/smoke/`, todas de solo lectura:
 | `arbScan.ts` | ¿Cuántas oportunidades de arbitraje hubo y de qué tamaño? |
 | `favoritoReplay.ts` | El camino del favorito sobre las ventanas ya vistas; con `--desde`, cruce con el ledger |
 | `frenoRiesgo.ts` | ¿Cuánto habría protegido el cortacircuitos, y a qué precio? |
+| `cerrarEnVerde.ts` | ¿Se puede cerrar cada día en verde, y qué cuesta? Día a día y frontera de objetivos |
+| `filtrosEntrada.ts` | ¿Qué parte del volumen no paga su comisión? Por mercado, tramo de banda y hora |
 
 > **La analítica ya no cabe en memoria: 1,3 GB entre el archivo y el fichero vivo, 17.812 ventanas.**
 > Cargarla entera con `readAnalyticsSamples` —que devuelve el fichero completo como array— agotó la
