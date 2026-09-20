@@ -542,9 +542,15 @@ Tres cosas que esto **no** hace, y conviene que estén escritas antes de que dec
 Aplicado el **2026-09-20T02:55Z** con el bot parado y la imagen reconstruida (el campo es nuevo, así que
 el contenedor viejo no lo conocía). Respaldo en `data/ui-config.json.bak-antes-objetivo`.
 
+**El contador arranca en el reinicio de P&L del 2026-09-20T09:00:30Z**, no en el despliegue. Se
+reiniciaron las dos marcas: `pnlResetAtMs` (la cuenta que se mira) y `riskHaltResetAtMs` (la línea base
+del freno), porque sin la segunda el objetivo del primer día habría arrastrado los −5,01 $ que ya
+llevaba esa mañana y «desde cero» no habría sido verdad. Ninguna de las dos borra nada: son marcadores,
+y `trades.jsonl` conserva las 7.426 filas — el histórico sigue entero para volver a medir.
+
 | | |
 |---|---|
-| hito | 14 días naturales, para que haya al menos 14 cierres de día que observar |
+| hito | 14 días naturales desde el reinicio, para que haya al menos 14 cierres de día que observar |
 | se mantiene si | cierran en verde **≥ 7 de cada 9 días** (lo medido fuera de muestra, 6/9, más un día) **y** el neto por día no cae por debajo de +2,42 $, que es lo que daba sin nada |
 | se baja el objetivo si | se cierran en verde menos de 6 de cada 9 días: el objetivo de 15 $ no se alcanza lo bastante a menudo y hay que mirar 10 $ |
 | se quita si | el neto por día cae por debajo de +2,42 $ **y** los días en verde no mejoran |
