@@ -563,6 +563,47 @@ Aviso por escrito: **14 días son 14 observaciones.** La diferencia entre 6/9 y 
 va a poder distinguir del azar con esa muestra. El hito sirve para detectar un fallo grande —que el
 objetivo no se alcance casi nunca, o que el neto se hunda—, no para certificar una mejora fina.
 
+#### Disparador: cuándo el objetivo tiene que dejar de ser dólares y pasar a %
+
+Un objetivo en dólares **no sobrevive a que la cuenta crezca**, y ésa es su única debilidad seria. Si el
+importe por entrada pasa de 5 $ a 20 $, el P&L diario se multiplica por cuatro y los +15 $ se alcanzan
+en la cuarta parte de las operaciones: **la regla se vuelve mucho más estricta sin que nadie lo haya
+decidido**, y deja de ser la que se midió. Un objetivo en porcentaje es la versión invariante a escala
+de esta misma regla: si el importe se multiplica por k, el P&L diario también, y un porcentaje mantiene
+solo el comportamiento medido.
+
+**Se cambia cuando ocurra cualquiera de estas dos cosas, y no antes:**
+
+1. **El importe por entrada deja de ser el mínimo del exchange.** Hoy `autoMinLive` lo clava en 5 $ en
+   los dos modos, así que no escala con nada y dólares y porcentaje son la misma regla con otro nombre.
+2. **Hay un capital declarado o leído contra el que dividir.** Hoy no lo hay: el bot no consulta el
+   saldo de la wallet y `liveBankrollUsd` es un número declarado para live que está en 0. En papel no
+   existe cuenta que dividir, y ése es el motivo real de que el objetivo esté en dólares.
+
+**Cómo se convierte, para que el cambio no sea una decisión nueva encubierta.** El objetivo equivalente
+es el que conserva la misma fracción de lo que el día despliega:
+
+```
+objetivo% = objetivo$ / (entradas por día × importe por entrada)
+```
+
+Con los números de hoy —15 $, ~83 entradas al día, 5 $ por entrada— eso es **15 / 415 = 3,6%**. Al
+cambiar se pone ese porcentaje, no uno redondo que «suene bien»: redondear a 5% sería subir el objetivo
+un 39% sin haberlo medido.
+
+**El denominador correcto es el capital acumulado**, no lo apostado en el día. Esto no es un detalle de
+implementación, es la diferencia entre que la regla funcione o no:
+
+- **Sobre el capital acumulado** (inicial + P&L realizado) el objetivo queda **fijo al empezar el día** y
+  además crece según crece la cuenta, que es componer — el objetivo declarado del dueño.
+- **Sobre lo apostado hoy** el objetivo es **móvil**: cada entrada de 5 $ sube el listón 0,20 $ mientras
+  una ganadora aporta ~0,57 $. El objetivo se aleja mientras se persigue y el día no cierra limpio. Una
+  regla de parada tiene que quedar fija al empezar el día.
+
+**Lo que el cambio NO ahorra:** si el importe por entrada cambia, la frontera de `cerrarEnVerde.ts` hay
+que volver a medirla igual. El porcentaje evita que la regla se endurezca a escondidas mientras tanto;
+no sustituye a la medición.
+
 ### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
 
 El freno acota la caída pero **no toca el operar de más**: siguen entrando ~83 veces al día y la
