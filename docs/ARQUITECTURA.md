@@ -542,15 +542,18 @@ Tres cosas que esto **no** hace, y conviene que estén escritas antes de que dec
 Aplicado el **2026-09-20T02:55Z** con el bot parado y la imagen reconstruida (el campo es nuevo, así que
 el contenedor viejo no lo conocía). Respaldo en `data/ui-config.json.bak-antes-objetivo`.
 
-**El contador arranca en el reinicio de P&L del 2026-09-21T09:20:59Z**, no en el despliegue. Se
+**El contador arranca en el reinicio de P&L del 2026-09-21T09:41:29Z**, no en el despliegue. Se
 reiniciaron las dos marcas: `pnlResetAtMs` (la cuenta que se mira) y `riskHaltResetAtMs` (la línea base
 del freno), porque sin la segunda el objetivo del primer día habría arrastrado lo que ya llevaba esa
 mañana y «desde cero» no habría sido verdad. Ninguna de las dos borra nada: son marcadores, y
 `trades.jsonl` conserva el histórico entero para volver a medir.
 
-> **Este contador ya se reinició una vez.** El primero arrancó el 2026-09-20T09:00:30Z y duró 24 horas:
-> se descartó al añadir la racha de 2 (abajo), porque medir un cambio con datos anteriores al cambio no
-> mide nada. Queda anotado para que no se cuente ese día como parte del hito.
+> **Este contador ya se reinició dos veces, y conviene que se vea.** El primero arrancó el
+> 2026-09-20T09:00:30Z y duró 24 horas (se descartó al añadir la racha de 2); el segundo duró veinte
+> minutos y una sola operación (se descartó al bajar el objetivo a 8 $). Medir un cambio con datos
+> anteriores al cambio no mide nada, así que reiniciar es lo correcto — pero **cada reinicio es también
+> catorce días más sin respuesta**, y tres cambios de regla en dos días son más de los que una muestra
+> de este tamaño puede juzgar. Si el hito se reinicia otra vez, esa es la conversación a tener.
 
 | | |
 |---|---|
@@ -593,10 +596,32 @@ racha cuesta un día verde y el 21% del neto; en el de juicio conserva los días
 operando un 14% menos. El enfriamiento se queda en **2 h** porque con 24 h se pierde otro día verde en
 los dos periodos.
 
-Y un dato que el dueño debería tener a mano, porque apunta a la otra palanca: de los días que cerraron
-en rojo, varios habían pasado de +5 $. **El objetivo de 15 $ es demasiado alto para atraparlos** — con
-5 $ el periodo de juicio cierra 9 de 10 días en verde, pero a +2,47 $ al día en vez de +4,44 $. Es la
-misma frontera de siempre: más días en verde, menos dinero.
+#### Con el freno delante, la frontera del objetivo se aplana — y el objetivo baja a 8 $
+
+La tabla de arriba comparaba el objetivo **solo**. Con la racha de 2 ya puesta en las dos filas, que es
+la comparación que hay que hacer, sale otra cosa:
+
+| objetivo (todos con racha 2, enfr. 2 h) | elección (9 días) | juicio (10 días) | peor día (juicio) |
+|---|---|---|---|
+| 3 $ | 8/9 · +19,72 $ | **9/10** · +23,43 $ | −7,12 $ |
+| 5 $ | 8/9 · +33,60 $ | 8/10 · +16,36 $ | −20,17 $ |
+| **8 $** | 8/9 · +57,05 $ | 8/10 · **+40,56 $** | −20,17 $ |
+| 15 $ | 8/9 · +95,23 $ | 7/10 · +44,43 $ | −20,17 $ |
+| sin objetivo | 8/9 · +135,65 $ | 6/10 · +8,75 $ | −20,17 $ |
+
+**Con el freno delante, bajar el objetivo es mucho más barato**: de 15 a 8 cuesta 3,87 $ (un 9%) y compra
+un día verde; sin freno, bajar costaba casi la mitad del dinero. Y en el periodo de elección el objetivo
+**no cambia los días en verde en absoluto** —8/9 en todos— porque ese trabajo ya lo hace la racha; ahí el
+objetivo sólo decide cuánto dinero se deja encima de la mesa. **Puesto en 8 $ el 2026-09-21.**
+
+> **El argumento con el que se eligieron los 15 $ ya no describía la configuración.** Aquellos 15 $ se
+> defendieron por ser el único punto que mejoraba a la vez días verdes y neto **frente a racha 3 con
+> enfriamiento de 24 h, y con el objetivo medido SOLO**. Ninguna de las dos cosas seguía siendo cierta al
+> día siguiente. Queda anotado porque es el fallo típico: un número que se justificó una vez y se
+> arrastra después de que su justificación haya caducado.
+
+**Aviso al leer esa tabla:** el 5 $ rompe la monotonía (+16,36 $, peor que el de 3 y el de 8). Con diez
+días, estas diferencias distinguen bien «3» de «15», no «8» de «10».
 
 #### Disparador: cuándo el objetivo tiene que dejar de ser dólares y pasar a %
 
