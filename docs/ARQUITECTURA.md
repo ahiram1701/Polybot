@@ -542,11 +542,15 @@ Tres cosas que esto **no** hace, y conviene que estén escritas antes de que dec
 Aplicado el **2026-09-20T02:55Z** con el bot parado y la imagen reconstruida (el campo es nuevo, así que
 el contenedor viejo no lo conocía). Respaldo en `data/ui-config.json.bak-antes-objetivo`.
 
-**El contador arranca en el reinicio de P&L del 2026-09-20T09:00:30Z**, no en el despliegue. Se
+**El contador arranca en el reinicio de P&L del 2026-09-21T09:20:59Z**, no en el despliegue. Se
 reiniciaron las dos marcas: `pnlResetAtMs` (la cuenta que se mira) y `riskHaltResetAtMs` (la línea base
-del freno), porque sin la segunda el objetivo del primer día habría arrastrado los −5,01 $ que ya
-llevaba esa mañana y «desde cero» no habría sido verdad. Ninguna de las dos borra nada: son marcadores,
-y `trades.jsonl` conserva las 7.426 filas — el histórico sigue entero para volver a medir.
+del freno), porque sin la segunda el objetivo del primer día habría arrastrado lo que ya llevaba esa
+mañana y «desde cero» no habría sido verdad. Ninguna de las dos borra nada: son marcadores, y
+`trades.jsonl` conserva el histórico entero para volver a medir.
+
+> **Este contador ya se reinició una vez.** El primero arrancó el 2026-09-20T09:00:30Z y duró 24 horas:
+> se descartó al añadir la racha de 2 (abajo), porque medir un cambio con datos anteriores al cambio no
+> mide nada. Queda anotado para que no se cuente ese día como parte del hito.
 
 | | |
 |---|---|
@@ -562,6 +566,37 @@ ejecuta las entradas del resto del día, así que el ledger ya no las contiene.
 Aviso por escrito: **14 días son 14 observaciones.** La diferencia entre 6/9 y 7/9 días en verde no se
 va a poder distinguir del azar con esa muestra. El hito sirve para detectar un fallo grande —que el
 objetivo no se alcance casi nunca, o que el neto se hunda—, no para certificar una mejora fina.
+
+#### La racha de 2 se añade el 2026-09-21, y no es un candidato limpio
+
+Las primeras 24 h con el objetivo solo fueron malas: 92 operaciones, 81,5% de aciertos y **−15,62 $**.
+El 21 el día llegó a estar en +8,91 $ y cerró en **−20,60 $**, y el objetivo de 15 $ **no llegó a
+dispararse ni una vez**. Eso no es un fallo del objetivo: un objetivo no puede hacer nada contra un día
+que nunca sube lo bastante. Contra eso hace falta un freno por el lado de la pérdida, y el dueño pidió
+racha de **2**.
+
+**Hay que decir lo que esto es: una regla elegida DESPUÉS de un día malo.** No estaba en la rejilla
+pre-registrada —se midieron 3, 4 y 5— y por tanto no ha ganado ninguna elección limpia. Se mide, se
+aplica porque es la decisión del dueño, y queda escrito que no puede presumir de otra cosa.
+
+Lo que mide, con los dos periodos de siempre y el objetivo de 15 $ ya puesto:
+
+| | elección (9 días) | juicio (10 días) |
+|---|---|---|
+| objetivo 15 $ solo | 9/9 verdes · +121,31 $ | 7/10 verdes · +35,08 $ |
+| **objetivo 15 $ + racha 2 (enfr. 2 h)** | 8/9 · +95,23 $ | **7/10 · +44,43 $** |
+| objetivo 15 $ + racha 2 (enfr. 24 h) | 6/9 · +57,27 $ | 6/10 · +54,71 $ |
+| objetivo 15 $ + racha 3 (enfr. 2 h) | 9/9 · +113,67 $ | 7/10 · +30,64 $ |
+
+**Cambia de signo entre periodos, como todo lo demás en este apartado**: en el de elección añadir la
+racha cuesta un día verde y el 21% del neto; en el de juicio conserva los días verdes y añade +9,35 $
+operando un 14% menos. El enfriamiento se queda en **2 h** porque con 24 h se pierde otro día verde en
+los dos periodos.
+
+Y un dato que el dueño debería tener a mano, porque apunta a la otra palanca: de los días que cerraron
+en rojo, varios habían pasado de +5 $. **El objetivo de 15 $ es demasiado alto para atraparlos** — con
+5 $ el periodo de juicio cierra 9 de 10 días en verde, pero a +2,47 $ al día en vez de +4,44 $. Es la
+misma frontera de siempre: más días en verde, menos dinero.
 
 #### Disparador: cuándo el objetivo tiene que dejar de ser dólares y pasar a %
 

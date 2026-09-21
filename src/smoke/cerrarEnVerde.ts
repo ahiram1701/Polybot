@@ -116,12 +116,29 @@ function reglas(): Regla[] {
         objetivoDiarioUsd: objetivo,
       });
     }
-    lista.push({
-      nombre: `objetivo ${objetivo}$ + racha 3`,
-      limites: { maxConsecutiveLosses: 3, cooldownHours: 24 },
-      topeGastoDiarioUsd: 0,
-      objetivoDiarioUsd: objetivo,
-    });
+    // La racha entra con 2 y con 3, y con los dos enfriamientos. El 2 se añade el 2026-09-21 a peticion
+    // del dueño DESPUES de un dia malo, asi que no es un candidato pre-registrado: se mide y se dice lo
+    // que mide, pero no puede presumir de haber ganado una eleccion limpia.
+    for (const racha of [2, 3]) {
+      for (const enfriamiento of [2, 24]) {
+        lista.push({
+          nombre: `objetivo ${objetivo}$ + racha ${racha} (enfr. ${enfriamiento}h)`,
+          limites: { maxConsecutiveLosses: racha, cooldownHours: enfriamiento },
+          topeGastoDiarioUsd: 0,
+          objetivoDiarioUsd: objetivo,
+        });
+      }
+    }
+  }
+  for (const racha of [2, 3]) {
+    for (const enfriamiento of [2, 24]) {
+      lista.push({
+        nombre: `solo racha ${racha} (enfr. ${enfriamiento}h)`,
+        limites: { maxConsecutiveLosses: racha, cooldownHours: enfriamiento },
+        topeGastoDiarioUsd: 0,
+        objetivoDiarioUsd: 0,
+      });
+    }
   }
   // Solo el lado de la perdida, para ver cuanto del resultado viene de cada lado.
   for (const perdida of [5, 8, 10]) {
