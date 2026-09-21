@@ -347,6 +347,43 @@ describe("objetivo del dia", () => {
     expect(status.reason).toBe("daily_loss_limit");
   });
 
+  it("un freno de perdida re-armado NO reinicia el contador del objetivo", () => {
+    // EL FALLO DEL 2026-09-21, que se escapo a produccion. La racha de 2 salto con el dia en rojo, su
+    // enfriamiento de 2 h movio la linea base, y desde ahi el objetivo empezo a contar de cero: llego a
+    // "cumplido" con el dia todavia en perdidas y el bot cerro el dia anunciando que habia ganado.
+    //
+    // Aqui: tres perdidas tempranas (-30 $) que disparan la racha, y luego dos ganadoras (+20 $) ya
+    // pasado el enfriamiento. El dia va en -10 $, asi que el objetivo de 15 $ NO esta cumplido por mucho
+    // que el trozo posterior al re-armado sume +20 $.
+    const trades = [
+      pierde("p1", NOW - 8 * 60 * 60_000),
+      pierde("p2", NOW - 8 * 60 * 60_000 + 1000),
+      pierde("p3", NOW - 8 * 60 * 60_000 + 2000),
+      gana("g1", NOW - 60 * 60_000),
+      gana("g2", NOW - 60 * 60_000 + 1000),
+    ];
+    const limits = { maxConsecutiveLosses: 2, dailyProfitTargetUsd: 15, cooldownHours: 2 };
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limits, NOW);
+
+    expect(status.reason).not.toBe("daily_profit_target");
+    // Y lo que se enseña es el neto del DIA, no el del trozo desde el re-armado.
+    expect(status.dailyNetUsd).toBeLessThan(0);
+  });
+
+  it("con el freno re-armado, el objetivo se cumple solo cuando el DIA entero lo alcanza", () => {
+    // Mismo montaje, pero las ganadoras bastan para que el dia entero cruce el objetivo.
+    const trades = [
+      pierde("p1", NOW - 8 * 60 * 60_000),
+      pierde("p2", NOW - 8 * 60 * 60_000 + 1000),
+      ...Array.from({ length: 5 }, (_, i) => gana(`g${i}`, NOW - 60 * 60_000 + i * 1000)),
+    ];
+    const limits = { maxConsecutiveLosses: 2, dailyProfitTargetUsd: 15, cooldownHours: 2 };
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limits, NOW);
+
+    expect(status.reason).toBe("daily_profit_target");
+    expect(status.dailyNetUsd).toBeGreaterThanOrEqual(15);
+  });
+
   it("con el objetivo en 0 no existe, pase lo que pase", () => {
     const trades = [gana("g1", NOW - 3 * 60_000), gana("g2", NOW - 2 * 60_000), gana("g3", NOW - 60_000)];
     const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 0 }, NOW);

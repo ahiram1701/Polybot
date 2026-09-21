@@ -623,6 +623,38 @@ objetivo sólo decide cuánto dinero se deja encima de la mesa. **Puesto en 8 $ 
 **Aviso al leer esa tabla:** el 5 $ rompe la monotonía (+16,36 $, peor que el de 3 y el de 8). Con diez
 días, estas diferencias distinguen bien «3» de «15», no «8» de «10».
 
+#### El objetivo se midió sobre un trozo del día, no sobre el día (2026-09-21, corregido)
+
+**El primer disparo del objetivo en producción fue falso.** El bot anunció «objetivo cumplido» y cerró
+el día… con el día en **−3,23 $**. Así ocurrió:
+
+| hora (UTC) | qué pasó |
+|---|---|
+| 10:10 | salta la racha de 2 con el día en −12,21 $ |
+| 12:10 | su enfriamiento de 2 h mueve la línea base **y el contador del objetivo empieza de cero** |
+| 18:35 | esa ventana parcial llega a +8,98 $ → «objetivo cumplido», día cerrado |
+| realidad | el día iba en −3,23 $ |
+
+**La causa.** El objetivo colgaba de `evaluateFromBaseline`, que el bucle de enfriamiento vuelve a
+llamar con la línea base avanzada. Para un freno de pérdida eso es lo correcto —re-armarse significa
+«vuelta a empezar con la cuenta a cero»— pero para el objetivo del día es sencillamente falso: le hace
+medir un **trozo** del día. Corregido midiéndolo aparte, sobre el día entero, donde lo único que mueve
+la línea base es un reinicio manual.
+
+**Lo que falló no fue sólo el código.** Al implementarlo quedó escrito que el objetivo «no usa
+enfriamiento», y se comprobó con el enfriamiento configurado pero **sin ningún freno de pérdida que
+pudiera dispararse** — con `maxConsecutiveLosses` en 0, el bucle de re-armado nunca corre y el fallo no
+aparece. Al encender la racha de 2 al día siguiente, esa suposición dejó de ser cierta y no se volvió a
+comprobar. La lección, que es la de siempre en este documento: **un límite nuevo hay que probarlo
+también con los otros límites encendidos**, no sólo solo.
+
+`dailyNetUsd` pasa además a enseñar siempre el neto del **día**, no el del trozo desde el último
+re-armado: la pantalla dice «hoy» y tiene que decir la verdad.
+
+> **Las tablas de arriba no cambian.** `frenoSimulacion.ts` acumulaba el realizado del día sin
+> reiniciarlo nunca —o sea, ya implementaba la semántica correcta—, así que lo medido describe el código
+> corregido y no el que estuvo corriendo unas horas. La diferencia estaba sólo en producción.
+
 #### Disparador: cuándo el objetivo tiene que dejar de ser dólares y pasar a %
 
 Un objetivo en dólares **no sobrevive a que la cuenta crezca**, y ésa es su única debilidad seria. Si el

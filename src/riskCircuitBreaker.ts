@@ -78,20 +78,53 @@ export function evaluateRiskCircuitBreaker(
 
   const cooldownMs = Math.max(0, limits.cooldownHours ?? 0) * 3_600_000;
 
+  // EL OBJETIVO DEL DIA SE MIDE APARTE, Y SOBRE EL DIA ENTERO.
+  //
+  // No puede colgar del bucle de abajo. Ese bucle avanza la linea base cada vez que un freno de PERDIDA
+  // se re-arma, que para ellos es lo correcto —"vuelta a empezar con la cuenta a cero"— pero para el
+  // objetivo es falso: haria que midiera un TROZO del dia en vez del dia.
+  //
+  // No es teorico. El 2026-09-21 la racha de 2 salto a las 10:10 con el dia en -12,21 $; su enfriamiento
+  // movio la linea base a las 12:10; desde ahi el contador del objetivo empezo de cero, llego a +8,98 $
+  // a las 18:35 y el bot anuncio "objetivo cumplido" y cerro el dia... con el dia en -3,23 $. Justo lo
+  // que esta funcion existe para impedir.
+  //
+  // Lo unico que mueve la linea base del objetivo es un reinicio MANUAL (`haltResetAtMs`), que es lo que
+  // significa "empezar a contar de nuevo".
+  const objetivoUsd = limits.dailyProfitTargetUsd ?? 0;
+  const delDia = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > haltResetAtMs);
+  let netoDelDia = 0;
+  let objetivoAlcanzado = false;
+  for (const trade of delDia) {
+    netoDelDia += calculateTradePnl(trade).netUsd ?? 0;
+    // Recorrer el dia entero es lo que hace que no se suelte: una vez alcanzado, da igual que el neto
+    // baje despues.
+    if (objetivoUsd > 0 && netoDelDia >= objetivoUsd) {
+      objetivoAlcanzado = true;
+    }
+  }
+
   // Baseline: losses before a manual reset never count. With a cooldown, every trip whose cooldown has
   // already elapsed also advances the baseline (auto re-arm), possibly several times in one day.
   let baseline = haltResetAtMs;
   for (;;) {
     const evaluation = evaluateFromBaseline(resolvedToday, limits, baseline);
-    // El objetivo del dia no se enfria: cumplido, dura hasta el corte del dia. Cualquier enfriamiento
-    // configurado es para los frenos de perdida, no para este.
-    const duraTodoElDia = evaluation.reason === "daily_profit_target";
-    if (!evaluation.reason || cooldownMs === 0 || duraTodoElDia) {
+    if (objetivoAlcanzado) {
+      return {
+        tripped: true,
+        reason: "daily_profit_target",
+        dailyLossUsd: Math.max(0, -netoDelDia),
+        dailyNetUsd: netoDelDia,
+        consecutiveLosses: evaluation.consecutiveLosses,
+      };
+    }
+    if (!evaluation.reason || cooldownMs === 0) {
       return {
         tripped: evaluation.reason !== undefined,
         reason: evaluation.reason,
         dailyLossUsd: evaluation.dailyLossUsd,
-        dailyNetUsd: evaluation.dailyNetUsd,
+        // El neto del DIA, no el del trozo desde el ultimo re-armado: la pantalla dice "hoy".
+        dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
       };
     }
@@ -101,7 +134,8 @@ export function evaluateRiskCircuitBreaker(
         tripped: true,
         reason: evaluation.reason,
         dailyLossUsd: evaluation.dailyLossUsd,
-        dailyNetUsd: evaluation.dailyNetUsd,
+        // El neto del DIA, no el del trozo desde el ultimo re-armado: la pantalla dice "hoy".
+        dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
         resumeAtMs,
       };
@@ -121,9 +155,10 @@ function evaluateFromBaseline(
   dailyNetUsd: number;
   consecutiveLosses: number;
 } {
+  // Aqui NO se mira el objetivo del dia: se evalua fuera, sobre el dia entero, porque esta funcion se
+  // llama con la linea base ya avanzada por los re-armados y eso le mostraria solo un trozo del dia.
   const maxDailyLossUsd = limits.maxDailyLossUsd ?? 0;
   const maxConsecutiveLosses = limits.maxConsecutiveLosses ?? 0;
-  const dailyProfitTargetUsd = limits.dailyProfitTargetUsd ?? 0;
   const counted = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > baselineMs);
 
   // Walk chronologically so we know the exact moment each limit was crossed (the cooldown anchors there).
@@ -145,9 +180,6 @@ function evaluateFromBaseline(
         trippedAtMs = tradeClosedAtMs(trade) ?? 0;
       } else if (maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
         reason = "consecutive_losses";
-        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
-      } else if (dailyProfitTargetUsd > 0 && netUsd >= dailyProfitTargetUsd) {
-        reason = "daily_profit_target";
         trippedAtMs = tradeClosedAtMs(trade) ?? 0;
       }
     }
