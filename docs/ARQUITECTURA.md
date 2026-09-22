@@ -542,18 +542,32 @@ Tres cosas que esto **no** hace, y conviene que estén escritas antes de que dec
 Aplicado el **2026-09-20T02:55Z** con el bot parado y la imagen reconstruida (el campo es nuevo, así que
 el contenedor viejo no lo conocía). Respaldo en `data/ui-config.json.bak-antes-objetivo`.
 
-**El contador arranca en el reinicio de P&L del 2026-09-21T09:41:29Z**, no en el despliegue. Se
-reiniciaron las dos marcas: `pnlResetAtMs` (la cuenta que se mira) y `riskHaltResetAtMs` (la línea base
-del freno), porque sin la segunda el objetivo del primer día habría arrastrado lo que ya llevaba esa
-mañana y «desde cero» no habría sido verdad. Ninguna de las dos borra nada: son marcadores, y
-`trades.jsonl` conserva el histórico entero para volver a medir.
+**El contador arranca el 2026-09-22T00:00:00Z**, con el día 22 como día 1. Las dos marcas
+—`pnlResetAtMs`, la cuenta que se mira, y `riskHaltResetAtMs`, la línea base del freno— se pusieron a
+esa hora **a mano en `data/state.json` con el bot parado**, porque el endpoint `/api/pnl/reset` sólo
+sabe reiniciar «ahora» y eso habría dejado fuera el día 22, que ya estaba cerrado en verde. Ninguna de
+las dos borra nada: son marcadores, y `trades.jsonl` conserva el histórico entero.
 
-> **Este contador ya se reinició dos veces, y conviene que se vea.** El primero arrancó el
-> 2026-09-20T09:00:30Z y duró 24 horas (se descartó al añadir la racha de 2); el segundo duró veinte
-> minutos y una sola operación (se descartó al bajar el objetivo a 8 $). Medir un cambio con datos
-> anteriores al cambio no mide nada, así que reiniciar es lo correcto — pero **cada reinicio es también
-> catorce días más sin respuesta**, y tres cambios de regla en dos días son más de los que una muestra
-> de este tamaño puede juzgar. Si el hito se reinicia otra vez, esa es la conversación a tener.
+Poner la marca en el inicio del día y no en «ahora» también evita un efecto que no es obvio:
+`riskHaltResetAtMs` es la línea base del objetivo, así que reiniciarla a mediodía habría puesto el
+contador del día a cero y **el bot habría vuelto a operar después de haber cerrado el día ganando** —
+justo la conducta que la regla existe para impedir.
+
+> **Este contador va por el cuarto arranque, y conviene que se vea.** El 20 a las 09:00:30 (duró 24 h,
+> descartado al añadir la racha de 2); el 21 a las 09:20:59 (duró 20 minutos y una operación, descartado
+> al bajar el objetivo a 8 $); el 21 a las 09:41:29 (descartado porque el 21 quedó contaminado: el
+> objetivo estuvo roto media jornada y el arreglo entró a mediodía, así que ese día mezcla dos
+> comportamientos). Cada reinicio es correcto por separado —medir un cambio con datos anteriores al
+> cambio no mide nada— y cada uno es también **catorce días más sin respuesta**. Cuatro arranques en tres
+> días son más de los que una muestra de este tamaño puede juzgar; si hay un quinto, la conversación no
+> es sobre el ajuste sino sobre cuántas veces se puede cambiar de regla antes de que medir deje de tener
+> sentido.
+
+**Día 1 (2026-09-22): cerró en verde con +8,28 $ en 15 operaciones**, cruzando el objetivo a las
+03:45:02 UTC. Verificado contra el ledger: el neto del día entero coincide al céntimo con lo que anunció
+el freno, la racha de 2 no intervino ni una vez, y no quedaba ninguna posición abierta que pudiera
+hundirlo después. Y el efecto secundario que hay que anotar ya: **a 15 operaciones al día en vez de 83,
+cualquier otra medición tarda cinco veces más en tener muestra.**
 
 | | |
 |---|---|
