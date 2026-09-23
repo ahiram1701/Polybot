@@ -1448,8 +1448,48 @@ que no lo está es peor que la brecha misma.
 
 ## Las tareas programadas viven en la sesión 0
 
-> Solo aplica a la vía **Windows nativo**. Bajo Docker no hay tareas programadas y nada de esta sección
-> interviene.
+> `PolybotWatchdog` y `PolybotArchivoAnalitica` solo aplican a la vía **Windows nativo**. Bajo Docker sí
+> hay una tarea, `PolybotDespiertaWSL`, y está justo debajo.
+
+### `PolybotDespiertaWSL`: bajo Docker, el punto único de fallo es WSL (2026-09-22)
+
+**Polybot se paró 59 minutos y no fue el bot: se paró la distro de Ubuntu entera**, y con ella Docker y
+los dos contenedores. Del 2026-09-23T01:47Z al 02:46Z. El contenedor no se cayó —`RestartCount = 0`, el
+proceso anterior salió con código 0— y `dockerd` arrancó de cero al final del hueco.
+
+Lo más incómodo del incidente: **volvió solo porque alguien ejecutó un comando.** `dockerd` arrancó 29
+segundos antes de la primera consulta de esa mañana, o sea que lo despertó el propio `wsl.exe` de quien
+fue a mirar. Sin esa mirada seguiría parado. En el registro de eventos de Windows, en el minuto exacto
+en que se corta el log, aparece la instalación de un servicio y el servicio **Claude** pasando de inicio
+automático a deshabilitado —una actualización de la app—; coincide al minuto, pero eso es correlación,
+no causa demostrada.
+
+**`vmIdleTimeout=-1` no protege de esto.** Está puesto en `.wslconfig` desde el 2026-09-03 por un hueco
+parecido, y evita el apagado por INACTIVIDAD; no evita que algo termine la distro explícitamente.
+
+La tarea, registrada el 2026-09-22:
+
+| | |
+|---|---|
+| acción | `wsl.exe -d Ubuntu --exec /bin/true` |
+| cada | 5 minutos, indefinidamente, más un disparador al iniciar sesión |
+| en batería | arranca igual y no se detiene al pasar a batería |
+
+**No arranca los contenedores a mano, y es deliberado.** Basta con despertar la distro: systemd arranca
+`docker.service` y los contenedores llevan `restart: unless-stopped`, así que vuelven solos. Si la tarea
+hiciera `docker compose up -d`, resucitaría también un contenedor que alguien paró a propósito, y
+`unless-stopped` existe justamente para respetar esa decisión.
+
+**Probada tirando la distro a propósito**, que es la única prueba que vale: `wsl --terminate Ubuntu` →
+la API deja de responder → se lanza la tarea → responde 200 a los 45 segundos, con el P&L y el estado
+intactos porque viven en disco.
+
+**Limitación que hay que conocer: quedó registrada como `Interactive`, no como S4U.** Registrar S4U
+**exige administrador** y Windows lo denegó («Acceso denegado»), igual que les pasa a los instaladores
+según la sección de abajo. Interactive significa **que solo corre con la sesión iniciada**: si Windows
+arranca y nadie entra, la tarea no se ejecuta y Polybot no vuelve — exactamente el agujero que costó 45
+horas de datos en 10 días con el watchdog. Para cerrarlo hay que volver a registrarla desde una consola
+de administrador; el comando es el mismo cambiando `-LogonType Interactive` por `-LogonType S4U`.
 
 `PolybotWatchdog` y `PolybotArchivoAnalitica` se registran con **`LogonType: S4U`**, que las hace correr
 haya o no sesión iniciada. Antes eran `Interactive` y eso costó **45 horas de datos en 10 días**: el
