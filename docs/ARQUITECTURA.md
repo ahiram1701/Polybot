@@ -1484,13 +1484,18 @@ hiciera `docker compose up -d`, resucitaría también un contenedor que alguien 
 la API deja de responder → se lanza la tarea → responde 200 a los 45 segundos, con el P&L y el estado
 intactos porque viven en disco.
 
-**Limitación que hay que conocer: quedó registrada como `Interactive`, no como S4U.** Registrar S4U
-**exige administrador** y Windows lo denegó («Acceso denegado»), igual que les pasa a los instaladores
-según la sección de abajo. Interactive significa **que solo corre con la sesión iniciada**: si Windows
-arranca y nadie entra, la tarea no se ejecuta y Polybot no vuelve — exactamente el agujero que costó 45
-horas de datos en 10 días con el watchdog. Para cerrarlo, `ACTIVAR-VIGILANTE-WSL.cmd` se eleva solo y
-vuelve a registrarla; `scripts/registrar-tarea-wsl.ps1` intenta S4U primero y solo cae a Interactive si
-se lo deniegan.
+**Registrada en `S4U`, que es lo que hace falta.** Registrarla desde una consola sin privilegios cae en
+`Interactive` —«Acceso denegado»—, y eso **solo corre con la sesión iniciada**: si Windows arranca y
+nadie entra, la tarea no se ejecuta y Polybot no vuelve, que es el agujero que costó 45 horas de datos
+en 10 días con el watchdog. `ACTIVAR-VIGILANTE-WSL.cmd` se eleva solo y la deja en S4U;
+`scripts/registrar-tarea-wsl.ps1` intenta S4U primero y solo cae a Interactive si se lo deniegan.
+
+**Y sí, `wsl.exe` arranca la distro desde la sesión 0.** No era evidente: S4U ejecuta la tarea en la
+sesión 0 y la sección de abajo ya documenta que eso tiene consecuencias raras. Comprobado de la única
+forma que vale, sin intervenir: `wsl --terminate Ubuntu` → la API deja de responder → **no se toca
+nada** → la tarea se dispara sola a los pocos minutos y la API vuelve a responder 200 a los 170
+segundos, con el P&L intacto. Una tarea de rescate que no se ha visto rescatar no es una protección,
+es una suposición.
 
 > **Dos trampas de Windows que se cobraron el primer intento, y las dos son de ruta.** La carpeta del
 > proyecto está en `\\wsl.localhost\...`, y **cmd no admite rutas UNC como directorio de trabajo**: un
