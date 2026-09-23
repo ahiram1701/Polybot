@@ -8,7 +8,7 @@ rem Abre la TUI de Polybot con doble clic, con el despliegue de DOCKER + WSL.
 rem
 rem La version anterior de este fichero asumia Windows nativo: buscaba `node` en el PATH de Windows y
 rem llamaba a `node_modules\.bin\tsx.cmd`. Desde que el repo vive dentro de WSL y el bot corre en
-rem contenedores, las dos cosas son falsas — las dependencias estan instaladas para Linux y no existe
+rem contenedores, las dos cosas son falsas ? las dependencias estan instaladas para Linux y no existe
 rem ningun shim `.cmd`. El doble clic fallaba y el README lo seguia prometiendo.
 rem
 rem Dos detalles que explican por que esto no hace un `cd` normal:

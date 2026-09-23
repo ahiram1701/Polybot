@@ -1,0 +1,12 @@
+# Los scripts de Windows TIENEN que llegar con saltos de linea CRLF.
+#
+# Con LF de Linux, cmd.exe se atraganta —los `goto :etiqueta` y los bloques `if (...)` son los primeros
+# en romperse— y la ventana se cierra sin decir nada: ni error, ni pista. Costo un rato averiguar por
+# que "le pique y no salio nada". El repo vive en WSL, asi que sin esto cualquier fichero nuevo nace
+# con LF y el fallo vuelve.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# El resto, saltos de linea de Unix.
+* text=auto eol=lf
