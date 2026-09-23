@@ -1488,8 +1488,20 @@ intactos porque viven en disco.
 **exige administrador** y Windows lo denegó («Acceso denegado»), igual que les pasa a los instaladores
 según la sección de abajo. Interactive significa **que solo corre con la sesión iniciada**: si Windows
 arranca y nadie entra, la tarea no se ejecuta y Polybot no vuelve — exactamente el agujero que costó 45
-horas de datos en 10 días con el watchdog. Para cerrarlo hay que volver a registrarla desde una consola
-de administrador; el comando es el mismo cambiando `-LogonType Interactive` por `-LogonType S4U`.
+horas de datos en 10 días con el watchdog. Para cerrarlo, `ACTIVAR-VIGILANTE-WSL.cmd` se eleva solo y
+vuelve a registrarla; `scripts/registrar-tarea-wsl.ps1` intenta S4U primero y solo cae a Interactive si
+se lo deniegan.
+
+> **Dos trampas de Windows que se cobraron el primer intento, y las dos son de ruta.** La carpeta del
+> proyecto está en `\\wsl.localhost\...`, y **cmd no admite rutas UNC como directorio de trabajo**: un
+> `.cmd` lanzado desde ahí falla en el `cd /d` antes de hacer nada. Se arregla con `pushd`, que le
+> asigna una letra temporal. Y **elevar un ejecutable que vive en una ruta de red no siempre muestra el
+> diálogo de UAC**, así que la copia que se usa de verdad vive en el Escritorio y llama a un
+> `registrar-tarea-wsl.ps1` copiado a `%LOCALAPPDATA%\Polybot\`: todo disco local.
+>
+> La tercera, que no es de Windows: **un `Start-Process -Verb RunAs` lanzado por un agente no enseña el
+> UAC al usuario**, porque no corre en su escritorio interactivo. El diálogo tiene que nacer de un doble
+> clic de la persona.
 
 `PolybotWatchdog` y `PolybotArchivoAnalitica` se registran con **`LogonType: S4U`**, que las hace correr
 haya o no sesión iniciada. Antes eran `Interactive` y eso costó **45 horas de datos en 10 días**: el

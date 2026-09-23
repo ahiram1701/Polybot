@@ -1,6 +1,8 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+REM `pushd` y no `cd /d`: la carpeta del proyecto puede estar en una ruta UNC (\wsl.localhost...) y
+REM cmd no admite UNC como directorio de trabajo. `pushd` le asigna una letra temporal y si funciona.
+pushd "%~dp0"
 
 REM Deja la tarea PolybotDespiertaWSL en modo S4U, que es el que funciona SIN sesion iniciada.
 REM
