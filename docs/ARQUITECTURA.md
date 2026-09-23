@@ -1471,7 +1471,7 @@ La tarea, registrada el 2026-09-22:
 
 | | |
 |---|---|
-| acción | `wsl.exe -d Ubuntu --exec /bin/true` |
+| acción | comprobar `127.0.0.1:8787` y, **solo si no responde**, `wsl.exe -d Ubuntu --exec /bin/true` |
 | cada | 5 minutos, indefinidamente, más un disparador al iniciar sesión |
 | en batería | arranca igual y no se detiene al pasar a batería |
 
@@ -1491,11 +1491,39 @@ en 10 días con el watchdog. `ACTIVAR-VIGILANTE-WSL.cmd` se eleva solo y la deja
 `scripts/registrar-tarea-wsl.ps1` intenta S4U primero y solo cae a Interactive si se lo deniegan.
 
 **Y sí, `wsl.exe` arranca la distro desde la sesión 0.** No era evidente: S4U ejecuta la tarea en la
-sesión 0 y la sección de abajo ya documenta que eso tiene consecuencias raras. Comprobado de la única
-forma que vale, sin intervenir: `wsl --terminate Ubuntu` → la API deja de responder → **no se toca
-nada** → la tarea se dispara sola a los pocos minutos y la API vuelve a responder 200 a los 170
-segundos, con el P&L intacto. Una tarea de rescate que no se ha visto rescatar no es una protección,
-es una suposición.
+sesión 0 y la sección de abajo ya documenta que eso tiene consecuencias raras. Comprobado sin
+intervenir: `wsl --terminate Ubuntu` → la API deja de responder → **no se toca nada** → la tarea se
+dispara sola y la API vuelve a responder a los 170 segundos, con el P&L intacto. Una tarea de rescate
+que no se ha visto rescatar no es una protección, es una suposición.
+
+#### La primera versión mataba al bot cada 5 minutos (2026-09-23)
+
+Y pasó la prueba de rescate igual, que es lo que la hace instructiva. **`wsl.exe` lanzado desde la
+sesión 0 no se engancha a la distro que ya corre: la tumba y la vuelve a levantar.** Como la tarea
+llamaba a `wsl.exe` cada 5 minutos **pasara lo que pasara**, el efecto fue:
+
+| | |
+|---|---|
+| arranques del bot tras un reinicio de Windows | **120 en 10 horas** |
+| cadencia | uno cada 5 minutos, clavado al intervalo de la tarea |
+| ventanas del mercado | 5 minutos — o sea, casi ninguna se completaba |
+
+La prueba que hice el día anterior no podía detectarlo: medía *«¿revive cuando está muerto?»*, y la
+respuesta era sí. Nunca medí *«¿molesta cuando está vivo?»*. **Una protección hay que probarla también
+en el caso bueno**, no solo en el malo — es la misma lección que el objetivo del día, que se probó sin
+ningún freno de pérdida encendido y por eso el fallo salió a producción.
+
+El arreglo es que la tarea **mire antes de tocar**: comprueba `127.0.0.1:8787` y solo llama a `wsl.exe`
+si no responde. En el caso normal no invoca `wsl.exe` en absoluto, así que no puede molestar a nadie; y
+cuando sí lo invoca, la distro ya estaba caída y reiniciarla no rompe nada.
+
+> **`Interactive` no es una alternativa en esta máquina: no ejecuta su acción.** Al perder el S4U por
+> falta de permisos, la tarea quedó en Interactive y ahí ni el más simple `cmd /c echo > fichero` llega
+> a correr — devuelve `0x1` sin crear nada, mientras ese mismo comando funciona a mano. Con
+> `powershell.exe` devuelve `0xFFFD0000`. Así que **o S4U o nada**, y S4U exige administrador.
+>
+> Y no es un detalle teórico: ese reinicio de Windows arrancó a las 05:32 y **nadie inició sesión hasta
+> las 15:05**. Nueve horas y media en las que una tarea Interactive no habría hecho absolutamente nada.
 
 > **Dos trampas de Windows que se cobraron el primer intento, y las dos son de ruta.** La carpeta del
 > proyecto está en `\\wsl.localhost\...`, y **cmd no admite rutas UNC como directorio de trabajo**: un
