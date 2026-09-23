@@ -594,7 +594,10 @@ export class BotRunner {
     await this.deps.analyticsRecorder?.pruneIfNeeded?.();
     const tamanoMb = await this.deps.analyticsRecorder?.analyticsSizeMb?.();
     if (tamanoMb !== undefined) {
-      logger.info("Analitica en disco.", { mb: tamanoMb, tope: "10.000 muestras" });
+      // El tope sale de la config, no de una cadena escrita a mano. Estuvo fijo en "10.000 muestras"
+      // mientras el tope real era 5.000, y un log que miente sobre el limite de retencion es justo el
+      // que se mira cuando la poda vuelve a dar problemas.
+      logger.info("Analitica en disco.", { mb: tamanoMb, topeMuestras: this.config.maxAnalyticsSamples });
     }
     // A partir de aqui, cada media hora y solo si de verdad hace falta: el recuento ya es conocido,
     // asi que la comprobacion es gratis y la lectura cara solo ocurre al pasarse del tope.
