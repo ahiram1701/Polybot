@@ -1471,7 +1471,7 @@ La tarea, registrada el 2026-09-22:
 
 | | |
 |---|---|
-| acción | comprobar `127.0.0.1:8787` y, **solo si no responde**, `wsl.exe -d Ubuntu --exec /bin/true` |
+| acción | leer el fichero de **latido** y, solo si lleva **>4 min parado** (y dos veces seguidas, y no más de una vez cada 30 min), `wsl.exe -d Ubuntu --exec /bin/true` |
 | cada | 5 minutos, indefinidamente, más un disparador al iniciar sesión |
 | en batería | arranca igual y no se detiene al pasar a batería |
 
@@ -1495,6 +1495,41 @@ sesión 0 y la sección de abajo ya documenta que eso tiene consecuencias raras.
 intervenir: `wsl --terminate Ubuntu` → la API deja de responder → **no se toca nada** → la tarea se
 dispara sola y la API vuelve a responder a los 170 segundos, con el P&L intacto. Una tarea de rescate
 que no se ha visto rescatar no es una protección, es una suposición.
+
+#### El latido: por qué el vigilante ya no pregunta por la red (2026-09-24)
+
+**El 24 volvió a pasar, con otra causa y el mismo daño.** Se rompió el reenvío de `localhost` de WSL a
+Windows —un fallo conocido de WSL, no del bot—: la API respondía **HTTP 200 dentro de la distro** y
+desde Windows no conectaba. El vigilante, que preguntaba por HTTP desde Windows, lo leyó como «caído» y
+llamó a `wsl.exe`. **12 horas reiniciando el bot cada 5 minutos.**
+
+El error de fondo es que `¿responde http://127.0.0.1:8787?` **mezcla dos preguntas**: «¿vive el
+proceso?» y «¿funciona el reenvío?». Solo la primera justifica tocar nada.
+
+**El latido las separa.** El servidor escribe una marca de tiempo cada 30 s en un fichero que vive en el
+disco de **Windows** (`src/latido.ts`, montado en `/latido` por el compose). El vigilante lee ese
+fichero: sin red y sin `wsl.exe` de por medio. Si la marca está fresca, la pila vive, se rompa lo que se
+rompa en el camino de la red.
+
+Tres decisiones que no son obvias:
+
+- **Lo escribe el servidor, no el bucle de trading.** La pregunta es «¿sigue en pie el proceso?», no
+  «¿está operando?». Si alguien para el bot a propósito, el latido sigue — despertar la distro por eso
+  sería deshacer una decisión del dueño.
+- **Cae en un disco de Windows, no en `\\wsl.localhost\...`.** Leerlo a través de WSL devolvería la
+  dependencia a la pieza que se rompe.
+- **Un fallo al escribirlo no tumba el proceso** y solo se avisa una vez: un diagnóstico que mata a su
+  paciente no vale nada.
+
+Y los frenos se quedan puestos, porque esto ya falló tres veces: **dos confirmaciones seguidas** antes
+de actuar y **como mucho un despertar cada 30 minutos**. En el peor caso, 2 reinicios por hora en vez
+de 12.
+
+> **Una cuarta versión murió en el banco de pruebas, y esa es la buena noticia.** Antes del latido
+> intenté distinguir los casos mirando si el puerto seguía en ESCUCHA en Windows. El test lo tumbó: al
+> parar el contenedor **el puerto también desaparece**, así que «sin puerto» no significa «WSL caído».
+> Nunca llegó a producción. También probé `networkingMode=mirrored` en `.wslconfig` como arreglo de raíz
+> del reenvío: dejó el bot inalcanzable **incluso desde dentro** de la distro. Revertido.
 
 #### La primera versión mataba al bot cada 5 minutos (2026-09-23)
 

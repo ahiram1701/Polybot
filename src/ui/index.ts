@@ -2,6 +2,7 @@ import { loadConfig } from "../config.js";
 import { installHttpKeepAlive } from "../httpAgent.js";
 import { installNoisyConsoleAggregator } from "../noisyConsole.js";
 import { logger } from "../logger.js";
+import { iniciarLatido } from "../latido.js";
 import { createDynamicNotifier } from "../notifier.js";
 import { BotController } from "./controller.js";
 import { createUiApp } from "./server.js";
@@ -45,6 +46,10 @@ async function main(): Promise<void> {
     });
   }, 5 * 60_000);
   memoryLogTimer.unref();
+
+  // El latido: una marca de tiempo en un fichero que el vigilante de Windows puede leer sin tocar la
+  // red ni invocar `wsl.exe`. Ver `src/latido.ts` para las dos averias que lo hicieron necesario.
+  iniciarLatido({ path: process.env.POLYBOT_HEARTBEAT_PATH });
 
   const server = app.listen(PORT, HOST, async () => {
     const url = config.publicUrl ?? `http://${HOST}:${PORT}`;

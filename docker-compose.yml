@@ -31,6 +31,8 @@ services:
       - TZ=UTC
       - POLYBOT_UI_HOST=0.0.0.0
       - POLYBOT_SUPERVISOR=compose
+      # Dentro del contenedor la ruta es fija; lo que cambia por maquina es donde se monta /latido.
+      - POLYBOT_HEARTBEAT_PATH=/latido/latido.txt
 
     ports:
       # 127.0.0.1 EN EL HOST, a proposito. La UI no tiene autenticacion y expone endpoints que mueven
@@ -45,6 +47,15 @@ services:
       # TODO el estado vive aqui: trades.jsonl (la fuente de verdad del P&L), state.json, analytics y
       # el archivo historico. Sin este montaje, cada `docker compose up --build` borra el ledger.
       - ./data:/app/data
+
+      # El LATIDO, para el vigilante de Windows. Tiene que caer en un disco que Windows lea SIN pasar
+      # por WSL: si el vigilante tuviera que leerlo por `\\wsl.localhost\...` volveria a depender de la
+      # pieza que se rompe. Por eso apunta a una carpeta de C: montada dentro de WSL.
+      #
+      # La ruta concreta es de cada maquina, asi que vive en `.env` (POLYBOT_HEARTBEAT_HOST_DIR). Si no
+      # se define, el montaje cae en /tmp y el latido queda desconectado del vigilante, que es un
+      # apagado limpio: sin fichero fresco el vigilante no hace nada raro, solo deja de servir.
+      - ${POLYBOT_HEARTBEAT_HOST_DIR:-/tmp/polybot-latido}:/latido
 
     # Si tu usuario de WSL no es UID 1000, descomenta esto o `./data` acabara siendo de otro usuario y
     # el bot no podra escribir. Comprueba con: id -u; id -g
