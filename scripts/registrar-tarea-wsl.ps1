@@ -33,8 +33,21 @@ if (Test-Path $origen) {
 
 $accion = New-ScheduledTaskAction -Execute 'powershell.exe' `
   -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$vigilante`""
-$cada5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-  -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+
+# UN SOLO DISPARO, AL INICIAR SESION. Sin repeticion cada 5 minutos, y esto es lo mas importante que
+# aprendio este fichero.
+#
+# La repeticion se probo cuatro veces y tres hicieron daño, siempre igual: la tarea decidia mal, llamaba
+# a `wsl.exe`, y desde la sesion 0 eso no se engancha a la distro sino que la TUMBA y la levanta. El
+# 2026-09-28 quedo demostrado por atribucion, que es lo unico que valio despues de tres diagnosticos
+# equivocados: reinicios cada 5 minutos clavados (02:03, 02:08, 02:13...), se desactiva la tarea a las
+# 02:37:16 y el reinicio de las 02:38 no ocurre.
+#
+# La necesidad real es UNA: tras reiniciar Windows, WSL esta caida y hay que levantarla una vez. Un
+# disparo al iniciar sesion hace exactamente eso y es incapaz de entrar en bucle.
+#
+# LO QUE SE PIERDE, dicho claro: si WSL se cae a media tarde, no vuelve sola hasta el proximo inicio de
+# sesion. Con cuatro versiones y tres averias detras, ese precio es mejor que el otro.
 $alIniciarSesion = New-ScheduledTaskTrigger -AtLogOn -User $usuario
 # En bateria tambien: un portatil desenchufado sigue teniendo que operar.
 $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -44,7 +57,7 @@ $descripcion = 'Despierta WSL cuando el latido de Polybot se para. Decide por el
 
 try {
   $principal = New-ScheduledTaskPrincipal -UserId $usuario -LogonType S4U -RunLevel Limited
-  Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger @($cada5, $alIniciarSesion) `
+  Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $alIniciarSesion `
     -Settings $ajustes -Principal $principal -Description $descripcion -Force | Out-Null
   Write-Output "OK: $nombre registrada con S4U. Corre haya o no sesion iniciada."
 } catch {

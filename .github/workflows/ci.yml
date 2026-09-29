@@ -1,0 +1,54 @@
+# CI de Polybot: que un cambio no llegue al bot que opera sin pasar por los tests.
+#
+# POR QUE EXISTE. Hasta el 2026-09-28 la unica verificacion era que alguien se acordara de ejecutar
+# `npm test` a mano antes de reconstruir la imagen. Eso ya dejo pasar a produccion dos fallos que los
+# tests habrian cazado: el objetivo del dia media un TROZO del dia en vez del dia, y el aviso del freno
+# anunciaba una hora de re-armado que no era. Los dos se arreglaron con un test que fallaba antes y
+# pasaba despues; el problema no era que faltara el test, era que nada obligaba a ejecutarlo.
+#
+# NO HAY DESPLIEGUE AQUI, a proposito. El bot corre en la maquina de su dueño y actualizarlo es un
+# `docker compose build` suyo. Un CD que empuje codigo nuevo al bot que mueve dinero necesita mas
+# confianza en la suite de la que hay hoy: la ventaja del favorito sigue sin estar demostrada, y un
+# despliegue automatico añadiria una variable mas a un experimento que ya cuesta reiniciar.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Un push nuevo sobre la misma rama cancela el anterior: lo que importa es si el ULTIMO commit pasa.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # La misma mayor que corre dentro del contenedor. Probar en otra seria probar otro programa.
+          node-version: '22'
+          cache: npm
+
+      # `npm ci` y no `npm install`: instala EXACTAMENTE el lockfile. Si alguien subio un package.json
+      # sin actualizar el lock, aqui falla — que es justo cuando hay que enterarse.
+      - run: npm ci
+
+      # Los tres van en pasos separados para que el nombre del paso rojo diga ya que se rompio.
+      - name: Tipos
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # Compilar de verdad: `typecheck` no emite, y el contenedor arranca desde `dist/`. Un fallo que
+      # solo aparezca al emitir llegaria a la imagen sin que nadie lo viera.
+      - name: Compilar
+        run: npm run build

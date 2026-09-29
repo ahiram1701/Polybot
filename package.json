@@ -1,6 +1,7 @@
 {
   "name": "polybot-crypto-5m",
   "version": "0.1.0",
+  "license": "SEE LICENSE IN LICENSE.md",
   "private": true,
   "type": "module",
   "description": "Crypto Up/Down 5m Polymarket trading bot with simulation and live modes.",
