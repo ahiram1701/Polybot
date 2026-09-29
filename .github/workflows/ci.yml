@@ -29,9 +29,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # La misma mayor que corre dentro del contenedor. Probar en otra seria probar otro programa.
           node-version: '22'
