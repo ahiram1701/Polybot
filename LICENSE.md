@@ -1,8 +1,16 @@
-Copyright 2026 A. Hiram
+Copyright 2026 Alberto Hiram Saucedo Guajardo
 
 Polybot se publica bajo la **PolyForm Noncommercial License 1.0.0**, cuyo texto completo y sin
 modificar es el de abajo. El resumen, que NO sustituye al texto: puedes leerlo, estudiarlo, modificarlo
 y compartirlo para fines **no comerciales**; operar con el para ganar dinero no es uno de ellos.
+
+Required Notice: Copyright 2026 Alberto Hiram Saucedo Guajardo (https://github.com/ahiram1701/Polybot)
+
+Esa linea no es decorativa ni su formato es casual. La seccion **Notices** obliga a quien reparta el
+software a conservar «las lineas de TEXTO PLANO que empiecen por `Required Notice:`», asi que va sin
+comillas de cita, sin viñeta y en una sola linea: en cuanto se envuelve en otra cosa deja de ser lo que
+la clausula describe. Es el mecanismo que la propia PolyForm ofrece para que el nombre del autor viaje
+con el codigo.
 
 Dos limites que conviene conocer antes de confiar en esta licencia:
 

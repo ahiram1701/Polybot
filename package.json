@@ -1,6 +1,7 @@
 {
   "name": "polybot-crypto-5m",
   "version": "0.1.0",
+  "author": "Alberto Hiram Saucedo Guajardo",
   "license": "SEE LICENSE IN LICENSE.md",
   "private": true,
   "type": "module",
