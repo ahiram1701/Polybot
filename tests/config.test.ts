@@ -64,8 +64,14 @@ describe("DATA_DIR", () => {
   });
 
   it("una ruta de verdad se respeta, y se le quitan los espacios de los bordes", () => {
-    process.env.DATA_DIR = "  /tmp/polybot-datos  ";
-    expect(loadConfig([]).config.dataDir).toBe("/tmp/polybot-datos");
+    // La ruta ABSOLUTA se construye con `resolve`, no se escribe a mano, porque este test corre en los
+    // dos sistemas donde el repo se despliega. Con "/tmp/polybot-datos" literal pasaba en Linux y
+    // fallaba en Windows: alli `resolve("/tmp/x")` devuelve "C:\tmp\x" —la barra inicial es relativa a
+    // la unidad actual, no raiz— y el test acusaba al codigo de un fallo que era del test. Se descubrio
+    // al migrar a Windows nativo el 2026-10-03, con la suite verde en Linux y un solo fallo aqui.
+    const absoluta = resolve("/tmp/polybot-datos");
+    process.env.DATA_DIR = `  ${absoluta}  `;
+    expect(loadConfig([]).config.dataDir).toBe(absoluta);
   });
 
   it("una ruta relativa sigue resolviendose contra el cwd", () => {

@@ -25,15 +25,29 @@ concurrency:
 
 jobs:
   verificar:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # LOS DOS SISTEMAS, y no es por completismo.
+    #
+    # Hasta el 2026-10-03 esto corria solo en Linux porque el bot vivia en Docker. Ese dia se migro a
+    # WINDOWS NATIVO y la suite, verde en Linux, fallo al primer intento alli: un test de `DATA_DIR`
+    # escribia "/tmp/polybot-datos" a mano y en Windows `resolve` devuelve "C:\tmp\polybot-datos". Un
+    # fallo de plataforma que el CI no podia ver porque probaba un sistema distinto al de produccion.
+    #
+    # Windows es el que ejecuta el bot, asi que es el que no puede romperse. Linux se queda porque el
+    # repo tambien se despliega en VPS con systemd y en Docker.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
-          # La misma mayor que corre dentro del contenedor. Probar en otra seria probar otro programa.
+          # La misma mayor que corre en produccion. Probar en otra seria probar otro programa.
           node-version: '22'
           cache: npm
 
