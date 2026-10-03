@@ -21,7 +21,12 @@ El watchdog resuelve eso: cada 5 minutos comprueba si la UI responde y, si no, l
 
 1. Mira `watchdogEnabled` en `data/ui-config.json`. Si está en `false` (lo desmarcaste en la UI),
    termina sin hacer nada. Si el archivo no existe o está ilegible, sigue: mejor vigilar de más.
-2. Pide `http://127.0.0.1:8787/api/status` (dos intentos, para no reiniciar por un hipo puntual).
+2. Pide `http://127.0.0.1:8787/api/health` — **cuatro** intentos con 10 s de espera entre ellos, o sea
+   ~30 s de margen antes de actuar. Esta guía decía «`/api/status`, dos intentos» hasta el 2026-10-03;
+   el código cambió y la guía se quedó atrás. **Los dos detalles importan**: `/api/status` cotizaba
+   mercados en vivo y tardaba, así que reiniciaba bots sanos (52 de 59 reinicios), y dos intentos de 5 s
+   no aguantaban un hipo. `/api/health` además devuelve **503 con el feed rancio o el bucle bloqueado**,
+   así que el watchdog relanza un bot *vivo pero ciego* — un caso que Docker deja pasar.
 3. Si responde 200 → no hace nada y termina.
 4. Si no responde → mata cualquier proceso zombi que aún ocupe el puerto 8787 y relanza `npm run ui`
    con `NODE_OPTIONS=--max-old-space-size=3072` (tope de memoria: si hay una fuga, el proceso muere
@@ -70,7 +75,7 @@ Stop-Process -Id (Get-NetTCPConnection -LocalPort 8787 -State Listen).OwningProc
 powershell -NoProfile -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\watchdog.ps1"
 
 # 3) La UI debe volver en segundos
-Invoke-WebRequest http://127.0.0.1:8787/api/status -UseBasicParsing | Select-Object StatusCode
+Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing | Select-Object StatusCode
 ```
 
 Y revisa la bitácora:

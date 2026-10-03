@@ -1448,10 +1448,65 @@ que no lo está es peor que la brecha misma.
 
 ## Las tareas programadas viven en la sesión 0
 
-> `PolybotWatchdog` y `PolybotArchivoAnalitica` solo aplican a la vía **Windows nativo**. Bajo Docker sí
-> hay una tarea, `PolybotDespiertaWSL`, y está justo debajo.
+> `PolybotWatchdog` y `PolybotArchivoAnalitica` son las tareas **vigentes** desde el 2026-10-03:
+> Polybot volvió a Windows nativo. `PolybotDespiertaWSL` está retirada y lo de abajo es historia.
 
-### `PolybotDespiertaWSL`: bajo Docker, el punto único de fallo es WSL (2026-09-22)
+### Se vuelve a Windows nativo, y se cierra el capítulo de WSL (2026-10-03)
+
+**La causa raíz, por fin medida.** Dos hechos que por separado parecen inofensivos:
+
+| hecho | consecuencia |
+|---|---|
+| `wsl.exe` lanzado desde la **sesión 0** no se engancha a la distro que corre: **la reemplaza** | la acción del vigilante era destructiva por diseño |
+| Desde la sesión 0 **no se alcanza `127.0.0.1:8787`**: el reenvío de puertos de WSL vive en la sesión interactiva | la comprobación por red decía «caído» **siempre**, incluso con el bot respondiendo HTTP 200 |
+
+Comprobación eternamente equivocada + acción destructiva = **12 reinicios por hora**, medidos sin
+interrupción durante días. Y al desactivar el vigilante para parar el daño, la distro murió sola y el bot
+pasó **13,5 horas muerto**. Con vigilante o sin él el resultado era el mismo: no había forma de ganar
+parcheándolo, y se intentó cuatro veces.
+
+> **El «script fantasma», resuelto — y la lección de método.** Durante días el registro escribió mensajes
+> de una versión del vigilante que, según todas las comprobaciones, no existía: se verificó el fichero
+> por hash, por `Select-String` y por su primera línea, y las tres veces salió el correcto. Al limpiar la
+> carpeta apareció la explicación: **había dos ficheros con el mismo nombre** en
+> `%LOCALAPPDATA%\Polybot\` —el bueno de 3.753 bytes y uno viejo de 677— y la tarea ejecutaba el viejo.
+>
+> El error no fue de observación sino de método: **se verificó el artefacto en vez del comportamiento.**
+> El log decía exactamente qué código corría y se trató como un detalle inexplicable. La regla que queda:
+> **cuando el log contradice al fichero, el log tiene razón.** El fichero es lo que crees; el log es lo
+> que pasó.
+
+**Por qué nativo no es volver al camino que costó 45 horas.** La advertencia del `README` compara contra
+un watchdog que ya no existe. Las dos averías históricas están corregidas en el código del repo:
+
+| avería | causa de entonces | `scripts/watchdog.ps1` hoy |
+|---|---|---|
+| 45 h de datos perdidos en 10 días | tarea `Interactive`, no corría sin sesión | registra **S4U + disparador de arranque** |
+| 52 de 59 reinicios mataron bots sanos | sondeaba `/api/status`, que cotiza mercados, 2 intentos | sondea **`/api/health`**, 4 intentos, ~30 s de margen |
+
+Y nativo **recupera algo que Docker no puede**: `/api/health` devuelve 503 con el feed rancio o el bucle
+bloqueado, así que el watchdog relanza un bot **vivo pero ciego** — el caso que en agosto costó siete
+horas y que Compose deja pasar marcándolo `unhealthy` sin actuar.
+
+**La migración no necesitó un solo cambio en `src/`.** Ni `child_process`, ni `/tmp`, ni rutas POSIX
+fijas, ni binarios nativos. Al contrario: `src/atomicWrite.ts` conserva reintentos de
+`EPERM`/`EACCES`/`EBUSY` con backoff escritos **para el antivirus de Windows**, inertes bajo Linux y otra
+vez útiles aquí. Lo único que falló fue un test que escribía `/tmp/…` a mano, invisible para un CI que
+solo corría en Linux — de ahí que el CI pase ahora a matriz Windows + Linux.
+
+**Lo medido el día de la migración**, para que conste que el estado viajó entero:
+
+| | antes (Docker/WSL) | después (Windows nativo) |
+|---|---|---|
+| P&L realizado | +47,98 $ / 323 ops | **idéntico** |
+| `trades.jsonl` | 8.824 líneas, sha `083b068b…` | **mismo hash** |
+| arranque de la API | ~15-25 s | **5 s** |
+| rescate tras matar el proceso | — | **40 s, y volvió operando** |
+
+**El precio, dicho claro:** desplegar pasa a tardar ≤5 min en vez de segundos, porque
+`POST /api/system/restart` sale con `process.exit(0)` y espera el siguiente tick de la tarea.
+
+### `PolybotDespiertaWSL`: bajo Docker el punto único de fallo era WSL (2026-09-22, retirada el 10-03)
 
 **Polybot se paró 59 minutos y no fue el bot: se paró la distro de Ubuntu entera**, y con ella Docker y
 los dos contenedores. Del 2026-09-23T01:47Z al 02:46Z. El contenedor no se cayó —`RestartCount = 0`, el

@@ -179,9 +179,13 @@ la TUI no arranca ni supervisa nada, solo se conecta como cliente a `http://127.
 TUI-POLYBOT.cmd
 ```
 
-Funciona con Docker + WSL y con Windows nativo: deduce de su propia ubicación en qué distro y en qué
-carpeta vive el repo, comprueba si el servidor responde y, **solo si no responde**, levanta los
-contenedores. Si ya hay un servidor vivo no lo toca — matarlo podría cortar un live.
+**Solo sirve para Docker + WSL.** Deduce de su propia ubicación en qué distro y en qué carpeta vive el
+repo, comprueba si el servidor responde y, **solo si no responde**, levanta los contenedores. Si ya hay
+un servidor vivo no lo toca — matarlo podría cortar un live.
+
+En un checkout nativo de Windows (`C:\…`) este `.cmd` **no abre nada**: no encuentra una ruta UNC de WSL,
+salta a su rama `:no_wsl` y solo imprime un aviso. Ahí la TUI se abre con `npm run tui`. Esta línea decía
+lo contrario hasta el 2026-10-03, cuando el despliegue pasó a nativo y quedó claro que no era cierto.
 
 ### Desde una terminal
 
