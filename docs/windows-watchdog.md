@@ -53,11 +53,30 @@ Si responde `No matching MSFT_ScheduledTask objects found`, no está registrado:
 
 ## Registrarlo (una sola vez)
 
-PowerShell **normal, sin permisos de administrador**, desde la carpeta del proyecto:
+**Doble clic en `TAREAS-ADMIN.cmd`** en la raiz del proyecto, y aceptar el aviso de Windows. Registra
+las dos tareas (el watchdog y el archivador de analitica) y despues imprime en que modo quedaron.
+
+Se eleva solo **a proposito**, y no es un lujo: `install-watchdog.ps1` pide `S4U` —el modo que corre
+aunque nadie inicie sesion— pero eso necesita permisos de administrador, y si no los tiene **no falla**:
+cae a `Interactive` con un aviso facil de pasar por alto. `Interactive` solo se ejecuta mientras tu
+sesion este abierta, asi que una tarea registrada desde una ventana normal deja al bot muerto si Windows
+arranca y nadie entra. Ese es el agujero que costo 6,7 h de datos el 17 de agosto y 24 h el 13-14.
+
+Tambien se puede ejecutar el script a mano, pero entonces la ventana tiene que estar **elevada**:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\install-watchdog.ps1"
+powershell -ExecutionPolicy Bypass -File "C:\Polybot\scripts\install-watchdog.ps1"
 ```
+
+En cualquiera de los dos casos, **comprobar el modo en vez de suponerlo** —que es la diferencia entre
+creer que esta arreglado y que lo este:
+
+```powershell
+Get-ScheduledTask PolybotWatchdog,PolybotArchivoAnalitica |
+  Select-Object TaskName,@{n='Modo';e={$_.Principal.LogonType}},State
+```
+
+`S4U` en las dos es lo que hay que ver. `Interactive` significa que la elevacion no ocurrio.
 
 [`scripts/install-watchdog.ps1`](../scripts/install-watchdog.ps1) apunta la tarea a la carpeta donde
 vive él mismo, así que si moviste el proyecto —o tienes varias copias— basta con ejecutar el de la
@@ -72,7 +91,7 @@ Prueba end-to-end (mata el proceso a propósito y observa cómo revive):
 Stop-Process -Id (Get-NetTCPConnection -LocalPort 8787 -State Listen).OwningProcess -Force
 
 # 2) Ejecutar el watchdog a mano (sin esperar los 5 min)
-powershell -NoProfile -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\watchdog.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Polybot\scripts\watchdog.ps1"
 
 # 3) La UI debe volver en segundos
 Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing | Select-Object StatusCode
@@ -81,7 +100,7 @@ Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing | Select-Obj
 Y revisa la bitácora:
 
 ```powershell
-Get-Content "C:\DEV\tests\Workspace de Yarbis\Polybot\data\watchdog.log" -Tail 10
+Get-Content "C:\Polybot\data\watchdog.log" -Tail 10
 ```
 
 ## Cómo te enteras de que actuó
@@ -103,7 +122,7 @@ no quieres que el watchdog te mate el puerto 8787.
 ## Quitarlo
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\DEV\tests\Workspace de Yarbis\Polybot\scripts\install-watchdog.ps1" -Remove
+powershell -ExecutionPolicy Bypass -File "C:\Polybot\scripts\install-watchdog.ps1" -Remove
 ```
 
 ## Solución de problemas

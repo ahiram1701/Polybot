@@ -165,7 +165,7 @@ Verificar si ya esta registrado:
 Get-ScheduledTaskInfo -TaskName "PolybotWatchdog"
 ```
 
-`LastTaskResult: 0` y un `NextRunTime` ~5 minutos adelante = funcionando. Si no existe la tarea, registrala con `powershell -ExecutionPolicy Bypass -File scripts\install-watchdog.ps1` (sin admin). Corre sin abrir ninguna ventana, y se puede apagar y encender desde **Settings -> "Watchdog (auto-reinicio)"** en la UI web o la TUI, sin desregistrar la tarea. La prueba end-to-end y la solucion de problemas estan en [`docs/windows-watchdog.md`](docs/windows-watchdog.md).
+`LastTaskResult: 0` y un `NextRunTime` ~5 minutos adelante = funcionando. Si no existe la tarea, registrala con **doble clic en `TAREAS-ADMIN.cmd`**, que se eleva solo. Tiene que quedar en modo `S4U`: registrada sin permisos de administrador cae a `Interactive`, que **solo corre con tu sesion abierta** y deja el bot muerto si Windows arranca y nadie entra. Corre sin abrir ninguna ventana, y se puede apagar y encender desde **Settings -> "Watchdog (auto-reinicio)"** en la UI web o la TUI, sin desregistrar la tarea. La prueba end-to-end y la solucion de problemas estan en [`docs/windows-watchdog.md`](docs/windows-watchdog.md).
 
 ## TUI (panel en terminal)
 
