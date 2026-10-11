@@ -234,6 +234,21 @@ async function main(): Promise<void> {
   );
   for (const [dia, v] of [...porDia.entries()].sort()) console.log(`  ${dia}  n=${String(v.n).padStart(3)}  ${usd(v.neto).padStart(8)}`);
 
+  // Lo que el bot toma y el replay no: pocas, pero cada una puede decidir el dia entero (ver diaDivergente.ts).
+  console.log(`
+=== lo que el bot toma y el replay no: ${soloReal.length} entradas, ${usd(sumaSoloReal)} $ ===`);
+  for (const t of [...soloReal].sort((a, b) => a.createdAtMs - b.createdAtMs)) {
+    const r = replayPorSlug.get(t.slug);
+    console.log(
+      `  ${new Date(t.createdAtMs).toISOString().slice(0, 16)}  ${t.slug.padEnd(28)} ${t.outcome.padEnd(4)} ask ${(t.bestAsk ?? 0).toFixed(4)}  ` +
+        `a ${((t.endMs - t.createdAtMs) / 1000).toFixed(1).padStart(5)} s del cierre  ${usd(netoReal(t)).padStart(6)}${r ? "" : ""}`,
+    );
+  }
+  console.log(
+    `  banda viva: [${(efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK).toFixed(2)}, ${(efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK).toFixed(2)}] · ` +
+      `ventana de entrada ${efectiva.entryWindowSeconds} s · minimo al cierre ${efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END} s`,
+  );
+
   await porQueNoEntro(join(config.dataDir, "ui-console.log"), soloReplay, netoReplay);
   frenosSimuladosContraReales(enPeriodo, cerradas, netoReal, endMsPorSlug, efectiva);
 }

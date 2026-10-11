@@ -34,64 +34,13 @@
  * Lo que se reporta y NO elige: neto total, peor dia, dias rojos, caida maxima, y el bootstrap por dias
  * de la diferencia contra hoy. Si el elegido no mejora el peor tramo de hoy, se dice tal cual.
  */
-import { join } from "node:path";
-
-import { muestrasEnOrden } from "../analyticsStream.js";
-import { loadConfig } from "../config.js";
-import { crearReplayFavorito, type FavoriteSignal } from "../favoriteReplay.js";
-import { DEFAULT_FAVORITE_MAX_ASK, DEFAULT_FAVORITE_MIN_ASK, DEFAULT_MAX_ASK_SUM } from "../favoriteSelector.js";
 import { simular, type Regla, type Resultado } from "../frenoSimulacion.js";
-import { DEFAULT_MIN_SECONDS_TO_END } from "../markets.js";
-import { dayKeyInTimeZone, resolveTimeZone } from "../timezone.js";
 import { bootstrapCIPorBloques } from "../tradeStats.js";
-import type { BotConfig, MarketSymbol, TradeAttempt } from "../types.js";
-import { applySettings, UiSettingsStore } from "../ui/settings.js";
+import { cargarUniverso, STAKE_USD, tramoPorDia } from "./universoReplay.js";
 
-const STAKE_USD = 5;
-const REGIMEN_TWAP_MS = Date.parse("2026-08-08T00:00:00Z");
-const DEFAULT_MAX_ASK_SPREAD = 0.02;
 const TRAMOS = 6;
 const TOPES = [0, 5, 8, 10, 12, 15, 20];
 const EMPATE_USD = 0.5;
-
-/** Igual que en `frenoRiesgo.ts`: solo lo que el freno mira. La comision la estima el P&L de produccion. */
-function comoOperacion(signal: FavoriteSignal, endMs: number): TradeAttempt {
-  return {
-    id: `${signal.slug}-${signal.outcome}`,
-    asset: signal.market as MarketSymbol,
-    slug: signal.slug,
-    mode: "sim",
-    outcome: signal.outcome,
-    amountUsd: STAKE_USD,
-    estimatedShares: STAKE_USD / signal.ask,
-    bestAsk: signal.ask,
-    createdAtMs: endMs - signal.secondsToEnd * 1000,
-    endMs,
-    resolved: { won: signal.won, resolvedAtMs: endMs },
-  } as unknown as TradeAttempt;
-}
-
-async function candidatas(dataDir: string, efectiva: BotConfig): Promise<{ ops: TradeAttempt[]; ventanas: number }> {
-  const replay = crearReplayFavorito({
-    entryWindowSeconds: efectiva.entryWindowSeconds,
-    minSecondsToEnd: efectiva.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END,
-    minAsk: efectiva.favoriteMinAsk ?? DEFAULT_FAVORITE_MIN_ASK,
-    maxAsk: efectiva.favoriteMaxAsk ?? DEFAULT_FAVORITE_MAX_ASK,
-    maxAskSum: efectiva.favoriteMaxAskSum ?? DEFAULT_MAX_ASK_SUM,
-    maxAskSpread: efectiva.maxAskSpread ?? DEFAULT_MAX_ASK_SPREAD,
-    minCertainty: efectiva.favoriteMinCertainty ?? 1,
-  });
-  const endMsPorSlug = new Map<string, number>();
-  const fuentes = [join(dataDir, "archive", "analytics-archive.jsonl"), join(dataDir, "analytics.jsonl")];
-  let ventanas = 0;
-  for await (const sample of muestrasEnOrden(fuentes, (u) => u.windowStartMs >= REGIMEN_TWAP_MS)) {
-    ventanas += 1;
-    endMsPorSlug.set(sample.slug, sample.endMs);
-    replay.observa(sample);
-  }
-  const ops = replay.resultado().signals.map((s) => comoOperacion(s, endMsPorSlug.get(s.slug) as number));
-  return { ops, ventanas };
-}
 
 interface Medida {
   tope: number;
@@ -104,21 +53,12 @@ interface Medida {
 }
 
 async function main(): Promise<void> {
-  const { config } = loadConfig(["--mode", "sim"]);
-  const settings = await new UiSettingsStore(config.dataDir).load(config);
-  const efectiva: BotConfig = applySettings(config, settings);
-  // "auto" se resuelve a un NOMBRE, la zona del sistema, que es lo que hace el bot. Hasta el 2026-10-10 se
-  // pasaba `undefined` al simulador, y alli `undefined` significa dos zonas distintas: la tabla que eligio
-  // el tope de 12 $ salio de ahi (ver `simular`).
-  const timeZone = resolveTimeZone(efectiva.timezone) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // La zona sale del universo ya resuelta a un NOMBRE. Hasta el 2026-10-10 se pasaba `undefined` al
+  // simulador, y alli `undefined` significa dos zonas distintas: la tabla que eligio el tope de 12 $ salio
+  // de ahi (ver `simular`).
+  const { efectiva, timeZone, ops, ventanas, dias: todosLosDias } = await cargarUniverso();
   const zonaVisible = timeZone;
-
-  const { ops, ventanas } = await candidatas(config.dataDir, efectiva);
-
-  // Los dias del UNIVERSO, no los de cada candidato: si los cortes se recalcularan por regla, cada una
-  // tendria tramos distintos y no se podrian comparar.
-  const todosLosDias = [...new Set(ops.map((t) => dayKeyInTimeZone(t.createdAtMs, timeZone)))].sort();
-  const tramoDe = new Map(todosLosDias.map((dia, i) => [dia, Math.min(TRAMOS - 1, Math.floor((i * TRAMOS) / todosLosDias.length))]));
+  const tramoDe = tramoPorDia(todosLosDias, TRAMOS);
 
   const medidas: Medida[] = TOPES.map((tope) => {
     const regla: Regla = {
