@@ -710,6 +710,93 @@ implementación, es la diferencia entre que la regla funcione o no:
 que volver a medirla igual. El porcentaje evita que la regla se endurezca a escondidas mientras tanto;
 no sustituye a la medición.
 
+### La simetría: el tope de pérdida también es del día (2026-10-10)
+
+**Del 21-sep al 10-oct el objetivo hizo exactamente lo que se le pidió, y ahí estaba el problema.**
+Medido sobre el ledger real, 20 días después del reinicio del 22:
+
+| | días verdes | días rojos |
+|---|---|---|
+| cuántos | 13 | 7 |
+| neto medio | **+9,32 $** | **−11,18 $** |
+| operaciones por día | **20** | **57** |
+| operaciones en total | 261 | **396 (60%)** |
+
+Cuando el día iba bien llegaba a +8 y paraba. Cuando iba mal **nada lo paraba**: 60, 70, 90 entradas
+más, y el peor día cerró en **−28,53 $, tres veces y media el objetivo**. El objetivo tapaba las ganancias
+y las pérdidas corrían libres. El neto de esos 20 días fue +42,87 $; el 2 de octubre iba en +47,98 $.
+
+**Por qué nada lo paraba.** Dos causas, y la segunda no se veía leyendo la configuración:
+
+1. `maxDailyLossUsd` estaba en 0: se apagó al poner el objetivo.
+2. **Aunque se encendiera, no era un tope del día.** Vivía dentro del bucle de re-armado de la racha, y
+   con `cooldownHours: 2` cada re-armado le ponía la cuenta a cero. Un «tope diario» de 8 $ dejaba
+   perder 8 $ por cada tramo de 2 h. Simulado sobre esos mismos días, con tope de 8 $ el peor día seguía
+   en −22 $.
+
+Es el mismo fallo que tuvo el objetivo el 21-sep —medir un trozo del día en vez del día— y la misma
+lección: al objetivo se le sacó del bucle **a propósito**, y nadie aplicó el razonamiento al otro lado.
+**Los dos límites se llamaban «diarios» y sólo uno lo era.** La métrica «Pérdida hoy» de la UI tenía el
+mismo defecto: enseñaba la pérdida desde el último re-armado.
+
+**El arreglo.** `evaluateRiskCircuitBreaker` evalúa ahora los dos límites del día juntos y fuera del
+bucle: sobre el día entero desde el reinicio manual, sin enfriamiento y sin soltarse si el día cambia de
+signo después. Si se cruzan los dos, manda el que llegó antes, que es el motivo real de que el día dejara
+de operar. El enfriamiento queda sólo para la racha, que sí es un freno de «respira y vuelve». Los siete
+tests nuevos llevan los otros límites encendidos, por la lección del 21-sep.
+
+#### Cuánto vale el tope: `simetria.ts`
+
+Criterio escrito **antes** del dato: candidatos {0, 5, 8, 10, 12, 15, 20} $ sobre la configuración viva
+(racha 2, enfriamiento 2 h, objetivo 8 $); seis tramos cronológicos de **días enteros** con los mismos
+cortes para todos; gana el **mayor peor-tramo**, nunca la media; empate a menos de 0,50 $ → el tope más
+bajo. Universo: el replay del favorito sin ningún freno sobre 28.341 ventanas, 3.311 entradas, 38 días
+(3-sep → 10-oct), zona America/Mexico_City.
+
+| regla | neto | peor tramo | peor día | días rojos | caída máx | Δ contra hoy (bootstrap por días) |
+|---|---|---|---|---|---|---|
+| hoy, sin tope | +231,14 | +13,97 | −19,83 | 10/38 | 53,95 | — |
+| tope 5 $ | +126,52 | +12,06 | −15,88 | 15/38 | 35,18 | −104,62, P(>0) 6% |
+| tope 8 $ | +163,13 | +12,13 | −17,57 | 15/38 | 33,61 | −68,01, P(>0) 13% |
+| tope 10 $ | +229,31 | +10,41 | −19,03 | 14/38 | 44,83 | −1,83, P(>0) 49% |
+| **tope 12 $** | **+239,65** | **+25,45** | −19,03 | 12/38 | **38,10** | **+8,51, IC95 [−36, +54], P(>0) 65%** |
+| tope 15 $ | +227,77 | +21,36 | −19,03 | 11/38 | 42,23 | −3,37, P(>0) 42% |
+| tope 20 $ | +197,53 | +10,54 | −23,69 | 10/38 | 51,94 | −33,61, P(>0) 1% |
+
+**Elegido: 12 $**, aplicado el 2026-10-10. Mejora el peor tramo (+25,45 frente a +13,97) y 4 de 6 tramos,
+y baja la caída máxima de 54 a 38 $. **Lo que no hace es ganar dinero:** el bootstrap no lo distingue de
+cero. La simetría sale aproximadamente gratis; no es una mejora de la estrategia.
+
+Lo que enseña la tabla, más allá del número:
+
+- **Los topes bajos cuestan caro** (5 y 8 $, P(>0) de 6% y 13%). Un objetivo de +8 con un tope de −8
+  sería simétrico en número y ruinoso en resultado.
+- **Un tope que «no se suelta» corta las remontadas.** El de 20 $ es *peor* que no tener tope (P(>0) 1%,
+  los 6 tramos peor), aunque ningún día de la referencia cierra por debajo de −20 $. Sólo hay una forma:
+  días que bajan de −20 a media mañana y se recuperan después. El tope los cierra en el fondo. En esta
+  estrategia los días malos se recuperan a menudo dentro del día, y eso es lo que pone precio a cualquier
+  tope.
+- **El peor día apenas se mueve** (−19,83 → −19,03). La protección real está en la caída máxima, no en
+  el peor día.
+
+> **El replay es mucho más optimista que la realidad, y eso queda abierto.** Para el mismo periodo que
+> el ledger real (22-sep → 10-oct) el replay da unos +129 $ con la regla de hoy; el ledger, +42,87 $.
+> Tres veces. La tabla sirve para **comparar reglas entre sí** —el sesgo afecta a todas igual—, no
+> para prometer un neto. Por qué el papel real rinde un tercio del replay es la pregunta más importante
+> que tiene ahora el proyecto, y no está medida.
+
+#### El quinto arranque del contador (2026-10-10)
+
+P&L reiniciado el 2026-10-10 a las 20:1x hora local, con el bot parado y el código nuevo ya cargado. Es
+el quinto arranque, y éste por dos motivos: el hito de 14 días quedó invalidado por los tres días de 12
+reinicios por hora bajo WSL, y la regla cambia (tope de 12 $ simétrico). **El reinicio del P&L no toca el
+marcador del freno**, así que el día 10 siguió cerrado por su objetivo (+8,52 $) y **el primer día del
+régimen nuevo es el 11 de octubre completo**.
+
+Un cambio de medición que hay que tener presente al comparar con lo anterior: desde la migración del
+2026-10-03 los días cortan a la medianoche de **America/Mexico_City** (`timezone: auto` en nativo), no a
+la de UTC como en el contenedor. Seis horas de diferencia en dónde termina cada día.
+
 ### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
 
 El freno acota la caída pero **no toca el operar de más**: siguen entrando ~83 veces al día y la
@@ -1506,7 +1593,9 @@ solo corría en Linux — de ahí que el CI pase ahora a matriz Windows + Linux.
 **El precio, dicho claro:** desplegar pasa a tardar ≤5 min en vez de segundos, porque
 `POST /api/system/restart` sale con `process.exit(0)` y espera el siguiente tick de la tarea.
 
-### `PolybotDespiertaWSL`: bajo Docker el punto único de fallo era WSL (2026-09-22, retirada el 10-03)
+### `PolybotDespiertaWSL`: bajo Docker el punto único de fallo era WSL (2026-09-22, retirada el 10-10)
+
+> **Este título decía «retirada el 10-03» y era falso.** El plan de la migración la daba por quitada y nadie lo comprobó: el 2026-10-10 seguía registrada, en S4U, disparándose en cada inicio de sesión. Fue inofensiva por casualidad —su script leía el mismo `latido.txt` que ahora escribe el bot nativo, siempre fresco, y salía sin actuar—, no por diseño. Ese día se borró su script y su registro pasó a `TAREAS-ADMIN.cmd`, porque al haberse creado elevada sólo se puede quitar con elevación (desde una ventana normal: «Acceso denegado»). Los tres ficheros de la etapa WSL (`ACTIVAR-VIGILANTE-WSL.cmd`, `scripts/registrar-tarea-wsl.ps1`, `scripts/vigila-polybot.ps1`) salieron del repo el mismo día; siguen en el historial de git.
 
 **Polybot se paró 59 minutos y no fue el bot: se paró la distro de Ubuntu entera**, y con ella Docker y
 los dos contenedores. Del 2026-09-23T01:47Z al 02:46Z. El contenedor no se cayó —`RestartCount = 0`, el
@@ -1664,6 +1753,7 @@ Todas en `src/smoke/`, todas de solo lectura:
 | `frenoRiesgo.ts` | ¿Cuánto habría protegido el cortacircuitos, y a qué precio? |
 | `cerrarEnVerde.ts` | ¿Se puede cerrar cada día en verde, y qué cuesta? Día a día y frontera de objetivos |
 | `filtrosEntrada.ts` | ¿Qué parte del volumen no paga su comisión? Por mercado, tramo de banda y hora |
+| `simetria.ts` | ¿Cuánto debe valer el tope de pérdida del día? Peor tramo de días enteros y bootstrap por días |
 
 > **La analítica ya no cabe en memoria: 1,3 GB entre el archivo y el fichero vivo, 17.812 ventanas.**
 > Cargarla entera con `readAnalyticsSamples` —que devuelve el fichero completo como array— agotó la

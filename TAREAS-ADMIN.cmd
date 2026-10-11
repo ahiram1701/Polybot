@@ -40,8 +40,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-watchd
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-analytics-archive.ps1"
 echo.
+REM La tarea de la etapa WSL. Se registro elevada (S4U) y por eso solo se puede quitar desde aqui:
+REM desde una ventana normal Windows responde "Acceso denegado". Su script ya no existe, asi que no
+REM hace nada, pero sigue disparandose en cada inicio de sesion. Si no existe, no pasa nada.
+powershell -NoProfile -Command "if (Get-ScheduledTask -TaskName 'PolybotDespiertaWSL' -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName 'PolybotDespiertaWSL' -Confirm:$false; Write-Host '  [ok] Quitada la tarea vieja PolybotDespiertaWSL.' } else { Write-Host '  [ok] La tarea vieja PolybotDespiertaWSL ya no existe.' }"
+echo.
 echo  ----------------------------------------------------------
-powershell -NoProfile -Command "Get-ScheduledTask -TaskName 'PolybotWatchdog','PolybotArchivoAnalitica' | Select-Object TaskName, @{n='Modo';e={$_.Principal.LogonType}}, State | Format-Table -AutoSize | Out-String"
+powershell -NoProfile -Command "Get-ScheduledTask | Where-Object { $_.TaskName -like 'Polybot*' } | Select-Object TaskName, @{n='Modo';e={$_.Principal.LogonType}}, State | Format-Table -AutoSize | Out-String"
 echo  ----------------------------------------------------------
 echo.
 echo  Si las dos dicen S4U, ya esta: Polybot vuelve solo aunque nadie inicie sesion.
