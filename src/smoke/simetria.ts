@@ -107,8 +107,11 @@ async function main(): Promise<void> {
   const { config } = loadConfig(["--mode", "sim"]);
   const settings = await new UiSettingsStore(config.dataDir).load(config);
   const efectiva: BotConfig = applySettings(config, settings);
-  const timeZone = resolveTimeZone(efectiva.timezone);
-  const zonaVisible = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // "auto" se resuelve a un NOMBRE, la zona del sistema, que es lo que hace el bot. Hasta el 2026-10-10 se
+  // pasaba `undefined` al simulador, y alli `undefined` significa dos zonas distintas: la tabla que eligio
+  // el tope de 12 $ salio de ahi (ver `simular`).
+  const timeZone = resolveTimeZone(efectiva.timezone) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zonaVisible = timeZone;
 
   const { ops, ventanas } = await candidatas(config.dataDir, efectiva);
 

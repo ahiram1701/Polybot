@@ -63,8 +63,24 @@ export interface Resultado {
 export function simular(
   candidatas: readonly TradeAttempt[],
   regla: Regla,
-  timeZone: string | undefined,
+  /**
+   * Nombre IANA OBLIGATORIO ("UTC", "America/Mexico_City"). Nunca `undefined` ni "auto".
+   *
+   * `undefined` no tiene un solo significado en este codigo: `dayKeyInTimeZone` lo lee como la zona del
+   * SISTEMA y `dailySpendKey` —de donde sale el dia del freno— como UTC. Aqui se usan los dos, asi que
+   * con `undefined` el simulador agrupaba los dias por una zona y el freno los cortaba por otra: desde
+   * las 18:00 de Mexico el freno miraba el dia siguiente, lo veia vacio y dejaba entrar. Asi se midio el
+   * tope de 12 $ el 2026-10-10, con el replay en +129 $ donde con la zona explicita da +73 $.
+   *
+   * Para "auto", resolverla antes: `resolveTimeZone(x) ?? Intl.DateTimeFormat().resolvedOptions().timeZone`.
+   */
+  timeZone: string,
 ): Resultado {
+  if (!timeZone) {
+    throw new Error(
+      "simular: hace falta una zona horaria explicita. Con `undefined` el freno y la agrupacion por dias usan zonas distintas.",
+    );
+  }
   const ejecutadas: TradeAttempt[] = [];
   const gastoPorDia = new Map<string, number>();
   const diasConFreno = new Set<string>();
@@ -174,7 +190,7 @@ export function simular(
 export function netoDeLasSaltadas(
   candidatas: readonly TradeAttempt[],
   regla: Regla,
-  timeZone: string | undefined,
+  timeZone: string,
 ): number {
   const total = candidatas.reduce((suma, trade) => suma + (calculateTradePnl(trade).netUsd ?? 0), 0);
   return total - simular(candidatas, regla, timeZone).netoUsd;
