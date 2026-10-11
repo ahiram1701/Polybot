@@ -20,8 +20,10 @@ async function main(): Promise<void> {
   const staticClient = process.argv.includes("--static");
   const autoStartMode = getAutoStartMode(process.argv);
   const { config } = loadConfig(["--mode", "sim"]);
+  // Un solo notifier por proceso: con dos, cada uno llevaba su propio buffer de digest y los avisos
+  // del controlador y los de arranque salian en resumenes distintos.
   const notifier = createDynamicNotifier(config);
-  const controller = new BotController(config);
+  const controller = new BotController(config, { notifier });
   const app = createUiApp(controller, { staticClient });
 
   if (!staticClient) {

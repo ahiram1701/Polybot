@@ -55,6 +55,18 @@ describe("telegram digest mode", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("adds the net P&L of the period and the mode badge when every entry shares it", async () => {
+    await store.save({ digestEnabled: true, digestIntervalMinutes: 60 });
+
+    await notifier.notify({ category: "trade", title: "Trade ganado", mode: "live", netUsd: 2.5 });
+    await notifier.notify({ category: "trade", title: "Trade perdido", mode: "live", netUsd: -4 });
+    nowMs += 61 * 60_000;
+    await notifier.flushDigestIfDue();
+
+    expect(sent[0].text).toContain("🔴 LIVE");
+    expect(sent[0].text).toContain("Neto del periodo: -$1.50");
+  });
+
   it("counts a settled arbitrage as a WIN in the summary header", async () => {
     // Un set completo de arbitraje cobra $1/set gane quien gane. Antes caia en el contador de "otros"
     // (+N) y el resumen subreportaba los aciertos frente al P&L real que si lo contaba como ganancia.
