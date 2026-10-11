@@ -127,7 +127,7 @@ describe("BotRunner", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const markets: Partial<Record<MarketSymbol, MarketInfo>> = {
       BTC: marketInfo("BTC", "btc", windowStartMs),
       ETH: marketInfo("ETH", "eth", windowStartMs),
@@ -220,7 +220,7 @@ describe("BotRunner", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("ETH", "eth", windowStartMs);
     const opening = {
       asset: market.asset,
@@ -1597,7 +1597,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const markets: Record<MarketSymbol, MarketInfo> = {
       BTC: marketInfo("BTC", "btc", windowStartMs),
       ETH: marketInfo("ETH", "eth", windowStartMs),
@@ -1686,7 +1686,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const watcher = {
       getCurrentMarkets: vi.fn(async () => []),
       getCurrentMarket: vi.fn(async () => null),
@@ -2041,7 +2041,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -2415,7 +2415,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const watcher = {
       getCurrentMarket: vi.fn(async () => market),
@@ -2572,7 +2572,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -2641,7 +2641,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -2746,7 +2746,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
   describe("puerta de capital para el direccional", () => {
     const setup = (mode: "sim" | "live") => {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-      const nowMs = windowStartMs + 290_000;
+      const nowMs = windowStartMs + 285_000;
       const market = marketInfo("BTC", "btc", windowStartMs);
       const openings = new Map([
         [
@@ -2832,7 +2832,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
   describe("sondeos de banda", () => {
     const montar = (askDelLibro: number) => {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-      const nowMs = windowStartMs + 290_000;
+      const nowMs = windowStartMs + 285_000;
       const market = marketInfo("BTC", "btc", windowStartMs);
       const openings = new Map([
         [
@@ -3083,7 +3083,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -3151,7 +3151,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -3224,7 +3224,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
       explorationEnabled?: boolean;
     }) {
       const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-      const nowMs = windowStartMs + 290_000;
+      const nowMs = windowStartMs + 285_000;
       const market = marketInfo("BTC", "btc", windowStartMs);
       const openings = new Map([
         [
@@ -3450,11 +3450,108 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     expect(executor.execute).toHaveBeenCalled();
   });
 
+  describe("el minimo hasta el cierre se mide tambien con el reloj, no solo con el tick", () => {
+    // Paso de verdad el 2026-10-09 (btc-updown-5m-1791534300): la guarda veia 10 s "de tick", pero la
+    // operacion se creo a 6,9 s del cierre. Perdio -5,07 $ y se llevo el dia, que estaba a 9 centavos
+    // del objetivo. 3 de 657 entradas del favorito entre el 22-sep y el 10-oct cayeron asi.
+    const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
+    const market = marketInfo("BTC", "btc", windowStartMs);
+
+    /** Un libro cuya cotizacion se lleva `msPorCotizacion` del reloj inyectado. */
+    function cotizacionLenta(msPorCotizacion: number) {
+      let paredMs = 1_000_000;
+      const rapido = fakeOrderbook(0.5);
+      const orderbook = {
+        getQuote: vi.fn(async (...args: Parameters<OrderbookService["getQuote"]>) => {
+          paredMs += msPorCotizacion;
+          return rapido.getQuote(...args);
+        }),
+      } as unknown as OrderbookService;
+      return { reloj: () => paredMs, orderbook };
+    }
+
+    function montar(args: { nowMs: number; tickMs: number; reloj?: () => number; orderbook?: OrderbookService }) {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const openings = new Map([
+        [market.slug, { asset: market.asset, slug: market.slug, windowStartMs, openingPrice: 100, openingTickTimestampMs: windowStartMs, capturedAtMs: windowStartMs }],
+      ]);
+      const state = {
+        load: vi.fn(async () => undefined),
+        listTrades: vi.fn(() => []),
+        getOpening: vi.fn((slug: string) => openings.get(slug)),
+        hasTraded: vi.fn(() => false),
+        getDailySpend: vi.fn(() => 0),
+        recordTradeAttempt: vi.fn(async () => undefined),
+      } as unknown as StateStore;
+      const executor = {
+        execute: vi.fn(async (input: ExecutionInput) => ({
+          id: "t", asset: input.market.asset, slug: input.market.slug, mode: "sim" as const,
+          conditionId: input.market.conditionId, outcome: input.outcome,
+          tokenId: input.market.outcomes[input.outcome].tokenId, amountUsd: input.amountUsd,
+          maxAskPrice: input.maxAskPrice, bestAsk: input.quote.bestAsk,
+          estimatedShares: input.quote.estimatedSharesForAmount, openingPrice: input.opening.openingPrice,
+          entryPrice: input.tick.value, distanceUsd: input.distanceUsd,
+          entryWindowSeconds: input.entryWindowSeconds, windowStartMs: input.market.windowStartMs,
+          endMs: input.market.endMs, createdAtMs: args.nowMs,
+        })),
+      } satisfies TradeExecutor;
+      // El tick lo emitio el oraculo en `tickMs`, pero llega fresco: el retraso esta en el oraculo y el
+      // feed, no en la entrega, y por eso no lo para `isTickStale`.
+      const priceFeed = {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getLatestTick: vi.fn(() => ({
+          market: "BTC" as const, symbol: "btc/usd", value: 130, timestampMs: args.tickMs, receivedAtMs: args.nowMs,
+        })),
+      } as unknown as ChainlinkPriceFeed;
+      const runner = new BotRunner(
+        { ...baseConfig(), mode: "sim", requirePositiveEv: false, minSecondsToEndForEntry: 10, entryWindowSecondsByMarket: { BTC: 120, ETH: 120, DOGE: 120 } },
+        {
+          watcher: { getCurrentMarket: vi.fn(async () => market) } as unknown as MarketWatcher,
+          orderbook: args.orderbook ?? fakeOrderbook(0.5),
+          priceFeed,
+          state,
+          executor,
+          reconciler: fakeReconciler(),
+          now: args.reloj,
+        },
+      );
+      return { runner, executor };
+    }
+
+    it("rechaza un tick viejo cuando el reloj ya esta a menos del minimo del cierre", async () => {
+      // El tick dice 15 s; el reloj, 6,9 s. Antes pasaba porque solo se miraba el tick.
+      const nowMs = market.endMs - 6_900;
+      const { runner, executor } = montar({ nowMs, tickMs: market.endMs - 15_000 });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("rechaza justo antes de ejecutar si la cotizacion consumio el margen", async () => {
+      // Tick y reloj a 12 s al empezar la iteracion; cada cotizacion tarda 3 s de reloj. Al ir a
+      // ejecutar quedan menos de 10 s aunque todo lo medido al principio decia que sobraba.
+      const nowMs = market.endMs - 12_000;
+      const { reloj, orderbook } = cotizacionLenta(3_000);
+      const { runner, executor } = montar({ nowMs, tickMs: nowMs, reloj, orderbook });
+      await runner.runOnce(nowMs);
+      expect(orderbook.getQuote).toHaveBeenCalled();
+      expect(executor.execute).not.toHaveBeenCalled();
+    });
+
+    it("sigue entrando si tick y reloj dejan margen de sobra", async () => {
+      const nowMs = market.endMs - 30_000;
+      const { reloj, orderbook } = cotizacionLenta(3_000);
+      const { runner, executor } = montar({ nowMs, tickMs: nowMs - 2_000, reloj, orderbook });
+      await runner.runOnce(nowMs);
+      expect(executor.execute).toHaveBeenCalled();
+    });
+  });
+
   it("does not trade when the price move is below the distance floor", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -3517,7 +3614,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -4495,7 +4592,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -4555,7 +4652,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("BTC", "btc", windowStartMs);
     const openings = new Map([
       [
@@ -4706,7 +4803,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const markets: Partial<Record<MarketSymbol, MarketInfo>> = {
       BTC: marketInfo("BTC", "btc", windowStartMs),
       DOGE: marketInfo("DOGE", "doge", windowStartMs),
@@ -4803,7 +4900,7 @@ it("en LIVE, tres mercados de banda NO pueden sumar mas que la cuenta", async ()
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
-    const nowMs = windowStartMs + 290_000;
+    const nowMs = windowStartMs + 285_000;
     const market = marketInfo("ETH", "eth", windowStartMs);
     const openings = new Map<string, WindowOpening>();
     const watcher = {
@@ -5092,7 +5189,7 @@ describe("estrategia favorito", () => {
   const windowStartMs = Date.UTC(2026, 4, 7, 4, 25, 0, 0);
   // 10s para el cierre: dentro de la ventana de entrada (20s), dentro de la de analitica (120s) y
   // justo en el limite de `DEFAULT_MIN_SECONDS_TO_END` (10), que rechaza con `<`.
-  const nowMs = windowStartMs + 290_000;
+  const nowMs = windowStartMs + 285_000;
 
   function escenario(args: { upAsk: number; downAsk: number; overrides?: Partial<BotConfig> }) {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
