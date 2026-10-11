@@ -881,8 +881,47 @@ Lo que dice, sin adornos:
   −34,66 a −19,83, a un coste que el bootstrap no distingue de cero (P(>0) 12%).
 
 **Esto no decide nada por sí solo.** El objetivo existe porque el dueño quiere cerrar cada día en verde, y
-eso es una preferencia. Lo que la tabla hace es ponerle precio. La decisión queda abierta a la espera del
-dueño; mientras tanto el bot sigue con racha 2, objetivo 8 $ y tope 12 $.
+eso es una preferencia. Lo que la tabla hace es ponerle precio.
+
+#### ¿Le ganan los frenos al azar? `memoriaAzar.ts`
+
+La objeción del dueño, y es la natural: *«estamos jugando con el azar; con frenos le gano acumulando
+ganancia diaria con límite y limitando la pérdida»*. Tiene una condición matemática exacta. **Ninguna regla
+de parar cambia lo que vale cada apuesta: solo cambia cuántas se hacen.** Un freno sólo le gana al azar si
+las entradas que salta son *peores* que las demás, y eso exige que el azar tenga memoria.
+
+Se partió cada entrada del universo según el estado en el que se decidió, con lo ya cerrado en ese
+instante:
+
+| estado al decidir | entradas | acierto | $/entrada | IC95 (por ventanas) |
+|---|---|---|---|---|
+| todas | 3.313 | 86,2% | **+0,112** | [+0,038, +0,183] |
+| tras 2+ pérdidas seguidas (lo que salta la racha) | 72 | 86,1% | +0,072 | [−0,416, +0,530] |
+| día ya en ≥ +8 $ (lo que salta el objetivo) | 1.098 | 85,6% | +0,076 | [−0,059, +0,208] |
+| día ya en ≤ −12 $ (lo que salta el tope) | 433 | **87,5%** | **+0,200** | [+0,009, +0,383] |
+
+**El acierto es ~86% en todos los estados: no hay memoria que medir.** Lo que saltan la racha y el
+objetivo vale algo menos que la media, pero dentro del ruido. Y lo que salta el tope de pérdida es **lo
+mejor de todo**: son las remontadas. Un tope que no se suelta las tira justo cuando más valen.
+
+Lo que sí tenía razón la objeción: los frenos **reducen los sustos**. La caída máxima baja de 62 $ sin
+frenos a 35 $ con todos, y la racha recorta el peor día de −34,66 a −19,83. No es ganarle al azar, es pagar
+por menos varianza, y es una compra legítima si se conoce el precio.
+
+#### La decisión: sólo la racha (2026-10-10)
+
+El dueño eligió **racha de 2 con enfriamiento de 2 h, sin objetivo del día y sin tope de pérdida**. Es la
+única regla que limita la pérdida sin tirar las remontadas y la única que mejora el peor tramo
+(+16,22 frente a −5,17 sin frenos), con un coste que el bootstrap no distingue de cero. Medido sobre los
+mismos 38 días: +306,86 $, 29/38 días verdes, peor día −19,83 $.
+
+Lo que se deja de comprar, dicho para que no sorprenda: **habrá días en rojo que con el objetivo habrían
+cerrado en verde** (32/38 con objetivo, 29/38 sin él), y el bot opera todo el día en vez de parar en +8 $.
+El mecanismo de los dos límites del día sigue en el código, simétrico y probado; sólo están a 0.
+
+**Sexto arranque del contador**, el 2026-10-10 a las 22:07 hora local, a la vez que el cambio de reglas. El
+quinto (20:1x del mismo día) no llegó a operar: el día estaba cerrado por el objetivo. El primer día
+completo del régimen nuevo es el 11 de octubre.
 
 ### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
 
@@ -1844,6 +1883,7 @@ Todas en `src/smoke/`, todas de solo lectura:
 | `brechaReplay.ts` | ¿Por qué el replay y el ledger no dan lo mismo? Cascada que cuadra al céntimo y motivo de cada salto según el log del bot |
 | `diaDivergente.ts` | Un día entrada a entrada: lo que quería el replay, lo que hizo el bot y dónde se separan |
 | `costeFrenos.ts` | ¿Cuánto cuesta cada freno y cuántos días verdes compra? |
+| `memoriaAzar.ts` | ¿Vale una entrada distinto según cómo va el día o la racha? Si no, ningún freno le gana al azar |
 
 > **La analítica ya no cabe en memoria: 1,3 GB entre el archivo y el fichero vivo, 17.812 ventanas.**
 > Cargarla entera con `readAnalyticsSamples` —que devuelve el fichero completo como array— agotó la
