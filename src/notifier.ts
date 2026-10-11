@@ -553,7 +553,7 @@ function titleEmoji(title: string, level: NotificationLevel): string {
   return level === "error" ? "🔥" : level === "warn" ? "⚠️" : "ℹ️";
 }
 
-function formatSignedUsdShort(value: number): string {
+export function formatSignedUsdShort(value: number): string {
   const rounded = Math.round(value * 100) / 100;
   return `${rounded >= 0 ? "+" : "-"}$${Math.abs(rounded).toFixed(2)}`;
 }
