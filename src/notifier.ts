@@ -38,6 +38,10 @@ export interface TelegramNotificationSettings {
   // Daily self-report at the configured hour (timezone-aware; sent by the controller).
   dailyReportEnabled: boolean;
   dailyReportHour: number;
+  // Comandos entrantes (/estado, /arrancar...). Solo se atienden desde `chatId`.
+  commandsEnabled: boolean;
+  // Permite arrancar en live desde el chat (con doble confirmacion). Apagado por defecto.
+  liveControlEnabled: boolean;
 }
 
 export interface TelegramNotificationPatch {
@@ -49,6 +53,8 @@ export interface TelegramNotificationPatch {
   digestIntervalMinutes?: number;
   dailyReportEnabled?: boolean;
   dailyReportHour?: number;
+  commandsEnabled?: boolean;
+  liveControlEnabled?: boolean;
 }
 
 interface TelegramNotificationFile {
@@ -60,9 +66,11 @@ interface TelegramNotificationFile {
   digestIntervalMinutes?: number;
   dailyReportEnabled?: boolean;
   dailyReportHour?: number;
+  commandsEnabled?: boolean;
+  liveControlEnabled?: boolean;
 }
 
-interface EffectiveTelegramNotificationConfig {
+export interface EffectiveTelegramNotificationConfig {
   enabled: boolean;
   botToken?: string;
   chatId?: string;
@@ -72,6 +80,8 @@ interface EffectiveTelegramNotificationConfig {
   digestIntervalMinutes: number;
   dailyReportEnabled: boolean;
   dailyReportHour: number;
+  commandsEnabled: boolean;
+  liveControlEnabled: boolean;
 }
 
 export const DEFAULT_DIGEST_INTERVAL_MINUTES = 240;
@@ -253,6 +263,8 @@ export class TelegramNotificationStore {
         digestIntervalMinutes: local.digestIntervalMinutes ?? DEFAULT_DIGEST_INTERVAL_MINUTES,
         dailyReportEnabled: local.dailyReportEnabled ?? false,
         dailyReportHour: local.dailyReportHour ?? DEFAULT_DAILY_REPORT_HOUR,
+        commandsEnabled: local.commandsEnabled ?? true,
+        liveControlEnabled: local.liveControlEnabled ?? false,
       };
     }
 
@@ -266,6 +278,8 @@ export class TelegramNotificationStore {
         digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES,
         dailyReportEnabled: false,
         dailyReportHour: DEFAULT_DAILY_REPORT_HOUR,
+        commandsEnabled: false,
+        liveControlEnabled: false,
       };
     }
     return {
@@ -278,6 +292,8 @@ export class TelegramNotificationStore {
       digestIntervalMinutes: DEFAULT_DIGEST_INTERVAL_MINUTES,
       dailyReportEnabled: false,
       dailyReportHour: DEFAULT_DAILY_REPORT_HOUR,
+      commandsEnabled: true,
+      liveControlEnabled: false,
     };
   }
 
@@ -299,6 +315,8 @@ export class TelegramNotificationStore {
         typeof patch.dailyReportHour === "number" && patch.dailyReportHour >= 0 && patch.dailyReportHour <= 23
           ? Math.round(patch.dailyReportHour)
           : current.dailyReportHour,
+      commandsEnabled: patch.commandsEnabled ?? current.commandsEnabled,
+      liveControlEnabled: patch.liveControlEnabled ?? current.liveControlEnabled,
     };
     if (patch.publicUrl === undefined) {
       next.publicUrl = current.publicUrl;
@@ -313,6 +331,8 @@ export class TelegramNotificationStore {
       digestIntervalMinutes: next.digestIntervalMinutes,
       dailyReportEnabled: next.dailyReportEnabled,
       dailyReportHour: next.dailyReportHour,
+      commandsEnabled: next.commandsEnabled,
+      liveControlEnabled: next.liveControlEnabled,
     };
     await writeFileAtomic(this.settingsPath, `${JSON.stringify(file, null, 2)}\n`);
     return sanitizeEffectiveConfig(next);
@@ -331,6 +351,8 @@ export class TelegramNotificationStore {
           typeof parsed.digestIntervalMinutes === "number" ? parsed.digestIntervalMinutes : undefined,
         dailyReportEnabled: typeof parsed.dailyReportEnabled === "boolean" ? parsed.dailyReportEnabled : undefined,
         dailyReportHour: typeof parsed.dailyReportHour === "number" ? parsed.dailyReportHour : undefined,
+        commandsEnabled: typeof parsed.commandsEnabled === "boolean" ? parsed.commandsEnabled : undefined,
+        liveControlEnabled: typeof parsed.liveControlEnabled === "boolean" ? parsed.liveControlEnabled : undefined,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -436,6 +458,8 @@ function sanitizeEffectiveConfig(config: EffectiveTelegramNotificationConfig): T
     digestIntervalMinutes: config.digestIntervalMinutes,
     dailyReportEnabled: config.dailyReportEnabled,
     dailyReportHour: config.dailyReportHour,
+    commandsEnabled: config.commandsEnabled,
+    liveControlEnabled: config.liveControlEnabled,
   };
 }
 

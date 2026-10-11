@@ -3628,6 +3628,8 @@ export function TelegramPanel() {
         digestIntervalMinutes: next.digestIntervalMinutes,
         dailyReportEnabled: next.dailyReportEnabled,
         dailyReportHour: next.dailyReportHour,
+        commandsEnabled: next.commandsEnabled,
+        liveControlEnabled: next.liveControlEnabled,
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -3662,6 +3664,8 @@ export function TelegramPanel() {
         digestIntervalMinutes: saved.digestIntervalMinutes,
         dailyReportEnabled: saved.dailyReportEnabled,
         dailyReportHour: saved.dailyReportHour,
+        commandsEnabled: saved.commandsEnabled,
+        liveControlEnabled: saved.liveControlEnabled,
       });
       setMessage("Configuracion guardada.");
     } catch (caught) {
@@ -3802,6 +3806,37 @@ export function TelegramPanel() {
         Un mensaje al día con P&L de hoy y post-reset, progreso del plan de validación con banda de varianza, estado del
         autoajuste y del freno, cap sugerido por mercado y salud del proceso.
       </p>
+
+      <label className="switch-row">
+        <input
+          type="checkbox"
+          checked={Boolean(draft.commandsEnabled)}
+          onChange={(event) => updateTelegramDraft("commandsEnabled", event.target.checked)}
+        />
+        <span>Comandos desde Telegram</span>
+      </label>
+      <p className="settings-hint">
+        Escribe /ayuda al bot: /estado, /pnl, /trades, /ajustes, /arrancar sim, /detener. Solo responde al Chat ID de
+        arriba; mensajes de cualquier otro chat se ignoran.
+      </p>
+
+      {draft.commandsEnabled && (
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.liveControlEnabled)}
+            onChange={(event) => updateTelegramDraft("liveControlEnabled", event.target.checked)}
+          />
+          <span>Permitir arrancar en LIVE desde Telegram</span>
+        </label>
+      )}
+      {draft.commandsEnabled && draft.liveControlEnabled && (
+        <div className="notice error">
+          <AlertTriangle size={18} />
+          Dinero real: cualquiera con acceso a tu Telegram podra arrancar en live. Pide boton + codigo de 4 digitos
+          que caduca en 60 s. Un /arrancar sim con alguna estrategia en live tambien pasa por esta confirmacion.
+        </div>
+      )}
 
       {settings?.source === "env" && (
         <p className="telegram-note">Usando valores de .env hasta que guardes una configuracion local.</p>

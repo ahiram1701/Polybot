@@ -57,6 +57,8 @@ const telegramNotificationsPatchSchema = z.object({
   digestIntervalMinutes: z.coerce.number().int().min(5).optional(),
   dailyReportEnabled: z.boolean().optional(),
   dailyReportHour: z.coerce.number().int().min(0).max(23).optional(),
+  commandsEnabled: z.boolean().optional(),
+  liveControlEnabled: z.boolean().optional(),
 });
 const fiscalYearQuerySchema = z.object({
   year: z.coerce.number().int().min(2020).max(2100).optional(),
