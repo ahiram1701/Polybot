@@ -37,6 +37,9 @@ function makeSettings(overrides: Partial<UiSettings> = {}): UiSettings {
     makerMode: "heredado",
     arbEnabled: true,
     makerEnabled: false,
+    favoriteStrategyEnabled: true,
+    explorationEnabled: false,
+    requirePositiveEv: false,
     simTradeAmountUsd: 5,
     liveTradeAmountUsd: 2,
     maxAskPrice: 0.9,
@@ -54,6 +57,7 @@ function makeStatus(overrides: Partial<UiStatus> = {}): UiStatus {
   return {
     running: false,
     effectiveModes: { arb: "sim", directional: "sim", maker: "sim" },
+    settings: makeSettings(),
     liveReadiness: { ready: true, hasPrivateKey: true, hasFunderAddress: true, hasSignatureType: true },
     pnlByMode: { sim: EMPTY_PNL_SUMMARY, live: EMPTY_PNL_SUMMARY },
     pnlHistoricalByMode: { sim: EMPTY_PNL_SUMMARY, live: EMPTY_PNL_SUMMARY },
@@ -147,14 +151,18 @@ describe("telegram command bot", () => {
     expect(t.replies()[0]).toContain("/arrancar sim");
   });
 
-  it("formats /estado with the effective mode of every strategy", async () => {
+  it("formats /estado with only the strategies that are switched on", async () => {
     const t = setup();
     vi.mocked(t.controller.getStatus).mockResolvedValue(
-      makeStatus({ effectiveModes: { arb: "live", directional: "sim", maker: "sim" } }),
+      makeStatus({
+        effectiveModes: { arb: "live", directional: "sim", maker: "live" },
+        settings: makeSettings({ arbEnabled: true, makerEnabled: false }),
+      }),
     );
     await t.handle(t.message("/estado@PolybotBot"));
-    expect(t.replies()[0]).toContain("arb 🔴 LIVE");
-    expect(t.replies()[0]).toContain("direccional 🧪 SIM");
+    expect(t.replies()[0]).toContain("Estrategias: favorito 🧪 SIM · arbitraje 🔴 LIVE");
+    expect(t.replies()[0]).toContain("Apagadas: maker");
+    expect(t.replies()[0]).not.toContain("maker 🔴");
   });
 
   it("starts a pure sim run straight away", async () => {
@@ -228,10 +236,31 @@ describe("telegram command bot", () => {
 });
 
 describe("liveStrategies", () => {
+  const base = {
+    arbMode: "heredado",
+    directionalMode: "sim",
+    makerMode: "heredado",
+    arbEnabled: true,
+    makerEnabled: true,
+    favoriteStrategyEnabled: true,
+    explorationEnabled: false,
+    requirePositiveEv: false,
+  } as const;
+
   it("mirrors the runner inheritance: heredado follows the start mode, maker falls back to sim", () => {
-    const settings = { arbMode: "heredado", directionalMode: "sim", makerMode: "heredado" } as const;
-    expect(liveStrategies(settings, "live")).toEqual(["arbitraje"]);
-    expect(liveStrategies(settings, "sim")).toEqual([]);
-    expect(liveStrategies({ ...settings, makerMode: "live" }, "sim")).toEqual(["maker"]);
+    expect(liveStrategies(base, "live")).toEqual(["arbitraje"]);
+    expect(liveStrategies(base, "sim")).toEqual([]);
+    expect(liveStrategies({ ...base, makerMode: "live" }, "sim")).toEqual(["maker"]);
+  });
+
+  it("ignores strategies that are switched off, whatever their mode says", () => {
+    expect(liveStrategies({ ...base, makerMode: "live", makerEnabled: false }, "sim")).toEqual([]);
+    expect(liveStrategies({ ...base, arbEnabled: false }, "live")).toEqual([]);
+  });
+
+  it("names exploration only when the EV gate that runs it is on", () => {
+    const live = { ...base, directionalMode: "live", explorationEnabled: true } as const;
+    expect(liveStrategies(live, "sim")).toEqual(["favorito"]);
+    expect(liveStrategies({ ...live, requirePositiveEv: true }, "sim")).toEqual(["favorito + exploracion"]);
   });
 });

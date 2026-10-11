@@ -333,7 +333,7 @@ export class TelegramCommandBot {
       [
         `⚠️ <b>Arranque con DINERO REAL</b>  ${modeBadge("live")}`,
         `Estrategias en live: <b>${live.join(", ")}</b>`,
-        `Perdida maxima diaria: $${settings.maxDailyLossUsd} · Gasto diario max: $${settings.dailySpendLimitUsd}`,
+        `Perdida maxima diaria: ${usdOrOff(settings.maxDailyLossUsd)} · Gasto diario max: ${usdOrOff(settings.dailySpendLimitUsd)}`,
         `Stake live: $${settings.liveTradeAmountUsd} · Bankroll: ${escapeTelegramHtml(bankroll)}`,
         "",
         "Pulsa el boton en los proximos 60 s para continuar.",
@@ -458,22 +458,63 @@ export class TelegramCommandBot {
 type InlineButton = { text: string; callback_data: string };
 type Reply = (text: string, buttons?: InlineButton[][]) => Promise<void>;
 
-const STRATEGY_LABEL: Record<(typeof MODE_KEYS)[number], string> = {
-  arbMode: "arbitraje",
-  directionalMode: "direccional",
-  makerMode: "maker",
+type StrategySettings = Pick<
+  UiSettings,
+  | (typeof MODE_KEYS)[number]
+  | "arbEnabled"
+  | "makerEnabled"
+  | "favoriteStrategyEnabled"
+  | "explorationEnabled"
+  | "requirePositiveEv"
+>;
+
+export interface StrategyView {
+  /** Clave de `effectiveModes`. */
+  key: "arb" | "directional" | "maker";
+  label: string;
+  active: boolean;
+}
+
+/**
+ * Que estrategias estan ENCENDIDAS y como se llaman para quien lee el movil.
+ *
+ * `effectiveModes` dice en que modo operaria cada estrategia, no si esta encendida: con arbitraje y
+ * maker apagados seguia listando "arb SIM · maker SIM", y eso se leyo como tres estrategias corriendo.
+ * El direccional siempre esta encendido (es el motor base); se nombra por su variante.
+ */
+export function describeStrategies(settings: StrategySettings): StrategyView[] {
+  // La exploracion vive dentro del filtro de EV: con `requirePositiveEv` apagado no corre nunca.
+  const exploring = settings.explorationEnabled === true && settings.requirePositiveEv === true;
+  const directional = settings.favoriteStrategyEnabled === true ? "favorito" : "direccional";
+  return [
+    { key: "directional", label: exploring ? `${directional} + exploracion` : directional, active: true },
+    { key: "arb", label: "arbitraje", active: settings.arbEnabled === true },
+    { key: "maker", label: "maker", active: settings.makerEnabled === true },
+  ];
+}
+
+const MODE_KEY_BY_STRATEGY: Record<StrategyView["key"], (typeof MODE_KEYS)[number]> = {
+  arb: "arbMode",
+  directional: "directionalMode",
+  maker: "makerMode",
 };
 
 /**
- * Estrategias que operarian en live con este arranque. Replica la herencia del runner: `heredado`
- * toma el modo del arranque, salvo el maker, que cae a sim.
+ * Estrategias ENCENDIDAS que operarian en live con este arranque. Replica la herencia del runner:
+ * `heredado` toma el modo del arranque, salvo el maker, que cae a sim. Una estrategia apagada no mueve
+ * dinero aunque su modo diga live, asi que no pide confirmacion.
  */
-export function liveStrategies(settings: Pick<UiSettings, (typeof MODE_KEYS)[number]>, mode: Mode): string[] {
-  return MODE_KEYS.filter((key) => {
-    const value = settings[key];
-    const resolved = value === "heredado" ? (key === "makerMode" ? "sim" : mode) : value;
-    return resolved === "live";
-  }).map((key) => STRATEGY_LABEL[key]);
+export function liveStrategies(settings: StrategySettings, mode: Mode): string[] {
+  return describeStrategies(settings)
+    .filter((strategy) => {
+      if (!strategy.active) {
+        return false;
+      }
+      const value = settings[MODE_KEY_BY_STRATEGY[strategy.key]];
+      const resolved = value === "heredado" ? (strategy.key === "maker" ? "sim" : mode) : value;
+      return resolved === "live";
+    })
+    .map((strategy) => strategy.label);
 }
 
 function updateChat(update: TelegramUpdate): TelegramChat | undefined {
@@ -486,13 +527,15 @@ function isAuthorized(update: TelegramUpdate, chatId: string | undefined): boole
 }
 
 function anyLive(status: UiStatus): boolean {
-  return Object.values(status.effectiveModes).some((mode) => mode === "live");
+  return describeStrategies(status.settings).some(
+    (strategy) => strategy.active && status.effectiveModes[strategy.key] === "live",
+  );
 }
 
 function helpText(liveControlEnabled: boolean): string {
   return [
     "<b>Polybot</b> — comandos",
-    "/estado — estado y modos efectivos",
+    "/estado — estado y estrategias encendidas",
     "/pnl — P&amp;L sim y live",
     "/trades [n] — ultimos trades",
     "/ajustes — ajustes clave",
@@ -513,12 +556,17 @@ export function formatStatus(status: UiStatus, nowMs: number): string {
   } else {
     lines.push("⏹ Detenido");
   }
-  const modes = status.effectiveModes as unknown as Record<string, Mode>;
+  const strategies = describeStrategies(status.settings);
   lines.push(
-    `Modos: ${Object.entries(modes)
-      .map(([strategy, mode]) => `${STRATEGY_SHORT[strategy] ?? strategy} ${modeBadge(mode)}`)
+    `Estrategias: ${strategies
+      .filter((strategy) => strategy.active)
+      .map((strategy) => `${strategy.label} ${modeBadge(status.effectiveModes[strategy.key])}`)
       .join(" · ")}`,
   );
+  const off = strategies.filter((strategy) => !strategy.active).map((strategy) => strategy.label);
+  if (off.length > 0) {
+    lines.push(`Apagadas: ${off.join(", ")}`);
+  }
   const halt = status.riskHalt;
   if (halt?.tripped) {
     const until = halt.resumeAtMs ? ` hasta ${new Date(halt.resumeAtMs).toISOString().slice(11, 16)} UTC` : "";
@@ -583,24 +631,30 @@ export function formatSettings(settings: UiSettings): string {
   return [
     "<b>⚙️ Ajustes clave</b>",
     `Mercados: ${settings.enabledMarkets.join(", ") || "ninguno"}`,
-    `Modos: arb ${mode(settings.arbMode)} · direccional ${mode(settings.directionalMode)} · maker ${mode(settings.makerMode)}`,
-    `Arbitraje: ${settings.arbEnabled ? "on" : "off"} · Maker: ${settings.makerEnabled ? "on" : "off"}`,
+    `Estrategias: ${describeStrategies(settings)
+      .map((strategy) =>
+        strategy.active ? `${strategy.label} ${mode(settings[MODE_KEY_BY_STRATEGY[strategy.key]])}` : `${strategy.label} off`,
+      )
+      .join(" · ")}`,
     `Stake: sim $${settings.simTradeAmountUsd} · live $${settings.liveTradeAmountUsd}`,
     `Ask max: ${settings.maxAskPrice} · Distancia min: $${settings.minBtcDistanceUsd}`,
-    `Gasto diario max: $${settings.dailySpendLimitUsd} · Perdida diaria max: $${settings.maxDailyLossUsd}`,
-    `Perdidas seguidas max: ${settings.maxConsecutiveLosses} · Objetivo diario: $${settings.dailyProfitTargetUsd}`,
+    `Gasto diario max: ${usdOrOff(settings.dailySpendLimitUsd)} · Perdida diaria max: ${usdOrOff(settings.maxDailyLossUsd)}`,
+    `Perdidas seguidas max: ${settings.maxConsecutiveLosses > 0 ? settings.maxConsecutiveLosses : "sin limite"} · Objetivo diario: ${usdOrOff(settings.dailyProfitTargetUsd)}`,
     "",
     "Para cambiarlos usa la UI (el bot debe estar detenido).",
   ].join("\n");
 }
-
-const STRATEGY_SHORT: Record<string, string> = { arb: "arb", directional: "direccional", maker: "maker" };
 
 const RISK_REASON: Record<string, string> = {
   daily_loss_limit: "perdida diaria maxima",
   consecutive_losses: "perdidas seguidas",
   daily_profit_target: "objetivo del dia cumplido",
 };
+
+/** En los limites de riesgo, 0 significa apagado (la guardia solo actua con `> 0`), no "cero tolerancia". */
+function usdOrOff(value: number): string {
+  return value > 0 ? `$${value}` : "sin limite";
+}
 
 function formatDuration(ms: number): string {
   const minutes = Math.max(0, Math.floor(ms / 60_000));
