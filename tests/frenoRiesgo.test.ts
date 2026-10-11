@@ -107,6 +107,35 @@ describe("simulacion del freno de riesgo", () => {
     expect(simular(candidatas, regla, "America/Mexico_City").n).toBe(3);
   });
 
+  it("el dia del freno es el mismo que el de la agrupacion, tambien pasada la medianoche UTC", () => {
+    // El fallo del 2026-10-10. Con la zona en `undefined`, el simulador agrupaba los dias por la zona del
+    // SISTEMA y el freno cortaba en UTC (`dailySpendKey` trata `undefined` como "legacy UTC"). En Mexico,
+    // desde las 18:00 el freno miraba un "hoy" que ya era mañana en UTC, lo veia casi vacio y dejaba
+    // entrar. `simetria.ts` midio asi el tope de 12 $: el replay con la regla de hoy daba +129 $ cuando,
+    // con la zona explicita, da +73 $.
+    //
+    // Aqui: dos ganadoras a las 16:00 de Mexico (~+1,18 $ cada una a 0,80) cumplen un objetivo de 2 $; las
+    // tres siguientes, a las
+    // 18:10 (00:10 UTC del dia siguiente), son del MISMO dia mexicano y tienen que saltarse.
+    const tarde = DIA + 22 * HORA; // 16:00 en Mexico (UTC-6)
+    const candidatas = [
+      ...serie(tarde, [true, true], "a"),
+      ...serie(DIA + 24 * HORA + 10 * MINUTO, [true, true, true], "b"),
+    ];
+    const regla: Regla = { nombre: "objetivo 2$", limites: { dailyProfitTargetUsd: 2 }, topeGastoDiarioUsd: 0 };
+
+    expect(simular(candidatas, regla, "America/Mexico_City").n).toBe(2);
+  });
+
+  it("sin zona horaria se niega, en vez de mezclar dos dias distintos", () => {
+    // `undefined` no tiene un solo significado en este codigo: `dayKeyInTimeZone` lo lee como la zona
+    // del sistema y `dailySpendKey` como UTC. Quien quiera "auto" tiene que resolverlo a un nombre.
+    const candidatas = serie(DIA + 10 * HORA, [true, false]);
+
+    expect(() => simular(candidatas, SIN_FRENO, undefined as unknown as string)).toThrow(/zona/);
+    expect(() => simular(candidatas, SIN_FRENO, "")).toThrow(/zona/);
+  });
+
   it("el tope de gasto diario corta por importe acumulado y se reinicia al dia siguiente", () => {
     const candidatas = [
       ...serie(DIA + 6 * HORA, [true, true, true, true, true, true], "a"),

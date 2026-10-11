@@ -747,6 +747,13 @@ tests nuevos llevan los otros límites encendidos, por la lección del 21-sep.
 
 #### Cuánto vale el tope: `simetria.ts`
 
+> **⚠️ ESTA TABLA ESTÁ MAL Y SE CONSERVA SOLO COMO REGISTRO.** Se midió con el simulador pasando la zona
+> horaria como `undefined`, que dentro de `simular` significaba dos zonas a la vez: agrupaba los días en
+> Mexico y el freno cortaba en UTC. Desde las 18:00 locales el freno miraba el día siguiente, lo veía
+> vacío y dejaba entrar, así que todos los frenos parecían más baratos de lo que son. **El tope de 12 $
+> se eligió con ella.** Con el simulador corregido ningún tope mejora a no tener tope: ver «La brecha
+> entre el replay y el papel real», más abajo.
+
 Criterio escrito **antes** del dato: candidatos {0, 5, 8, 10, 12, 15, 20} $ sobre la configuración viva
 (racha 2, enfriamiento 2 h, objetivo 8 $); seis tramos cronológicos de **días enteros** con los mismos
 cortes para todos; gana el **mayor peor-tramo**, nunca la media; empate a menos de 0,50 $ → el tope más
@@ -796,6 +803,86 @@ régimen nuevo es el 11 de octubre completo**.
 Un cambio de medición que hay que tener presente al comparar con lo anterior: desde la migración del
 2026-10-03 los días cortan a la medianoche de **America/Mexico_City** (`timezone: auto` en nativo), no a
 la de UTC como en el contenedor. Seis horas de diferencia en dónde termina cada día.
+
+### La brecha entre el replay y el papel real, explicada (2026-10-10)
+
+`simetria.ts` dejó una pregunta abierta: para el mismo periodo (22-sep → 10-oct) el replay con la regla
+de hoy daba +129 $ y el ledger +42,87 $. Todas las decisiones de configuración de este proyecto se han
+tomado con el replay; si rindiera el triple de la realidad, no se sabría cuánto de lo elegido es ventaja
+y cuánto sesgo. **La respuesta tiene tres partes, y ninguna es que el replay esté sesgado.**
+
+**1. El replay es fiel operación a operación.** `brechaReplay.ts` cruza cada entrada del replay con la del
+bot en la misma ventana y descompone la diferencia en una cascada que cuadra al céntimo, siempre con
+`calculateTradePnl`:
+
+| paso | | acumulado |
+|---|---|---|
+| replay sin frenos | | +148,79 |
+| − lo que el replay toma y el bot no (1.014 entradas) | −91,20 | +57,59 |
+| etiqueta: ganador del replay → oficial | 0,00 | +57,59 |
+| precio: ask del replay → ask del bot | −0,13 | +57,46 |
+| lado del replay → lado del bot | 0,00 | +57,46 |
+| resto (comisión, llenado) | −1,70 | +55,76 |
+| + lo que el bot toma y el replay no (12 entradas) | −12,88 | **+42,87 = ledger** |
+
+En las **645 entradas que hacen los dos**: mismo lado 645/645, ninguna etiqueta distinta, ask idéntico en
+la mediana. Descartado también antes de empezar: no hay salidas por stop, ni reentradas, y el precio de
+llenado se separa del mejor ask en 0,0004 de media. **Toda la brecha está en qué entradas se toman.**
+
+**2. Las que el bot no toma las tumban sus frenos.** El bot registra cada salto con su motivo. Para lo que
+cubre el log nativo (3 → 10-oct), de 349 entradas que el replay hace y el bot no, **347 son frenos**: 296 el
+objetivo del día (+42,93 $, acierto 87,2%) y 51 la racha (+5,05 $, 86,3%). Los frenos tiran entradas
+buenas, que es lo que cualquier freno hace si cada entrada tiene ventaja.
+
+**3. El +129 era un fallo del simulador, no del replay.** `simular` usaba la zona en dos sitios que leen
+`undefined` de forma distinta: `dayKeyInTimeZone` como la zona del sistema y `dailySpendKey` —de donde sale
+el día del freno— como UTC. `simetria.ts` le pasaba `undefined` al resolver «auto». Con la zona explícita,
+el replay con los frenos de hoy da **+64,95 $** para el periodo, no +129. Producción nunca tuvo el fallo:
+el bot pasa «auto» sin resolver, y «auto» acaba en la zona del sistema por los dos caminos. Ahora `simular`
+exige un nombre de zona en el tipo y en tiempo de ejecución, y el compilador señaló a `simetria.ts` como
+único llamante afectado.
+
+**Lo que queda (+65 → +43 $) es sensibilidad al camino, y la crea el objetivo.** El 9-oct, `diaDivergente.ts`
+lo enseña fila a fila: a las 02:29 el bot iba en +7,91 $, a 9 centavos del objetivo, e hizo una entrada en
+BTC a 0,790 que el replay no tiene. Perdió −5,07 $. Sin ella, la siguiente (+0,70) cerraba el día en
++8,61 $; con ella el día siguió abierto, bajó hasta −26,66 $ y terminó en −5,30 $ tras 89 entradas. **Una
+operación de 5 $ decidió un día de 14 $ de diferencia.** Con un umbral que cierra el día, cualquier
+diferencia mínima de camino se amplifica.
+
+Esa entrada, además, se creó a **6,9 s del cierre** con un mínimo configurado de 10 s: la guarda mide desde
+el tick que disparó la señal y no desde el reloj, así que un tick con retraso la cuela. Pasa en 3 de 657
+entradas (0,5%); se arregla aparte.
+
+#### Lo que cuestan los frenos y lo que compran: `costeFrenos.ts`
+
+Con el simulador corregido, mismo universo que `simetria.ts` (3.311 entradas, 38 días, America/Mexico_City):
+
+| regla | neto | días verdes | día mediano | peor día | días ≤ −10 | peor tramo |
+|---|---|---|---|---|---|---|
+| sin frenos | **+369,44** | 29/38 | **+9,56** | −34,66 | 4 | −5,17 |
+| solo racha 2 | +306,86 | 29/38 | +9,39 | −19,83 | 7 | **+16,22** |
+| solo objetivo 8 $ | +153,66 | **32/38** | +8,26 | −34,66 | 4 | +8,71 |
+| racha + objetivo (hasta el 10-oct) | +133,25 | 30/38 | +8,25 | −19,83 | 6 | +2,89 |
+| + tope 12 $ (desde el 10-oct) | +113,74 | 29/38 | +8,26 | −17,09 | **9** | −16,18 |
+
+Contra no tener frenos (bootstrap por días): el objetivo solo, **−215,79 $, IC95 [−371, −80], P(>0) 0%**; la
+configuración desde el 10-oct, **−255,70 $, IC95 [−425, −96]**.
+
+Lo que dice, sin adornos:
+
+- **El objetivo cuesta el 58% del neto para ganar 3 días verdes de 38.** No es ruido: el intervalo entero
+  está por debajo de cero. Es una compra de regularidad, y es cara.
+- **El objetivo no protege los días malos**: mismo peor día y mismos días ≤ −10 que sin frenos. Lo
+  anunciaba su propia documentación (punto 3 de `cerrarEnVerde.ts`), y aquí está medido.
+- **La configuración actual está dominada**: cuesta el 69% del neto y deja **los mismos 29 días verdes que
+  no tener frenos**, con más días ≤ −10 (9 frente a 4) porque el tope congela en −12 días que habrían
+  remontado.
+- **La racha sola es la única que mejora el peor tramo** (+16,22 frente a −5,17) y recorta el peor día de
+  −34,66 a −19,83, a un coste que el bootstrap no distingue de cero (P(>0) 12%).
+
+**Esto no decide nada por sí solo.** El objetivo existe porque el dueño quiere cerrar cada día en verde, y
+eso es una preferencia. Lo que la tabla hace es ponerle precio. La decisión queda abierta a la espera del
+dueño; mientras tanto el bot sigue con racha 2, objetivo 8 $ y tope 12 $.
 
 ### ¿Sobra volumen? Filtros de entrada medidos (2026-09-20)
 
@@ -1754,6 +1841,9 @@ Todas en `src/smoke/`, todas de solo lectura:
 | `cerrarEnVerde.ts` | ¿Se puede cerrar cada día en verde, y qué cuesta? Día a día y frontera de objetivos |
 | `filtrosEntrada.ts` | ¿Qué parte del volumen no paga su comisión? Por mercado, tramo de banda y hora |
 | `simetria.ts` | ¿Cuánto debe valer el tope de pérdida del día? Peor tramo de días enteros y bootstrap por días |
+| `brechaReplay.ts` | ¿Por qué el replay y el ledger no dan lo mismo? Cascada que cuadra al céntimo y motivo de cada salto según el log del bot |
+| `diaDivergente.ts` | Un día entrada a entrada: lo que quería el replay, lo que hizo el bot y dónde se separan |
+| `costeFrenos.ts` | ¿Cuánto cuesta cada freno y cuántos días verdes compra? |
 
 > **La analítica ya no cabe en memoria: 1,3 GB entre el archivo y el fichero vivo, 17.812 ventanas.**
 > Cargarla entera con `readAnalyticsSamples` —que devuelve el fichero completo como array— agotó la
