@@ -14,6 +14,8 @@ function trade(args: {
   amountUsd?: number;
   ask?: number;
   resolved?: boolean;
+  /** Ventana del trade. Por defecto, la que acaba 3 s antes del cierre, como en los datos reales. */
+  endMs?: number;
 }): TradeAttempt {
   const ask = args.ask ?? 0.5;
   const base: TradeAttempt = {
@@ -33,7 +35,7 @@ function trade(args: {
     distanceUsd: 10,
     entryWindowSeconds: 30,
     windowStartMs: 1,
-    endMs: 2,
+    endMs: args.endMs ?? (args.resolvedAtMs ?? NOW) - 3_000,
     createdAtMs: (args.resolvedAtMs ?? NOW) - 60_000,
   };
   if (args.resolved === false) {
@@ -84,6 +86,54 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(status.tripped).toBe(true);
     expect(status.reason).toBe("daily_loss_limit");
     expect(status.dailyLossUsd).toBeGreaterThanOrEqual(25);
+  });
+
+  describe("trades que cierran en la misma ventana", () => {
+    // 2026-10-11 16:55 UTC: DOGE gano y ETH perdio en el mismo milisegundo, tras una perdida a las 16:25.
+    const ventana = NOW - 3_000;
+    const previa = trade({ id: "previa", won: false, resolvedAtMs: NOW - 30 * 60_000 });
+    const gana = trade({ id: "doge", won: true, resolvedAtMs: NOW, endMs: ventana, ask: 0.9, amountUsd: 1 });
+    const pierde = trade({ id: "eth", won: false, resolvedAtMs: NOW, endMs: ventana, ask: 0.9, amountUsd: 1 });
+    const limits = { maxConsecutiveLosses: 2 };
+
+    it("no depende del orden de la lista", () => {
+      const a = evaluateRiskCircuitBreaker([previa, gana, pierde], "sim", limits, NOW);
+      const b = evaluateRiskCircuitBreaker([previa, pierde, gana], "sim", limits, NOW);
+      expect(a).toEqual(b);
+    });
+
+    it("cuenta la ventana como UNA perdida cuando su neto es negativo", () => {
+      // +$0.11 de DOGE no compensa -$1 de ETH: la ventana pierde y la racha llega a 2.
+      const status = evaluateRiskCircuitBreaker([previa, gana, pierde], "sim", limits, NOW);
+      expect(status.tripped).toBe(true);
+      expect(status.consecutiveLosses).toBe(2);
+      expect(status.streakAtTrip).toBe(2);
+    });
+
+    it("cuenta la ventana como ganancia cuando su neto es positivo", () => {
+      const grande = trade({ id: "doge", won: true, resolvedAtMs: NOW, endMs: ventana, ask: 0.5, amountUsd: 5 });
+      const status = evaluateRiskCircuitBreaker([previa, pierde, grande], "sim", limits, NOW);
+      expect(status.tripped).toBe(false);
+      expect(status.consecutiveLosses).toBe(0);
+    });
+
+    it("agrupa cierres de la misma ventana separados por menos de un minuto", () => {
+      const tarde = trade({ id: "eth", won: false, resolvedAtMs: NOW + 1_200, endMs: ventana, ask: 0.9, amountUsd: 1 });
+      const status = evaluateRiskCircuitBreaker([previa, gana, tarde], "sim", limits, NOW + 2_000);
+      expect(status.consecutiveLosses).toBe(2);
+    });
+  });
+
+  it("reports the streak at the trip even after a later win resets the current streak", () => {
+    const trades = [
+      trade({ id: "l1", won: false, resolvedAtMs: NOW - 3000 }),
+      trade({ id: "l2", won: false, resolvedAtMs: NOW - 2000 }),
+      trade({ id: "w", won: true, resolvedAtMs: NOW - 1000 }),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 2, cooldownHours: 2 }, NOW);
+    expect(status.tripped).toBe(true);
+    expect(status.consecutiveLosses).toBe(0);
+    expect(status.streakAtTrip).toBe(2);
   });
 
   it("trips on consecutive losses (most recent trades)", () => {

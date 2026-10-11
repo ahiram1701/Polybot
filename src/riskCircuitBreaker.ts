@@ -49,6 +49,12 @@ export interface RiskHaltStatus {
   /** Lo realizado hoy, con signo. Positivo es ganancia: es lo que mira el objetivo diario. */
   dailyNetUsd: number;
   consecutiveLosses: number;
+  /**
+   * La racha en el momento en que salto el freno. `consecutiveLosses` es la racha de AHORA: si despues
+   * del disparo cierra algo en verde vuelve a 0, y el aviso decia "0 perdidas seguidas" de un freno que
+   * salto por 2. Solo presente cuando el freno salto por racha.
+   */
+  streakAtTrip?: number;
   // When a cooldown-based halt will auto-re-arm (epoch ms). Absent when not tripped or in legacy mode.
   resumeAtMs?: number;
 }
@@ -149,6 +155,7 @@ export function evaluateRiskCircuitBreaker(
         dailyLossUsd: perdidaDelDia,
         dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
+        ...(evaluation.tripped ? { streakAtTrip: evaluation.streakAtTrip } : {}),
       };
     }
     const resumeAtMs = evaluation.trippedAtMs + cooldownMs;
@@ -159,6 +166,7 @@ export function evaluateRiskCircuitBreaker(
         dailyLossUsd: perdidaDelDia,
         dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
+        streakAtTrip: evaluation.streakAtTrip,
         resumeAtMs,
       };
     }
@@ -166,30 +174,70 @@ export function evaluateRiskCircuitBreaker(
   }
 }
 
+/** Margen para considerar que dos trades de la misma ventana cerraron "a la vez". */
+const CIERRE_CONJUNTO_MS = 60_000;
+
+/**
+ * Agrupa los trades que cierran JUNTOS: misma ventana (`endMs`) y cierre a menos de un minuto.
+ *
+ * Con tres mercados de 5 min, varios trades resuelven en el mismo instante y su orden relativo es el de
+ * la lista que llegue. Recorrerlos uno a uno hacia que la racha dependiera de ese orden: el 2026-10-11 a
+ * las 16:55 UTC cerraron DOGE (gano) y ETH (perdio) en el mismo milisegundo; el bot los vio
+ * perdida-perdida-ganancia y freno el direccional 2 h, mientras la UI, con la lista al reves, los vio
+ * perdida-ganancia-perdida y decia que no habia freno. Ahora la ventana es UNA unidad: su neto decide.
+ *
+ * El margen y no la igualdad exacta porque en 6 de 92 ventanas reales los cierres se separaron hasta
+ * ~1,2 s. Una salida anticipada cierra minutos antes del final y queda como suceso propio.
+ */
+function agruparCierresConjuntos(trades: TradeAttempt[]): { closedAtMs: number; netUsd: number }[] {
+  const grupos: { endMs: number; firstClosedAtMs: number; closedAtMs: number; netUsd: number }[] = [];
+  for (const trade of trades) {
+    const closedAtMs = tradeClosedAtMs(trade) ?? 0;
+    const netUsd = calculateTradePnl(trade).netUsd ?? 0;
+    let grupo: (typeof grupos)[number] | undefined;
+    for (let index = grupos.length - 1; index >= 0 && !grupo; index -= 1) {
+      const candidato = grupos[index];
+      if (candidato.endMs === trade.endMs && closedAtMs - candidato.firstClosedAtMs <= CIERRE_CONJUNTO_MS) {
+        grupo = candidato;
+      }
+    }
+    if (grupo) {
+      grupo.netUsd += netUsd;
+      grupo.closedAtMs = Math.max(grupo.closedAtMs, closedAtMs);
+    } else {
+      grupos.push({ endMs: trade.endMs, firstClosedAtMs: closedAtMs, closedAtMs, netUsd });
+    }
+  }
+  return grupos.sort((left, right) => left.closedAtMs - right.closedAtMs);
+}
+
 function evaluarRacha(
   resolvedToday: TradeAttempt[],
   limits: RiskLimits,
   baselineMs: number,
-): { tripped: boolean; trippedAtMs: number; consecutiveLosses: number } {
+): { tripped: boolean; trippedAtMs: number; consecutiveLosses: number; streakAtTrip: number } {
   // Solo la RACHA. Los dos limites del dia se evaluan fuera, sobre el dia entero, porque esta funcion se
   // llama con la linea base ya avanzada por los re-armados y les enseñaria solo un trozo del dia.
   const maxConsecutiveLosses = limits.maxConsecutiveLosses ?? 0;
   const counted = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > baselineMs);
 
   // Walk chronologically so we know the exact moment the streak crossed (the cooldown anchors there).
+  // Cada paso es una ventana, no un trade: ver `agruparCierresConjuntos`. Un grupo de un solo trade se
+  // juzga igual que antes (`isWinningTrade` es neto > 0).
   let consecutiveLosses = 0;
   let tripped = false;
   let trippedAtMs = 0;
-  for (const trade of counted) {
-    // A profitable arbitrage must not extend a losing streak just because its nominal side lost.
-    consecutiveLosses = isWinningTrade(trade) ? 0 : consecutiveLosses + 1;
+  let streakAtTrip = 0;
+  for (const grupo of agruparCierresConjuntos(counted)) {
+    consecutiveLosses = grupo.netUsd > 0 ? 0 : consecutiveLosses + 1;
     if (!tripped && maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
       tripped = true;
-      trippedAtMs = tradeClosedAtMs(trade) ?? 0;
+      trippedAtMs = grupo.closedAtMs;
+      streakAtTrip = consecutiveLosses;
     }
   }
 
-  return { tripped, trippedAtMs, consecutiveLosses };
+  return { tripped, trippedAtMs, consecutiveLosses, streakAtTrip };
 }
 
 /**

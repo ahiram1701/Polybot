@@ -1507,7 +1507,8 @@ export class BotRunner {
     const body =
       status.reason === "daily_loss_limit"
         ? `Perdida diaria $${status.dailyLossUsd.toFixed(2)} (modo ${this.config.mode}).`
-        : `${status.consecutiveLosses} perdidas seguidas (modo ${this.config.mode}).`;
+        : // La racha del DISPARO, no la de ahora: un verde posterior la deja en 0 y el aviso mentia.
+          `${status.streakAtTrip ?? status.consecutiveLosses} perdidas seguidas (modo ${this.config.mode}).`;
     void this.deps.notifier?.notify({
       key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}:${status.reason}`,
       mode: this.modeFor("dir"),
