@@ -3,7 +3,8 @@ import { installHttpKeepAlive } from "../httpAgent.js";
 import { installNoisyConsoleAggregator } from "../noisyConsole.js";
 import { logger } from "../logger.js";
 import { iniciarLatido } from "../latido.js";
-import { createDynamicNotifier } from "../notifier.js";
+import { createDynamicNotifier, TelegramNotificationStore } from "../notifier.js";
+import { TelegramCommandBot } from "../telegram/commandBot.js";
 import { BotController } from "./controller.js";
 import { createUiApp } from "./server.js";
 
@@ -20,9 +21,14 @@ async function main(): Promise<void> {
   const staticClient = process.argv.includes("--static");
   const autoStartMode = getAutoStartMode(process.argv);
   const { config } = loadConfig(["--mode", "sim"]);
+  // Un solo notifier por proceso: con dos, cada uno llevaba su propio buffer de digest y los avisos
+  // del controlador y los de arranque salian en resumenes distintos.
   const notifier = createDynamicNotifier(config);
-  const controller = new BotController(config);
+  const controller = new BotController(config, { notifier });
   const app = createUiApp(controller, { staticClient });
+  // Comandos entrantes. Arranca siempre y se queda en espera mientras `commandsEnabled` este apagado o
+  // falte token/chat: asi activarlo desde la UI no exige reiniciar.
+  const telegramCommands = new TelegramCommandBot(new TelegramNotificationStore(config.dataDir, config), controller);
 
   if (!staticClient) {
     const { createServer: createViteServer } = await import("vite");
@@ -61,6 +67,7 @@ async function main(): Promise<void> {
     });
     // El flag de linea de comandos O el ajuste persistido. Solo "sim" por diseño: live siempre lo
     // arranca el usuario, asi que un reinicio automatico nunca puede acabar moviendo dinero real.
+    telegramCommands.start();
     const autoStartFromSettings = (await controller.getSettings()).autoStartSimOnBoot === true;
     if (autoStartMode === "sim" || autoStartFromSettings) {
       controller.start("sim").catch((error) => {
@@ -78,6 +85,7 @@ async function main(): Promise<void> {
   });
 
   const shutdown = () => {
+    void telegramCommands.stop();
     controller.dispose();
     server.close();
   };

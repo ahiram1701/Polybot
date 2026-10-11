@@ -207,6 +207,16 @@ paths:
                 botToken: { type: string }
                 chatId: { type: string }
                 publicUrl: { type: string }
+                digestEnabled: { type: boolean }
+                digestIntervalMinutes: { type: integer, minimum: 5 }
+                dailyReportEnabled: { type: boolean }
+                dailyReportHour: { type: integer, minimum: 0, maximum: 23 }
+                commandsEnabled:
+                  type: boolean
+                  description: Atiende comandos (/estado, /arrancar...) desde chatId. Por defecto true.
+                liveControlEnabled:
+                  type: boolean
+                  description: Permite arrancar en live desde Telegram (boton + codigo). Por defecto false; dinero real.
       responses:
         "200":
           description: Config resultante

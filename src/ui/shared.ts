@@ -336,6 +336,10 @@ export interface TelegramNotificationSettings {
   // Reporte diario a la hora configurada (tz-aware).
   dailyReportEnabled: boolean;
   dailyReportHour: number;
+  // Comandos entrantes desde el chat configurado.
+  commandsEnabled: boolean;
+  // Arrancar en live desde Telegram (doble confirmacion). Apagado por defecto.
+  liveControlEnabled: boolean;
 }
 
 export interface TelegramNotificationPatch {
@@ -347,6 +351,8 @@ export interface TelegramNotificationPatch {
   digestIntervalMinutes?: number;
   dailyReportEnabled?: boolean;
   dailyReportHour?: number;
+  commandsEnabled?: boolean;
+  liveControlEnabled?: boolean;
 }
 
 export interface TelegramNotificationTestResponse {

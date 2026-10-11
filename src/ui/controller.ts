@@ -283,7 +283,7 @@ export class BotController {
     this.recommendationEngine = deps.recommendationEngine ?? new RecommendationEngine(baseConfig.dataDir);
     this.telegramStore = new TelegramNotificationStore(baseConfig.dataDir, baseConfig, this.env);
     this.notifier = deps.notifier ?? createDynamicNotifier(baseConfig, { fetchFn: deps.fetch, env: this.env });
-    this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config, { priceFeed: this.priceFeed }));
+    this.runnerFactory = deps.runnerFactory ?? ((config) => BotRunner.create(config, { priceFeed: this.priceFeed, notifier: this.notifier }));
     this.snapshotProvider = deps.snapshotProvider;
     this.fetchImpl = deps.fetch ?? fetch;
     this.unsubscribeLogger = logger.subscribe((entry) => this.pushLog(entry));

@@ -504,7 +504,7 @@ export class BotRunner {
     private readonly deps: BotDependencies,
   ) {}
 
-  static create(config: BotConfig, overrides: { priceFeed?: RunnerPriceFeed } = {}): BotRunner {
+  static create(config: BotConfig, overrides: { priceFeed?: RunnerPriceFeed; notifier?: Notifier } = {}): BotRunner {
     return new BotRunner(config, {
       watcher: new MarketWatcher(config.gammaHost),
       orderbook: OrderbookService.create(config.clobHost),
@@ -528,7 +528,9 @@ export class BotRunner {
       },
       analyticsRecorder: new AnalyticsRecorder(config.dataDir, config.maxAnalyticsSamples),
       strategyAnalysisEngine: new StrategyAnalysisEngine(config.dataDir),
-      notifier: createDynamicNotifier(config),
+      // El del proceso cuando lo hay: uno nuevo por arranque perdia los trades guardados para el digest
+      // en cada parada y dejaba otro temporizador vivo.
+      notifier: overrides.notifier ?? createDynamicNotifier(config),
       // Se lee en AMBOS modos aunque la guardia solo actue en live: el saldo real es lo que hay que
       // mirar mientras el arbitraje hace crecer el capital hacia el umbral, y en sim es cuando mas se
       // mira la pantalla. Es una lectura cacheada a 60s, no pesa.
@@ -643,6 +645,7 @@ export class BotRunner {
     });
     await this.deps.notifier?.notify({
       key: `bot-started:${this.config.mode}`,
+      mode: this.anyStrategyLive() ? "live" : "sim",
       title: "Bot iniciado",
       body: `Modo: ${this.config.mode}. Mercados trading: ${this.config.enabledMarkets.join(", ") || "ninguno"}. Analitica: ${SUPPORTED_MARKETS.join(", ")}.`,
     });
@@ -1479,6 +1482,7 @@ export class BotRunner {
   private async notifyStopped(): Promise<void> {
     await this.deps.notifier?.notify({
       key: `bot-stopped:${this.config.mode}`,
+      mode: this.anyStrategyLive() ? "live" : "sim",
       title: "Bot detenido",
       body: `Modo: ${this.config.mode}.`,
     });
@@ -1490,6 +1494,7 @@ export class BotRunner {
     if (status.reason === "daily_profit_target") {
       void this.deps.notifier?.notify({
         key: `dia-cerrado:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}`,
+        mode: this.modeFor("dir"),
         level: "info",
         title: "Objetivo del dia cumplido",
         body:
@@ -1505,6 +1510,7 @@ export class BotRunner {
         : `${status.consecutiveLosses} perdidas seguidas (modo ${this.config.mode}).`;
     void this.deps.notifier?.notify({
       key: `risk-halt:${this.config.mode}:${dailySpendKey(nowMs, this.config.timezone)}:${status.reason}`,
+      mode: this.modeFor("dir"),
       level: "warn",
       title: "Circuit breaker de riesgo activado",
       // Con enfriamiento configurado el freno NO dura hasta el proximo dia: se re-arma a las
@@ -2035,6 +2041,7 @@ export class BotRunner {
     await this.deps.notifier?.notify({
       key: `trade-exit:${trade.id}`,
       category: "trade",
+      mode: trade.mode,
       level: "warn",
       title: plan.motivo === "certeza_perdida" ? "Salida: ventaja perdida" : "Salida: desplome del libro",
       body: [
@@ -2819,6 +2826,11 @@ export class BotRunner {
     return (strategy === "arb" ? this.config.arbMode : this.config.directionalMode) ?? this.config.mode;
   }
 
+  /** Si alguna estrategia opera con dinero real. Es lo que importa al leer un aviso en el movil. */
+  private anyStrategyLive(): boolean {
+    return (["arb", "dir", "maker"] as const).some((strategy) => this.modeFor(strategy) === "live");
+  }
+
   /** Ejecutor del modo pedido. Cae al inyectado cuando no hay uno por modo (dobles de test). */
   private executorFor(mode: Mode): TradeExecutor {
     return this.deps.executorByMode?.[mode] ?? this.deps.executor;
@@ -3275,6 +3287,7 @@ export class BotRunner {
           });
           await this.deps.notifier?.notify({
             key: `arb-naked:${arbSlug}`,
+            mode: this.modeFor("arb"),
             level: "warn",
             title: "Arbitraje incompleto",
             body: `${market.asset}: solo la pata ${thinFirst[0]} llenó (${sets} sets). Queda posición direccional.`,
@@ -3332,6 +3345,7 @@ export class BotRunner {
     });
     await this.deps.notifier?.notify({
       key: `arb-executed:${arbSlug}`,
+      mode: this.modeFor("arb"),
       title: "Arbitraje ejecutado",
       body: [
         `${market.asset}: ${filledSets} sets a $${pairCost.toFixed(3)} el par.`,
@@ -3602,6 +3616,8 @@ export class BotRunner {
     await this.deps.notifier?.notify({
       key: `trade-resolved:${trade.id ?? trade.slug}`,
       category: "trade",
+      mode: trade.mode,
+      netUsd: pnl.netUsd ?? undefined,
       level: arbPair || resolution.won ? "info" : "warn",
       title: arbPair ? "Arbitraje liquidado" : resolution.won ? "Trade ganado" : "Trade perdido",
       body: [

@@ -216,12 +216,16 @@ export function createPolybotMcpServer(client: PolybotClient, options: PolybotMc
     server.registerTool(
       "polybot_update_telegram",
       {
-        description: "Actualiza la configuracion de Telegram (enabled, botToken, chatId, publicUrl).",
+        description:
+          "Actualiza la configuracion de Telegram (enabled, botToken, chatId, publicUrl, commandsEnabled). " +
+          "liveControlEnabled=true permite arrancar en live desde el chat: no lo actives sin que el usuario lo pida.",
         inputSchema: {
           enabled: z.boolean().optional(),
           botToken: z.string().optional(),
           chatId: z.string().optional(),
           publicUrl: z.string().optional(),
+          commandsEnabled: z.boolean().optional(),
+          liveControlEnabled: z.boolean().optional(),
         },
       },
       async (patch) => guard(() => client.updateTelegram(patch)),

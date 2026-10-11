@@ -95,6 +95,22 @@ curl -X PATCH http://127.0.0.1:8787/api/settings -H 'Content-Type: application/j
 curl -X POST http://127.0.0.1:8787/api/bot/start -H 'Content-Type: application/json' -d '{"mode":"sim"}'
 ```
 
+## Vía 4 — Telegram (para la persona, desde el móvil)
+
+El servidor de Polybot lee los comandos del chat con long polling (`getUpdates`), así que no hace falta
+URL pública ni abrir puertos. Se configura en la UI → panel Telegram (token, Chat ID, «Comandos desde
+Telegram»).
+
+`/estado`, `/pnl`, `/trades [n]`, `/ajustes`, `/arrancar sim`, `/arrancar live`, `/detener`, `/ayuda`.
+
+- **Solo responde al `chatId` configurado.** Si el Chat ID es de un grupo, cualquiera en el grupo puede mandar comandos.
+- Al arrancar se **descartan los mensajes pendientes**: un `/arrancar` escrito con el proceso caído no se ejecuta después.
+- **Arrancar con dinero real** (`/arrancar live`, o un `/arrancar sim` con alguna estrategia en `live`)
+  requiere `liveControlEnabled: true` (por defecto **false**), un botón y un código de 4 dígitos
+  (`CONFIRMO LIVE 1234`) de un solo intento que caduca a los 60 s. Un agente **no** debe activar
+  `liveControlEnabled` sin que el usuario lo pida.
+- Un solo token = un solo proceso haciendo polling. Si Telegram responde `409`, hay otro Polybot (o un webhook) usando el mismo bot.
+
 ## Endpoints (referencia rápida)
 
 | Método | Ruta | Propósito | Notas |
