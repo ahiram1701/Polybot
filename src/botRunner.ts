@@ -328,6 +328,11 @@ interface BotDependencies {
   notifier?: Notifier;
   /** Lee el colateral real on-chain. Ausente = la guardia de capital usa el valor declarado. */
   bankrollSource?: BankrollSource;
+  /**
+   * Reloj de pared, solo para medir cuanto avanza DENTRO de una iteracion (ver `ahoraMs`). Ausente =
+   * `Date.now`. Los tests lo inyectan para simular una cotizacion lenta.
+   */
+  now?: () => number;
 }
 
 interface TradeSignal {
@@ -491,6 +496,8 @@ export class BotRunner {
    * cada uno se quedaria sin la mitad de sus sondeos sin que nada lo dijera.
    */
   private readonly lastFavoriteScanMs = new Map<string, number>();
+  /** Ancla de `ahoraMs`: el `nowMs` de la iteracion en curso y el reloj de pared en ese momento. */
+  private relojIteracion?: { nowMs: number; paredMs: number };
 
   constructor(
     private readonly config: BotConfig,
@@ -705,6 +712,7 @@ export class BotRunner {
     // El cronometro se crea AQUI, no dentro de runIteration: si la iteracion lanza, lo medido hasta el
     // fallo se registra igual. Antes una iteracion que reventaba publicaba fases a cero.
     const timer = new PhaseTimer();
+    this.relojIteracion = { nowMs, paredMs: this.paredMs() };
     let failed = false;
     try {
       await this.runIteration(nowMs, timer);
@@ -2236,17 +2244,7 @@ export class BotRunner {
       // The CLOB already rejected takers for this window; don't even quote.
       return undefined;
     }
-    const minSecondsToEnd = this.config.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END;
-    // Desde el tick que disparo la senal, no del reloj de pared: es el instante que realmente estamos
-    // evaluando (y hace la guardia testeable con un reloj inyectado).
-    const secondsToEnd = (signal.market.endMs - signal.tick.timestampMs) / 1000;
-    if (minSecondsToEnd > 0 && secondsToEnd < minSecondsToEnd) {
-      this.logSkipOnce(signal.market.slug, "too_close_to_close", {
-        market: signal.market.asset,
-        outcome: signal.outcome,
-        secondsToEnd: Math.round(secondsToEnd * 10) / 10,
-        minSecondsToEnd,
-      });
+    if (this.demasiadoCercaDelCierre(signal)) {
       return undefined;
     }
     const token = signal.market.outcomes[signal.outcome];
@@ -2352,6 +2350,52 @@ export class BotRunner {
     return { ...signal, quote, expectedValue: evResult.expectedValue, exploration: evResult.exploration };
   }
 
+  /**
+   * Si a la entrada le quedan menos de `minSecondsToEndForEntry` hasta el cierre.
+   *
+   * Se mide de DOS formas y basta con que una lo diga. Desde el tick que disparo la senal, que es el
+   * instante que realmente se evalua. Y desde el reloj (`ahoraMs`), porque el tick puede llegar con
+   * retraso y entre la senal y la orden van la cotizacion y el gate de EV: con solo el tick, la guarda
+   * veia 10 s y la operacion se creaba a 6,9 s (btc-updown-5m-1791534300, 2026-10-09, -5,07 $).
+   */
+  private demasiadoCercaDelCierre(signal: TradeSignal): boolean {
+    const minSecondsToEnd = this.config.minSecondsToEndForEntry ?? DEFAULT_MIN_SECONDS_TO_END;
+    if (minSecondsToEnd <= 0) {
+      return false;
+    }
+    const porTick = (signal.market.endMs - signal.tick.timestampMs) / 1000;
+    const ahora = this.ahoraMs();
+    const porReloj = ahora === undefined ? porTick : (signal.market.endMs - ahora) / 1000;
+    const secondsToEnd = Math.min(porTick, porReloj);
+    if (secondsToEnd >= minSecondsToEnd) {
+      return false;
+    }
+    this.logSkipOnce(signal.market.slug, "too_close_to_close", {
+      market: signal.market.asset,
+      outcome: signal.outcome,
+      secondsToEnd: Math.round(secondsToEnd * 10) / 10,
+      tickSecondsToEnd: Math.round(porTick * 10) / 10,
+      minSecondsToEnd,
+    });
+    return true;
+  }
+
+  /**
+   * El reloj del runner: el `nowMs` de la iteracion mas lo que el reloj de pared ha avanzado desde que
+   * empezo. En produccion `nowMs` ya es `Date.now()`, asi que es la hora real; en los tests, que pasan
+   * un `nowMs` fijo, avanza solo lo que el reloj inyectado diga. Fuera de una iteracion no hay ancla.
+   */
+  private ahoraMs(): number | undefined {
+    if (!this.relojIteracion) {
+      return undefined;
+    }
+    return this.relojIteracion.nowMs + (this.paredMs() - this.relojIteracion.paredMs);
+  }
+
+  private paredMs(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
   private async executeTradeCandidates(candidates: TradeCandidate[]): Promise<void> {
     if (candidates.length === 0) {
       return;
@@ -2360,6 +2404,11 @@ export class BotRunner {
     for (const candidate of candidates) {
       if (this.postOnlySlugs.has(candidate.market.slug)) {
         // A sibling candidate in this same batch already hit the post-only rejection.
+        continue;
+      }
+      // Otra vez, ya con la cotizacion y el gate de EV hechos, y tras las ordenes de los candidatos
+      // anteriores de este mismo lote: es lo ultimo antes de mandar la orden.
+      if (this.demasiadoCercaDelCierre(candidate)) {
         continue;
       }
       const result = await this.executeTradeCandidate(candidate);
