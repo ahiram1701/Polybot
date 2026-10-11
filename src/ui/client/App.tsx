@@ -2366,7 +2366,7 @@ export function SettingsPanel({
             onChange={(value) => update("dailyProfitTargetUsd", value)}
           />
           <NumberField
-            label="Cooldown del freno (horas)"
+            label="Enfriamiento de la racha (horas)"
             value={draft.riskHaltCooldownHours}
             min={0}
             step={0.5}
@@ -2430,10 +2430,11 @@ export function SettingsPanel({
           </label>
         </div>
         <p className="settings-hint">
-          Circuit breaker (0 = desactivado). Si la pérdida realizada del día (según la zona horaria
-          configurada) o la racha de pérdidas cruza el límite, el <strong>direccional</strong> deja de
-          operar y rearma solo pasado el <em>enfriamiento</em> de abajo — no espera al día siguiente.
-          Sigue observando para analítica.
+          Circuit breaker (0 = desactivado). Si la <strong>racha</strong> de pérdidas cruza su límite, el
+          <strong> direccional</strong> deja de operar y rearma solo pasado el <em>enfriamiento</em>. La
+          <strong> pérdida del día</strong> y el <strong>objetivo del día</strong> se miden sobre el día entero
+          (según la zona horaria configurada) y paran hasta el día siguiente: ni el enfriamiento los rearma
+          ni se sueltan si el día cambia de signo después. Sigue observando para analítica.
           <br />
           <strong>No frena el arbitraje</strong>, y es deliberado: sus dos disparadores miden riesgo
           direccional, y un par completo redime $1 por set gane quien gane. Pararlo tras un día malo

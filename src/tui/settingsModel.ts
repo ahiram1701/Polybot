@@ -114,7 +114,7 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
   {
     key: "maxDailyLossUsd",
     label: "Pérdida diaria máx",
-    help: "Para el DIRECCIONAL si la pérdida realizada del día lo cruza. 0 = desactivado. No frena el arbitraje.",
+    help: "Para el DIRECCIONAL hasta mañana si la pérdida del día lo cruza. 0 = desactivado. No frena el arbitraje.",
     min: 0,
     format: fmtUsd,
   },
@@ -135,8 +135,8 @@ const RISK_FIELDS: readonly RiskFieldSpec[] = [
   },
   {
     key: "riskHaltCooldownHours",
-    label: "Enfriamiento (horas)",
-    help: "Tras saltar el freno, cuánto espera antes de rearmarse. No espera al día siguiente.",
+    label: "Enfriamiento racha (h)",
+    help: "Cuánto espera la RACHA antes de rearmarse. La pérdida del día y el objetivo duran hasta mañana.",
     min: 0,
     format: (v) => `${v} h`,
   },

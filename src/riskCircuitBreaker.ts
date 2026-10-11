@@ -3,6 +3,17 @@ import { dailySpendKey, localDayRange } from "./time.js";
 import type { Mode, TradeAttempt } from "./types.js";
 
 export interface RiskLimits {
+  /**
+   * Tope de perdida del dia: cuando lo PERDIDO hoy llega a esto, se deja de entrar hasta mañana.
+   *
+   * Es el espejo del objetivo y se comporta igual que el: sobre el dia ENTERO desde el reinicio manual,
+   * sin enfriamiento, y sin soltarse si lo que seguia abierto recupera el dia despues.
+   *
+   * Hasta el 2026-10-10 vivia dentro del bucle de re-armado, y con `cooldownHours: 2` no era un tope del
+   * dia sino de cada tramo de 2 h: al re-armarse empezaba de cero y dejaba perder el tope varias veces.
+   * Con el objetivo en +8 $ eso dio dias verdes de +9,32 $ de media y rojos de -11,18 $, el peor en
+   * -28,53 $. Los dos limites se llamaban "diarios" y solo uno lo era.
+   */
   maxDailyLossUsd?: number;
   maxConsecutiveLosses?: number;
   /**
@@ -21,9 +32,9 @@ export interface RiskLimits {
    * buenas. Lo que compra es regularidad, y se paga en media. Medido en `cerrarEnVerde.ts`.
    */
   dailyProfitTargetUsd?: number;
-  // Hours the halt lasts after tripping; the breaker then RE-ARMS ITSELF with a clean slate (losses
+  // Hours the STREAK halt lasts after tripping; it then RE-ARMS ITSELF with a clean slate (losses
   // before the re-arm moment stop counting, exactly like a manual reset). 0 = legacy behavior: halted
-  // for the rest of the day.
+  // for the rest of the day. The two DAILY limits (loss cap and profit target) never use it.
   cooldownHours?: number;
   // Timezone defining the metrics day (undefined = legacy UTC cut).
   timeZone?: string;
@@ -91,39 +102,51 @@ export function evaluateRiskCircuitBreaker(
   //
   // Lo unico que mueve la linea base del objetivo es un reinicio MANUAL (`haltResetAtMs`), que es lo que
   // significa "empezar a contar de nuevo".
+  //
+  // EL TOPE DE PERDIDA DEL DIA VIVE AQUI POR LA MISMA RAZON, desde el 2026-10-10. Dentro del bucle, cada
+  // re-armado de la racha le ponia la cuenta a cero y el "tope diario" pasaba a ser un tope por tramo de
+  // 2 h. Son los dos limites que hablan del DIA, y los dos se miden igual.
+  //
+  // Si se cruzan los dos, manda el que llego ANTES: es el motivo real de que el dia dejara de operar.
   const objetivoUsd = limits.dailyProfitTargetUsd ?? 0;
+  const topePerdidaUsd = limits.maxDailyLossUsd ?? 0;
   const delDia = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > haltResetAtMs);
   let netoDelDia = 0;
-  let objetivoAlcanzado = false;
+  let diaCerrado: RiskHaltReason | undefined;
   for (const trade of delDia) {
     netoDelDia += calculateTradePnl(trade).netUsd ?? 0;
-    // Recorrer el dia entero es lo que hace que no se suelte: una vez alcanzado, da igual que el neto
-    // baje despues.
-    if (objetivoUsd > 0 && netoDelDia >= objetivoUsd) {
-      objetivoAlcanzado = true;
+    // Recorrer el dia entero es lo que hace que no se suelte: una vez cruzado, da igual lo que haga el
+    // neto despues.
+    if (diaCerrado === undefined) {
+      if (topePerdidaUsd > 0 && -netoDelDia >= topePerdidaUsd) {
+        diaCerrado = "daily_loss_limit";
+      } else if (objetivoUsd > 0 && netoDelDia >= objetivoUsd) {
+        diaCerrado = "daily_profit_target";
+      }
     }
   }
+  // Lo que la pantalla llama "perdida hoy": la del DIA, nunca la del trozo desde el ultimo re-armado.
+  const perdidaDelDia = Math.max(0, -netoDelDia);
 
-  // Baseline: losses before a manual reset never count. With a cooldown, every trip whose cooldown has
-  // already elapsed also advances the baseline (auto re-arm), possibly several times in one day.
+  // Baseline: losses before a manual reset never count. With a cooldown, every STREAK trip whose cooldown
+  // has already elapsed also advances the baseline (auto re-arm), possibly several times in one day.
   let baseline = haltResetAtMs;
   for (;;) {
-    const evaluation = evaluateFromBaseline(resolvedToday, limits, baseline);
-    if (objetivoAlcanzado) {
+    const evaluation = evaluarRacha(resolvedToday, limits, baseline);
+    if (diaCerrado !== undefined) {
       return {
         tripped: true,
-        reason: "daily_profit_target",
-        dailyLossUsd: Math.max(0, -netoDelDia),
+        reason: diaCerrado,
+        dailyLossUsd: perdidaDelDia,
         dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
       };
     }
-    if (!evaluation.reason || cooldownMs === 0) {
+    if (!evaluation.tripped || cooldownMs === 0) {
       return {
-        tripped: evaluation.reason !== undefined,
-        reason: evaluation.reason,
-        dailyLossUsd: evaluation.dailyLossUsd,
-        // El neto del DIA, no el del trozo desde el ultimo re-armado: la pantalla dice "hoy".
+        tripped: evaluation.tripped,
+        reason: evaluation.tripped ? "consecutive_losses" : undefined,
+        dailyLossUsd: perdidaDelDia,
         dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
       };
@@ -132,9 +155,8 @@ export function evaluateRiskCircuitBreaker(
     if (nowMs < resumeAtMs) {
       return {
         tripped: true,
-        reason: evaluation.reason,
-        dailyLossUsd: evaluation.dailyLossUsd,
-        // El neto del DIA, no el del trozo desde el ultimo re-armado: la pantalla dice "hoy".
+        reason: "consecutive_losses",
+        dailyLossUsd: perdidaDelDia,
         dailyNetUsd: netoDelDia,
         consecutiveLosses: evaluation.consecutiveLosses,
         resumeAtMs,
@@ -144,48 +166,30 @@ export function evaluateRiskCircuitBreaker(
   }
 }
 
-function evaluateFromBaseline(
+function evaluarRacha(
   resolvedToday: TradeAttempt[],
   limits: RiskLimits,
   baselineMs: number,
-): {
-  reason?: RiskHaltReason;
-  trippedAtMs: number;
-  dailyLossUsd: number;
-  dailyNetUsd: number;
-  consecutiveLosses: number;
-} {
-  // Aqui NO se mira el objetivo del dia: se evalua fuera, sobre el dia entero, porque esta funcion se
-  // llama con la linea base ya avanzada por los re-armados y eso le mostraria solo un trozo del dia.
-  const maxDailyLossUsd = limits.maxDailyLossUsd ?? 0;
+): { tripped: boolean; trippedAtMs: number; consecutiveLosses: number } {
+  // Solo la RACHA. Los dos limites del dia se evaluan fuera, sobre el dia entero, porque esta funcion se
+  // llama con la linea base ya avanzada por los re-armados y les enseñaria solo un trozo del dia.
   const maxConsecutiveLosses = limits.maxConsecutiveLosses ?? 0;
   const counted = resolvedToday.filter((trade) => (tradeClosedAtMs(trade) ?? 0) > baselineMs);
 
-  // Walk chronologically so we know the exact moment each limit was crossed (the cooldown anchors there).
-  //
-  // Recorrer el dia entero es lo que hace que el objetivo NO SE SUELTE: el motivo se fija la primera vez
-  // que se cruza y no se borra aunque el neto baje despues. Y sale gratis en persistencia — igual que el
-  // resto del freno, se deduce del ledger y no de una bandera guardada, asi que sobrevive a un reinicio.
-  let netUsd = 0;
+  // Walk chronologically so we know the exact moment the streak crossed (the cooldown anchors there).
   let consecutiveLosses = 0;
-  let reason: RiskHaltReason | undefined;
+  let tripped = false;
   let trippedAtMs = 0;
   for (const trade of counted) {
-    netUsd += calculateTradePnl(trade).netUsd ?? 0;
     // A profitable arbitrage must not extend a losing streak just because its nominal side lost.
     consecutiveLosses = isWinningTrade(trade) ? 0 : consecutiveLosses + 1;
-    if (reason === undefined) {
-      if (maxDailyLossUsd > 0 && Math.max(0, -netUsd) >= maxDailyLossUsd) {
-        reason = "daily_loss_limit";
-        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
-      } else if (maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
-        reason = "consecutive_losses";
-        trippedAtMs = tradeClosedAtMs(trade) ?? 0;
-      }
+    if (!tripped && maxConsecutiveLosses > 0 && consecutiveLosses >= maxConsecutiveLosses) {
+      tripped = true;
+      trippedAtMs = tradeClosedAtMs(trade) ?? 0;
     }
   }
 
-  return { reason, trippedAtMs, dailyLossUsd: Math.max(0, -netUsd), dailyNetUsd: netUsd, consecutiveLosses };
+  return { tripped, trippedAtMs, consecutiveLosses };
 }
 
 /**

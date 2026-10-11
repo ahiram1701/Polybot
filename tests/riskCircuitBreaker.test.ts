@@ -121,6 +121,11 @@ describe("evaluateRiskCircuitBreaker", () => {
     expect(status.dailyLossUsd).toBe(0);
   });
 
+  // EL ENFRIAMIENTO ES COSA DE LA RACHA. Hasta el 2026-10-10 estos tres tests usaban el tope de PERDIDA
+  // diaria, y lo que fijaban era justo el fallo: un "tope diario" que se re-armaba a las 2 h con la cuenta
+  // a cero, y asi dejaba perder el tope varias veces en un dia (-28,53 $ el 6-oct con el objetivo en +8).
+  // El tope de perdida se mide ahora sobre el dia entero, como el objetivo (ver "tope de perdida del dia");
+  // la maquinaria del enfriamiento sigue existiendo y se prueba aqui con quien la usa.
   it("with a cooldown, stays tripped until the cooldown elapses and reports when it resumes", () => {
     const tripAt = NOW - 30 * 60_000; // tripped 30 minutes ago
     const trades = [
@@ -128,8 +133,9 @@ describe("evaluateRiskCircuitBreaker", () => {
       trade({ id: "l2", won: false, resolvedAtMs: tripAt - 1000 }),
       trade({ id: "l3", won: false, resolvedAtMs: tripAt }),
     ];
-    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3, cooldownHours: 2 }, NOW);
     expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("consecutive_losses");
     expect(status.resumeAtMs).toBe(tripAt + 2 * 3_600_000);
   });
 
@@ -140,10 +146,12 @@ describe("evaluateRiskCircuitBreaker", () => {
       trade({ id: "l2", won: false, resolvedAtMs: tripAt - 1000 }),
       trade({ id: "l3", won: false, resolvedAtMs: tripAt }),
     ];
-    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3, cooldownHours: 2 }, NOW);
     expect(status.tripped).toBe(false);
-    // Pre-trip losses no longer count against the re-armed window.
-    expect(status.dailyLossUsd).toBe(0);
+    // The streak starts over after the re-arm...
+    expect(status.consecutiveLosses).toBe(0);
+    // ...but "perdida hoy" is still TODAY's loss, not the slice since the re-arm. The UI labels it "hoy".
+    expect(status.dailyLossUsd).toBeGreaterThanOrEqual(30);
   });
 
   it("with a cooldown, re-trips on NEW losses after the auto re-arm", () => {
@@ -157,9 +165,9 @@ describe("evaluateRiskCircuitBreaker", () => {
       trade({ id: "n2", won: false, resolvedAtMs: NOW - 2000 }),
       trade({ id: "n3", won: false, resolvedAtMs: NOW - 1000 }),
     ];
-    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxDailyLossUsd: 25, cooldownHours: 2 }, NOW);
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { maxConsecutiveLosses: 3, cooldownHours: 2 }, NOW);
     expect(status.tripped).toBe(true);
-    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.reason).toBe("consecutive_losses");
     expect(status.resumeAtMs).toBe(NOW - 1000 + 2 * 3_600_000);
   });
 
@@ -389,6 +397,123 @@ describe("objetivo del dia", () => {
     const status = evaluateRiskCircuitBreaker(trades, "sim", { dailyProfitTargetUsd: 0 }, NOW);
 
     expect(status.tripped).toBe(false);
+  });
+});
+
+/**
+ * El tope de perdida del dia, simetrico al objetivo.
+ *
+ * Hasta el 2026-10-10 vivia dentro del bucle de re-armado, y con `cooldownHours: 2` no era un tope del
+ * DIA sino de cada tramo de 2 h: al re-armarse empezaba de cero. Del 21-sep al 10-oct, con el objetivo
+ * en +8 $, los dias verdes cerraron en +9,32 $ de media y los rojos en -11,18 $, con el peor en -28,53 $:
+ * el objetivo tapaba las ganancias y nada tapaba las perdidas. Los dos limites se llamaban "diarios" y
+ * solo uno lo era.
+ *
+ * Ahora los dos se miden igual: sobre el dia entero desde el reinicio manual, sin enfriamiento y sin
+ * soltarse. La racha conserva el suyo, porque ella si es un freno de "respira y vuelve".
+ *
+ * Todos estos tests llevan los OTROS limites encendidos. La leccion del 21-sep fue que un limite nuevo
+ * probado a solas pasa, y en produccion convive con el re-armado de la racha.
+ */
+describe("tope de perdida del dia", () => {
+  const gana = (id: string, resolvedAtMs: number) => trade({ id, won: true, resolvedAtMs });
+  const pierde = (id: string, resolvedAtMs: number) => trade({ id, won: false, resolvedAtMs });
+  const HORA = 60 * 60_000;
+  // La configuracion de produccion, mas el tope.
+  const limites = { maxConsecutiveLosses: 2, cooldownHours: 2, dailyProfitTargetUsd: 8, maxDailyLossUsd: 25 };
+
+  it("el enfriamiento NO lo rearma: un tope cruzado dura hasta el corte del dia", () => {
+    // La racha salta en p3 con el dia en -20 $; p4 lo lleva a -30 $ y cruza el tope de 25 $. Antes el
+    // motivo quedaba fijado en "racha" y, pasadas sus 2 h, el dia se reabria como si nada.
+    const trades = [
+      pierde("p1", NOW - 6 * HORA),
+      gana("g1", NOW - 6 * HORA + 1000),
+      pierde("p2", NOW - 6 * HORA + 2000),
+      pierde("p3", NOW - 6 * HORA + 3000),
+      pierde("p4", NOW - 6 * HORA + 4000),
+    ];
+    // Seis horas despues, con enfriamiento de 2 h.
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { ...limites, dailyProfitTargetUsd: 0 }, NOW);
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.resumeAtMs).toBeUndefined();
+  });
+
+  it("cuenta el DIA entero aunque la racha se haya re-armado entre medias", () => {
+    // EL CASO QUE LO ROMPIA. Dos perdidas a primera hora disparan la racha (-20 $); su enfriamiento la
+    // rearma a las 2 h con la cuenta a cero. Una tercera perdida horas despues deja el dia en -30 $, pero
+    // el trozo posterior al re-armado solo ve -10 $, y el tope de 25 $ no saltaba nunca.
+    const trades = [pierde("p1", NOW - 8 * HORA), pierde("p2", NOW - 8 * HORA + 1000), pierde("p3", NOW - HORA)];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limites, NOW);
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.dailyLossUsd).toBeGreaterThanOrEqual(25);
+    expect(status.resumeAtMs).toBeUndefined();
+  });
+
+  it("NO se suelta aunque lo que seguia abierto recupere el dia despues", () => {
+    // Igual que el objetivo: reabrir tras recuperarse seria volver a jugar el dia que ya se dio por malo.
+    // La perdida va 3 h antes, FUERA del enfriamiento de 2 h: si no, pasaria tambien con el codigo viejo y
+    // el test no distinguiria nada.
+    const trades = [
+      pierde("p1", NOW - 3 * HORA),
+      gana("g1", NOW - 30 * 60_000),
+      gana("g2", NOW - 20 * 60_000),
+    ];
+    const status = evaluateRiskCircuitBreaker(
+      trades,
+      "sim",
+      { ...limites, maxDailyLossUsd: 5, dailyProfitTargetUsd: 0 },
+      NOW,
+    );
+
+    expect(status.tripped).toBe(true);
+    expect(status.reason).toBe("daily_loss_limit");
+    expect(status.dailyNetUsd).toBeGreaterThan(0);
+  });
+
+  it("si el objetivo llega antes, el dia cerro por objetivo aunque luego cruce el tope", () => {
+    // Lo que decide el motivo es el orden CRONOLOGICO: el dia se cerro al ganar, y lo que seguia abierto
+    // lo hundio despues. Decir "tope de perdida" mentiria sobre por que dejo de operar.
+    const trades = [
+      gana("g1", NOW - 6 * 60_000),
+      pierde("p1", NOW - 5 * 60_000),
+      pierde("p2", NOW - 4 * 60_000),
+      pierde("p3", NOW - 3 * 60_000),
+      pierde("p4", NOW - 2 * 60_000),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limites, NOW);
+
+    expect(status.reason).toBe("daily_profit_target");
+    expect(status.dailyLossUsd).toBeGreaterThanOrEqual(25);
+  });
+
+  it("respeta el reinicio manual: lo anterior al reinicio no cuenta", () => {
+    const trades = [
+      pierde("p1", NOW - 3 * HORA),
+      pierde("p2", NOW - 3 * HORA + 1000),
+      pierde("p3", NOW - 3 * HORA + 2000),
+    ];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limites, NOW, NOW - 2 * HORA);
+
+    expect(status.tripped).toBe(false);
+    expect(status.dailyLossUsd).toBe(0);
+  });
+
+  it("empieza de cero cada dia", () => {
+    const trades = [pierde("a1", YESTERDAY), pierde("a2", YESTERDAY + 1000), pierde("a3", YESTERDAY + 2000)];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", limites, NOW);
+
+    expect(status.tripped).toBe(false);
+  });
+
+  it("con el tope en 0 no existe", () => {
+    const trades = [pierde("p1", NOW - 8 * HORA), pierde("p2", NOW - 8 * HORA + 1000), pierde("p3", NOW - HORA)];
+    const status = evaluateRiskCircuitBreaker(trades, "sim", { ...limites, maxDailyLossUsd: 0 }, NOW);
+
+    expect(status.reason).not.toBe("daily_loss_limit");
   });
 });
 

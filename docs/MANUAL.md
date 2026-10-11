@@ -141,7 +141,7 @@ simuladas tapar pérdidas reales. Ver la sección 7.
 
 ### Los frenos del direccional
 
-**Cortacircuitos** (`maxDailyLossUsd`, `maxConsecutiveLosses`). Detiene el trading —no el bot ni la analítica— cuando la pérdida del día o la racha de pérdidas cruza el límite. Se rearma solo tras `riskHaltCooldownHours`. **Con ambos valores a 0 nunca corta.**
+**Cortacircuitos** (`maxDailyLossUsd`, `maxConsecutiveLosses`). Detiene el trading —no el bot ni la analítica— cuando la pérdida del día o la racha de pérdidas cruza el límite. La **racha** se rearma sola tras `riskHaltCooldownHours`; la **pérdida del día**, igual que el objetivo (`dailyProfitTargetUsd`), se mide sobre el día entero y para hasta el día siguiente — el enfriamiento no la rearma. **Con ambos valores a 0 nunca corta.**
 
 **Guardia de capital** (`minBankrollForDirectionalUsd`, **por defecto 10**). Apaga el direccional **en live** mientras el capital real esté por debajo. El mínimo de orden de Polymarket es $5, así que con poco capital cada entrada arriesga una fracción enorme y la ruina llega antes que el edge.
 
